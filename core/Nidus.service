@@ -5,6 +5,6 @@ After=network.target
 [Service]
 User=qing
 Group=qing
-ExecStart=nidus -i /etc/Nidus/init.txt --serve 5200
+ExecStart=bash /opt/micro_servers/core/_run.sh
 [Install]
 WantedBy=multi-user.target
