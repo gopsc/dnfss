@@ -1,0 +1,2 @@
+bash /home/qing/micro_servers/gateway/_run.sh
+bash /home/qing/micro_servers/static/_run.sh

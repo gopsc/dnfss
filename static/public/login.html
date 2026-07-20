@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<!-- 移动端适配核心标签 -->
+		<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+		<title>登录</title>
+		<style>
+			.tip-red {color:red;}
+			.tip-yellow {color: orange;}
+			.tip-green {color: greenyellow;}
+		</style>
+	</head>
+	<body>
+		<h2>用户登录</h2>
+		<form action="" id="form" method="post">
+			<div>
+			<label>用户名/推荐邮箱：</label>
+			<input type="text" id="loginUsername" name="username" placeholder="请输入用户名">
+			<span id="msgTip" ></span>
+			<br>
+			<label>密码：</label>
+			<input type="password" id="loginPassword" name="password" placeholder="请输入密码">
+			<span id="pwdTip"></span>
+			</div>
+			<div>
+			<label>验证邮箱：</label>
+			<input type="email" id="loginEmail" name="email" placeholder="请输入验证邮箱">
+			<span id="emlSub">
+				<input type="submit" value="发送验证码">
+			</span>
+			<span id="emlTip"></span>
+			</div>
+			<div>
+				<button type="button" id="registerBtn">注册</button>
+				<input type="submit" id="loginBtn" value="登录">
+				<input type="reset" id="resetUser" value="重置">
+			</div>
+			<div>
+				<input type="checkbox" id="agreeBox" name="agree" value="access">
+				<label id="agreement">同意该系统相关用户使用条例</label>
+				<span id="agreeTip"></span>
+			</div>
+		</form>
+		<script src="js/login.js"></script>
+	</body>
+</html>

@@ -1,0 +1,10 @@
+[Unit]
+Description=PMC Http Interfaces
+After=network.target
+
+[Service]
+User=qing
+Group=qing
+ExecStart=nidus -i /etc/Nidus/init.txt --serve 5200
+[Install]
+WantedBy=multi-user.target
