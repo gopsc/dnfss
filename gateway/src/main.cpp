@@ -12,6 +12,7 @@
 #include <boost/program_options.hpp>
 #include <openssl/provider.h>
 #include "ExpBase.hpp"
+#include "LocalTime.hpp"
 #include "Conf.hpp"
 
 using namespace pmc::net;
@@ -328,7 +329,7 @@ http::response<http::string_body> handleLogin(
 		auto username = std::string(obj.at("username").as_string());
 		auto password = std::string(obj.at("password").as_string());
 		auto password_hash = SHA256::sha256(password);
-		std::cout  << username << " " << password_hash << std::endl;
+		//std::cout  << username << " " << password_hash << std::endl;
 
 		std::string sql = "SELECT COUNT(*) FROM Users WHERE email=? AND password_hash=?;";
 		auto stmt = _SQLDB->stmt(sql);
@@ -349,16 +350,17 @@ http::response<http::string_body> handleLogin(
 		//int  created_at = 0;
 		int  keep_time  = 3600;	// second
 
-		json::value jv_r = {
+		/* 用于token的json对象 */
+		json::value jv_t = {
 			{"user", username},
-			//{"created_at", created_at},
+			{"created_at", LocalTime::getCurrent()},
 			{"keep_time", keep_time}
 		};
-
-		std::string data = json::serialize(jv_r);
+		std::string data = json::serialize(jv_t);
 		std::string token = Base64::base64_encode(data);
 		std::string sign = _PRIV.Sign(data);
 
+		/* 用于返回结果的json对象 */
 		json::value jv_rr = {
 			{"success", true},
 			{"data", json::object{{"token", token + "_" + sign}}}	// 双大括号
@@ -484,6 +486,23 @@ http::response<http::string_body> handleProxy(
 			}
 		}
 
+		json::value jv;
+		/* 令牌是否过期 */
+		{
+			/* TODO: 放进try包裹 */
+			jv = json::parse(auth);
+			json::object& obj = jv.as_object();
+
+			auto t = json::value_to<std::string>(obj["created_at"]);
+			bool r = LocalTime::isExpired(t);
+
+			if (r) {
+				THROW_EX_CUSTOM(HttpException, 2000, "Authorization Expired",
+                	            401, "*");
+			}
+		}
+
+		/* 代理地址是否开放、合法 */
 		{
 			std::cout << t_url << std::endl;
 			bool flag = false;
