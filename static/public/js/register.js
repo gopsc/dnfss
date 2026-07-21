@@ -183,11 +183,8 @@ form.addEventListener('submit', async function (e) {
 			throw new Error(result.message || `注册失败（HTTP ${res.status}）`);
 		}
 
-		if (result.code === 0) {
-			if (!result.data || !result.data.username) {
-				throw new Error('注册成功，但服务器返回的数据不完整');
-			}
-			alert(`${result.message}，账号：${result.data.username}`);
+		if (result.success) {
+			alert('注册成功');
 			form.reset();
 			sendCode = '';
 			codeTarget = '';
@@ -196,6 +193,7 @@ form.addEventListener('submit', async function (e) {
 		}
 
 		alert(result.message || '注册失败');
+
 	} catch (err) {
 		console.error('注册请求异常：', err);
 		alert(err.message || '接口请求失败，请检查后端服务是否启动');
