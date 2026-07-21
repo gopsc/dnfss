@@ -359,9 +359,13 @@ http::response<http::string_body> handleLogin(
 		std::string token = Base64::base64_encode(data);
 		std::string sign = _PRIV.Sign(data);
 
+		json::value jv_rr = {
+			{"success", true},
+			{"data", json::object{{"token", token + "_" + sign}}}	// 双大括号
+		};
 		res.set("Connection", "close");
 		res.result(http::status::ok);
-		res.body() = token + "_" + sign;
+		res.body() = json::serialize(jv_rr);
 	}
 
 	catch (const HttpException& e) {
