@@ -117,20 +117,20 @@ form.addEventListener('submit', async function(e) {
 		return;
 	}
 
-    const jsonBody = JSON.stringify({
-        username: userOk,
-        password: pwdOk
-    });
+	const jsonBody = JSON.stringify({
+		username: userOk,
+		password: pwdOk
+	});
 	
 	try {
 		loginButton.disabled = true;
 		const res = await fetch('/login', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded'
-            },
-            body: jsonBody
-        });
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json'	// 告诉服务器内容为json
+			},
+			body: jsonBody
+		});
 
 		const responseText = await res.text();
 		let result;
@@ -150,15 +150,15 @@ form.addEventListener('submit', async function(e) {
 			if (!result.data || !result.data.token || !result.data.username) {
 				throw new Error('登录成功，但服务器返回的数据不完整');
 			}
-            alert(`${result.message}，账号：${result.data.username}`);
-            sessionStorage.setItem('token', result.data.token);
-            location.href = 'main.html';
-        } else {
+			alert(`${result.message}，账号：${result.data.username}`);
+			sessionStorage.setItem('token', result.data.token);
+			location.href = 'main.html';
+		} else {
 			alert(result.message || '登录失败');
-        }
-    } catch (err) {
+		}
+	} catch (err) {
 		alert(err.message || '接口请求失败，请检查后端服务是否启动');
-        console.error('登录请求异常：', err);
+		console.error('登录请求异常：', err);
 	} finally {
 		loginButton.disabled = false;
 	}
