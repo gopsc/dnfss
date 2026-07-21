@@ -21,6 +21,21 @@ namespace po = boost::program_options;
 
 constexpr const char *_VER = "0.2.1";
 
+//////////////////////////////////
+#include <sstream>
+#include <vector>
+#include <string>
+
+std::vector<std::string> split(const std::string& s, char delim) {
+    std::vector<std::string> tokens;
+    std::istringstream stream(s);
+    std::string token;
+    while (std::getline(stream, token, delim)) {
+        tokens.push_back(token);
+    }
+    return tokens;
+}
+//////////////////////////////////
 
 class DatabaseException: public ExceptionBase {
 public:
@@ -80,12 +95,13 @@ http::response<http::string_body> handleRegister(
 bool is_special_header(const std::string &header);
 
 /* configure items */
-static std::string	_ADDR;
-static int		_PORT;
-static std::string	_DEFT_URL;
-static std::string	_DB_PATH;
-static std::string	_DEFT_ADMIN_USER = "admin";
-static std::string	_DEFT_ADMIN_PASS = "44112233";
+static std::string		_ADDR;
+static int			_PORT;
+static std::string		_DEFT_URL;
+static std::vector<std::string>	_OPEN_URL;
+static std::string		_DB_PATH;
+static std::string		_DEFT_ADMIN_USER = "admin";
+static std::string		_DEFT_ADMIN_PASS = "44112233";
 
 /* instance items */
 static std::unique_ptr<HttpServer>		_SERVE;
@@ -150,6 +166,7 @@ int main(int argc, char **argv) {
 			_ADDR = cf.get<std::string>("Server.address", "");
 			_PORT = cf.get<int> ("Server.port", -1);
 			_DEFT_URL = cf.get<std::string>("Proxy.default", "");
+			_OPEN_URL = split(cf.get<std::string>("Proxy.opened", ""), ';');
 			_DB_PATH = cf.get<std::string>("Database.path", "");
 		}
 		catch (ConfIni::IniConfigureFileParseException &e) {
@@ -418,32 +435,31 @@ http::response<http::string_body> handleProxy(
 	try {
 		auto _PUBL = MyRSA::Public_Key::from_pem(_KEYGEN->get_public_key_pem());
 
+		std::string t_url = "";
 		std::string url = "";
-		auto flag = false;
+		std::string auth = "";
 		{
+			auto flag = false;
 			auto it = req.base().find("Target-Url");
 			if (it != req.base().end()) {
-				url = req["Target-Url"];
+				t_url = req["Target-Url"];
 			}
 
 			it = req.base().find("target-url");
 			if (it != req.base().end()) {
-				url = req["target-url"];
+				t_url = req["target-url"];
 			}
 
 			if (url == "") {
-				url =  _DEFT_URL;
+				t_url =  _DEFT_URL;
 				flag = true;
 			}
 
+			url = t_url;
 			url += "/";
 			url += req.target();
-		}
 
-		/* check auth */
-		std::string auth = "";
-		{
-			auto it = req.base().find("Authorization");
+			it = req.base().find("Authorization");
 			if (it == req.base().end() && !flag) {
 				throw std::runtime_error("401");
 			}
@@ -461,6 +477,21 @@ http::response<http::string_body> handleProxy(
 					throw std::runtime_error("Header 401 Unauthorized");
 				}
 				std::cout << "auth data: " << auth  << std::endl;
+			}
+		}
+
+		{
+			std::cout << t_url << std::endl;
+			bool flag = false;
+			for (auto& s: _OPEN_URL) {
+				std::cout << s << std::endl;
+				if (s == t_url) {
+					flag = true;
+					break;
+				}
+			}
+			if (!flag) {
+				throw std::runtime_error("403");
 			}
 		}
 
