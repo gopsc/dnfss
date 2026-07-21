@@ -315,8 +315,8 @@ function renderNodes(nodes) {
         : '';
     
     return `
-        <div class="node ${parsed.hasFile ? 'has-file' : ''}">
-        <div class="node-title" onclick="enterNode(${n.id})">
+        <div class="node ${parsed.hasFile ? 'has-file' : ''}" onclick="handleNodeClick(event, ${n.id})">
+        <div class="node-title">
             <i class="fas ${parsed.hasFile ? 'fa-file' : 'fa-folder'}"></i> ${displayTitle}
         </div>
         ${contentDisplay}
@@ -361,6 +361,18 @@ async function load(pid = 0) {
     showToast(`加载失败: ${e.message}`, 'error');
     console.error("加载节点错误:", e);
     }
+}
+
+// 整个节点卡片的点击处理（点击卡片任意非按钮区域进入节点）
+function handleNodeClick(event, id) {
+    var el = event.target;
+    while (el && el !== event.currentTarget) {
+    if (el.tagName === 'BUTTON' || el.closest('button') || el.closest('.node-actions')) {
+        return; // 点击了按钮或操作区，不进入节点
+    }
+    el = el.parentElement;
+    }
+    enterNode(id);
 }
 
 // 进入节点
