@@ -23,37 +23,82 @@
 				margin-right: 0px;
 				background-color: #cfcfcf;
 			}
+
+			/* by qing */
+			body {
+				min-height: 100vh;
+				display: flex;
+				justify-content: center;
+				align-items: center;
+				background: #c2ccd0;
+				font-family: system-ui, -apple-system, "Segoe UI", Roboto,sans-serif;
+				padding: 1rem;
+			}
+
+			.box {
+				width: 90%;
+			}
+
+			.card {
+				background-color: #eedeb0;
+				border: 1px solid #000000;
+				border-radius: 1.125rem;
+				padding: 1.5rem 1.25rem;
+				box-shadow: 0 6px 18px rgba(0, 0, 0, 0.04), 0 2px 4px rgba(0, 0, 0, 0.02);
+				/*max-width: 480px;*/
+				width: 90%;
+				color: #4d3e2b;
+				transition: box-shadow 0.2s, border-color 0.2s;
+				overflow-wrap: break-word;
+			}
+
+			.card:hover {
+				border-color: #c7b38a;
+				box-shadow: 0 10px 24px rgba(0,0,0,0.06), 0 2px 6px rgba(0,0,0,0.03);
+			}
+
+			/* 移动端微调 */
+			@media (max-width: 480px) {
+				body {
+					padding: 0.8rem;
+				}
+
+				.card {
+					padding: 1.2rem, 1rem;
+					border-radius: 1rem;
+					border-width: 1px;
+				}
+			}
+
+			/* 极小屏 (宽度 < 360px)  */
+			@media (max-width: 360px) {
+				.card {
+					padding: 1rem 0.8rem;
+					border-radius: 0.9rem;
+				}
+			}
+
 		</style>
 	</head>
 	<body>
-		<center>
-		<!-- 文章主标题 -->
-		<h1><div id="article-title">title</div></h1>
+		<div class="box">
+			<h1><div id="article-title">title</div></h1>
 
-		<!-- 文章详情 -->
-		<div>
-			发布时间：<span id="publish-time">2026-1-1</span>
+			</center>
+			<div id="article-content">hello</div>
+			<hr>
+			<div class="recommend-list" id="recommend-list"></div>
+			<br>
+			<div class="card">
+				<h3>节点操作</h3>
+				<label>新增节点</label><input id="input-note-title"></input><br>
+				<label>节点内容</label><textarea id="input-note-content"></textarea><br>
+				<button id="input-note-submit">提交</button>
+				<button id="input-note-clear">重置</button>
+			</div>
+			<script src="https://cdnjs.cloudflare.com/ajax/libs/markdown-it/12.0.0/markdown-it.min.js"></script>
+			<script src="/js/validation.js"></script>
+			<script src="/js/dnfs.js"></script>
 		</div>
-		<div>
-			浏览：<span id="visit-count">999</span>
-			点赞：<span id="like-count">999</span>
-			分享：<span id="share-count">999</span>
-		</div>
-		</center>
-		<!-- 文章正文-->
-		<div id="article-content">hello</div>
-		<hr>
-		<div class="recommend-list" id="recommend-list"></div>
-		<br>
-		<h3>节点操作</h3>
-		<div>
-			<label>新增节点</label><input id="input-note-title"></input><br>
-			<label>节点内容</label><textarea id="input-note-content"></textarea><br>
-			<button id="input-note-submit">提交</button>
-			<button id="input-note-clear">重置</button>
-		</div>
-		<script src="https://cdnjs.cloudflare.com/ajax/libs/markdown-it/12.0.0/markdown-it.min.js"></script>
-		<script src="/js/validation.js"></script>
-		<script src="/js/dnfs.js"></script>
 	</body>
 </html>

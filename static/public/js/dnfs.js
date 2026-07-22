@@ -144,19 +144,22 @@ function load_notes(main_node) {
 	}
 	for (i in main_node) {
 		item = main_node[i]
+		var card = document.createElement('div'); 
+		card.className = "card";
 		var ttl = document.createElement('center');
 		ttl.addEventListener('click', function(event) {
 			var id = Number(item.id)
 			stack.push(id)
 			getNode(token, id).then(load_notes)
 		});
-		var ttl1 =document.createElement('h1');
+		var ttl1 =document.createElement('h3');
 		ttl1.textContent = item.title
 		ttl.appendChild(ttl1)
-		recommend_list.appendChild(ttl)
+		card.appendChild(ttl)
 		var ctt = document.createElement('p');
 		renderMarkdown(ctt, item.content);
-		recommend_list.appendChild(ctt)
+		card.appendChild(ctt)
+		recommend_list.appendChild(card)
 		recommend_list.appendChild(document.createElement('br'))
 		recommend_list.appendChild(document.createElement('hr'))
 	}
