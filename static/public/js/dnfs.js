@@ -131,8 +131,7 @@ function load_notes(main_node) {
 	recommend_list.replaceChildren();
 	//alert(stack.length)
 	if (stack.length > 0) {	/* 如果不在根节点 */
-		var bak = document.createElement('a');
-		//ttl.href = '/dnfs.html';
+		var bak = document.createElement('center');
 		bak.addEventListener('click', function (event) {
 			stack.pop();
 			var id = (stack.length > 1) ? stack[stack.length - 1] : 0;
@@ -145,8 +144,7 @@ function load_notes(main_node) {
 	}
 	for (i in main_node) {
 		item = main_node[i]
-		var ttl = document.createElement('a');
-		//ttl.href ="/dnfs.html";
+		var ttl = document.createElement('center');
 		ttl.addEventListener('click', function(event) {
 			var id = Number(item.id)
 			stack.push(id)
@@ -160,6 +158,7 @@ function load_notes(main_node) {
 		renderMarkdown(ctt, item.content);
 		recommend_list.appendChild(ctt)
 		recommend_list.appendChild(document.createElement('br'))
+		recommend_list.appendChild(document.createElement('hr'))
 	}
 };
 
