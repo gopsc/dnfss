@@ -9,9 +9,21 @@
 	</head>
 	<body>
 		<div class="box">
-			<h1><div id="article-title"></div></h1>
+			<center>
+			<!-- 文章主标题 -->
+			<h1><div id="article-title">title</div></h1>
 
-			<div id="article-content"></div>
+			<!-- 文章详情 -->
+			<div>
+				发布时间：<span id="publish-time">2026-1-1</span>
+			</div>
+			<div>
+				浏览：<span id="visit-count">999</span>
+				点赞：<span id="like-count">999</span>
+				分享：<span id="share-count">999</span>
+			</div>
+			</center>
+			<div id="article-content">hello</div>
 			<div class="recommend-list" id="recommend-list"></div>
 			<br>
 			<div class="card">
@@ -22,8 +34,8 @@
 				<button id="input-note-clear">重置</button>
 			</div>
 			<script src="https://cdnjs.cloudflare.com/ajax/libs/markdown-it/12.0.0/markdown-it.min.js"></script>
-			<script src="/js/validation.js"></script>
-			<script src="/js/dnfs.js"></script>
+			<script src="js/validation.js"></script>
+			<script src="js/dnfs.js"></script>
 		</div>
 	</body>
 </html>
