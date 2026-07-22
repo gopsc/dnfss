@@ -5,146 +5,230 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
     <title>文件浏览</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        :root {
+            --bg: #fff8f0;
+            --fg: #5a3e2b;
+            --card: #fff5e6;
+            --card-hover: #ffe8cc;
+            --border: #f0d9b5;
+            --border-light: #f5e6d3;
+            --muted: #b08968;
+            --subtle: #8b6f47;
+            --accent: #e67e22;
+            --accent-dark: #d35400;
+            --accent-bg: rgba(255,255,255,0.25);
+            --accent-bg-active: rgba(255,255,255,0.45);
+            --play: #f39c12;
+            --error: #c0392b;
+            --shadow: 0 2px 6px rgba(211, 84, 0, 0.1);
+            --shadow-hover: 0 4px 12px rgba(211, 84, 0, 0.2);
         }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #2b1d14;
+                --fg: #f5e6d3;
+                --card: #3d2817;
+                --card-hover: #4a3020;
+                --border: #5a3e2b;
+                --border-light: #4a3020;
+                --muted: #a08868;
+                --subtle: #c4a67a;
+                --accent: #e67e22;
+                --accent-dark: #d35400;
+                --accent-bg: rgba(255,255,255,0.15);
+                --accent-bg-active: rgba(255,255,255,0.3);
+                --shadow: 0 2px 6px rgba(0,0,0,0.3);
+                --shadow-hover: 0 4px 12px rgba(0,0,0,0.5);
+            }
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
-            background: #f5f5f5;
-            color: #333;
-            padding: 0;
+            background: var(--bg);
+            color: var(--fg);
             min-height: 100vh;
         }
+
         .header {
-            background: #4A90D9;
+            background: linear-gradient(135deg, var(--accent), var(--accent-dark));
             color: white;
-            padding: 12px 16px;
+            padding: 14px 16px;
             position: sticky;
             top: 0;
             z-index: 10;
             display: flex;
             justify-content: space-between;
             align-items: center;
+            box-shadow: var(--shadow);
         }
         .header h1 { font-size: 18px; font-weight: 600; }
-        .header a {
+        .header-actions { display: flex; gap: 6px; }
+        .header-actions a {
             color: white;
             text-decoration: none;
             padding: 4px 10px;
-            background: rgba(255,255,255,0.2);
-            border-radius: 4px;
+            background: var(--accent-bg);
+            border-radius: 6px;
             font-size: 14px;
+            transition: background 0.15s;
         }
-        .header a:active { background: rgba(255,255,255,0.4); }
+        .header-actions a:active { background: var(--accent-bg-active); }
+
         .breadcrumb {
             padding: 8px 16px;
-            background: white;
+            background: var(--card);
             font-size: 13px;
             overflow-x: auto;
             white-space: nowrap;
-            border-bottom: 1px solid #e0e0e0;
+            border-bottom: 1px solid var(--border);
         }
-        .breadcrumb a { color: #4A90D9; text-decoration: none; padding: 2px 6px; }
-        .breadcrumb .sep { color: #999; margin: 0 4px; }
-        .breadcrumb .current { color: #333; font-weight: 500; }
+        .breadcrumb a { color: var(--accent); text-decoration: none; padding: 2px 6px; }
+        .breadcrumb .sep { color: var(--muted); margin: 0 4px; }
+        .breadcrumb .current { color: var(--fg); font-weight: 500; }
+
         .search-box {
             padding: 8px 16px;
-            background: white;
-            border-bottom: 1px solid #e0e0e0;
+            background: var(--card);
+            border-bottom: 1px solid var(--border);
         }
         .search-box input {
             width: 100%;
             padding: 8px 12px;
-            border: 1px solid #ddd;
+            border: 1px solid var(--border-light);
             border-radius: 6px;
             font-size: 14px;
             outline: none;
+            background: var(--bg);
+            color: var(--fg);
+            transition: border-color 0.15s, box-shadow 0.15s;
         }
-        .search-box input:focus { border-color: #4A90D9; }
+        .search-box input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(230, 126, 34, 0.2);
+        }
+
         .stats {
             padding: 6px 16px;
-            background: #fafafa;
+            background: var(--bg);
             font-size: 12px;
-            color: #666;
-            border-bottom: 1px solid #e0e0e0;
+            color: var(--subtle);
+            border-bottom: 1px solid var(--border);
             display: flex;
             gap: 12px;
             flex-wrap: wrap;
         }
+
         .container {
-            padding: 8px 12px 60px 12px;
-            max-width: 800px;
+            padding: 12px;
+            max-width: 1200px;
             margin: 0 auto;
         }
-        .item {
-            background: white;
-            border-radius: 8px;
-            padding: 10px 14px;
-            margin-bottom: 4px;
-            display: flex;
-            align-items: center;
+
+        /* 方块网格布局 */
+        .file-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
             gap: 12px;
-            cursor: pointer;
-            border-bottom: 1px solid #f0f0f0;
         }
-        .item:active { background: #f0f0f0; }
-        .item .icon { font-size: 24px; flex-shrink: 0; width: 36px; text-align: center; }
-        .item .info { flex: 1; min-width: 0; }
-        .item .name { font-size: 15px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .item .meta { font-size: 12px; color: #999; display: flex; gap: 10px; flex-wrap: wrap; }
-        .item .actions { display: flex; gap: 4px; flex-shrink: 0; }
+
+        .item {
+            background: var(--card);
+            border-radius: 10px;
+            padding: 14px 10px;
+            cursor: pointer;
+            border: 1px solid var(--border-light);
+            box-shadow: var(--shadow);
+            transition: background 0.15s, box-shadow 0.15s, transform 0.1s;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            gap: 6px;
+        }
+        .item:hover { background: var(--card-hover); box-shadow: var(--shadow-hover); }
+        .item:active { transform: scale(0.97); }
+
+        .item .icon {
+            font-size: 40px;
+            width: 100%;
+            text-align: center;
+            line-height: 1;
+        }
+        .item .info {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .item .name {
+            font-size: 14px;
+            font-weight: 500;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            width: 100%;
+        }
+        .item .meta {
+            font-size: 11px;
+            color: var(--muted);
+            display: flex;
+            justify-content: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        .item .actions {
+            display: flex;
+            gap: 4px;
+            justify-content: center;
+            margin-top: 4px;
+        }
         .item .actions button {
-            padding: 4px 10px;
+            padding: 5px 10px;
             font-size: 12px;
             border: none;
-            border-radius: 4px;
+            border-radius: 5px;
             cursor: pointer;
+            color: white;
+            transition: opacity 0.15s;
         }
-        .item .actions button:active { transform: scale(0.95); }
-        .btn-play { background: #4CAF50; color: white; }
-        .btn-download { background: #4A90D9; color: white; }
-        .loading { text-align: center; padding: 40px; color: #999; }
+        .item .actions button:hover { opacity: 0.85; }
+        .item .actions button:active { transform: scale(0.92); }
+        .btn-play { background: var(--play); }
+        .btn-download { background: var(--accent); }
+
+        .loading { text-align: center; padding: 40px; color: var(--muted); }
         .loading .spinner { display: inline-block; animation: spin 1s linear infinite; font-size: 28px; }
         @keyframes spin { 100% { transform: rotate(360deg); } }
-        .empty { text-align: center; padding: 60px 20px; color: #999; }
+
+        .empty { text-align: center; padding: 60px 20px; color: var(--muted); }
         .empty .icon { font-size: 48px; display: block; margin-bottom: 12px; }
-        .error { text-align: center; padding: 40px 20px; color: #e74c3c; }
+
+        .error { text-align: center; padding: 40px 20px; color: var(--error); }
+
         @media (max-width: 480px) {
-            .item { padding: 8px 10px; }
-            .item .icon { font-size: 20px; width: 30px; }
+            .file-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
+            .item { padding: 10px 8px; }
+            .item .icon { font-size: 32px; }
             .item .name { font-size: 13px; }
-            .item .meta { font-size: 11px; gap: 6px; }
-            .item .actions button { padding: 3px 8px; font-size: 11px; }
+            .item .meta { font-size: 10px; gap: 4px; }
+            .item .actions button { padding: 4px 8px; font-size: 11px; }
             .header h1 { font-size: 16px; }
-        }
-        @media (prefers-color-scheme: dark) {
-            body { background: #1a1a2e; color: #e0e0e0; }
-            .header { background: #2d2d5e; }
-            .breadcrumb { background: #16213e; border-color: #2a2a4a; }
-            .breadcrumb .current { color: #e0e0e0; }
-            .stats { background: #16213e; color: #aaa; border-color: #2a2a4a; }
-            .search-box { background: #16213e; border-color: #2a2a4a; }
-            .search-box input { background: #2a2a4a; border-color: #3a3a5a; color: #e0e0e0; }
-            .item { background: #16213e; border-color: #2a2a4a; }
-            .item:active { background: #2a2a4a; }
-            .item .meta { color: #888; }
         }
     </style>
 </head>
 <body>
-    <div class="header">
+    <header class="header">
         <h1>📁 文件浏览</h1>
-        <div>
+        <nav class="header-actions">
             <a href="/">🏠</a>
-            <a href="#" id="btnRefresh" style="margin-left:6px;">🔄</a>
-        </div>
-    </div>
+            <a href="#" id="btnRefresh">🔄</a>
+        </nav>
+    </header>
 
-    <div class="breadcrumb" id="breadcrumb">
+    <nav class="breadcrumb" id="breadcrumb">
         <a href="/">根目录</a>
-    </div>
+    </nav>
 
     <div class="search-box">
         <input type="text" id="searchInput" placeholder="搜索文件..." autocomplete="off">
@@ -158,24 +242,23 @@
         <span>🎵 <span id="totalAudios">0</span></span>
     </div>
 
-    <div class="container">
+    <main class="container">
         <div class="loading" id="loading">
             <span class="spinner">⏳</span>
             <div>加载中...</div>
         </div>
-        <div id="fileList"></div>
+        <div id="fileList" class="file-grid"></div>
         <div class="empty" id="empty" style="display:none;">
             <span class="icon">📭</span>
             <div>此目录为空</div>
         </div>
-    </div>
+    </main>
 
     <script>
-        // 从 URL 解析当前路径（去除首尾斜杠），不再依赖后端注入
+        // ===== 路径解析：从 URL 取当前目录（去除首尾斜杠） =====
         const currentPath = decodeURIComponent(window.location.pathname).replace(/^\/+|\/+$/g, '');
-        let items = [];
-        let searchQuery = "";
 
+        // ===== DOM 引用（id 与原版本完全一致，保持后端/前端契约不变） =====
         const fileList = document.getElementById("fileList");
         const loading = document.getElementById("loading");
         const empty = document.getElementById("empty");
@@ -188,65 +271,77 @@
         const btnRefresh = document.getElementById("btnRefresh");
         const breadcrumb = document.getElementById("breadcrumb");
 
+        // ===== 状态 =====
+        let items = [];
+        let searchQuery = "";
+
+        // ===== 工具函数 =====
+        const SIZE_UNITS = ["B", "KB", "MB", "GB"];
         function formatSize(bytes) {
             if (bytes === 0) return "0B";
-            const k = 1024;
-            const sizes = ["B", "KB", "MB", "GB"];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return (bytes / Math.pow(k, i)).toFixed(1) + sizes[i];
+            const i = Math.floor(Math.log(bytes) / Math.log(1024));
+            return (bytes / Math.pow(1024, i)).toFixed(1) + SIZE_UNITS[i];
         }
 
+        const FILE_ICONS = {
+            pdf: "📄", doc: "📝", docx: "📝", xls: "📊", xlsx: "📊",
+            zip: "📦", rar: "📦", "7z": "📦",
+            jpg: "🖼️", jpeg: "🖼️", png: "🖼️", gif: "🖼️",
+            txt: "📃", json: "📋", html: "🌐", css: "🎨", js: "⚡"
+        };
         function getIcon(item) {
             if (item.type === "dir") return "📁";
             if (item.type === "video") return "🎬";
             if (item.type === "audio") return "🎵";
             const ext = item.name.split(".").pop().toLowerCase();
-            const icons = {
-                "pdf": "📄", "doc": "📝", "docx": "📝", "xls": "📊", "xlsx": "📊",
-                "zip": "📦", "rar": "📦", "7z": "📦",
-                "jpg": "🖼️", "jpeg": "🖼️", "png": "🖼️", "gif": "🖼️",
-                "txt": "📃", "json": "📋", "html": "🌐", "css": "🎨", "js": "⚡"
-            };
-            return icons[ext] || "📄";
+            return FILE_ICONS[ext] || "📄";
         }
 
+        // 转义文本，防止文件名含特殊字符导致 XSS 或模板断裂
+        function esc(str) {
+            return String(str)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#39;");
+        }
+
+        // ===== 导航行为（与原版本一致） =====
         function navigate(path, type) {
             if (type === "dir") window.location.href = "/" + path;
             else if (type === "video" || type === "audio") window.location.href = "/video/" + path;
             else window.location.href = "/" + path;
         }
-
         function playMedia(path) { window.location.href = "/video/" + path; }
         function downloadFile(path) { window.location.href = "/" + path + "?download=true"; }
 
-        // 面包屑由 JS 根据当前路径动态生成
+        // ===== 面包屑 =====
         function renderBreadcrumb() {
-            let html = '<a href="/">根目录</a>';
-            if (currentPath) {
-                const parts = currentPath.split('/');
-                let acc = '';
-                for (let i = 0; i < parts.length; i++) {
-                    const part = parts[i];
-                    if (i === parts.length - 1) {
-                        html += `<span class="sep">›</span><span class="current">${part}</span>`;
-                    } else {
-                        acc += (i === 0 ? '' : '/') + part;
-                        html += `<span class="sep">›</span><a href="/${acc}/">${part}</a>`;
-                    }
+            const parts = currentPath ? currentPath.split('/') : [];
+            const frags = ['<a href="/">根目录</a>'];
+            let acc = '';
+            parts.forEach((part, i) => {
+                if (i === parts.length - 1) {
+                    frags.push(`<span class="sep">›</span><span class="current">${esc(part)}</span>`);
+                } else {
+                    acc += (i === 0 ? '' : '/') + part;
+                    frags.push(`<span class="sep">›</span><a href="/${encodeURIComponent(acc)}/">${esc(part)}</a>`);
                 }
-            }
-            breadcrumb.innerHTML = html;
+            });
+            breadcrumb.innerHTML = frags.join('');
         }
 
+        // ===== 列表渲染（使用转义，避免文件名注入） =====
         function render() {
-            const filtered = items.filter(item => {
-                if (!searchQuery) return true;
-                return item.name.toLowerCase().includes(searchQuery.toLowerCase());
-            });
+            const q = searchQuery.toLowerCase();
+            const filtered = searchQuery
+                ? items.filter(i => i.name.toLowerCase().includes(q))
+                : items;
 
             totalItems.textContent = filtered.length;
-            totalDirs.textContent = filtered.filter(i => i.type === "dir").length;
-            totalFiles.textContent = filtered.filter(i => i.type === "file").length;
+            totalDirs.textContent   = filtered.filter(i => i.type === "dir").length;
+            totalFiles.textContent  = filtered.filter(i => i.type === "file").length;
             totalVideos.textContent = filtered.filter(i => i.type === "video").length;
             totalAudios.textContent = filtered.filter(i => i.type === "audio").length;
 
@@ -259,25 +354,35 @@
             empty.style.display = "none";
             loading.style.display = "none";
 
-            fileList.innerHTML = filtered.map(item => `
-                <div class="item">
-                    <span class="icon">${getIcon(item)}</span>
-                    <div class="info" onclick="navigate('${item.path}', '${item.type}')">
-                        <div class="name">${item.name}</div>
-                        <div class="meta">
-                            ${item.type !== "dir" ? `<span>${formatSize(item.size)}</span>` : '<span>📁 文件夹</span>'}
-                            <span>${item.modified}</span>
+            fileList.innerHTML = filtered.map(item => {
+                const path = esc(item.path);
+                const type = esc(item.type);
+                const name = esc(item.name);
+                const sizeOrDir = item.type !== "dir"
+                    ? `<span>${formatSize(item.size)}</span>`
+                    : '<span>📁 文件夹</span>';
+                const playBtn = (item.type === "video" || item.type === "audio")
+                    ? `<button class="btn-play" onclick="event.stopPropagation(); playMedia('${path}')">▶</button>`
+                    : '';
+                return `
+                    <div class="item">
+                        <span class="icon">${getIcon(item)}</span>
+                        <div class="info" onclick="navigate('${path}', '${type}')">
+                            <div class="name">${name}</div>
+                            <div class="meta">
+                                ${sizeOrDir}
+                                <span>${esc(item.modified)}</span>
+                            </div>
                         </div>
-                    </div>
-                    <div class="actions">
-                        ${(item.type === "video" || item.type === "audio") ?
-                            `<button class="btn-play" onclick="event.stopPropagation(); playMedia('${item.path}')">▶</button>` : ''}
-                        <button class="btn-download" onclick="event.stopPropagation(); downloadFile('${item.path}')">⬇</button>
-                    </div>
-                </div>
-            `).join("");
+                        <div class="actions">
+                            ${playBtn}
+                            <button class="btn-download" onclick="event.stopPropagation(); downloadFile('${path}')">⬇</button>
+                        </div>
+                    </div>`;
+            }).join("");
         }
 
+        // ===== 数据拉取（接口与参数与原版本一致） =====
         async function loadData() {
             loading.style.display = "block";
             fileList.innerHTML = "";
@@ -294,22 +399,24 @@
                     throw new Error(data.error || "加载失败");
                 }
             } catch (e) {
-                fileList.innerHTML = `<div class="error">❌ 加载失败: ${e.message}</div>`;
+                fileList.innerHTML = `<div class="error">❌ 加载失败: ${esc(e.message)}</div>`;
                 loading.style.display = "none";
             }
         }
 
-        let timeout;
-        searchInput.addEventListener("input", function() {
-            clearTimeout(timeout);
-            timeout = setTimeout(() => {
+        // ===== 事件绑定（快捷键 / 搜索 / 刷新 与原版本一致） =====
+        let searchTimer;
+        searchInput.addEventListener("input", function () {
+            clearTimeout(searchTimer);
+            searchTimer = setTimeout(() => {
                 searchQuery = this.value.trim();
                 render();
             }, 200);
         });
 
-        document.addEventListener("keydown", function(e) {
-            if ((e.ctrlKey && e.key === "f") || (e.key === "/" && !e.ctrlKey && !e.metaKey)) {
+        document.addEventListener("keydown", function (e) {
+            if ((e.ctrlKey && e.key === "f") ||
+                (e.key === "/" && !e.ctrlKey && !e.metaKey)) {
                 e.preventDefault();
                 searchInput.focus();
                 searchInput.select();
@@ -323,9 +430,10 @@
         });
 
         btnRefresh.addEventListener("click", loadData);
+
+        // ===== 启动 =====
         renderBreadcrumb();
         loadData();
     </script>
 </body>
 </html>
-
