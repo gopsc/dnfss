@@ -60,6 +60,9 @@ SSL_ENABLED = file_config['ssl'].get('enabled', 'false').lower() == 'true'
 SSL_CERT_FILE = file_config['ssl'].get('cert_file', 'cert.pem')
 SSL_KEY_FILE = file_config['ssl'].get('key_file', 'key.pem')
 
+# 视图文件名：根路径与目录访问时固定返回此静态文件，由前端 JS 调用 /api/filelist 拉取数据
+VIEW_FILE = '__view.html'
+
 # ==================== 视频文件支持 ====================
 VIDEO_MIME_TYPES = {
     '.mp4': 'video/mp4', '.webm': 'video/webm', '.ogg': 'video/ogg',
@@ -106,29 +109,29 @@ def get_file_list():
     try:
         if not FILESYSTEM_ENABLED:
             return jsonify({'error': '文件系统未启用'}), 403
-        
+
         requested_path = request.args.get('path', '')
         full_path = safe_path_join(HTML_ROOT_DIR, requested_path)
-        
+
         if full_path is None:
             return jsonify({'error': '无效的路径'}), 403
-        
+
         if not os.path.exists(full_path) or not os.path.isdir(full_path):
             return jsonify({'error': '目录不存在'}), 404
-        
+
         items = []
         for item in os.listdir(full_path):
             if item == '__pycache__':
                 continue
-            
+
             item_path = os.path.join(full_path, item)
             item_stat = os.stat(item_path)
             is_dir = os.path.isdir(item_path)
-            
+
             item_rel_path = os.path.join(requested_path, item) if requested_path else item
-            
+
             file_type = 'dir' if is_dir else ('video' if is_video_file(item) else ('audio' if is_audio_file(item) else 'file'))
-            
+
             items.append({
                 'name': item,
                 'type': file_type,
@@ -137,9 +140,9 @@ def get_file_list():
                 'size_formatted': format_file_size(item_stat.st_size) if not is_dir else '',
                 'modified': datetime.datetime.fromtimestamp(item_stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
             })
-        
+
         items.sort(key=lambda x: (x['type'] != 'dir', x['name'].lower()))
-        
+
         return jsonify({
             'success': True,
             'path': requested_path or '/',
@@ -155,33 +158,33 @@ def stream_video(file_path):
     try:
         if not FILESYSTEM_ENABLED:
             return jsonify({'error': '文件系统未启用'}), 403
-        
+
         full_path = safe_path_join(HTML_ROOT_DIR, file_path)
         if full_path is None or not os.path.exists(full_path) or not os.path.isfile(full_path):
             return jsonify({'error': '文件不存在'}), 404
-        
+
         if not is_video_file(full_path) and not is_audio_file(full_path):
             return jsonify({'error': '不支持的文件类型'}), 400
-        
+
         file_size = os.path.getsize(full_path)
         mime_type = get_media_mime_type(full_path)
-        
+
         range_header = request.headers.get('Range', None)
-        
+
         if range_header:
             byte_range = range_header.replace('bytes=', '').split('-')
             start = int(byte_range[0]) if byte_range[0] else 0
             end = int(byte_range[1]) if len(byte_range) > 1 and byte_range[1] else file_size - 1
-            
+
             if start >= file_size:
                 return jsonify({'error': '请求范围超出文件大小'}), 416
-            
+
             length = end - start + 1
-            
+
             with open(full_path, 'rb') as f:
                 f.seek(start)
                 data = f.read(length)
-            
+
             response = Response(data, 206, mimetype=mime_type, direct_passthrough=True)
             response.headers.add('Content-Range', f'bytes {start}-{end}/{file_size}')
             response.headers.add('Accept-Ranges', 'bytes')
@@ -194,342 +197,38 @@ def stream_video(file_path):
         logger.error(f"Video streaming error: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-# ==================== 极简版HTML页面（使用字符串拼接，避免花括号问题） ====================
-def get_html_template(path, breadcrumb_html):
-    """生成HTML页面"""
-    return f'''<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>文件浏览</title>
-    <style>
-        * {{
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }}
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
-            background: #f5f5f5;
-            color: #333;
-            padding: 0;
-            min-height: 100vh;
-        }}
-        .header {{
-            background: #4A90D9;
-            color: white;
-            padding: 12px 16px;
-            position: sticky;
-            top: 0;
-            z-index: 10;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }}
-        .header h1 {{ font-size: 18px; font-weight: 600; }}
-        .header a {{
-            color: white;
-            text-decoration: none;
-            padding: 4px 10px;
-            background: rgba(255,255,255,0.2);
-            border-radius: 4px;
-            font-size: 14px;
-        }}
-        .header a:active {{ background: rgba(255,255,255,0.4); }}
-        .breadcrumb {{
-            padding: 8px 16px;
-            background: white;
-            font-size: 13px;
-            overflow-x: auto;
-            white-space: nowrap;
-            border-bottom: 1px solid #e0e0e0;
-        }}
-        .breadcrumb a {{ color: #4A90D9; text-decoration: none; padding: 2px 6px; }}
-        .breadcrumb .sep {{ color: #999; margin: 0 4px; }}
-        .breadcrumb .current {{ color: #333; font-weight: 500; }}
-        .search-box {{
-            padding: 8px 16px;
-            background: white;
-            border-bottom: 1px solid #e0e0e0;
-        }}
-        .search-box input {{
-            width: 100%;
-            padding: 8px 12px;
-            border: 1px solid #ddd;
-            border-radius: 6px;
-            font-size: 14px;
-            outline: none;
-        }}
-        .search-box input:focus {{ border-color: #4A90D9; }}
-        .stats {{
-            padding: 6px 16px;
-            background: #fafafa;
-            font-size: 12px;
-            color: #666;
-            border-bottom: 1px solid #e0e0e0;
-            display: flex;
-            gap: 12px;
-            flex-wrap: wrap;
-        }}
-        .container {{
-            padding: 8px 12px 60px 12px;
-            max-width: 800px;
-            margin: 0 auto;
-        }}
-        .item {{
-            background: white;
-            border-radius: 8px;
-            padding: 10px 14px;
-            margin-bottom: 4px;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            cursor: pointer;
-            border-bottom: 1px solid #f0f0f0;
-        }}
-        .item:active {{ background: #f0f0f0; }}
-        .item .icon {{ font-size: 24px; flex-shrink: 0; width: 36px; text-align: center; }}
-        .item .info {{ flex: 1; min-width: 0; }}
-        .item .name {{ font-size: 15px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-        .item .meta {{ font-size: 12px; color: #999; display: flex; gap: 10px; flex-wrap: wrap; }}
-        .item .actions {{ display: flex; gap: 4px; flex-shrink: 0; }}
-        .item .actions button {{
-            padding: 4px 10px;
-            font-size: 12px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-        }}
-        .item .actions button:active {{ transform: scale(0.95); }}
-        .btn-play {{ background: #4CAF50; color: white; }}
-        .btn-download {{ background: #4A90D9; color: white; }}
-        .loading {{ text-align: center; padding: 40px; color: #999; }}
-        .loading .spinner {{ display: inline-block; animation: spin 1s linear infinite; font-size: 28px; }}
-        @keyframes spin {{ 100% {{ transform: rotate(360deg); }} }}
-        .empty {{ text-align: center; padding: 60px 20px; color: #999; }}
-        .empty .icon {{ font-size: 48px; display: block; margin-bottom: 12px; }}
-        .error {{ text-align: center; padding: 40px 20px; color: #e74c3c; }}
-        @media (max-width: 480px) {{
-            .item {{ padding: 8px 10px; }}
-            .item .icon {{ font-size: 20px; width: 30px; }}
-            .item .name {{ font-size: 13px; }}
-            .item .meta {{ font-size: 11px; gap: 6px; }}
-            .item .actions button {{ padding: 3px 8px; font-size: 11px; }}
-            .header h1 {{ font-size: 16px; }}
-        }}
-        @media (prefers-color-scheme: dark) {{
-            body {{ background: #1a1a2e; color: #e0e0e0; }}
-            .header {{ background: #2d2d5e; }}
-            .breadcrumb {{ background: #16213e; border-color: #2a2a4a; }}
-            .breadcrumb .current {{ color: #e0e0e0; }}
-            .stats {{ background: #16213e; color: #aaa; border-color: #2a2a4a; }}
-            .search-box {{ background: #16213e; border-color: #2a2a4a; }}
-            .search-box input {{ background: #2a2a4a; border-color: #3a3a5a; color: #e0e0e0; }}
-            .item {{ background: #16213e; border-color: #2a2a4a; }}
-            .item:active {{ background: #2a2a4a; }}
-            .item .meta {{ color: #888; }}
-        }}
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>📁 文件浏览</h1>
-        <div>
-            <a href="/">🏠</a>
-            <a href="#" id="btnRefresh" style="margin-left:6px;">🔄</a>
-        </div>
-    </div>
-    
-    <div class="breadcrumb">
-        <a href="/">根目录</a>
-        {breadcrumb_html}
-    </div>
-    
-    <div class="search-box">
-        <input type="text" id="searchInput" placeholder="搜索文件..." autocomplete="off">
-    </div>
-    
-    <div class="stats">
-        <span>📊 共 <span id="totalItems">0</span> 项</span>
-        <span>📁 <span id="totalDirs">0</span></span>
-        <span>📄 <span id="totalFiles">0</span></span>
-        <span>🎬 <span id="totalVideos">0</span></span>
-        <span>🎵 <span id="totalAudios">0</span></span>
-    </div>
-    
-    <div class="container">
-        <div class="loading" id="loading">
-            <span class="spinner">⏳</span>
-            <div>加载中...</div>
-        </div>
-        <div id="fileList"></div>
-        <div class="empty" id="empty" style="display:none;">
-            <span class="icon">📭</span>
-            <div>此目录为空</div>
-        </div>
-    </div>
-
-    <script>
-        const currentPath = "{path}";
-        let items = [];
-        let searchQuery = "";
-        
-        const fileList = document.getElementById("fileList");
-        const loading = document.getElementById("loading");
-        const empty = document.getElementById("empty");
-        const searchInput = document.getElementById("searchInput");
-        const totalItems = document.getElementById("totalItems");
-        const totalDirs = document.getElementById("totalDirs");
-        const totalFiles = document.getElementById("totalFiles");
-        const totalVideos = document.getElementById("totalVideos");
-        const totalAudios = document.getElementById("totalAudios");
-        const btnRefresh = document.getElementById("btnRefresh");
-        
-        function formatSize(bytes) {{
-            if (bytes === 0) return "0B";
-            const k = 1024;
-            const sizes = ["B", "KB", "MB", "GB"];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return (bytes / Math.pow(k, i)).toFixed(1) + sizes[i];
-        }}
-        
-        function getIcon(item) {{
-            if (item.type === "dir") return "📁";
-            if (item.type === "video") return "🎬";
-            if (item.type === "audio") return "🎵";
-            const ext = item.name.split(".").pop().toLowerCase();
-            const icons = {{
-                "pdf": "📄", "doc": "📝", "docx": "📝", "xls": "📊", "xlsx": "📊",
-                "zip": "📦", "rar": "📦", "7z": "📦",
-                "jpg": "🖼️", "jpeg": "🖼️", "png": "🖼️", "gif": "🖼️",
-                "txt": "📃", "json": "📋", "html": "🌐", "css": "🎨", "js": "⚡"
-            }};
-            return icons[ext] || "📄";
-        }}
-        
-        function navigate(path, type) {{
-            if (type === "dir") window.location.href = "/" + path;
-            else if (type === "video" || type === "audio") window.location.href = "/video/" + path;
-            else window.location.href = "/" + path;
-        }}
-        
-        function playMedia(path) {{ window.location.href = "/video/" + path; }}
-        function downloadFile(path) {{ window.location.href = "/" + path + "?download=true"; }}
-        
-        function render() {{
-            const filtered = items.filter(item => {{
-                if (!searchQuery) return true;
-                return item.name.toLowerCase().includes(searchQuery.toLowerCase());
-            }});
-            
-            totalItems.textContent = filtered.length;
-            totalDirs.textContent = filtered.filter(i => i.type === "dir").length;
-            totalFiles.textContent = filtered.filter(i => i.type === "file").length;
-            totalVideos.textContent = filtered.filter(i => i.type === "video").length;
-            totalAudios.textContent = filtered.filter(i => i.type === "audio").length;
-            
-            if (filtered.length === 0) {{
-                fileList.innerHTML = "";
-                empty.style.display = "block";
-                loading.style.display = "none";
-                return;
-            }}
-            empty.style.display = "none";
-            loading.style.display = "none";
-            
-            fileList.innerHTML = filtered.map(item => `
-                <div class="item">
-                    <span class="icon">${{getIcon(item)}}</span>
-                    <div class="info" onclick="navigate('${{item.path}}', '${{item.type}}')">
-                        <div class="name">${{item.name}}</div>
-                        <div class="meta">
-                            ${{item.type !== "dir" ? `<span>${{formatSize(item.size)}}</span>` : '<span>📁 文件夹</span>'}}
-                            <span>${{item.modified}}</span>
-                        </div>
-                    </div>
-                    <div class="actions">
-                        ${{(item.type === "video" || item.type === "audio") ? 
-                            `<button class="btn-play" onclick="event.stopPropagation(); playMedia('${{item.path}}')">▶</button>` : ''}}
-                        <button class="btn-download" onclick="event.stopPropagation(); downloadFile('${{item.path}}')">⬇</button>
-                    </div>
-                </div>
-            `).join("");
-        }}
-        
-        async function loadData() {{
-            loading.style.display = "block";
-            fileList.innerHTML = "";
-            empty.style.display = "none";
-            
-            try {{
-                const url = `/api/filelist?path=${{encodeURIComponent(currentPath)}}`;
-                const res = await fetch(url);
-                const data = await res.json();
-                if (data.success) {{
-                    items = data.items || [];
-                    render();
-                }} else {{
-                    throw new Error(data.error || "加载失败");
-                }}
-            }} catch (e) {{
-                fileList.innerHTML = `<div class="error">❌ 加载失败: ${{e.message}}</div>`;
-                loading.style.display = "none";
-            }}
-        }}
-        
-        let timeout;
-        searchInput.addEventListener("input", function() {{
-            clearTimeout(timeout);
-            timeout = setTimeout(() => {{
-                searchQuery = this.value.trim();
-                render();
-            }}, 200);
-        }});
-        
-        document.addEventListener("keydown", function(e) {{
-            if ((e.ctrlKey && e.key === "f") || (e.key === "/" && !e.ctrlKey && !e.metaKey)) {{
-                e.preventDefault();
-                searchInput.focus();
-                searchInput.select();
-            }}
-            if (e.key === "Escape") {{
-                searchInput.value = "";
-                searchQuery = "";
-                render();
-                searchInput.blur();
-            }}
-        }});
-        
-        btnRefresh.addEventListener("click", loadData);
-        loadData();
-    </script>
-</body>
-</html>'''
-
 # ==================== 主路由 ====================
-@app.route('/', defaults={'path': ''})
+@app.route('/')
+def serve_view():
+    """根路径固定返回 __view.html 静态文件，由前端 JS 调用 /api/filelist 拉取文件系统信息"""
+    if not FILESYSTEM_ENABLED:
+        return "文件系统未启用", 403
+    view_path = os.path.join(HTML_ROOT_DIR, VIEW_FILE)
+    if not os.path.exists(view_path):
+        return f"视图文件 {VIEW_FILE} 不存在", 500
+    return send_file(view_path, mimetype='text/html')
+
 @app.route('/<path:path>')
-def serve_file(path=''):
+def serve_file(path):
     try:
         if not FILESYSTEM_ENABLED:
             return "文件系统未启用", 403
-        
+
         full_path = safe_path_join(HTML_ROOT_DIR, path)
         if full_path is None:
             return "无效的路径", 403
-        
+
         if not os.path.exists(full_path):
             return "路径不存在", 404
-        
+
         # 文件处理
         if os.path.isfile(full_path):
             if request.args.get('download') == 'true':
                 return send_file(full_path, as_attachment=True, download_name=os.path.basename(full_path))
-            
+
             if is_video_file(full_path) or is_audio_file(full_path):
                 return send_file(full_path, mimetype=get_media_mime_type(full_path))
-            
+
             # 普通文件
             with open(full_path, 'rb') as f:
                 content = f.read()
@@ -541,23 +240,13 @@ def serve_file(path=''):
                 '.pdf': 'application/pdf', '.svg': 'image/svg+xml', '.ico': 'image/x-icon'
             }
             return Response(content, mimetype=mime_map.get(ext, 'application/octet-stream'))
-        
-        # 目录处理 - 生成面包屑
-        breadcrumb = ''
-        if path:
-            parts = path.split('/')
-            current = ''
-            for i, part in enumerate(parts):
-                if i == len(parts) - 1:
-                    breadcrumb += f'<span class="sep">›</span><span class="current">{part}</span>'
-                else:
-                    current += part + '/'
-                    breadcrumb += f'<span class="sep">›</span><a href="/{current}">{part}</a>'
-        
-        # 使用函数生成HTML，避免字符串格式化问题
-        html = get_html_template(path, breadcrumb)
-        return Response(html, mimetype='text/html')
-        
+
+        # 目录处理：返回 __view.html，由前端 JS 根据 URL 路径调用 /api/filelist 拉取文件列表
+        view_path = os.path.join(HTML_ROOT_DIR, VIEW_FILE)
+        if os.path.exists(view_path):
+            return send_file(view_path, mimetype='text/html')
+        return "目录无法浏览", 404
+
     except Exception as e:
         logger.error(f"Error: {str(e)}")
         import traceback
@@ -575,7 +264,7 @@ def health_check():
 if __name__ == '__main__':
     host = file_config['server']['host']
     port = int(file_config['server']['port'])
-    
+
     print("\n" + "="*50)
     print("📁 文件托管服务器 (极简版)")
     print("="*50)
@@ -589,3 +278,4 @@ if __name__ == '__main__':
         app.run(host=host, port=port, ssl_context=(SSL_CERT_FILE, SSL_KEY_FILE), debug=False)
     else:
         app.run(host=host, port=port, debug=False)
+
