@@ -121,7 +121,8 @@ def get_file_list():
 
         items = []
         for item in os.listdir(full_path):
-            if item == '__pycache__':
+            # 过滤系统项目：以双下划线开头的文件和文件夹（如 __pycache__、__view.html、__icons 等）
+            if item.startswith('__'):
                 continue
 
             item_path = os.path.join(full_path, item)
