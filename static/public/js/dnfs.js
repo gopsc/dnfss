@@ -92,6 +92,13 @@ async function addNode(token, pid, title, content) {
 	}
 }
 
+function renderMarkdown(element, content) {
+	/*
+	Markdown渲染
+	*/
+	const md = window.markdownit();
+	element.innerHTML = md.render(content);
+}
 
 var article_title = document.getElementById('article-title');
 var article_content = document.getElementById('article-content');
