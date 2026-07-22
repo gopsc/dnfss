@@ -2,7 +2,7 @@ async function getNode(token, id) {
 	try {
 		obj = { "pid": String(id) }
 		jsonBody = JSON.stringify(obj)
-		alert(jsonBody)
+		console.log(jsonBody)
 		const res = await fetch('/get_notes', {
 			method: 'POST',
 			headers: {
@@ -28,7 +28,7 @@ async function getNode(token, id) {
 		}
 
 		//if (result.success) {
-		alert(`获取节点成功`);
+		console.log(`获取节点成功`);
 		return result
 		//...
 
@@ -51,7 +51,7 @@ async function addNode(token, pid, title, content) {
 			"content": content
 		}
 		jsonBody = JSON.stringify(obj)
-		alert(jsonBody)
+		console.log(jsonBody)
 		const res = await fetch('/add_note', {
 			method: 'POST',
 			headers: {
@@ -77,7 +77,7 @@ async function addNode(token, pid, title, content) {
 		}
 
 		//if (result.success) {
-		alert(`添加节点成功`);
+		console.log(`添加节点成功`, result);
 		return result
 		//...
 
@@ -99,7 +99,7 @@ function renderMarkdown(element, content) {
 	const md = window.markdownit();
 	element.innerHTML = md.render(content);
 }
-
+const stack = [];	/* 这个是笔记节点的栈 */
 var article_title = document.getElementById('article-title');
 var article_content = document.getElementById('article-content');
 var input_note_title = document.getElementById('input-note-title');
@@ -111,7 +111,10 @@ var recommend_list = document.getElementById('recommend-list');
 input_note_submit.addEventListener('click', function(event) {
 	var title = input_note_title.value
 	var content = input_note_content.value
-	addNode(token, 0, title, content).then(result => {
+	var pid = (stack.length == 0) ? 0 : stack[stack.length - 1];
+	alert(stack.length)
+	alert(pid)
+	addNode(token, pid, title, content).then(result => {
 		alert(result.message);
 	})
 })
@@ -121,21 +124,44 @@ input_note_clear.addEventListener('click', function(event) {
 	input_note_content.value = "";
 })
 
-var token = sessionStorage.getItem('q4_token')
-getNode(token, 0).then(main_node => {
+function load_notes(main_node) {
 	article_title.textContent = "";
 	article_content.textContent = "";
-	console.log(main_node)
+
 	recommend_list.replaceChildren();
+	//alert(stack.length)
+	if (stack.length > 0) {	/* 如果不在根节点 */
+		var bak = document.createElement('a');
+		//ttl.href = '/dnfs.html';
+		bak.addEventListener('click', function (event) {
+			stack.pop();
+			var id = (stack.length > 1) ? stack[stack.length - 1] : 0;
+			getNode(token, id).then(load_notes)
+		});
+		var bak1 = document.createElement('h1');
+		bak1.textContent = "返回上一层";
+		bak.appendChild(bak1)
+		recommend_list.appendChild(bak)
+	}
 	for (i in main_node) {
 		item = main_node[i]
-		var ttl = document.createElement('h3');
-		ttl.textContent = item.title
-		document.getElementById('recommend-list').appendChild(ttl)
-		//document.getElementById('recommend-list').appendChild(document.createElement('br'))
+		var ttl = document.createElement('a');
+		//ttl.href ="/dnfs.html";
+		ttl.addEventListener('click', function(event) {
+			var id = Number(item.id)
+			stack.push(id)
+			getNode(token, id).then(load_notes)
+		});
+		var ttl1 =document.createElement('h1');
+		ttl1.textContent = item.title
+		ttl.appendChild(ttl1)
+		recommend_list.appendChild(ttl)
 		var ctt = document.createElement('p');
-		ctt.textContent = item.content
-		document.getElementById('recommend-list').appendChild(ctt)
-		//document.getElementById('recommend-list').appendChild(document.createElement('br'))
+		renderMarkdown(ctt, item.content);
+		recommend_list.appendChild(ctt)
+		recommend_list.appendChild(document.createElement('br'))
 	}
-});
+};
+
+var token = sessionStorage.getItem('q4_token')
+getNode(token, 0).then(load_notes);
