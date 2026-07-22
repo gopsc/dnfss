@@ -161,7 +161,6 @@ function load_notes(main_node) {
 		card.appendChild(ctt)
 		recommend_list.appendChild(card)
 		recommend_list.appendChild(document.createElement('br'))
-		recommend_list.appendChild(document.createElement('hr'))
 	}
 };
 

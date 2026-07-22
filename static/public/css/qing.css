@@ -22,7 +22,7 @@ body {
     display: flex;
     justify-content: center;
     align-items: center;
-    background: #c2ccd0;
+    background: #fffbf0;
     font-family: system-ui, -apple-system, "Segoe UI", Roboto,sans-serif;
     padding: 1rem;
 }
