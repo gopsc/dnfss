@@ -1,5 +1,10 @@
 #prjs
 *.db
+*.bin
+*.build
+*.dist
+*.onefile-build
+nuitka-crash-report.xml
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
