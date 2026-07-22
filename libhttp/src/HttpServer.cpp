@@ -4,7 +4,7 @@
 #include <sstream>
 #include <iomanip>
 #include <openssl/err.h>
-#include <openssl/ssl.h>   // SSL_CTX_set_cipher_list
+#include <openssl/ssl.h>
 
 namespace pmc {
 namespace net {
@@ -85,7 +85,6 @@ private:
                                   << remote_ip_ << ":" << remote_port_
                                   << " - " << ec.message()
                                   << " (code=" << ec.value() << ")" << std::endl;
-                        // 输出 OpenSSL 详细错误堆栈
                         ERR_print_errors_fp(stderr);
                     }
                 }));
@@ -168,7 +167,6 @@ private:
     HttpServer* server_;
     bool ssl_enabled_;
 
-    // 使用 any_io_executor 兼容多种执行器
     asio::strand<asio::any_io_executor> strand_;
 
     std::string remote_ip_ = "unknown";
@@ -272,7 +270,6 @@ void HttpServer::initSSLContext() {
             asio::ssl::context::no_sslv3 |
             asio::ssl::context::single_dh_use);
 
-        // 设置现代加密套件，确保兼容主流客户端
         SSL_CTX_set_cipher_list(ssl_ctx_->native_handle(),
             "ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS");
 
@@ -391,6 +388,17 @@ void HttpServer::del(const std::string& path, HttpRequestHandler handler) {
     delete_handlers_.push_back(entry);
 }
 
+// ---- 新增 OPTIONS 路由注册 ----
+void HttpServer::options(const std::string& path, HttpRequestHandler handler) {
+    RouteEntry entry;
+    entry.path = path;
+    entry.handler = handler;
+    entry.is_wildcard = (path.find('*') != std::string::npos ||
+                         path.find('?') != std::string::npos);
+    if (entry.is_wildcard) entry.pattern = wildcardToRegex(path);
+    options_handlers_.push_back(entry);
+}
+
 void HttpServer::use(MiddlewareHandler m) {
     middlewares_.push_back(m);
 }
@@ -442,6 +450,7 @@ HttpRequestHandler HttpServer::findRoute(const std::string& method, const std::s
     else if (method == "POST") handlers = &post_handlers_;
     else if (method == "PUT") handlers = &put_handlers_;
     else if (method == "DELETE") handlers = &delete_handlers_;
+    else if (method == "OPTIONS") handlers = &options_handlers_;
     else return nullptr;
 
     // 精确匹配优先
@@ -453,6 +462,11 @@ HttpRequestHandler HttpServer::findRoute(const std::string& method, const std::s
         if (e.is_wildcard && matchPath(path, e.pattern)) return e.handler;
     }
     return nullptr;
+}
+
+// ---- 新增辅助方法：检查路由是否存在 ----
+bool HttpServer::routeExists(const std::string& method, const std::string& path) {
+    return findRoute(method, path) != nullptr;
 }
 
 // ---- 请求处理核心 ----
@@ -486,6 +500,68 @@ http::response<http::string_body> HttpServer::handleRequest(const http::request<
     }
 
     std::string method = http::to_string(req.method());
+    
+    // ========== 处理 OPTIONS 预检请求 ==========
+    if (method == "OPTIONS") {
+        // 检查是否有自定义 OPTIONS 路由
+        auto handler = findRoute("OPTIONS", target_path);
+        if (handler) {
+            try {
+                return handler(req, params);
+            } catch (const std::exception& e) {
+                std::cerr << "[Handler] Exception: " << e.what() << std::endl;
+                res.result(http::status::internal_server_error);
+                res.body() = "500 Internal Server Error\n";
+                res.prepare_payload();
+                return res;
+            }
+        }
+        
+        // 自动生成 OPTIONS 响应
+        auto origin = req.find(http::field::origin);
+        if (origin != req.end()) {
+            // 构建允许的方法列表
+            std::vector<std::string> all_methods = {"GET", "POST", "PUT", "DELETE", "OPTIONS"};
+            std::vector<std::string> allowed_methods;
+            
+            // 检查每个方法是否有对应的路由
+            for (const auto& m : all_methods) {
+                if (m == "OPTIONS" || routeExists(m, target_path)) {
+                    allowed_methods.push_back(m);
+                }
+            }
+            
+            if (!allowed_methods.empty()) {
+                std::string allow_methods;
+                for (size_t i = 0; i < allowed_methods.size(); ++i) {
+                    if (i > 0) allow_methods += ", ";
+                    allow_methods += allowed_methods[i];
+                }
+                
+                res.result(http::status::ok);
+                res.set(http::field::allow, allow_methods);
+                res.set(http::field::access_control_allow_origin, 
+                       std::string(origin->value()));
+                res.set(http::field::access_control_allow_methods, allow_methods);
+                res.set(http::field::access_control_allow_headers, 
+                       "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+                res.set(http::field::access_control_max_age, "86400");
+                res.body() = "";
+                res.content_length(0);
+                res.prepare_payload();
+                return res;
+            }
+        }
+        
+        // 没有 Origin 头或没有匹配的方法
+        res.result(http::status::not_found);
+        res.body() = "404 Not Found\n";
+        res.prepare_payload();
+        return res;
+    }
+    // ========== OPTIONS 处理结束 ==========
+
+    // 查找普通路由
     auto handler = findRoute(method, target_path);
 
     // 静态文件
@@ -562,6 +638,9 @@ void HttpServer::showStatus() const {
     std::cout << "  DELETE: " << delete_handlers_.size() << " handler(s)" << std::endl;
     for (const auto& entry : delete_handlers_)
         std::cout << "    DELETE " << entry.path << (entry.is_wildcard ? " (wildcard)" : "") << std::endl;
+    std::cout << "  OPTIONS: " << options_handlers_.size() << " handler(s)" << std::endl;  // 新增
+    for (const auto& entry : options_handlers_)
+        std::cout << "    OPTIONS " << entry.path << (entry.is_wildcard ? " (wildcard)" : "") << std::endl;
     std::cout << "Middlewares: " << middlewares_.size() << std::endl;
     std::cout << "==========================" << std::endl;
 }

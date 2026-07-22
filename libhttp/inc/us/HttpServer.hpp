@@ -60,6 +60,7 @@ public:
     void post(const std::string& path, HttpRequestHandler handler);
     void put(const std::string& path, HttpRequestHandler handler);
     void del(const std::string& path, HttpRequestHandler handler);
+    void options(const std::string& path, HttpRequestHandler handler);  // 新增 OPTIONS
     void use(MiddlewareHandler middleware);
     void setStaticDirectory(const std::string& path);
 
@@ -102,6 +103,7 @@ private:
     std::vector<RouteEntry> post_handlers_;
     std::vector<RouteEntry> put_handlers_;
     std::vector<RouteEntry> delete_handlers_;
+    std::vector<RouteEntry> options_handlers_;  // 新增 OPTIONS 路由
     std::vector<MiddlewareHandler> middlewares_;
     std::string static_directory_;
 
@@ -113,6 +115,7 @@ private:
     bool matchPath(const std::string& path, const std::regex& pattern);
     http::response<http::string_body> handleRequest(const http::request<http::string_body>& req);
     HttpRequestHandler findRoute(const std::string& method, const std::string& path);
+    bool routeExists(const std::string& method, const std::string& path);  // 新增辅助方法
 
     void addSession(const std::shared_ptr<Session>& session);
     void removeSession(const Session* session);

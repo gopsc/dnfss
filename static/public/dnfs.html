@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<!-- 移动端适配核心标签 -->
+		<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+		<title>DNFS · 树状笔记</title>
+		<style>
+			code {
+				color: red;
+				background-color: rgb(254, 235, 238);
+				padding: 5px;
+				border-radius: 5px;
+			}
+			pre > code {
+				display: block;
+				color: white;
+				background-color: rgb(96, 96, 96);
+				padding: 5px;
+				border-radius: 5px;
+			}
+			blockquote {
+				margin-right: 0px;
+				background-color: #cfcfcf;
+			}
+		</style>
+	</head>
+	<body>
+		<center>
+		<!-- 文章主标题 -->
+		<h1><div id="article-title">title</div></h1>
+
+		<!-- 文章详情 -->
+		<div>
+			发布时间：<span id="publish-time">2026-1-1</span>
+		</div>
+		<div>
+			浏览：<span id="visit-count">999</span>
+			点赞：<span id="like-count">999</span>
+			分享：<span id="share-count">999</span>
+		</div>
+		</center>
+		<!-- 文章正文-->
+		<div id="article-content">hello</div>
+		<hr>
+		<div class="other-recommend">
+			<h3>其他推荐</h3>
+		</div>
+		<div class="recommend-list" id="recommend-list">
+			<ul>
+				<li><a href="https://www.baidu.com">百度推荐</a></li>
+				<li><a href="https://www.baidu.com">百度推荐</a></li>
+				<li><a href="https://www.baidu.com">百度推荐</a></li>
+				<li><a href="https://www.baidu.com">百度推荐</a></li>
+				<li><a href="https://www.baidu.com">百度推荐</a></li>
+			</ul>
+		</div>
+		<br>
+		<h3>节点操作</h3>
+		<div>
+			<label>新增节点</label><input id="input-note-title"></input><br>
+			<label>节点内容</label><textarea id="input-note-content"></textarea><br>
+			<button id="input-note-submit">提交</button>
+			<button id="input-note-clear">重置</button>
+		</div>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/markdown-it/12.0.0/markdown-it.min.js"></script>
+		<script src="/js/validation.js"></script>
+		<script src="/js/dnfs.js"></script>
+	</body>
+</html>

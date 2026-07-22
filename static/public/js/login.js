@@ -148,8 +148,8 @@ form.addEventListener('submit', async function(e) {
 
 		if (result.success) {
 			alert(`登陆成功`);
-			sessionStorage.setItem('token', result.data.token);
-			location.href = 'main.html';
+			sessionStorage.setItem('q4_token', result.data.token);
+			location.href = 'dnfs.html';
 		} else {
 			alert(result.message || '登录失败');
 		}

@@ -1,3 +1,4 @@
+nuitka
 flask
 flask-cors
 flask_sqlalchemy

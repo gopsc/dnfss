@@ -58,5 +58,13 @@
 		};
 	}
 
+	function note_title(value) {
+		return true;
+	}
+
+	function note_content(value) {
+		return true;
+	}
+
 	window.FormValidators = { username, password, email };
 }());

@@ -273,6 +273,19 @@ void registerRoutes(HttpServer &server) {
 	server.post("*", [](const auto& req, const auto& params) {
 		return handleProxy(req, params, "post");
 	});
+
+	server.options("*", [](const auto& req, const auto& params) {
+			pmc::net::http::response<pmc::net::http::string_body> res;
+			res.result(pmc::net::http::status::ok);
+			res.set(pmc::net::http::field::access_control_allow_origin, "*");
+			res.set(pmc::net::http::field::access_control_allow_methods, "GET, POST, OPTIONS");
+			res.set(pmc::net::http::field::access_control_allow_headers, "Content-Type, Authorization");
+			res.set(pmc::net::http::field::access_control_max_age, "86400");
+			res.body() = "";
+			res.content_length(0);
+			res.prepare_payload();
+			return res;
+	});
 }
 
 http::response<http::string_body> wrapperHttp(
@@ -444,6 +457,7 @@ http::response<http::string_body> handleProxy(
 		std::string t_url = "";
 		std::string url = "";
 		std::string auth = "";
+		json::value jv_t;	/* json value of the token */
 		{
 			auto flag = false;
 			auto it = req.base().find("Target-Url");
@@ -456,7 +470,7 @@ http::response<http::string_body> handleProxy(
 				t_url = req["target-url"];
 			}
 
-			if (url == "") {
+			if (t_url == "") {
 				t_url =  _DEFT_URL;
 				flag = true;
 			}
@@ -466,7 +480,7 @@ http::response<http::string_body> handleProxy(
 			url += req.target();
 
 			it = req.base().find("Authorization");
-			if (it == req.base().end() && !flag) {
+			if (it == req.base().end() && !flag) {	/* 不是默认代理地址且无令牌 */
 				throw std::runtime_error("401");
 			}
 			std::string raw = req["Authorization"];
@@ -484,21 +498,20 @@ http::response<http::string_body> handleProxy(
 				}
 				std::cout << "auth data: " << auth  << std::endl;
 			}
-		}
 
-		json::value jv;
-		/* 令牌是否过期 */
-		{
-			/* TODO: 放进try包裹 */
-			jv = json::parse(auth);
-			json::object& obj = jv.as_object();
+			if (!flag) {	/* 令牌是否过期 */
+		
+				/* TODO: 放进try包裹 */
+				jv_t = json::parse(auth);
+				json::object& obj = jv_t.as_object();
 
-			auto t = json::value_to<std::string>(obj["created_at"]);
-			bool r = LocalTime::isExpired(t);
+				auto t = json::value_to<std::string>(obj["created_at"]);
+				bool r = LocalTime::isExpired(t);
 
-			if (r) {
-				THROW_EX_CUSTOM(HttpException, 2000, "Authorization Expired",
-                	            401, "*");
+				if (!r) {
+					THROW_EX_CUSTOM(HttpException, 2000, "Authorization Expired",
+        	        	            401, "*");
+				}
 			}
 		}
 

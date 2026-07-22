@@ -30,4 +30,5 @@ inst_module "libhttp"
 inst_module "libcrypt"
 inst_module "gateway"
 inst_module "static"
+inst_module "dnfs"
 inst_module "core"	# core last
