@@ -85,6 +85,8 @@ async function addNode(token, pid, title, content) {
 			throw new Error(result.message || `添加节点失败（HTTP ${res.status}）`);
 		}
 
+		getNode(token, stack[stack.length - 1]).then(load_notes);
+
 		//if (result.success) {
 		console.log(`添加节点成功`, result);
 		return result
