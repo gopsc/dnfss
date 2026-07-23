@@ -1,3 +1,4 @@
 nuitka
 flask
+SQLAlchemy
 waitress
