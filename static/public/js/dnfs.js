@@ -193,8 +193,10 @@ delete_note.addEventListener('click', (event) => {
 })
 
 function load_notes(main_node) {
-	article_title.textContent = "";
-	article_content.textContent = "";
+
+	/* 这个不能设置为空的 */
+	//article_title.textContent = "";
+	//article_content.textContent = "";
 
 	if (input_note_title.value != "" || input_note_content.value != "") {
 		if (confirm("是否放弃当前输入的内容？") == true) {
