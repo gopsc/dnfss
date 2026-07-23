@@ -142,16 +142,16 @@ function load_notes(main_node) {
 		bak.appendChild(bak1)
 		recommend_list.appendChild(bak)
 	}
-	for (i in main_node) {
+	for (let i in main_node) {
 		item = main_node[i]
 		var card = document.createElement('div'); 
 		card.className = "card";
-		var ttl = document.createElement('center');
-		ttl.addEventListener('click', function(event) {
+		card.addEventListener('click', function(event) {
 			var id = Number(item.id)
 			stack.push(id)
 			getNode(token, id).then(load_notes)
 		});
+		var ttl = document.createElement('center');
 		var ttl1 =document.createElement('h3');
 		ttl1.textContent = item.title
 		ttl.appendChild(ttl1)
