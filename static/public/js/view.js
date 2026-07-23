@@ -109,9 +109,9 @@ function render() {
             ? `<button class="btn-play" onclick="event.stopPropagation(); playMedia('${path}')">▶</button>`
             : '';
         return `
-            <div class="item">
+            <div class="item" onclick="navigate('${path}', '${type}')">
                 <span class="icon">${getIcon(item)}</span>
-                <div class="info" onclick="navigate('${path}', '${type}')">
+                <div class="info">
                     <div class="name">${name}</div>
                     <div class="meta">
                         ${sizeOrDir}
