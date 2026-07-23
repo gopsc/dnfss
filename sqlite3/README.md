@@ -1,3 +1,4 @@
+
 # Flask SQLite 执行服务
 
 一个轻量级的 Flask HTTP 服务，用于安全地执行带参数的 SQLite SQL 语句，支持 `?` 和命名参数占位符，杜绝 SQL 注入。
@@ -8,7 +9,7 @@
 - 强制使用参数绑定（`execute(sql, params)`），无 SQL 注入风险
 - 统一返回格式，所有语句执行结果均包含 `data` 数组
 - 自动事务管理，异常时回滚
-- 无外部依赖（除 Flask），即开即用
+- 单线程单进程模式，绑定 127.0.0.1，仅本地访问
 
 ## 快速开始
 
@@ -20,7 +21,7 @@
 ### 安装依赖
 
 ```bash
-pip install flask
+pip install flask waitress
 ```
 
 ### 启动服务
@@ -29,7 +30,7 @@ pip install flask
 python app.py
 ```
 
-服务默认监听 `http://127.0.0.1:5000`，数据库文件 `database.db` 会在首次连接时自动创建（你需要预先建表或通过接口执行 `CREATE TABLE`）。
+服务运行在 `http://127.0.0.1:5000`，仅允许本地访问。数据库文件 `database.db` 会在首次连接时自动创建（可提前建表或通过接口执行 `CREATE TABLE`）。
 
 ## API 文档
 
@@ -74,7 +75,7 @@ python app.py
 ### 1. 创建数据表
 
 ```bash
-curl -X POST http://localhost:5000/execute \
+curl -X POST http://127.0.0.1:5000/execute \
   -H "Content-Type: application/json" \
   -d '{"sql": "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, age INTEGER)"}'
 ```
@@ -84,7 +85,7 @@ Python 版本：
 ```python
 import requests
 
-url = "http://localhost:5000/execute"
+url = "http://127.0.0.1:5000/execute"
 payload = {
     "sql": "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, age INTEGER)"
 }
@@ -95,7 +96,7 @@ print(resp.json())  # {"success": true, "data": []}
 ### 2. 插入数据（使用 `?` 占位符）
 
 ```bash
-curl -X POST http://localhost:5000/execute \
+curl -X POST http://127.0.0.1:5000/execute \
   -H "Content-Type: application/json" \
   -d '{"sql": "INSERT INTO users (name, age) VALUES (?, ?)", "params": ["Alice", 30]}'
 ```
@@ -114,7 +115,7 @@ print(resp.json())  # {"success": true, "data": []}
 ### 3. 插入数据（使用命名参数 `:key`）
 
 ```bash
-curl -X POST http://localhost:5000/execute \
+curl -X POST http://127.0.0.1:5000/execute \
   -H "Content-Type: application/json" \
   -d '{"sql": "INSERT INTO users (name, age) VALUES (:name, :age)", "params": {"name": "Charlie", "age": 28}}'
 ```
@@ -122,7 +123,7 @@ curl -X POST http://localhost:5000/execute \
 ### 4. 查询全部数据
 
 ```bash
-curl -X POST http://localhost:5000/execute \
+curl -X POST http://127.0.0.1:5000/execute \
   -H "Content-Type: application/json" \
   -d '{"sql": "SELECT * FROM users"}'
 ```
@@ -153,7 +154,7 @@ for user in users:
 ### 5. 按条件查询
 
 ```bash
-curl -X POST http://localhost:5000/execute \
+curl -X POST http://127.0.0.1:5000/execute \
   -H "Content-Type: application/json" \
   -d '{"sql": "SELECT * FROM users WHERE age > ?", "params": [26]}'
 ```
@@ -172,7 +173,7 @@ print(resp.json()["data"])
 ### 6. 更新数据
 
 ```bash
-curl -X POST http://localhost:5000/execute \
+curl -X POST http://127.0.0.1:5000/execute \
   -H "Content-Type: application/json" \
   -d '{"sql": "UPDATE users SET age = ? WHERE name = ?", "params": [31, "Alice"]}'
 ```
@@ -191,7 +192,7 @@ print(resp.json())  # {"success": true, "data": []}
 ### 7. 删除数据
 
 ```bash
-curl -X POST http://localhost:5000/execute \
+curl -X POST http://127.0.0.1:5000/execute \
   -H "Content-Type: application/json" \
   -d '{"sql": "DELETE FROM users WHERE id = ?", "params": [3]}'
 ```
@@ -212,7 +213,7 @@ print(resp.json())
 当 SQL 或参数错误时，返回明确的错误信息：
 
 ```bash
-curl -X POST http://localhost:5000/execute \
+curl -X POST http://127.0.0.1:5000/execute \
   -H "Content-Type: application/json" \
   -d '{"sql": "SELECT * FROM nonexistent_table"}'
 ```
@@ -231,12 +232,13 @@ curl -X POST http://localhost:5000/execute \
 1. **参数绑定**：使用 `sqlite3` 官方推荐的 `execute(sql, params)` 方式传参，参数值与 SQL 结构完全分离。
 2. **单语句执行**：`sqlite3.execute()` 仅执行第一条语句，无法通过分号注入多条命令。
 3. **错误回滚**：若执行过程中出现异常，已修改的数据会回滚，确保数据一致性。
+4. **本地绑定**：服务监听 `127.0.0.1`，仅本机可访问，避免网络暴露风险。
 
 ## 项目结构
 
 ```
 .
-├── app.py          # 主程序
+├── app.py          # 主程序（使用 waitress 单线程模式）
 └── README.md       # 本文档
 ```
 
@@ -244,5 +246,6 @@ curl -X POST http://localhost:5000/execute \
 
 ## 注意事项
 
-- 该服务无认证机制，请勿直接暴露在公网；如需使用，请配合反向代理并增加鉴权。
-- 所有写操作（INSERT/UPDATE/DELETE 等）会立即提交，且 `data` 字段固定为空数组。
+- 服务采用 waitress 单线程模式（`threads=1`），确保请求顺序执行，适合低并发场景。
+- 如需处理更高并发，可适当增加 `threads` 参数（例如 `threads=4`），但仍需注意 SQLite 的并发限制。
+- 该服务无认证机制，推荐仅在本机或内网可信环境使用。如需对外服务，请添加鉴权并考虑使用 nginx 等反向代理。
