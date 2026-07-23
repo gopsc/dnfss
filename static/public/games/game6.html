@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>末日生存 · 二维射击游戏</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      background: linear-gradient(135deg, #0a1f1a 0%, #1a2f1f 100%);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-family: 'Segoe UI', 'Arial', sans-serif;
+      padding: 20px;
+      margin: 0;
+    }
+    .game-container {
+      background: #2d3a2c;
+      border-radius: 28px;
+      box-shadow: 0 20px 30px rgba(0, 0, 0, 0.6), inset 0 0 15px rgba(0,0,0,0.4);
+      padding: 15px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    canvas {
+      display: block;
+      border-radius: 20px;
+      box-shadow: 0 0 25px rgba(0, 180, 0, 0.3);
+      background: #1e2b1c;
+      width: 100%;
+      height: auto;
+      max-width: 800px;
+      aspect-ratio: 800 / 600;
+      cursor: crosshair;
+    }
+    .info-panel {
+      width: 100%;
+      margin-top: 15px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: #e0f0d8;
+      font-weight: bold;
+      background: #1e2b1c;
+      border-radius: 40px;
+      padding: 12px 25px;
+      box-shadow: inset 0 2px 8px rgba(0,0,0,0.5);
+      flex-wrap: wrap;
+      gap: 15px;
+    }
+    .health-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .health-fill {
+      width: 180px;
+      height: 14px;
+      background: #3a2e2e;
+      border-radius: 20px;
+      overflow: hidden;
+      box-shadow: inset 0 2px 5px rgba(0,0,0,0.7);
+    }
+    .fill-level {
+      height: 100%;
+      width: 100%;
+      background: linear-gradient(90deg, #e74c3c, #f1c40f);
+      border-radius: 20px;
+      transition: width 0.15s ease;
+    }
+    .score-board {
+      background: #0f1a0f;
+      padding: 6px 20px;
+      border-radius: 30px;
+      font-size: 1.2rem;
+      letter-spacing: 1px;
+      color: #d4ed5e;
+      box-shadow: 0 0 12px #5a8f4a;
+    }
+    button {
+      background: #d4b34c;
+      border: none;
+      color: #1e2b1c;
+      font-weight: bold;
+      font-size: 1rem;
+      padding: 10px 25px;
+      border-radius: 30px;
+      cursor: pointer;
+      letter-spacing: 1px;
+      background: linear-gradient(180deg, #e9d584 0%, #b38b40 100%);
+      box-shadow: 0 5px 0 #6b4e1d, 0 8px 15px rgba(0,0,0,0.4);
+      transition: all 0.08s ease;
+      border: 1px solid #f3e3a7;
+      text-transform: uppercase;
+    }
+    button:active {
+      transform: translateY(3px);
+      box-shadow: 0 2px 0 #4b3a1a, 0 5px 10px rgba(0,0,0,0.5);
+    }
+    .controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      color: #b9d0a0;
+      font-size: 0.9rem;
+    }
+    @media (max-width: 650px) {
+      .info-panel {
+        flex-direction: column;
+        align-items: center;
+      }
+    }
+  </style>
+</head>
+<body>
+<div style="display: flex; flex-direction: column; align-items: center;">
+  <div class="game-container">
+    <canvas id="gameCanvas" width="800" height="600" aria-label="二维射击游戏地图"></canvas>
+    <div class="info-panel">
+      <div class="health-bar">
+        <span style="color:#f1c40f;">❤️ 生命</span>
+        <div class="health-fill">
+          <div id="healthFillLevel" class="fill-level" style="width: 100%;"></div>
+        </div>
+        <span id="healthText" style="min-width: 50px;">100</span>
+      </div>
+      <div class="score-board">
+        🎯 <span id="scoreDisplay">0</span>
+      </div>
+      <div class="controls">
+        <span>🖱️ 鼠标瞄准 | 左键射击</span>
+        <button id="restartButton">↺ 重新开始</button>
+      </div>
+    </div>
+  </div>
+  <div style="color:#8aa87d; margin-top: 8px; font-size: 0.9rem;">
+    ⌨️ WASD / 方向键 移动人物
+  </div>
+</div>
+
+<script>
+  (function () {
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // UI元素
+    const healthFill = document.getElementById('healthFillLevel');
+    const healthText = document.getElementById('healthText');
+    const scoreSpan = document.getElementById('scoreDisplay');
+
+    // 固定尺寸
+    const W = 800, H = 600;
+
+    // ----- 游戏状态 -----
+    let player = {
+      x: W / 2,
+      y: H / 2,
+      radius: 18,
+      health: 100,
+      maxHealth: 100,
+      speed: 4.8,
+    };
+
+    let monsters = [];
+    let bullets = [];
+    let score = 0;
+
+    // 射击冷却 (防止按住左键瞬间连射太夸张)
+    const SHOOT_COOLDOWN_MAX = 18; // 帧数 (约60fps => 0.3秒)
+    let shootCooldown = 0;
+
+    // 怪物生成控制
+    let monsterSpawnTimer = 0;
+    const SPAWN_DELAY = 45; // 大约每0.75秒生成一只 (60fps)
+    const MAX_MONSTERS = 14;
+
+    // 控制标志
+    let keys = {
+      w: false, up: false,
+      s: false, down: false,
+      a: false, left: false,
+      d: false, right: false
+    };
+
+    // 鼠标坐标 (用于瞄准方向)
+    let mouseX = player.x + 30;
+    let mouseY = player.y;
+    let mouseInside = true;
+
+    // 游戏循环控制
+    let gameRunning = true;
+    let animationFrameId = null;
+
+    // ----- 辅助函数：随机范围 -----
+    const rand = (min, max) => Math.random() * (max - min) + min;
+    const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+
+    // ----- 重置游戏 -----
+    function restartGame() {
+      player = {
+        x: W / 2,
+        y: H / 2,
+        radius: 18,
+        health: 100,
+        maxHealth: 100,
+        speed: 4.8,
+      };
+      monsters = [];
+      bullets = [];
+      score = 0;
+      shootCooldown = 0;
+      monsterSpawnTimer = 0;
+      gameRunning = true;
+
+      // 重置鼠标位置到玩家附近
+      mouseX = player.x + 20;
+      mouseY = player.y;
+      updateUI();
+    }
+
+    // ----- 生成怪物 (在屏幕边缘附近) -----
+    function spawnMonster() {
+      if (monsters.length >= MAX_MONSTERS) return;
+
+      // 随机选择边缘：0=上, 1=下, 2=左, 3=右
+      const edge = randInt(0, 3);
+      let spawnX, spawnY;
+      const padding = 25; // 略微在屏幕外生成，自然走入
+
+      switch (edge) {
+        case 0: // 上
+          spawnX = rand(padding, W - padding);
+          spawnY = -padding;
+          break;
+        case 1: // 下
+          spawnX = rand(padding, W - padding);
+          spawnY = H + padding;
+          break;
+        case 2: // 左
+          spawnX = -padding;
+          spawnY = rand(padding, H - padding);
+          break;
+        case 3: // 右
+          spawnX = W + padding;
+          spawnY = rand(padding, H - padding);
+          break;
+        default:
+          spawnX = -padding;
+          spawnY = rand(padding, H - padding);
+      }
+
+      // 怪物类型：基础速度 + 大小变化
+      const type = Math.random();
+      let radius, speed, health, color;
+      if (type < 0.6) {
+        // 普通僵尸
+        radius = 16 + rand(0, 6);
+        speed = 1.1 + rand(0, 0.9);
+        health = 1;
+        color = '#6b8c5c';
+      } else if (type < 0.88) {
+        // 快速怪物
+        radius = 13 + rand(0, 5);
+        speed = 2.0 + rand(0, 1.3);
+        health = 1;
+        color = '#b5876a';
+      } else {
+        // 大型怪物 (需要两枪)
+        radius = 22 + rand(0, 7);
+        speed = 0.7 + rand(0, 0.7);
+        health = 2;
+        color = '#8b3a3a';
+      }
+
+      monsters.push({
+        x: spawnX,
+        y: spawnY,
+        radius: radius,
+        speed: speed,
+        health: health,
+        maxHealth: health,
+        color: color,
+      });
+    }
+
+    // ----- 玩家移动 (基于键盘) -----
+    function movePlayer() {
+      if (!gameRunning) return;
+      let dx = 0, dy = 0;
+
+      if (keys.w || keys.up) dy -= 1;
+      if (keys.s || keys.down) dy += 1;
+      if (keys.a || keys.left) dx -= 1;
+      if (keys.d || keys.right) dx += 1;
+
+      if (dx !== 0 || dy !== 0) {
+        const len = Math.sqrt(dx * dx + dy * dy);
+        dx = (dx / len) * player.speed;
+        dy = (dy / len) * player.speed;
+
+        let newX = player.x + dx;
+        let newY = player.y + dy;
+
+        // 边界限制 (考虑玩家半径)
+        const minBound = player.radius;
+        const maxBoundX = W - player.radius;
+        const maxBoundY = H - player.radius;
+
+        newX = Math.max(minBound, Math.min(maxBoundX, newX));
+        newY = Math.max(minBound, Math.min(maxBoundY, newY));
+
+        player.x = newX;
+        player.y = newY;
+      }
+    }
+
+    // ----- 怪物移动 (朝向玩家) -----
+    function moveMonsters() {
+      for (let m of monsters) {
+        const dx = player.x - m.x;
+        const dy = player.y - m.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 0.5) continue; // 已重叠
+
+        const moveX = (dx / dist) * m.speed;
+        const moveY = (dy / dist) * m.speed;
+        m.x += moveX;
+        m.y += moveY;
+      }
+    }
+
+    // ----- 玩家射击 (生成子弹) -----
+    function shootBullet(targetX, targetY) {
+      if (!gameRunning) return;
+      // 计算方向向量 (从玩家指向鼠标)
+      const dx = targetX - player.x;
+      const dy = targetY - player.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len < 0.001) return; // 避免零向量
+
+      const normX = dx / len;
+      const normY = dy / len;
+
+      bullets.push({
+        x: player.x,
+        y: player.y,
+        vx: normX * 7.5,  // 子弹速度
+        vy: normY * 7.5,
+        radius: 4.5,
+        active: true,
+        damage: 1,
+      });
+    }
+
+    // ----- 更新子弹位置与碰撞-----
+    function updateBullets() {
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        const b = bullets[i];
+        b.x += b.vx;
+        b.y += b.vy;
+
+        // 边界消除 (超出画布太远)
+        if (b.x < -20 || b.x > W + 20 || b.y < -20 || b.y > H + 20) {
+          bullets.splice(i, 1);
+          continue;
+        }
+
+        let bulletHit = false;
+
+        // 检测子弹与怪物碰撞
+        for (let j = monsters.length - 1; j >= 0; j--) {
+          const m = monsters[j];
+          const d = Math.sqrt((b.x - m.x) ** 2 + (b.y - m.y) ** 2);
+          if (d < m.radius + b.radius) {
+            // 击中怪物
+            m.health -= b.damage;
+            bulletHit = true;
+
+            if (m.health <= 0) {
+              // 击杀怪物，增加分数
+              score += (m.maxHealth === 2 ? 15 : 10);
+              monsters.splice(j, 1);
+            }
+            break; // 一颗子弹只击中一个怪物
+          }
+        }
+
+        if (bulletHit) {
+          bullets.splice(i, 1);
+        }
+      }
+    }
+
+    // ----- 怪物攻击玩家 (碰撞检测) -----
+    function checkMonsterCollision() {
+      if (!gameRunning) return;
+      for (let i = monsters.length - 1; i >= 0; i--) {
+        const m = monsters[i];
+        const dist = Math.sqrt((m.x - player.x) ** 2 + (m.y - player.y) ** 2);
+        if (dist < player.radius + m.radius) {
+          // 怪物对玩家造成伤害 (每次碰撞扣血，并推开怪物防止连续帧多次伤害)
+          const damageAmount = 8 + (m.maxHealth === 2 ? 4 : 0); // 大型怪物伤害更高
+          player.health -= damageAmount;
+
+          // 推开怪物：沿连线方向移动怪物到刚好不重叠
+          const angle = Math.atan2(m.y - player.y, m.x - player.x);
+          const overlap = player.radius + m.radius - dist;
+          if (overlap > 0) {
+            m.x += Math.cos(angle) * overlap;
+            m.y += Math.sin(angle) * overlap;
+          }
+
+          // 检查玩家死亡
+          if (player.health <= 0) {
+            player.health = 0;
+            gameRunning = false;
+            updateUI();
+            break; // 停止检测其他怪物
+          }
+        }
+      }
+
+      // 再次确保玩家生命值不超限
+      if (player.health <= 0) {
+        player.health = 0;
+        gameRunning = false;
+      }
+      updateUI();
+    }
+
+    // ----- 更新UI元素-----
+    function updateUI() {
+      let healthPercent = Math.max(0, player.health) / player.maxHealth * 100;
+      healthFill.style.width = `${healthPercent}%`;
+      healthText.textContent = `${Math.max(0, player.health)}`;
+      scoreSpan.textContent = score;
+    }
+
+    // ----- 游戏主循环更新-----
+    function update() {
+      if (gameRunning) {
+        // 减少射击冷却
+        if (shootCooldown > 0) shootCooldown--;
+
+        // 移动玩家
+        movePlayer();
+
+        // 怪物移动
+        moveMonsters();
+
+        // 子弹更新与碰撞
+        updateBullets();
+
+        // 怪物攻击玩家
+        checkMonsterCollision();
+
+        // 怪物生成逻辑
+        if (gameRunning) {
+          monsterSpawnTimer--;
+          if (monsterSpawnTimer <= 0 && monsters.length < MAX_MONSTERS) {
+            spawnMonster();
+            monsterSpawnTimer = SPAWN_DELAY + randInt(-8, 10);
+          }
+        }
+
+        // 再次检查玩家死亡 (可能由碰撞导致)
+        if (player.health <= 0) {
+          gameRunning = false;
+          player.health = 0;
+        }
+
+        updateUI();
+      }
+    }
+
+    // ----- 绘制图形 (所有视觉元素) -----
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+
+      // 绘制网格/地面纹理
+      ctx.strokeStyle = '#3a4a2e';
+      ctx.lineWidth = 0.6;
+      for (let i = 0; i < W; i += 40) {
+        ctx.beginPath();
+        ctx.moveTo(i, 0);
+        ctx.lineTo(i, H);
+        ctx.strokeStyle = '#3a5535';
+        ctx.stroke();
+      }
+      for (let j = 0; j < H; j += 40) {
+        ctx.beginPath();
+        ctx.moveTo(0, j);
+        ctx.lineTo(W, j);
+        ctx.stroke();
+      }
+
+      // ----- 绘制怪物 -----
+      for (let m of monsters) {
+        // 怪物身体
+        ctx.beginPath();
+        ctx.arc(m.x, m.y, m.radius, 0, Math.PI * 2);
+        ctx.fillStyle = m.color;
+        ctx.fill();
+        ctx.strokeStyle = '#1a1a1a';
+        ctx.lineWidth = 2.2;
+        ctx.stroke();
+
+        // 怪物眼睛 (白色+瞳孔朝向玩家)
+        const eyeOffset = m.radius * 0.5;
+        const angleToPlayer = Math.atan2(player.y - m.y, player.x - m.x);
+        const leftEyeX = m.x + Math.cos(angleToPlayer - 0.5) * eyeOffset;
+        const leftEyeY = m.y + Math.sin(angleToPlayer - 0.5) * eyeOffset;
+        const rightEyeX = m.x + Math.cos(angleToPlayer + 0.5) * eyeOffset;
+        const rightEyeY = m.y + Math.sin(angleToPlayer + 0.5) * eyeOffset;
+
+        ctx.fillStyle = 'white';
+        ctx.beginPath();
+        ctx.arc(leftEyeX, leftEyeY, m.radius * 0.27, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(rightEyeX, rightEyeY, m.radius * 0.27, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.fillStyle = '#111';
+        ctx.beginPath();
+        ctx.arc(leftEyeX + Math.cos(angleToPlayer) * 1.8, leftEyeY + Math.sin(angleToPlayer) * 1.8, m.radius * 0.12, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(rightEyeX + Math.cos(angleToPlayer) * 1.8, rightEyeY + Math.sin(angleToPlayer) * 1.8, m.radius * 0.12, 0, 2 * Math.PI);
+        ctx.fill();
+
+        // 如果生命值>1 显示护甲标记
+        if (m.maxHealth === 2 && m.health === 2) {
+          ctx.fillStyle = '#f0d050';
+          ctx.beginPath();
+          ctx.arc(m.x, m.y - m.radius - 4, 4, 0, 2 * Math.PI);
+          ctx.fill();
+        } else if (m.maxHealth === 2 && m.health === 1) {
+          ctx.fillStyle = '#b5773a';
+          ctx.beginPath();
+          ctx.arc(m.x, m.y - m.radius - 4, 4, 0, 2 * Math.PI);
+          ctx.fill();
+        }
+      }
+
+      // ----- 绘制子弹 -----
+      for (let b of bullets) {
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, b.radius, 0, 2 * Math.PI);
+        ctx.fillStyle = '#f1e05a';
+        ctx.shadowColor = '#ffbb00';
+        ctx.shadowBlur = 8;
+        ctx.fill();
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = '#b38b20';
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+      }
+
+      // ----- 绘制玩家 (英雄) -----
+      ctx.save();
+      ctx.translate(player.x, player.y);
+      // 玩家面向鼠标方向
+      const aimAngle = Math.atan2(mouseY - player.y, mouseX - player.x);
+      ctx.rotate(aimAngle);
+
+      // 身体
+      ctx.beginPath();
+      ctx.arc(0, 0, player.radius, 0, 2 * Math.PI);
+      ctx.fillStyle = '#3b7bb7';
+      ctx.fill();
+      ctx.strokeStyle = '#102840';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      // 护甲/装备线条
+      ctx.beginPath();
+      ctx.arc(0, 0, player.radius - 3, 0, Math.PI * 2);
+      ctx.strokeStyle = '#c0daf5';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // 武器/枪口
+      ctx.fillStyle = '#4a4a5a';
+      ctx.fillRect(8, -3.5, 15, 7);
+      ctx.fillStyle = '#2b2b35';
+      ctx.fillRect(19, -2.8, 7, 5.6);
+
+      // 眼睛
+      ctx.fillStyle = 'white';
+      ctx.beginPath();
+      ctx.arc(5, -7, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(5, 7, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#0a0a14';
+      ctx.beginPath();
+      ctx.arc(7, -7, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(7, 7, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+
+      // 玩家血条 (头顶)
+      if (gameRunning) {
+        const healthPercent = player.health / player.maxHealth;
+        ctx.fillStyle = '#333';
+        ctx.fillRect(player.x - 22, player.y - player.radius - 13, 44, 8);
+        ctx.fillStyle = healthPercent > 0.6 ? '#6f9' : (healthPercent > 0.25 ? '#f4c542' : '#e03a3a');
+        ctx.fillRect(player.x - 22, player.y - player.radius - 13, 44 * healthPercent, 8);
+      }
+
+      // 游戏结束画面
+      if (!gameRunning) {
+        ctx.globalAlpha = 0.8;
+        ctx.fillStyle = '#0f1a0f';
+        ctx.fillRect(0, 0, W, H);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = '#e0d7b0';
+        ctx.font = 'bold 38px "Segoe UI", Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('💀 你倒下了', W/2, H/2-20);
+        ctx.font = '18px "Segoe UI"';
+        ctx.fillText('点击"重新开始"继续战斗', W/2, H/2+50);
+      }
+    }
+
+    // ----- 动画循环 -----
+    function gameLoop() {
+      update();
+      draw();
+      animationFrameId = requestAnimationFrame(gameLoop);
+    }
+
+    // ----- 事件监听 -----
+    function bindEvents() {
+      // 键盘按下
+      window.addEventListener('keydown', (e) => {
+        const key = e.key.toLowerCase();
+        // 防止页面滚动 / 默认行为
+        if (key === 'w' || key === 'a' || key === 's' || key === 'd' ||
+            key === 'arrowup' || key === 'arrowdown' || key === 'arrowleft' || key === 'arrowright') {
+          e.preventDefault();
+        }
+
+        if (key === 'w') keys.w = true;
+        if (key === 'a') keys.a = true;
+        if (key === 's') keys.s = true;
+        if (key === 'd') keys.d = true;
+        if (key === 'arrowup') keys.up = true;
+        if (key === 'arrowdown') keys.down = true;
+        if (key === 'arrowleft') keys.left = true;
+        if (key === 'arrowright') keys.right = true;
+      });
+
+      window.addEventListener('keyup', (e) => {
+        const key = e.key.toLowerCase();
+        if (key === 'w' || key === 'a' || key === 's' || key === 'd' ||
+            key === 'arrowup' || key === 'arrowdown' || key === 'arrowleft' || key === 'arrowright') {
+          e.preventDefault();
+        }
+        if (key === 'w') keys.w = false;
+        if (key === 'a') keys.a = false;
+        if (key === 's') keys.s = false;
+        if (key === 'd') keys.d = false;
+        if (key === 'arrowup') keys.up = false;
+        if (key === 'arrowdown') keys.down = false;
+        if (key === 'arrowleft') keys.left = false;
+        if (key === 'arrowright') keys.right = false;
+      });
+
+      // 鼠标移动 (追踪瞄准位置)
+      canvas.addEventListener('mousemove', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = W / rect.width;   // canvas 物理像素比例
+        const scaleY = H / rect.height;
+        const relativeX = (e.clientX - rect.left) * scaleX;
+        const relativeY = (e.clientY - rect.top) * scaleY;
+        mouseX = Math.min(W, Math.max(0, relativeX));
+        mouseY = Math.min(H, Math.max(0, relativeY));
+        mouseInside = true;
+      });
+
+      canvas.addEventListener('mouseleave', () => {
+        // 离开画布时瞄准点设为玩家右侧默认方向
+        mouseX = player.x + 30;
+        mouseY = player.y;
+        mouseInside = false;
+      });
+
+      // 射击：鼠标按下 (左键)
+      canvas.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        if (e.button === 0) { // 左键
+          if (gameRunning && shootCooldown <= 0) {
+            shootBullet(mouseX, mouseY);
+            shootCooldown = SHOOT_COOLDOWN_MAX;
+          }
+        }
+      });
+
+      // 防止右键菜单弹出
+      canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+      // 重新开始按钮
+      document.getElementById('restartButton').addEventListener('click', () => {
+        restartGame();
+      });
+
+      // 窗口失去焦点时重置按键状态 (防止卡方向)
+      window.addEventListener('blur', () => {
+        keys.w = keys.a = keys.s = keys.d = false;
+        keys.up = keys.down = keys.left = keys.right = false;
+      });
+    }
+
+    // 启动一切
+    bindEvents();
+    restartGame(); // 初始状态
+    gameLoop();
+
+    // 清理动画 (非必须，但良好实践)
+    window.addEventListener('beforeunload', () => {
+      if (animationFrameId) cancelAnimationFrame(animationFrameId);
+    });
+  })();
+</script>
+</body>
+</html>
