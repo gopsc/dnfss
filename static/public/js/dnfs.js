@@ -1,3 +1,8 @@
+
+/* by qing.
+ *
+ * 用于获取一个节点下的所有子节点信息，0为根节点。
+ */
 async function getNode(token, id) {
 	try {
 		obj = { "pid": String(id) }
@@ -43,6 +48,10 @@ async function getNode(token, id) {
 	}
 }
 
+/* by qing
+ *
+ * 用于向dnfs添加节点
+ */
 async function addNode(token, pid, title, content) {
 	try {
 		obj = {
@@ -92,6 +101,7 @@ async function addNode(token, pid, title, content) {
 	}
 }
 
+/* by shufeng2012 */
 function renderMarkdown(element, content) {
 	/*
 	Markdown渲染
@@ -99,6 +109,8 @@ function renderMarkdown(element, content) {
 	const md = window.markdownit();
 	element.innerHTML = md.render(content);
 }
+
+/* ---- by qing ---- */
 const stack = [];	/* 用于存储当前节点的路径，也就是经过的每一个节点的id， 否则就回不去上一层*/
 var article_title = document.getElementById('article-title');
 var article_content = document.getElementById('article-content');
@@ -130,7 +142,7 @@ function load_notes(main_node) {
 
 	recommend_list.replaceChildren();
 	//alert(stack.length)
-	if (stack.length > 0) {	/* 如果不在根节点 */
+	if (stack.length > 0) {	/* 如果不在根节点，就渲染返回按钮 */
 		var bak = document.createElement('center');
 		bak.addEventListener('click', function (event) {
 			stack.pop();
