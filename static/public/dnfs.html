@@ -9,15 +9,15 @@
 	</head>
 	<body>
 		<div class="box">
-			<center>
+			<center class="article-header">
 			<!-- 文章主标题 -->
 			<h1><div id="article-title">title</div></h1>
 
 			<!-- 文章详情 -->
-			<div>
+			<div class="article-meta">
 				发布时间：<span id="publish-time">2026-1-1</span>
 			</div>
-			<div>
+			<div class="article-stats">
 				浏览：<span id="visit-count">999</span>
 				点赞：<span id="like-count">999</span>
 				分享：<span id="share-count">999</span>
@@ -25,13 +25,14 @@
 			</center>
 			<div id="article-content">hello</div>
 			<div class="recommend-list" id="recommend-list"></div>
-			<br>
-			<div class="card">
+			<div class="card node-form">
 				<h3>节点操作</h3>
-				<label>新增节点</label><input id="input-note-title"></input><br>
-				<label>节点内容</label><textarea id="input-note-content"></textarea><br>
-				<button id="input-note-submit">提交</button>
-				<button id="input-note-clear">重置</button>
+				<label>新增节点</label><input id="input-note-title">
+				<label>节点内容</label><textarea id="input-note-content"></textarea>
+				<div class="form-actions">
+					<button id="input-note-submit">提交</button>
+					<button id="input-note-clear">重置</button>
+				</div>
 			</div>
 			<script src="https://cdnjs.cloudflare.com/ajax/libs/markdown-it/12.0.0/markdown-it.min.js"></script>
 			<script src="js/validation.js"></script>
