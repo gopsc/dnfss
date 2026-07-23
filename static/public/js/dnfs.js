@@ -96,7 +96,7 @@ async function addNode(token, pid, title, content) {
 
 	} catch (err) {
 		alert(err.message || '接口请求失败，请检查后端服务是否启动');
-		console.error('获取节点请求异常：', err);
+		console.error('添加节点请求异常：', err);
 	} finally {
 	}
 }
@@ -107,7 +107,7 @@ function renderMarkdown(element, content) {
 	Markdown渲染
 	*/
 	const md = window.markdownit();
-	element.innerHTML = md.render(content);
+	element.innerHTML = md.render(content, {html: false});
 }
 
 /* ---- by qing ---- */
