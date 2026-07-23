@@ -53,5 +53,5 @@ def execute_sql():
         return jsonify({'success': False, 'error': str(e)}), 400
 
 if __name__ == '__main__':
-    # 单线程单进程，绑定 127.0.0.1:5000
-    serve(app, host='127.0.0.1', port=5000, threads=1)
+    # 单线程单进程，绑定 127.0.0.1:8005
+    serve(app, host='127.0.0.1', port=8005, threads=1)
