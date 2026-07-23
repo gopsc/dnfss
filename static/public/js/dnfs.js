@@ -173,8 +173,6 @@ input_note_submit.addEventListener('click', function(event) {
 	alert(pid)
 	addNode(token, pid, title, content).then(result => {
 		alert(result.message);
-		input_note_title.value = "";
-		input_note_content.value = "";
 	})
 })
 
@@ -197,6 +195,9 @@ delete_note.addEventListener('click', (event) => {
 function load_notes(main_node) {
 	article_title.textContent = "";
 	article_content.textContent = "";
+
+	input_note_title.value = "";
+	input_note_content.value = "";
 
 	recommend_list.replaceChildren();
 	//alert(stack.length)
