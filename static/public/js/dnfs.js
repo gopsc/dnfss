@@ -196,8 +196,20 @@ function load_notes(main_node) {
 	article_title.textContent = "";
 	article_content.textContent = "";
 
-	input_note_title.value = "";
-	input_note_content.value = "";
+	if (input_note_title.value != "" || input_note_content.value != "") {
+		if (confirm("是否放弃当前输入的内容？") == true) {
+			input_note_title.value = "";
+			input_note_content.value = "";
+		} else {
+			if (stack.length != 0) {
+				return;
+			}
+		}
+	} else {
+			input_note_title.value = "";
+			input_note_content.value = "";
+	}
+
 
 	recommend_list.replaceChildren();
 	//alert(stack.length)
