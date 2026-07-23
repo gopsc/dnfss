@@ -173,6 +173,8 @@ input_note_submit.addEventListener('click', function(event) {
 	alert(pid)
 	addNode(token, pid, title, content).then(result => {
 		alert(result.message);
+		input_note_title.value = "";
+		input_note_content.value = "";
 	})
 })
 
