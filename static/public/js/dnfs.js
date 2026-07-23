@@ -171,14 +171,14 @@ function load_notes(main_node) {
 		var vit_div = document.createElement('p');
 		var lke_div = document.createElement('p');
 		var srd_div = document.createElement('p');
-		var ctt = document.createElement('p');
 		vit_div.textContent = "观看数：" + item.visit_count;
 		lke_div.textContent = "点赞数：" + item.like_count;
 		srd_div.textContent = "分享数：" + item.share_count;
+		ttl.appendChild(vit_div);
+		ttl.appendChild(lke_div);
+		ttl.appendChild(srd_div);
+		var ctt = document.createElement('p');
 		renderMarkdown(ctt, item.content);
-		card.appendChild(vit_div);
-		card.appendChild(lke_div);
-		card.appendChild(srd_div);
 		card.appendChild(ctt)
 		recommend_list.appendChild(card)
 		recommend_list.appendChild(document.createElement('br'))
