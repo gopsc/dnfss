@@ -8,6 +8,14 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import configparser
+import sys
+
+# 基准目录：编译后取可执行文件所在目录，开发时取脚本所在目录
+# 解决 Nuitka onefile 解压到 /tmp 后相对路径失效的问题
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
