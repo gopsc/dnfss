@@ -155,29 +155,29 @@ function load_notes(main_node) {
 		recommend_list.appendChild(bak)
 	}
 	for (let i in main_node) {
-		item = main_node[i]
-		var card = document.createElement('div'); 
+		let item = main_node[i]
+		let card = document.createElement('div'); 
 		card.className = "card";
 		card.addEventListener('click', function(event) {
 			var id = Number(item.id)
 			stack.push(id)
 			getNode(token, id).then(load_notes)
 		});
-		var ttl = document.createElement('center');
-		var ttl1 =document.createElement('h3');
+		let ttl = document.createElement('center');
+		let ttl1 =document.createElement('h3');
 		ttl1.textContent = item.title;
 		ttl.appendChild(ttl1);
 		card.appendChild(ttl);
-		var vit_div = document.createElement('p');
-		var lke_div = document.createElement('p');
-		var srd_div = document.createElement('p');
+		let vit_div = document.createElement('p');
+		let lke_div = document.createElement('p');
+		let srd_div = document.createElement('p');
 		vit_div.textContent = "观看数：" + item.visit_count;
 		lke_div.textContent = "点赞数：" + item.like_count;
 		srd_div.textContent = "分享数：" + item.share_count;
 		ttl.appendChild(vit_div);
 		ttl.appendChild(lke_div);
 		ttl.appendChild(srd_div);
-		var ctt = document.createElement('p');
+		let ctt = document.createElement('p');
 		renderMarkdown(ctt, item.content);
 		card.appendChild(ctt)
 		recommend_list.appendChild(card)
