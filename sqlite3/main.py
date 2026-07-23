@@ -1,5 +1,6 @@
 import sqlite3
 from flask import Flask, request, jsonify, g
+from waitress import serve
 
 app = Flask(__name__)
 app.config['DATABASE'] = 'database.db'
@@ -33,14 +34,13 @@ def execute_sql():
     try:
         db = get_db()
         cur = db.execute(sql, params)
-        db.commit()      # 对所有语句统一提交（只读语句提交也无副作用）
+        db.commit()
 
-        # 尝试获取查询结果，对 INSERT/UPDATE/DELETE 等无返回数据的语句会抛异常
         try:
             rows = cur.fetchall()
             result = [dict(row) for row in rows]
         except Exception:
-            result = []   # 无结果集时返回空数组
+            result = []
 
         return jsonify({
             'success': True,
@@ -53,4 +53,5 @@ def execute_sql():
         return jsonify({'success': False, 'error': str(e)}), 400
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # 单线程单进程，绑定 127.0.0.1:5000
+    serve(app, host='127.0.0.1', port=5000, threads=1)
