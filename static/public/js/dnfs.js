@@ -99,7 +99,7 @@ function renderMarkdown(element, content) {
 	const md = window.markdownit();
 	element.innerHTML = md.render(content);
 }
-const stack = [];	/* 这个是笔记节点的栈 */
+const stack = [];	/* 用于存储当前节点的路径，也就是经过的每一个节点的id， 否则就回不去上一层*/
 var article_title = document.getElementById('article-title');
 var article_content = document.getElementById('article-content');
 var input_note_title = document.getElementById('input-note-title');
@@ -143,17 +143,17 @@ function load_notes(main_node) {
 		recommend_list.appendChild(bak)
 	}
 	for (let i in main_node) {
-		item = main_node[i]
+		let item = main_node[i]	/* 必须用let */
 		var card = document.createElement('div'); 
 		card.className = "card";
-		card.addEventListener('click', function(event) {
+		var ttl = document.createElement('center');
+		var ttl1 =document.createElement('h3');
+		ttl1.textContent = item.title
+		ttl1.addEventListener('click', function(event) {
 			var id = Number(item.id)
 			stack.push(id)
 			getNode(token, id).then(load_notes)
 		});
-		var ttl = document.createElement('center');
-		var ttl1 =document.createElement('h3');
-		ttl1.textContent = item.title
 		ttl.appendChild(ttl1)
 		card.appendChild(ttl)
 		var ctt = document.createElement('p');
