@@ -54,6 +54,7 @@ function esc(str) {
 function navigate(path, type) {
     if (type === "dir") window.location.href = "/" + path;
     else if (type === "video" || type === "audio") window.location.href = "/video/" + path;
+    else if (/\.html?$/i.test(path)) window.open("/" + path, "_blank");
     else window.location.href = "/" + path;
 }
 function playMedia(path) { window.location.href = "/video/" + path; }
