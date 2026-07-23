@@ -1,3 +1,8 @@
+
+/* by qing.
+ *
+ * 用于获取一个节点下的所有子节点信息，0为根节点。
+ */
 async function getNode(token, id) {
 	try {
 		obj = { "pid": String(id) }
@@ -43,6 +48,10 @@ async function getNode(token, id) {
 	}
 }
 
+/* by qing
+ *
+ * 用于向dnfs添加节点
+ */
 async function addNode(token, pid, title, content) {
 	try {
 		obj = {
@@ -92,6 +101,7 @@ async function addNode(token, pid, title, content) {
 	}
 }
 
+/* by shufeng2012 */
 function renderMarkdown(element, content) {
 	/*
 	Markdown渲染
@@ -99,7 +109,9 @@ function renderMarkdown(element, content) {
 	const md = window.markdownit();
 	element.innerHTML = md.render(content);
 }
-const stack = [];	/* 这个是笔记节点的栈 */
+
+/* ---- by qing ---- */
+const stack = [];	/* 用于存储当前节点的路径，也就是经过的每一个节点的id， 否则就回不去上一层*/
 var article_title = document.getElementById('article-title');
 var article_content = document.getElementById('article-content');
 var input_note_title = document.getElementById('input-note-title');
@@ -142,20 +154,29 @@ function load_notes(main_node) {
 		bak.appendChild(bak1)
 		recommend_list.appendChild(bak)
 	}
-	for (i in main_node) {
+	for (let i in main_node) {
 		item = main_node[i]
 		var card = document.createElement('div'); 
 		card.className = "card";
-		var ttl = document.createElement('center');
-		ttl.addEventListener('click', function(event) {
+		card.addEventListener('click', function(event) {
 			var id = Number(item.id)
 			stack.push(id)
 			getNode(token, id).then(load_notes)
 		});
+		var ttl = document.createElement('center');
 		var ttl1 =document.createElement('h3');
-		ttl1.textContent = item.title
-		ttl.appendChild(ttl1)
-		card.appendChild(ttl)
+		ttl1.textContent = item.title;
+		ttl.appendChild(ttl1);
+		card.appendChild(ttl);
+		var vit_div = document.createElement('p');
+		var lke_div = document.createElement('p');
+		var srd_div = document.createElement('p');
+		vit_div.textContent = "观看数：" + item.visit_count;
+		lke_div.textContent = "点赞数：" + item.like_count;
+		srd_div.textContent = "分享数：" + item.share_count;
+		ttl.appendChild(vit_div);
+		ttl.appendChild(lke_div);
+		ttl.appendChild(srd_div);
 		var ctt = document.createElement('p');
 		renderMarkdown(ctt, item.content);
 		card.appendChild(ctt)

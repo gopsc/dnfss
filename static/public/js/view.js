@@ -54,6 +54,7 @@ function esc(str) {
 function navigate(path, type) {
     if (type === "dir") window.location.href = "/" + path;
     else if (type === "video" || type === "audio") window.location.href = "/video/" + path;
+    else if (/\.html?$/i.test(path)) window.open("/" + path, "_blank");
     else window.location.href = "/" + path;
 }
 function playMedia(path) { window.location.href = "/video/" + path; }
@@ -108,9 +109,9 @@ function render() {
             ? `<button class="btn-play" onclick="event.stopPropagation(); playMedia('${path}')">▶</button>`
             : '';
         return `
-            <div class="item">
+            <div class="item" onclick="navigate('${path}', '${type}')">
                 <span class="icon">${getIcon(item)}</span>
-                <div class="info" onclick="navigate('${path}', '${type}')">
+                <div class="info">
                     <div class="name">${name}</div>
                     <div class="meta">
                         ${sizeOrDir}

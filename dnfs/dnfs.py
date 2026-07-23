@@ -186,10 +186,10 @@ def update_note():
 
 
 
-@app.route('/')
-def view_page():
-    """返回应用主页"""
-    return render_template('index.html')
+#@app.route('/')
+#def view_page():
+#    """返回应用主页"""
+#    return render_template('index.html')
 
 ADDR='127.0.0.1'
 PORT=8006

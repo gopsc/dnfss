@@ -8,12 +8,20 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import configparser
+import sys
+
+# 基准目录：编译后取可执行文件所在目录，开发时取脚本所在目录
+# 解决 Nuitka onefile 解压到 /tmp 后相对路径失效的问题
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-file_handler = RotatingFileHandler('app.log', maxBytes=10485760, backupCount=10)
+file_handler = RotatingFileHandler(os.path.join(BASE_DIR, 'app.log'), maxBytes=10485760, backupCount=10)
 file_handler.setFormatter(logging.Formatter(
     '%(asctime)s %(levelname)s: %(message)s'
 ))
@@ -29,6 +37,8 @@ CORS(app)
 
 # ==================== 配置文件加载 ====================
 CONFIG_FILE = args.config
+if not os.path.isabs(CONFIG_FILE):
+    CONFIG_FILE = os.path.join(BASE_DIR, CONFIG_FILE)
 
 file_config = {
     'server': {'host': '0.0.0.0', 'port': '5000'},
@@ -46,6 +56,8 @@ if os.path.exists(CONFIG_FILE):
                     file_config[section][key] = value
 
 HTML_ROOT_DIR = file_config['directory']['root']
+if HTML_ROOT_DIR and not os.path.isabs(HTML_ROOT_DIR):
+    HTML_ROOT_DIR = os.path.join(BASE_DIR, HTML_ROOT_DIR)
 FILESYSTEM_ENABLED = bool(HTML_ROOT_DIR and HTML_ROOT_DIR.strip())
 
 if FILESYSTEM_ENABLED:
@@ -59,6 +71,10 @@ if FILESYSTEM_ENABLED:
 SSL_ENABLED = file_config['ssl'].get('enabled', 'false').lower() == 'true'
 SSL_CERT_FILE = file_config['ssl'].get('cert_file', 'cert.pem')
 SSL_KEY_FILE = file_config['ssl'].get('key_file', 'key.pem')
+if not os.path.isabs(SSL_CERT_FILE):
+    SSL_CERT_FILE = os.path.join(BASE_DIR, SSL_CERT_FILE)
+if not os.path.isabs(SSL_KEY_FILE):
+    SSL_KEY_FILE = os.path.join(BASE_DIR, SSL_KEY_FILE)
 
 # 视图文件名：根路径与目录访问时固定返回此静态文件，由前端 JS 调用 /api/filelist 拉取数据
 VIEW_FILE = '__view.html'

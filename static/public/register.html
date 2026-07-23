@@ -3,13 +3,8 @@
 	<head>
 		<meta charset="utf-8">
 		<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
-		<title>注册页面</title>
-		<link rel="stylesheet" href="css/style.css">
-		<style>
-			.tip-red {color:red;}
-			.tip-yellow {color: orange;}
-			.tip-green {color: greenyellow;}
-		</style>
+		<title>注册</title>
+		<link rel="stylesheet" href="css/theme.css">
 	</head>
 	<body>
 		<div class="card">
@@ -19,7 +14,6 @@
 					<label>用户名/推荐邮箱：</label>
 					<input type="text" id="regusername" placeholder="请输入用户名">
 					<span id="msgTip" ></span>
-					<br>
 					<label>邮箱号：</label>
 					<input type="email" id="regemail" placeholder="请输入邮箱号">
 					<div class="code-box">验证码：
@@ -28,20 +22,22 @@
 						<span id="codeTip"></span>
 					</div>
 					<span id="emlTip"></span>
-					<br>
 					<label>密码：</label>
 					<input type="password" id="regpsw" placeholder="密码至少6位">
 					<label>验证密码：</label>
 					<input type="password" id="repwd" placeholder="请再次输入密码">
 					<span id="pwdTip"></span>
 				</div>
-				<div>
+				<div class="form-actions">
 					<input id="formsub" type="submit" value="提交"> 
 					<input id="resetUser" type="reset" value="重置">
 					<input type="button" value="返回登录" onclick="location.href='login.html'"> 
 				</div>
 			</form>
 		</div>
+		<footer class="footer">
+			<a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">蜀ICP备2024107064号-2</a>
+		</footer>
 		<script src="js/validation.js"></script>
 		<script src="js/register.js?v=6"></script>
 	</body>
