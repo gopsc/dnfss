@@ -106,9 +106,37 @@ async function deleteNode(token, id) {
 		obj = {"id": String(id)};
 		jsonBody = JSON.stringify(obj);
 		console.log(jsonBody);
-		const res = fetch('/delete_notes', {
-			
+
+		const res = await fetch('/delete_note', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Authorization': `Bearer ${token}`,
+				'Target-Url': 'http://127.0.0.1:8006'
+			},
+			body: jsonBody
 		});
+
+		const responseText = await res.text();
+		let result;
+
+		try {
+			result = JSON.parse(responseText);
+		} catch {
+			console.error(`删除笔记接口返回非 JSON 内容（HTTP ${res.status}）：`, responseText);
+			throw new Error('服务器响应格式异常，请稍后重试');
+		}
+
+		if (!res.ok) {
+			throw new Error(result.message || `删除节点失败（HTTP ${res.status}）`);
+		}
+
+		stack.pop();
+		getNode(token, stack[stack.length - 1]).then(load_notes);
+
+		console.log(`删除节点成功`);
+		return result
+
 	} catch (err) {
 		alert(err.message || '接口请求失败，请检查后端服务是否启动');
 		console.error('删除节点请求异常：', err);
