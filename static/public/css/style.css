@@ -204,7 +204,7 @@ button[type="button"], input[type="button"] { background: var(--accent-soft); co
 #article-content { font-size: 0.95rem; line-height: 1.7; margin-bottom: 1.25rem; }
 
 /* ===== Recommend List (dnfs) ===== */
-.recommend-list .card { margin-bottom: 0.75rem; }
+.recommend-list .card { margin-bottom: 0.75rem; width: 100%; max-width: none; }
 .recommend-list center {
     cursor: pointer;
     padding: 0.4rem;
