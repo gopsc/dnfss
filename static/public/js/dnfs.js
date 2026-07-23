@@ -142,7 +142,7 @@ function load_notes(main_node) {
 
 	recommend_list.replaceChildren();
 	//alert(stack.length)
-	if (stack.length > 0) {	/* 如果不在根节点，就渲染返回按钮 */
+	if (stack.length > 0) {	/* 如果不在根节点 */
 		var bak = document.createElement('center');
 		bak.addEventListener('click', function (event) {
 			stack.pop();
@@ -155,21 +155,30 @@ function load_notes(main_node) {
 		recommend_list.appendChild(bak)
 	}
 	for (let i in main_node) {
-		let item = main_node[i]	/* 必须用let */
+		item = main_node[i]
 		var card = document.createElement('div'); 
 		card.className = "card";
-		var ttl = document.createElement('center');
-		var ttl1 =document.createElement('h3');
-		ttl1.textContent = item.title
-		ttl1.addEventListener('click', function(event) {
+		card.addEventListener('click', function(event) {
 			var id = Number(item.id)
 			stack.push(id)
 			getNode(token, id).then(load_notes)
 		});
-		ttl.appendChild(ttl1)
-		card.appendChild(ttl)
+		var ttl = document.createElement('center');
+		var ttl1 =document.createElement('h3');
+		ttl1.textContent = item.title;
+		ttl.appendChild(ttl1);
+		card.appendChild(ttl);
+		var vit_div = document.createElement('p');
+		var lke_div = document.createElement('p');
+		var srd_div = document.createElement('p');
 		var ctt = document.createElement('p');
+		vit_div.textContent = "观看数：" + item.visit_count;
+		lke_div.textContent = "点赞数：" + item.like_count;
+		srd_div.textContent = "分享数：" + item.share_count;
 		renderMarkdown(ctt, item.content);
+		card.appendChild(vit_div);
+		card.appendChild(lke_div);
+		card.appendChild(srd_div);
 		card.appendChild(ctt)
 		recommend_list.appendChild(card)
 		recommend_list.appendChild(document.createElement('br'))
