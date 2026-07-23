@@ -101,6 +101,20 @@ async function addNode(token, pid, title, content) {
 	}
 }
 
+async function deleteNode(token, id) {
+	try {
+		obj = {"id": String(id)};
+		jsonBody = JSON.stringify(obj);
+		console.log(jsonBody);
+		const res = fetch('/delete_notes', {
+			
+		});
+	} catch (err) {
+		alert(err.message || '接口请求失败，请检查后端服务是否启动');
+		console.error('删除节点请求异常：', err);
+	}
+}
+
 /* by shufeng2012 */
 function renderMarkdown(element, content) {
 	/*
@@ -119,6 +133,7 @@ var input_note_content = document.getElementById('input-note-content');
 var input_note_submit = document.getElementById('input-note-submit');
 var input_note_clear = document.getElementById('input-note-clear');
 var recommend_list = document.getElementById('recommend-list');
+var delete_note = document.getElementById('delete-note');
 
 input_note_submit.addEventListener('click', function(event) {
 	var title = input_note_title.value
@@ -134,6 +149,17 @@ input_note_submit.addEventListener('click', function(event) {
 input_note_clear.addEventListener('click', function(event) {
 	input_note_title.value = "";
 	input_note_content.value = "";
+})
+
+delete_note.addEventListener('click', (event) => {
+	var id = (stack.length == 0) ? 0 : stack[stack.length - 1];
+	if (id == 0) {
+		alert('无法删除根节点');
+		console.log("节点未删除");
+	}
+	else {
+		deleteNode(token, id);
+	}
 })
 
 function load_notes(main_node) {
