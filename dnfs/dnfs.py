@@ -24,8 +24,9 @@ import os
 import json
 import urllib.request
 import urllib.error
+from typing import Dict, Any
 
-_SERVER_URL = 'http://127.0.0.1:8005/execute'
+DB_SERVER_URL = 'http://127.0.0.1:8005/execute'
 def call_db_service(url: str, payload: dict, timeout: int  = 10) -> dict:
     '''
     使用标准库向数据库服务发送 JSON 请求并返回解析后的响应。
@@ -66,6 +67,50 @@ def call_db_service(url: str, payload: dict, timeout: int  = 10) -> dict:
     except urllib.error.URLError as e:
         raise urllib.error.URLError(f'连接失败: {e.reason}') from None
 
+REVIEW_SERVER_URL = 'http://127.0.0.1:8007/review'
+def review_content(content: str, timeout: int = 10) -> Dict[str, Any]:
+    """
+    调用 AI 内容审核服务的 /review 接口，对给定文本进行审核。
+
+    Args:
+        content: 待审核的文本内容，不可为空。
+        timeout: 请求超时时间（秒），默认 10 秒。
+
+    Returns:
+        字典，包含接口返回的字段，例如：
+        - 成功时：{"invalid": "true"} 或 {"invalid": "false"}
+        - API 错误时：{"invalid": "false", "error": "api_error", "detail": "..."}
+        - 解析失败时：{"invalid": "false", "error": "parse_failed", "raw": "..."}
+        - 请求参数错误时：{"error": "content is required"} 等
+        - 网络或异常时：{"error": "request_failed", "detail": "..."}
+    """
+    url = REVIEW_SERVER_URL
+    payload = {"content": content}
+    json_data = json.dumps(payload).encode("utf-8")
+
+    req = urllib.request.Request(
+        url,
+        data=json_data,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            resp_data = resp.read().decode("utf-8")
+            data =  json.loads(resp_data)
+            return 'false' == data['invalid']
+    except urllib.error.HTTPError as e:
+        # 服务端返回 4xx/5xx 错误时，尝试解析错误正文
+        error_body = e.read().decode("utf-8")
+        try:
+            return json.loads(error_body)
+        except json.JSONDecodeError as e:
+            raise e
+    except urllib.error.URLError as e:
+        raise e
+    except Exception as e:
+        raise e
 
 
 
@@ -131,6 +176,12 @@ def add_note():
 
     #    db.session.commit()
 
+
+    # 内容审查
+    review = review_content(title + '\n\n' + content, 10)
+    if not review:
+        return jsonify({'error': 'review failed'}), 400
+
     insert_payload = {
         'action': 'insert',
         'table': 'Notes',
@@ -141,7 +192,7 @@ def add_note():
         }
     }
 
-    result = call_db_service(_SERVER_URL, insert_payload)
+    result = call_db_service(DB_SERVER_URL, insert_payload)
 
     success = result['success']
 
@@ -170,7 +221,7 @@ def get_notes():
         }
     }
 
-    notes = call_db_service(_SERVER_URL, select_payload)
+    notes = call_db_service(DB_SERVER_URL, select_payload)
 
     #with app.app_context():
 
@@ -228,7 +279,7 @@ def delete_note():
         }
     }
 
-    notes = call_db_service(_SERVER_URL, select_payload)
+    notes = call_db_service(DB_SERVER_URL, select_payload)
 
     # 有子节点的情况不可删除
     if not notes['data']:
@@ -243,7 +294,7 @@ def delete_note():
         'where': {'id': note_id}
     }
 
-    result = call_db_service(_SERVER_URL, delete_payload)
+    result = call_db_service(DB_SERVER_URL, delete_payload)
 
     result = result['success']
 
@@ -306,7 +357,7 @@ def update_note():
         'where': {'id': id}
     }
 
-    result = call_db_service(_SERVER_URL, update_payload)
+    result = call_db_service(DB_SERVER_URL, update_payload)
 
     result = result['success']
 
