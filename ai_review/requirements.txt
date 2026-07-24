@@ -1,6 +1,0 @@
-openai
-flask
-flask-cors
-waitress
-chromadb
-python-dotenv

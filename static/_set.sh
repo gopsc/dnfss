@@ -4,4 +4,3 @@ python3 -m venv venv
 #sudo chmod +x .venv/bin/activate
 source venv/bin/activate
 pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
-nuitka --standalone fsys.py

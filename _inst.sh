@@ -28,6 +28,7 @@ inst_module() {
 inst_module "libth"
 inst_module "libhttp"
 inst_module "libcrypt"
+inst_module "libsqlite3"
 inst_module "gateway"
 inst_module "static"
 inst_module "dnfs"

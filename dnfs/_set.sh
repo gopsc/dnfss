@@ -4,4 +4,3 @@ python3 -m venv .env
 #sudo chmod +x .env/bin/activate
 source .env/bin/activate
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-#nuitka --standalone dnfs.py
