@@ -18,7 +18,7 @@ Dendrachy Network File-System (dnfs)
 
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-from flask_sqlalchemy import SQLAlchemy
+#from flask_sqlalchemy import SQLAlchemy
 from waitress import serve
 import os
 import json
@@ -69,41 +69,41 @@ def call_db_service(url: str, payload: dict, timeout: int  = 10) -> dict:
 
 
 
-basedir = os.path.abspath(os.path.dirname(__file__))
+#basedir = os.path.abspath(os.path.dirname(__file__))
 
 app = Flask(__name__)
 CORS(app)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'notes.db')
+#app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'notes.db')
 
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+#app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-db = SQLAlchemy(app)
+#db = SQLAlchemy(app)
 
-class Note(db.Model):
+#class Note(db.Model):
 
-    id = db.Column(db.Integer, primary_key=True)
+#    id = db.Column(db.Integer, primary_key=True)
 
-    pid = db.Column(db.Integer, nullable=False)
+#    pid = db.Column(db.Integer, nullable=False)
 
-    title = db.Column(db.String(128), nullable=False)
+#    title = db.Column(db.String(128), nullable=False)
 
-    content = db.Column(db.Text, nullable=False)
+#    content = db.Column(db.Text, nullable=False)
 
 
 
-    def __repr__(self):
+#    def __repr__(self):
 
-        return f"<Node {self.title}>"
+#        return f"<Node {self.title}>"
 
-with app.app_context():
+#with app.app_context():
 
-    db.create_all()
+#    db.create_all()
 
 
 
 # eg: {
-#    "pid": "0",
+#    "pid": 0,
 #    "title": "test",
 #    "content": "hello"
 #} 
@@ -151,7 +151,7 @@ def add_note():
         return jsonify({'success': success}), 400
 
 
-# {“pid”: "0"} 
+# {“pid”: 0} 
 @app.route('/get_notes', methods=["POST"])
 
 def get_notes():
@@ -188,7 +188,7 @@ def get_notes():
     return jsonify(result), 200
 
 
-# eg: {"id": "1"}
+# eg: {"id": 1}
 @app.route('/delete_note', methods=['POST'])
 
 def delete_note():
@@ -257,8 +257,8 @@ def delete_note():
 
 
 # eg: {
-#    "id": "1",
-#    "pid": "0",
+#    "id": 1,
+#    "pid": 0,
 #    "title": "test",
 #    "content": "hello"
 #}
