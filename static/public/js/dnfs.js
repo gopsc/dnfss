@@ -90,7 +90,7 @@ async function addNode(token, pid, title, content) {
 		getNode(token, stack[stack.length - 1]).then(load_notes);
 
 		//if (result.success) {
-		console.log(`添加节点成功`, result);
+		alert(`添加节点成功`, result);
 		return result
 		//...
 
@@ -132,7 +132,7 @@ async function deleteNode(token, id) {
 		}
 
 		if (!res.ok) {
-			throw new Error(result.message || `删除节点失败（HTTP ${res.status}）`);
+			throw new Error(`删除节点失败（HTTP ${res.status}）`);
 		}
 
 		stack.pop();
@@ -174,7 +174,7 @@ input_note_submit.addEventListener('click', function(event) {
 	//alert(stack.length)
 	//alert(pid)
 	addNode(token, pid, title, content).then(result => {
-		alert(result.message);
+		//alert(result.message);
 	})
 })
 
