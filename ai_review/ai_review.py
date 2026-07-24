@@ -19,8 +19,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 from agent.review_agent import ReviewAgent
+from security_middleware import apply_security_headers
 
 app = Flask(__name__)
+apply_security_headers(app)
 CORS(app)
 
 review_agent = ReviewAgent()

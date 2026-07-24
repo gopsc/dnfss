@@ -5,8 +5,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.exc import SQLAlchemyError
 from waitress import serve
+from security_middleware import apply_security_headers
 
 app = Flask(__name__)
+apply_security_headers(app)
 
 # 数据库配置
 DATABASE_URL = os.environ.get('DATABASE_URL', 'sqlite:///database.db')

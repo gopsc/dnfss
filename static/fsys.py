@@ -9,6 +9,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import configparser
 import sys
+from security_middleware import apply_security_headers
 
 # 基准目录：编译后取可执行文件所在目录，开发时取脚本所在目录
 # 解决 Nuitka onefile 解压到 /tmp 后相对路径失效的问题
@@ -33,6 +34,7 @@ parser.add_argument('--config', type=str, default='config.ini', help='Configurat
 args = parser.parse_args()
 
 app = Flask(__name__)
+apply_security_headers(app)
 CORS(app)
 
 # ==================== 配置文件加载 ====================

@@ -25,6 +25,7 @@ import json
 import urllib.request
 import urllib.error
 from typing import Dict, Any
+from security_middleware import apply_security_headers
 
 DB_SERVER_URL = 'http://127.0.0.1:8005/execute'
 def call_db_service(url: str, payload: dict, timeout: int  = 10) -> dict:
@@ -99,7 +100,7 @@ def review_content(content: str, timeout: int = 10) -> Dict[str, Any]:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             resp_data = resp.read().decode("utf-8")
             data =  json.loads(resp_data)
-            return 'false' == data['invalid']
+            return not data['invalid']
     except urllib.error.HTTPError as e:
         # 服务端返回 4xx/5xx 错误时，尝试解析错误正文
         error_body = e.read().decode("utf-8")
@@ -117,6 +118,7 @@ def review_content(content: str, timeout: int = 10) -> Dict[str, Any]:
 #basedir = os.path.abspath(os.path.dirname(__file__))
 
 app = Flask(__name__)
+apply_security_headers(app)
 CORS(app)
 
 #app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'notes.db')
@@ -190,7 +192,7 @@ def add_note():
         notes = call_db_service(DB_SERVER_URL, select_payload)
 
         # 不存在的父节点
-        if [] == notes['data']:
+        if len( notes['data']) == 0:
             return jsonify({'error': 'the new node need a parent'}), 400
 
 
@@ -292,16 +294,16 @@ def delete_note():
         'action': 'select',
         'table': 'Notes',
         'where': {
-            'id': note_id
+            'pid': note_id
         }
     }
 
     notes = call_db_service(DB_SERVER_URL, select_payload)
 
     # 有子节点的情况不可删除
-    if [] != notes['data']:
+    if len(notes['data']) > 0:
 
-        return jsonify({'error': 'this node has a child'}), 400
+        return jsonify({'error': 'this node has a child '}), 400
 
 
 
