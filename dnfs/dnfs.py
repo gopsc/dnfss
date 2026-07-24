@@ -177,19 +177,21 @@ def add_note():
     #    db.session.commit()
 
 
-    select_payload = {
-        'action': 'select',
-        'table': 'Notes',
-        'where': {
-            'id': pid
+    if pid != 0:
+
+        select_payload = {
+            'action': 'select',
+            'table': 'Notes',
+            'where': {
+                'id': pid
+            }
         }
-    }
 
-    notes = call_db_service(DB_SERVER_URL, select_payload)
+        notes = call_db_service(DB_SERVER_URL, select_payload)
 
-    # 不存在的父节点
-    #if [] == notes['data']:
-    #    return jsonify({'error': 'the new node need a parent'}), 400
+        # 不存在的父节点
+        if [] == notes['data']:
+            return jsonify({'error': 'the new node need a parent'}), 400
 
 
     # 内容审查
