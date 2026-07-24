@@ -118,11 +118,19 @@ def delete_note():
 
     note_id = data.get('id')
 
-    if not note_id:
+    if note_id:
 
         return jsonify({"error": "Note ID is required"}), 400
 
     with app.app_context():
+
+        notes = Note.query.filter(Note.pid == int(note_id))
+
+        # 有子节点的情况不可删除
+        if not notes:
+
+            return jsonify({'error': 'this node has a child'}), 400
+
 
         note = Note.query.get(note_id)
 
