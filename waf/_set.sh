@@ -1,6 +1,6 @@
 #!/bin/bash
 # 构建 WAF 单二进制
-set -e
+set -euo pipefail
 cd "$(dirname "$0")" || exit
 
 if ! command -v go >/dev/null 2>&1; then
@@ -8,10 +8,14 @@ if ! command -v go >/dev/null 2>&1; then
     exit 1
 fi
 
-echo "[1/2] 下载依赖"
-go mod download
+# 设置 GOPROXY 国内镜像（仅当未显式配置时）
+bash "$(dirname "$0")/_goproxy.sh"
 
-echo "[2/2] 编译"
-CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o waf.bin .
+echo "[1/2] 下载依赖（go mod download -x）"
+time go mod download -x
+
+echo "[2/2] 编译（go build -v）"
+time CGO_ENABLED=0 go build -v -trimpath -ldflags "-s -w" -o waf.bin .
 
 echo "完成: $(pwd)/waf.bin"
+ls -lh waf.bin
