@@ -1,4 +1,5 @@
-bash /opt/micro_servers/static/_run.sh
+bash /opt/micro_servers/ai_review/_run.sh
 bash /opt/micro_servers/db/_run.sh
 bash /opt/micro_servers/dnfs/_run.sh
+bash /opt/micro_servers/static/_run.sh
 bash /opt/micro_servers/gateway/_run.sh
