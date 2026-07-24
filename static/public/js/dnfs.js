@@ -106,6 +106,9 @@ async function addNode(token, pid, title, content) {
 }
 
 async function deleteNode(token, id) {
+	if (confirm("确认删除此节点？") == false) {
+		return;
+	}
 	try {
 		obj = {"id": id};
 		jsonBody = JSON.stringify(obj);
