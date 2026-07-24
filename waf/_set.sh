@@ -9,7 +9,7 @@ if ! command -v go >/dev/null 2>&1; then
 fi
 
 # 设置 GOPROXY 国内镜像（仅当未显式配置时）
-bash "$(dirname "$0")/_goproxy.sh"
+source _goproxy.sh
 
 echo "[1/2] 下载依赖（go mod download -x）"
 time go mod download -x
