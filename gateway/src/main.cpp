@@ -280,6 +280,7 @@ bool is_special_header(const std::string &header);
 /* configure items */
 static std::string		_ADDR;
 static int			_PORT;
+static bool			_TLS = false;
 static std::string		_DEFT_URL;
 static std::vector<std::string>	_OPEN_URL;
 static std::string		_DB_PATH;
@@ -383,11 +384,12 @@ int main(int argc, char **argv) {
 		try {
 
 			ConfIni cf(vm["input"].as<std::string>());
-			_ADDR = cf.get<std::string>("Server.address", "");
-			_PORT = cf.get<int> ("Server.port", -1);
-			_DEFT_URL = cf.get<std::string>("Proxy.default", "");
-			_OPEN_URL = split(cf.get<std::string>("Proxy.opened", ""), ';');
-			_DB_PATH = cf.get<std::string>("Database.path", "");
+		_ADDR = cf.get<std::string>("Server.address", "");
+		_PORT = cf.get<int> ("Server.port", -1);
+		_TLS = cf.get<bool>     ("Server.tls", false);
+		_DEFT_URL = cf.get<std::string>("Proxy.default", "");
+		_OPEN_URL = split(cf.get<std::string>("Proxy.opened", ""), ';');
+		_DB_PATH = cf.get<std::string>("Database.path", "");
 		}
 		catch (ConfIni::IniConfigureFileParseException &e) {
 			std::cerr << "ERROR: "  << e.what() << std::endl;
@@ -402,7 +404,13 @@ int main(int argc, char **argv) {
 		return 0;
 	}
 
-	_SERVE = std::make_unique<HttpServer> (_ADDR, _PORT, "full_chain.crt", "server.key", 4);
+	// 根据 Server.tls 选择 HTTPS（带证书）或 HTTP（无证书）构造函数
+	// HTTP 模式用于 WAF 终止 TLS 后的内部转发链路
+	if (_TLS) {
+		_SERVE = std::make_unique<HttpServer> (_ADDR, _PORT, "full_chain.crt", "server.key", 4);
+	} else {
+		_SERVE = std::make_unique<HttpServer> (_ADDR, _PORT, 4);
+	}
 	_KEYGEN = std::make_unique<MyRSA::Generator> ();
 	_SQLDB = std::make_unique<Sqlite3> (_DB_PATH);
 

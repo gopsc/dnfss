@@ -121,10 +121,12 @@
 根目录提供一键安装脚本，按依赖顺序依次构建并安装各模块（库先行，core 最后）：
 
 ```bash
-# 1. 安装系统依赖（Debian/Ubuntu）
-bash _setup.deb.sh
+# 1. 安装系统依赖
+bash _setup.deb.sh        # Debian/Ubuntu
+# 或
+bash _setup.rhel.sh       # RHEL/CentOS/Rocky/Fedora
 
-# 2. 依次安装各模块（libth -> libhttp -> libcrypt -> libsqlite3 -> gateway -> static -> dnfs -> db -> core）
+# 2. 依次安装各模块（libth -> libhttp -> libcrypt -> libsqlite3 -> gateway -> waf -> static -> dnfs -> db -> core）
 bash _inst.sh
 ```
 
