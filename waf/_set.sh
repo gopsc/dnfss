@@ -11,6 +11,11 @@ fi
 # 设置 GOPROXY 国内镜像（仅当未显式配置时）
 source _goproxy.sh
 
+# 强制使用本地 toolchain，避免 Go 1.21+ 自动下载新 toolchain 时连 proxy.golang.org 超时
+# 如需启用 toolchain 自动下载，注释掉下面这行并确保 GOPROXY 可达
+export GOTOOLCHAIN=local
+echo "[env] GOTOOLCHAIN=$GOTOOLCHAIN  GOPROXY=$(go env GOPROXY)"
+
 echo "[1/2] 下载依赖（go mod download -x）"
 time go mod download -x
 
