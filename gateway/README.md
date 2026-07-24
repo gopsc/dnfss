@@ -1,7 +1,214 @@
-# UniServe_gateway2
-US Framework gateway C++ version
+# gateway
 
-# Dependancy
+UniServe Framework 的应用层网关，C++20 实现。
 
-libboost
-libcurl
+在引入 [waf](../waf/) 模块后，gateway 退化为内部 HTTP 服务：TLS 由 WAF 终止，gateway 专注做账号鉴权与反向代理。通过 `Server.tls` 配置可一键切换独立部署（HTTPS）或与 WAF 协作（HTTP）两种模式。
+
+## 职责
+
+- **账号鉴权**：`/register` 注册、`/login` 登录，签发 RSA 签名的 Token。
+- **反向代理**：携带 Token 的请求校验后转发到 `Proxy.opened` 中放开的内部服务。
+- **CAPTCHA 接口**：`/captcha` 生成验证码 token + 文本（内存存储，5 分钟过期，一次性使用）。
+- **速率限制**：登录 5 次/5 分钟、注册 3 次/10 分钟，按 `X-Forwarded-For` 客户端 IP 计数（由 WAF 注入）。
+- **OPTIONS 预检**：通配 `*` 返回 CORS 头，允许跨域。
+
+## 安全特性
+
+| 特性 | 实现 |
+|------|------|
+| 密码哈希 | PBKDF2-HMAC-SHA256，100000 轮，16 字节随机盐，32 字节哈希 |
+| 密码强度校验 | 至少 8 字符；大写/小写/数字/特殊字符中至少 3 类 |
+| 邮箱格式校验 | 正则匹配 `^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$` |
+| 旧哈希自动迁移 | 登录时若发现 SHA256 旧哈希，验证通过后自动迁移为 PBKDF2 |
+| Token 机制 | `Base64(payload) + "_" + RSA-Sign(payload)`，验签 + 过期校验（默认 1 小时） |
+| 常数时间比较 | PBKDF2 验证用 `diff |= hash[i] ^ expected[i]` 防 timing attack |
+| CAPTCHA | 一次性、5 分钟过期，登录与注册均可选启用 |
+| 速率限制 | 内存计数器，自动清理超过 1 万条的老条目 |
+| TLS 可选 | `Server.tls = off` 时纯 HTTP（配合 WAF），`on` 时用 `full_chain.crt` / `server.key` |
+
+## 接口
+
+### `POST /captcha`
+
+生成验证码。返回：
+
+```json
+{
+  "token": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+  "text": "Ab3xy"
+}
+```
+
+### `POST /login`
+
+请求体：
+
+```json
+{
+  "username": "user@example.com",
+  "password": "P@ssw0rd",
+  "captcha_token": "a1b2c3d4...",   // 可选
+  "captcha_answer": "Ab3xy"          // 可选
+}
+```
+
+成功响应：
+
+```json
+{
+  "success": true,
+  "data": { "token": "<base64_payload>_<rsa_sign>" }
+}
+```
+
+失败响应：
+
+```json
+{ "success": false, "message": "Invalid Username or Password" }
+```
+
+错误码：`400`（参数/CAPTCHA 错误）、`401`（账号/密码错或 Token 过期）、`429`（速率超限）。
+
+### `POST /register`
+
+请求体与 `/login` 相同。先做密码强度校验、邮箱格式校验、CAPTCHA 校验，再写入 `Users` 表。
+
+错误码：`400`（密码/邮箱/CAPTCHA 不合规）、`429`（速率超限）、`500`（数据库异常）。
+
+### `GET/POST *`（反向代理）
+
+携带 header：
+
+```
+Authorization: Bearer <base64_payload>_<rsa_sign>
+Target-Url: http://127.0.0.1:9200   // 可选，缺省取 Proxy.default
+```
+
+- `Target-Url` 缺省时走 `Proxy.default`（不需 Token）。
+- 自定义 `Target-Url` 必须在 `Proxy.opened` 白名单中，否则返回 403。
+- 验签通过且未过期（默认 1 小时）才转发，否则返回 401。
+- `Proxy.closed`（如 db:8005、ai_review:8007）不在 `opened` 中，外部无法直访。
+
+### `OPTIONS *`
+
+返回 CORS 预检响应：`Access-Control-Allow-Origin: *`、`Allow-Methods: GET, POST, OPTIONS`、`Max-Age: 86400`。
+
+## 数据库
+
+SQLite3，表 `Users`：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | INTEGER PK AUTOINCREMENT | |
+| email | TEXT UNIQUE NOT NULL | 登录账号 |
+| password_hash | TEXT NOT NULL | `pbkdf2:100000:<salt_hex>:<hash_hex>` |
+| create_at | DATETIME DEFAULT CURRENT_TIMESTAMP | |
+| last_login | DATETIME | 每次登录更新 |
+| is_active | BOOLEAN DEFAULT 1 | |
+
+启动时若 `Users` 表不存在则自动建表（含 `idx_users_email` 索引），无默认管理员账号——首位注册者即为管理员。
+
+## 配置
+
+[example.ini](example.ini)：
+
+```ini
+[Server]
+# tls = off  HTTP 模式（配合 waf 模块）
+# tls = on   HTTPS 模式（独立部署，证书为 full_chain.crt / server.key）
+address = 127.0.0.1
+port = 8443
+tls = off
+
+[Proxy]
+default = http://127.0.0.1:9200
+closed  = http://127.0.0.1:8005;http://127.0.0.1:8007;
+opened  = http://127.0.0.1:9200;http://127.0.0.1:8006;
+
+[Database]
+path = sqlite3.db
+```
+
+- `Proxy.default`：未带 `Target-Url` header 时的默认转发地址（不需 Token，主要服务前端静态资源）。
+- `Proxy.opened`：允许外部带 Token 访问的内部服务白名单（分号分隔）。
+- `Proxy.closed`：仅记录用途，实际靠"不在 opened 中即拒绝"实现隔离。
+
+## 部署模式
+
+### 模式 A：与 WAF 协作（推荐）
+
+```
+客户端 ──HTTPS──▶ waf:443 (终止 TLS + coraza 规则) ──HTTP──▶ gateway:8443
+```
+
+```ini
+address = 127.0.0.1
+port = 8443
+tls = off
+```
+
+证书放在 `waf/certs/`。RateLimiter 从 WAF 注入的 `X-Forwarded-For` 取真实客户端 IP。
+
+### 模式 B：独立部署
+
+```
+客户端 ──HTTPS──▶ gateway:443 (终止 TLS + 鉴权 + 反代)
+```
+
+```ini
+address = 0.0.0.0
+port = 443
+tls = on
+```
+
+证书 `full_chain.crt` / `server.key` 放在 gateway 目录。RateLimiter 取不到 `X-Forwarded-For`，所有请求记为 `"direct"`。
+
+## 编译与运行
+
+依赖系统库（由根目录 [_setup.deb.sh](../_setup.deb.sh) 或 [_setup.rhel.sh](../_setup.rhel.sh) 安装）：
+
+- `libboost_json`、`libboost_program_options`
+- `libcurl`
+- `libssl` / `libcrypto`（OpenSSL，PBKDF2 + RSA + RAND_bytes）
+- `libsqlite3`
+- 项目内库：`libus_http`、`libus_crypt`（由 [libhttp](../libhttp/)、[libcrypt](../libcrypt/) 编译安装）
+
+```bash
+bash _set.sh   # make clear && make
+bash _run.sh   # ./build/gateway.out -i example.ini
+```
+
+`gateway.out` 需以 `-i <ini>` 传配置文件路径。其他参数：`-h/--help`、`-v/--version`。
+
+## 目录结构
+
+```
+gateway/
+├── src/
+│   └── main.cpp          # 全部实现：PBKDF2 / PasswordValidator / RateLimiter / 路由 / handler
+├── inc/
+│   ├── Conf.hpp          # ConfIni：基于 boost::property_tree 的 ini 解析
+│   ├── ExpBase.hpp       # 异常基类（带 source_location）
+│   └── LocalTime.hpp     # 本地时间工具（getCurrent / parse）
+├── Makefile
+├── example.ini
+├── _set.sh / _run.sh
+└── README.md
+```
+
+## 版本
+
+`0.3.0-security`（见 [src/main.cpp:27](src/main.cpp#L27)）。启动时打印：
+
+```
+Gateway 0.3.0-security started (PBKDF2 + CAPTCHA + RateLimit)
+```
+
+## 依赖
+
+- C++20（`g++`）
+- Boost：`boost::json`、`boost::program_options`、`boost::property_tree`
+- OpenSSL：PBKDF2-HMAC-SHA256、RSA 签名/验签、`RAND_bytes`
+- libcurl（反向代理出站请求）
+- libsqlite3（用户表存储）
+- 项目库：[libhttp](../libhttp/)（HttpServer/HttpClient）、[libcrypt](../libcrypt/)（MyRSA/Base64/SHA256）、[libsqlite3](../libsqlite3/)
