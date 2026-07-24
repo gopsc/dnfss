@@ -18,45 +18,137 @@ Dendrachy Network File-System (dnfs)
 
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-from flask_sqlalchemy import SQLAlchemy
+#from flask_sqlalchemy import SQLAlchemy
 from waitress import serve
 import os
+import json
+import urllib.request
+import urllib.error
+from typing import Dict, Any
 
-basedir = os.path.abspath(os.path.dirname(__file__))
+DB_SERVER_URL = 'http://127.0.0.1:8005/execute'
+def call_db_service(url: str, payload: dict, timeout: int  = 10) -> dict:
+    '''
+    使用标准库向数据库服务发送 JSON 请求并返回解析后的响应。
+
+    Args:
+        url: 服务端点 URL (例如 'http://127.0.0.1:8005/execute')
+        payload: 要发送的 JSON 数据字典
+        timeout: 请求超时秒数
+
+    Returns:
+        dict: 服务返回的 JSON 响应
+
+    Raises:
+        urllib.error.URLError: 网络连接错误
+        urllib.error.HTTPError: HTTP 状态错误 (4xx, 5xx)
+        json.JSONDecodeError: 响应不是有效的 JSON
+    '''
+
+    data = json.dumps(payload).encode('utf-8')
+
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={'Content-Type': 'application/json'},
+        method='POST'
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            raw = response.read().decode('utf-8')
+            return json.loads(raw)
+    except urllib.error.HTTPError as e:
+        # HTTP错误，尝试读取错误响应体
+        error_body = e.read().decode('utf-8', errors='replace')
+        raise urllib.error.HTTPError(
+            e.url, e.code, f'HTTP Error {e.code}: {error_body}', e.hdrs, e.fp
+        ) from None
+    except urllib.error.URLError as e:
+        raise urllib.error.URLError(f'连接失败: {e.reason}') from None
+
+REVIEW_SERVER_URL = 'http://127.0.0.1:8007/review'
+def review_content(content: str, timeout: int = 10) -> Dict[str, Any]:
+    """
+    调用 AI 内容审核服务的 /review 接口，对给定文本进行审核。
+
+    Args:
+        content: 待审核的文本内容，不可为空。
+        timeout: 请求超时时间（秒），默认 10 秒。
+
+    Returns:
+        字典，包含接口返回的字段，例如：
+        - 成功时：{"invalid": "true"} 或 {"invalid": "false"}
+        - API 错误时：{"invalid": "false", "error": "api_error", "detail": "..."}
+        - 解析失败时：{"invalid": "false", "error": "parse_failed", "raw": "..."}
+        - 请求参数错误时：{"error": "content is required"} 等
+        - 网络或异常时：{"error": "request_failed", "detail": "..."}
+    """
+    url = REVIEW_SERVER_URL
+    payload = {"content": content}
+    json_data = json.dumps(payload).encode("utf-8")
+
+    req = urllib.request.Request(
+        url,
+        data=json_data,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            resp_data = resp.read().decode("utf-8")
+            data =  json.loads(resp_data)
+            return 'false' == data['invalid']
+    except urllib.error.HTTPError as e:
+        # 服务端返回 4xx/5xx 错误时，尝试解析错误正文
+        error_body = e.read().decode("utf-8")
+        try:
+            return json.loads(error_body)
+        except json.JSONDecodeError as e:
+            raise e
+    except urllib.error.URLError as e:
+        raise e
+    except Exception as e:
+        raise e
+
+
+
+#basedir = os.path.abspath(os.path.dirname(__file__))
 
 app = Flask(__name__)
 CORS(app)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'notes.db')
+#app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'notes.db')
 
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+#app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-db = SQLAlchemy(app)
+#db = SQLAlchemy(app)
 
-class Note(db.Model):
+#class Note(db.Model):
 
-    id = db.Column(db.Integer, primary_key=True)
+#    id = db.Column(db.Integer, primary_key=True)
 
-    pid = db.Column(db.Integer, nullable=False)
+#    pid = db.Column(db.Integer, nullable=False)
 
-    title = db.Column(db.String(128), nullable=False)
+#    title = db.Column(db.String(128), nullable=False)
 
-    content = db.Column(db.Text, nullable=False)
+#    content = db.Column(db.Text, nullable=False)
 
 
 
-    def __repr__(self):
+#    def __repr__(self):
 
-        return f"<Node {self.title}>"
+#        return f"<Node {self.title}>"
 
-with app.app_context():
+#with app.app_context():
 
-    db.create_all()
+#    db.create_all()
 
 
 
 # eg: {
-#    "pid": "0",
+#    "pid": 0,
 #    "title": "test",
 #    "content": "hello"
 #} 
@@ -66,28 +158,51 @@ def add_note():
 
     data = request.get_json()
 
-    pid = data.get('pid')
+    pid: int = data.get('pid')
 
-    title = data.get('title')
+    title: str = data.get('title')
 
-    content = data.get('content')
+    content: str = data.get('content')
 
     if pid is None or not title or not content:
 
         return jsonify({"error": "Pid, title and content are required"}), 400
 
-    new_note = Note(pid=int(pid), title=title, content=content)
+    #new_note = Note(pid=int(pid), title=title, content=content)
+    
+    #with app.app_context():
 
-    with app.app_context():
+    #    db.session.add(new_note)
 
-        db.session.add(new_note)
-
-        db.session.commit()
-
-    return jsonify({"message": "Note added successfully"}), 200
+    #    db.session.commit()
 
 
-# {“pid”: "0"} 
+    # 内容审查
+    review = review_content(title + '\n\n' + content, 10)
+    if not review:
+        return jsonify({'error': 'review failed'}), 400
+
+    insert_payload = {
+        'action': 'insert',
+        'table': 'Notes',
+        'values': {
+            "pid": pid,
+            "title": title,
+            'content': content
+        }
+    }
+
+    result = call_db_service(DB_SERVER_URL, insert_payload)
+
+    success = result['success']
+
+    if success is True:
+        return jsonify({'success': success}), 200
+    else:
+        return jsonify({'success': success}), 400
+
+
+# {“pid”: 0} 
 @app.route('/get_notes', methods=["POST"])
 
 def get_notes():
@@ -96,52 +211,105 @@ def get_notes():
 
     pid = data.get('pid')
 
-    if not pid:
+    if not pid: pid = 0
 
-        pid = 0
+    select_payload = {
+        'action': 'select',
+        'table': 'Notes',
+        'where': {
+            'pid': pid
+        }
+    }
 
-    with app.app_context():
+    notes = call_db_service(DB_SERVER_URL, select_payload)
 
-        notes = Note.query.filter(Note.pid == int(pid))
+    #with app.app_context():
 
-        result = [{'id': note.id, 'pid': note.pid, 'title': note.title, 'content':note.content} for note in notes]
+    #    notes = Note.query.filter(Note.pid == int(pid))
+
+    #result = [{
+    #    'id': note['id'],
+    #    'pid': note['pid'],
+    #    'title': note['title'],
+    #    'content':note['content']
+    #} for note in notes]
+
+    result = notes['data']
 
     return jsonify(result), 200
 
 
-# eg: {"id": "1"}
+# eg: {"id": 1}
 @app.route('/delete_note', methods=['POST'])
 
 def delete_note():
 
     data = request.get_json()
 
-    note_id = data.get('id')
+    note_id: int = data.get('id')
 
     if not note_id:
 
         return jsonify({"error": "Note ID is required"}), 400
 
-    with app.app_context():
+    #with app.app_context():
 
-        note = Note.query.get(note_id)
+    #    notes = Note.query.filter(Note.pid == int(note_id))
 
-        if note:
+    #    note = Note.query.get(note_id)
 
-            db.session.delete(note)
+    #    if note:
 
-            db.session.commit()
+    #        db.session.delete(note)
 
-            return jsonify({'message': "Note deleted successfully"}), 200
+    #        db.session.commit()
 
-        else:
+    #        return jsonify({'message': "Note deleted successfully"}), 200
 
-            return jsonify({"error": "Note not found"}), 404
+    #    else:
+
+    #        return jsonify({"error": "Note not found"}), 404
+
+
+    select_payload = {
+        'action': 'select',
+        'table': 'Notes',
+        'where': {
+            'id': note_id
+        }
+    }
+
+    notes = call_db_service(DB_SERVER_URL, select_payload)
+
+    # 有子节点的情况不可删除
+    if not notes['data']:
+
+        return jsonify({'error': 'this node has a child'}), 400
+
+
+
+    delete_payload = {
+        'action': 'delete',
+        'table': 'Notes',
+        'where': {'id': note_id}
+    }
+
+    result = call_db_service(DB_SERVER_URL, delete_payload)
+
+    result = result['success']
+
+    if result is True:
+
+        return jsonify({'success': True}), 200
+
+    else:
+
+        return jsonify({'success': False}), 400
 
 
 # eg: {
-#    "id": "1",
-#    "pid": "0",
+#    "id": 1,
+#    "pid": 0,
 #    "title": "test",
 #    "content": "hello"
 #}
@@ -151,37 +319,55 @@ def update_note():
 
     data = request.get_json()
 
-    id = data.get('id')
+    id: int = data.get('id')
 
-    pid  = data.get('pid')
+    pid: int  = data.get('pid')
 
-    title = data.get('title')
+    title: str = data.get('title')
 
-    content = data.get('content')
+    content: str = data.get('content')
 
     if id is None or pid is None or not title or not content:
 
         return jsonify({"error": "Invalid param"}), 400
 
-    with app.app_context():
 
-        note = Note.query.get(id)
+    #with app.app_context():
 
-        if note:
+    #    note = Note.query.get(id)
 
-            note.pid = pid
+    #    if note:
 
-            note.title = title
+    #        note.pid = pid
 
-            note.content = content
+    #        note.title = title
 
-            db.session.commit()
+    #        note.content = content
 
-            return jsonify({'message': "Your change is up-to-date."}), 200
+    #        db.session.commit()
 
-        else:
+    update_payload = {
+        "action": "update",
+        'table': 'Notes',
+        "values": {
+            'pid': pid,
+            'title': title,
+            'content': content
+        },
+        'where': {'id': id}
+    }
 
-            return jsonify({'error': 'Note not found'}), 400
+    result = call_db_service(DB_SERVER_URL, update_payload)
+
+    result = result['success']
+
+    if result is True:
+
+        return jsonify({'success': True}), 200
+
+    else:
+
+        return jsonify({'success': False}), 400
 
 
 

@@ -1,0 +1,4 @@
+nuitka
+flask
+SQLAlchemy
+waitress

@@ -5,7 +5,7 @@
  */
 async function getNode(token, id) {
 	try {
-		obj = { "pid": String(id) }
+		obj = { "pid": id }
 		jsonBody = JSON.stringify(obj)
 		console.log(jsonBody)
 		const res = await fetch('/get_notes', {
@@ -55,7 +55,7 @@ async function getNode(token, id) {
 async function addNode(token, pid, title, content) {
 	try {
 		obj = {
-			"pid": String(pid),
+			"pid": pid,
 			"title": title,
 			"content": content
 		}
@@ -82,13 +82,15 @@ async function addNode(token, pid, title, content) {
 		}
 
 		if (!res.ok) {
-			throw new Error(result.message || `添加节点失败（HTTP ${res.status}）`);
+			throw new Error(`添加节点失败（HTTP ${res.status}）`);
 		}
 
+		input_note_title.value = "";
+		input_note_content.value = "";
 		getNode(token, stack[stack.length - 1]).then(load_notes);
 
 		//if (result.success) {
-		console.log(`添加节点成功`, result);
+		alert(`添加节点成功`, result);
 		return result
 		//...
 
@@ -104,8 +106,11 @@ async function addNode(token, pid, title, content) {
 }
 
 async function deleteNode(token, id) {
+	if (confirm("确认删除此节点？") == false) {
+		return;
+	}
 	try {
-		obj = {"id": String(id)};
+		obj = {"id": id};
 		jsonBody = JSON.stringify(obj);
 		console.log(jsonBody);
 
@@ -130,7 +135,7 @@ async function deleteNode(token, id) {
 		}
 
 		if (!res.ok) {
-			throw new Error(result.message || `删除节点失败（HTTP ${res.status}）`);
+			throw new Error(`删除节点失败（HTTP ${res.status}）`);
 		}
 
 		stack.pop();
@@ -169,10 +174,10 @@ input_note_submit.addEventListener('click', function(event) {
 	var title = input_note_title.value
 	var content = input_note_content.value
 	var pid = (stack.length == 0) ? 0 : stack[stack.length - 1];
-	alert(stack.length)
-	alert(pid)
+	//alert(stack.length)
+	//alert(pid)
 	addNode(token, pid, title, content).then(result => {
-		alert(result.message);
+		//alert(result.message);
 	})
 })
 
