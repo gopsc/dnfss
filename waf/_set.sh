@@ -16,10 +16,13 @@ source _goproxy.sh
 export GOTOOLCHAIN=local
 echo "[env] GOTOOLCHAIN=$GOTOOLCHAIN  GOPROXY=$(go env GOPROXY)"
 
-echo "[1/2] 下载依赖（go mod download -x）"
-time go mod download -x
+echo "[1/3] 下载依赖并整理 go.sum（go mod tidy）"
+time go mod tidy -v
 
-echo "[2/2] 编译（go build -v）"
+echo "[2/3] 下载到本地缓存（go mod download）"
+time go mod download
+
+echo "[3/3] 编译（go build -v）"
 time CGO_ENABLED=0 go build -v -trimpath -ldflags "-s -w" -o waf.bin .
 
 echo "完成: $(pwd)/waf.bin"

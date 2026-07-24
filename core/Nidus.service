@@ -3,8 +3,8 @@ Description=PMC Http Interfaces
 After=network.target
 
 [Service]
-User=qing
-Group=qing
+User=root
+Group=root
 ExecStart=bash /opt/micro_servers/core/_run.sh
 [Install]
 WantedBy=multi-user.target
