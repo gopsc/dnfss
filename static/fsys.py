@@ -217,9 +217,12 @@ def stream_video(file_path):
 # ==================== 主路由 ====================
 @app.route('/')
 def serve_view():
-    """根路径固定返回 __view.html 静态文件，由前端 JS 调用 /api/filelist 拉取文件系统信息"""
+    """根路径：优先返回 index.html（社区首页），不存在时回退到 __view.html（文件浏览）"""
     if not FILESYSTEM_ENABLED:
         return "文件系统未启用", 403
+    index_path = os.path.join(HTML_ROOT_DIR, 'index.html')
+    if os.path.exists(index_path):
+        return send_file(index_path, mimetype='text/html')
     view_path = os.path.join(HTML_ROOT_DIR, VIEW_FILE)
     if not os.path.exists(view_path):
         return f"视图文件 {VIEW_FILE} 不存在", 500
