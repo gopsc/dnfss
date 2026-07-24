@@ -177,6 +177,21 @@ def add_note():
     #    db.session.commit()
 
 
+    select_payload = {
+        'action': 'select',
+        'table': 'Notes',
+        'where': {
+            'id': pid
+        }
+    }
+
+    notes = call_db_service(DB_SERVER_URL, select_payload)
+
+    # 不存在的父节点
+    #if [] == notes['data']:
+    #    return jsonify({'error': 'the new node need a parent'}), 400
+
+
     # 内容审查
     review = review_content(title + '\n\n' + content, 10)
     if not review:
@@ -282,7 +297,7 @@ def delete_note():
     notes = call_db_service(DB_SERVER_URL, select_payload)
 
     # 有子节点的情况不可删除
-    if not notes['data']:
+    if [] != notes['data']:
 
         return jsonify({'error': 'this node has a child'}), 400
 
