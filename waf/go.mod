@@ -1,6 +1,6 @@
 module github.com/micro_servers/waf
 
-go 1.25.0
+go 1.21
 
 require (
 	github.com/corazawaf/coraza/v3 v3.7.0
