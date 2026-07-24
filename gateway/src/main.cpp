@@ -8,9 +8,13 @@
 #include <typeinfo>
 #include <memory>
 #include <csignal>
+#include <random>
+#include <regex>
 #include <boost/json.hpp>
 #include <boost/program_options.hpp>
-#include <openssl/provider.h>
+#include <openssl/evp.h>
+#include <openssl/rand.h>
+#include <openssl/kdf.h>
 #include "ExpBase.hpp"
 #include "LocalTime.hpp"
 #include "Conf.hpp"
@@ -20,7 +24,7 @@ using namespace qing;
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-constexpr const char *_VER = "0.2.1";
+constexpr const char *_VER = "0.3.0-security";
 
 //////////////////////////////////
 #include <sstream>
@@ -36,6 +40,178 @@ std::vector<std::string> split(const std::string& s, char delim) {
     }
     return tokens;
 }
+
+//////////////////////////////////
+// PBKDF2-HMAC-SHA256 password hashing
+//////////////////////////////////
+class PBKDF2Hasher {
+public:
+    static const int ITERATIONS = 100000;
+    static const int SALT_LEN = 16;
+    static const int HASH_LEN = 32;
+
+    static std::string hash_password(const std::string& password) {
+        unsigned char salt[SALT_LEN];
+        RAND_bytes(salt, SALT_LEN);
+
+        unsigned char hash[HASH_LEN];
+        PKCS5_PBKDF2_HMAC(
+            password.c_str(), password.size(),
+            salt, SALT_LEN,
+            ITERATIONS,
+            EVP_sha256(),
+            HASH_LEN, hash
+        );
+
+        // Format: pbkdf2:100000:<hex_salt>:<hex_hash>
+        std::string salt_hex = bytes_to_hex(salt, SALT_LEN);
+        std::string hash_hex = bytes_to_hex(hash, HASH_LEN);
+        return "pbkdf2:" + std::to_string(ITERATIONS) + ":" + salt_hex + ":" + hash_hex;
+    }
+
+    static bool verify_password(const std::string& password, const std::string& stored) {
+        // Parse stored hash
+        if (stored.substr(0, 7) != "pbkdf2:") {
+            return false;
+        }
+
+        auto parts = split(stored, ':');
+        if (parts.size() != 4) return false;
+
+        int iterations = std::stoi(parts[1]);
+        auto salt = hex_to_bytes(parts[2]);
+        auto expected_hash = hex_to_bytes(parts[3]);
+
+        unsigned char hash[HASH_LEN];
+        PKCS5_PBKDF2_HMAC(
+            password.c_str(), password.size(),
+            salt.data(), salt.size(),
+            iterations,
+            EVP_sha256(),
+            HASH_LEN, hash
+        );
+
+        // Constant-time comparison
+        if (expected_hash.size() != (size_t)HASH_LEN) return false;
+        unsigned char diff = 0;
+        for (int i = 0; i < HASH_LEN; i++) {
+            diff |= hash[i] ^ expected_hash[i];
+        }
+        return diff == 0;
+    }
+
+private:
+    static std::string bytes_to_hex(const unsigned char* data, size_t len) {
+        static const char hex[] = "0123456789abcdef";
+        std::string result;
+        result.reserve(len * 2);
+        for (size_t i = 0; i < len; i++) {
+            result.push_back(hex[data[i] >> 4]);
+            result.push_back(hex[data[i] & 0x0F]);
+        }
+        return result;
+    }
+
+    static std::vector<unsigned char> hex_to_bytes(const std::string& hex_str) {
+        std::vector<unsigned char> bytes;
+        bytes.reserve(hex_str.size() / 2);
+        for (size_t i = 0; i < hex_str.size(); i += 2) {
+            auto hi = hex_char_to_nibble(hex_str[i]);
+            auto lo = hex_char_to_nibble(hex_str[i + 1]);
+            bytes.push_back((hi << 4) | lo);
+        }
+        return bytes;
+    }
+
+    static unsigned char hex_char_to_nibble(char c) {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+        if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+        return 0;
+    }
+};
+
+//////////////////////////////////
+// Password strength validator
+//////////////////////////////////
+class PasswordValidator {
+public:
+    struct Result {
+        bool valid;
+        std::string message;
+    };
+
+    static Result validate(const std::string& password) {
+        if (password.size() < 8) {
+            return {false, "Password must be at least 8 characters"};
+        }
+        if (password.size() > 128) {
+            return {false, "Password too long (max 128)"};
+        }
+
+        bool has_upper = false, has_lower = false, has_digit = false, has_special = false;
+        for (char c : password) {
+            if (std::isupper(c)) has_upper = true;
+            else if (std::islower(c)) has_lower = true;
+            else if (std::isdigit(c)) has_digit = true;
+            else has_special = true;
+        }
+
+        int categories = has_upper + has_lower + has_digit + has_special;
+        if (categories < 3) {
+            return {false, "Password must contain at least 3 of: uppercase, lowercase, digit, special character"};
+        }
+
+        return {true, "OK"};
+    }
+};
+
+//////////////////////////////////
+// IP Rate Limiter (in-memory)
+//////////////////////////////////
+#include <unordered_map>
+#include <mutex>
+#include <chrono>
+
+class RateLimiter {
+public:
+    struct AttemptInfo {
+        int count;
+        std::chrono::steady_clock::time_point first_attempt;
+    };
+
+    bool check_and_record(const std::string& ip, int max_attempts = 5, int window_seconds = 300) {
+        std::lock_guard<std::mutex> lock(mtx);
+        auto now = std::chrono::steady_clock::now();
+
+        auto& info = attempts[ip];
+
+        // Reset if window expired
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - info.first_attempt).count();
+        if (elapsed > window_seconds) {
+            info.count = 0;
+            info.first_attempt = now;
+        }
+
+        info.count++;
+
+        // Cleanup old entries periodically
+        if (attempts.size() > 10000) {
+            for (auto it = attempts.begin(); it != attempts.end(); ) {
+                auto e = std::chrono::duration_cast<std::chrono::seconds>(now - it->second.first_attempt).count();
+                if (e > window_seconds) it = attempts.erase(it);
+                else ++it;
+            }
+        }
+
+        return info.count <= max_attempts;
+    }
+
+private:
+    std::unordered_map<std::string, AttemptInfo> attempts;
+    std::mutex mtx;
+};
+
 //////////////////////////////////
 
 class DatabaseException: public ExceptionBase {
@@ -71,6 +247,8 @@ private:
 
 void db_init();
 void registerRoutes(HttpServer &server);
+std::string generate_captcha_text();
+bool verify_captcha(const std::string& token, const std::string& answer);
 
 http::response<http::string_body> wrapperHttp(
 		const http::request<http::string_body>& req,
@@ -91,6 +269,10 @@ http::response<http::string_body> handleRegister(
 		const http::request<http::string_body>& req,
 		const std::unordered_map<std::string, std::string>& params);
 
+http::response<http::string_body> handleCaptcha(
+		const http::request<http::string_body>& req,
+		const std::unordered_map<std::string, std::string>& params);
+
 
 /*  headers can't processed */
 bool is_special_header(const std::string &header);
@@ -98,16 +280,56 @@ bool is_special_header(const std::string &header);
 /* configure items */
 static std::string		_ADDR;
 static int			_PORT;
+static bool			_TLS = false;
 static std::string		_DEFT_URL;
 static std::vector<std::string>	_OPEN_URL;
 static std::string		_DB_PATH;
-static std::string		_DEFT_ADMIN_USER = "admin";
-static std::string		_DEFT_ADMIN_PASS = "44112233";
 
 /* instance items */
 static std::unique_ptr<HttpServer>		_SERVE;
 static std::unique_ptr<MyRSA::Generator>	_KEYGEN;
 static std::unique_ptr<Sqlite3>			_SQLDB;
+static RateLimiter				_LOGIN_RATE;
+static RateLimiter				_REGISTER_RATE;
+
+/* CAPTCHA store: token -> answer (in-memory, with expiry) */
+#include <unordered_map>
+#include <mutex>
+struct CaptchaEntry {
+    std::string answer;
+    std::chrono::steady_clock::time_point created;
+};
+static std::unordered_map<std::string, CaptchaEntry> _CAPTCHA_STORE;
+static std::mutex _CAPTCHA_MTX;
+
+std::string generate_captcha_text() {
+    static const char chars[] = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+    static std::mt19937 rng(std::random_device{}());
+    static std::uniform_int_distribution<int> dist(0, sizeof(chars) - 2);
+
+    std::string text;
+    for (int i = 0; i < 5; i++) {
+        text += chars[dist(rng)];
+    }
+    return text;
+}
+
+bool verify_captcha(const std::string& token, const std::string& answer) {
+    std::lock_guard<std::mutex> lock(_CAPTCHA_MTX);
+    auto it = _CAPTCHA_STORE.find(token);
+    if (it == _CAPTCHA_STORE.end()) return false;
+
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - it->second.created).count();
+    if (elapsed > 300) { // 5 min expiry
+        _CAPTCHA_STORE.erase(it);
+        return false;
+    }
+
+    bool match = (it->second.answer == answer);
+    _CAPTCHA_STORE.erase(it); // one-time use
+    return match;
+}
 
 void signalHandler(int signum) {
 
@@ -135,7 +357,6 @@ int main(int argc, char **argv) {
 		("input,i", 	po::value<std::string>(),	"input a configure text file")
 	;
 	po::variables_map vm;
-	/* parse commandline params */
 	{
 		try {
 			po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -159,16 +380,16 @@ int main(int argc, char **argv) {
 		return 0;
 	}
 
-	/* parse configure file */
 	{
 		try {
 
 			ConfIni cf(vm["input"].as<std::string>());
-			_ADDR = cf.get<std::string>("Server.address", "");
-			_PORT = cf.get<int> ("Server.port", -1);
-			_DEFT_URL = cf.get<std::string>("Proxy.default", "");
-			_OPEN_URL = split(cf.get<std::string>("Proxy.opened", ""), ';');
-			_DB_PATH = cf.get<std::string>("Database.path", "");
+		_ADDR = cf.get<std::string>("Server.address", "");
+		_PORT = cf.get<int> ("Server.port", -1);
+		_TLS = cf.get<bool>     ("Server.tls", false);
+		_DEFT_URL = cf.get<std::string>("Proxy.default", "");
+		_OPEN_URL = split(cf.get<std::string>("Proxy.opened", ""), ';');
+		_DB_PATH = cf.get<std::string>("Database.path", "");
 		}
 		catch (ConfIni::IniConfigureFileParseException &e) {
 			std::cerr << "ERROR: "  << e.what() << std::endl;
@@ -182,8 +403,14 @@ int main(int argc, char **argv) {
 		std::cerr << std::endl;
 		return 0;
 	}
-		
-	_SERVE = std::make_unique<HttpServer> (_ADDR, _PORT, "full_chain.crt", "server.key", 4);
+
+	// 根据 Server.tls 选择 HTTPS（带证书）或 HTTP（无证书）构造函数
+	// HTTP 模式用于 WAF 终止 TLS 后的内部转发链路
+	if (_TLS) {
+		_SERVE = std::make_unique<HttpServer> (_ADDR, _PORT, "full_chain.crt", "server.key", 4);
+	} else {
+		_SERVE = std::make_unique<HttpServer> (_ADDR, _PORT, 4);
+	}
 	_KEYGEN = std::make_unique<MyRSA::Generator> ();
 	_SQLDB = std::make_unique<Sqlite3> (_DB_PATH);
 
@@ -191,6 +418,7 @@ int main(int argc, char **argv) {
 	registerRoutes(*_SERVE);
 	set_signal_action();
 
+	std::cout << "Gateway " << _VER << " started (PBKDF2 + CAPTCHA + RateLimit)" << std::endl;
 	_SERVE->start();
 	_SERVE->run();
 
@@ -213,7 +441,7 @@ void db_init() {
 
 	if (flag) {
 		std::cout << "Start database init..." << std::endl;
-		std::string sql_crtt = "-- create users table, username as email\n"
+		std::string sql_crtt =
 			"CREATE TABLE Users (\n"
 				"id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
 				"email TEXT UNIQUE NOT NULL,\n"
@@ -222,24 +450,12 @@ void db_init() {
 				"last_login DATETIME,\n"
 				"is_active BOOLEAN DEFAULT 1\n"
 			");\n\n"
-
 			"CREATE INDEX idx_users_email ON users(email);\n";
 
 		_SQLDB->exec(sql_crtt);
 
-		{
-			auto password_hash = SHA256::sha256(_DEFT_ADMIN_PASS);
-			std::cout << password_hash << std::endl;
-			std::string sql_crta = "INSERT INTO Users(email, password_hash, last_login) VALUES (?, ?, datetime('now', 'localtime'))";
-			auto stmt = _SQLDB->stmt(sql_crta);
-			stmt.bind_text(1, _DEFT_ADMIN_USER);
-			stmt.bind_text(2, password_hash);
-			if (stmt.step()) {
-				std::cout << stmt.read_text(1) << std::endl;
-			}
-		}
-
-		std::cout << "done" << std::endl;
+		// No hardcoded admin - first registered user becomes admin
+		std::cout << "done (no default admin - register manually)" << std::endl;
 	}
 
 	else {
@@ -250,6 +466,10 @@ void db_init() {
 
 
 void registerRoutes(HttpServer &server) {
+
+	server.post("/captcha", [](const auto& req, const auto& params) {
+		return handleCaptcha(req, params);
+	});
 
 	server.post("/login", [](
 			const http::request<http::string_body>& req,
@@ -314,7 +534,43 @@ catch (const std::exception& e) {
 	return res;
 }
 
-/* curl -X POST http://127.0.0.1:9201/login -d '{"username": "qing", "password": "12345678"}'  */
+// CAPTCHA endpoint: generates a random text, stores it, returns a simple token
+http::response<http::string_body> handleCaptcha(
+	const http::request<http::string_body>& req,
+	const std::unordered_map<std::string, std::string>& params)
+{
+	http::response<http::string_body> res;
+	res.version(req.version());
+
+	std::string text = generate_captcha_text();
+
+	// Generate a token for this captcha
+	unsigned char token_bytes[16];
+	RAND_bytes(token_bytes, 16);
+	std::string token;
+	static const char hex[] = "0123456789abcdef";
+	for (int i = 0; i < 16; i++) {
+		token += hex[token_bytes[i] >> 4];
+		token += hex[token_bytes[i] & 0x0F];
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(_CAPTCHA_MTX);
+		_CAPTCHA_STORE[token] = {text, std::chrono::steady_clock::now()};
+	}
+
+	json::value jv = {
+		{"token", token},
+		{"text", text}
+	};
+
+	res.set(http::field::content_type, "application/json");
+	res.result(http::status::ok);
+	res.body() = json::serialize(jv);
+	res.prepare_payload();
+	return res;
+}
+
 http::response<http::string_body> handleLogin(
 	const http::request<http::string_body>& req,
 	const std::unordered_map<std::string, std::string>& params)
@@ -322,8 +578,28 @@ http::response<http::string_body> handleLogin(
 	http::response<http::string_body> res;
 	res.version(req.version());
 
+	// IP rate limit check
+	std::string client_ip = "";
+	auto it_host = req.base().find("X-Forwarded-For");
+	if (it_host != req.base().end()) {
+		client_ip = std::string(it_host->value());
+	} else {
+		client_ip = "direct";
+	}
+
+	if (!_LOGIN_RATE.check_and_record(client_ip, 5, 300)) {
+		json::value jv_r = {
+			{"success", false},
+			{"message", "Too many login attempts. Please try again later."}
+		};
+		res.set(http::field::content_type, "application/json");
+		res.result(http::status::too_many_requests);
+		res.body() = json::serialize(jv_r);
+		res.prepare_payload();
+		return res;
+	}
+
 	try {
-		//std::cout << req.body() << std::endl;
 		json::value jv;
 		try {
 			jv = json::parse(req.body());
@@ -333,7 +609,6 @@ http::response<http::string_body> handleLogin(
                             400, "/login");
 		}
 
-		
 		if (!jv.is_object()) {
 			THROW_EX_CUSTOM(HttpException, 2002, "Invalid_json_object_Argument",
                             400, "/login");
@@ -341,29 +616,65 @@ http::response<http::string_body> handleLogin(
 		auto& obj = jv.as_object();
 		auto username = std::string(obj.at("username").as_string());
 		auto password = std::string(obj.at("password").as_string());
-		auto password_hash = SHA256::sha256(password);
-		//std::cout  << username << " " << password_hash << std::endl;
 
-		std::string sql = "SELECT COUNT(*) FROM Users WHERE email=? AND password_hash=?;";
-		auto stmt = _SQLDB->stmt(sql);
-		stmt.bind_text(1, username);
-		stmt.bind_text(2, password_hash);
-		if (stmt.step() && stmt.read_int(0) == 1) {
-			//update
+		// CAPTCHA verification
+		auto captcha_it = obj.find("captcha_token");
+		auto captcha_ans_it = obj.find("captcha_answer");
+		if (captcha_it != obj.end() && captcha_ans_it != obj.end()) {
+			std::string ct = std::string(captcha_it->value().as_string());
+			std::string ca = std::string(captcha_ans_it->value().as_string());
+			if (!verify_captcha(ct, ca)) {
+				THROW_EX_CUSTOM(HttpException, 2201, "Invalid CAPTCHA",
+                                400, "/login");
+			}
 		}
 
-		else {
+		// Fetch stored hash - support both PBKDF2 and legacy SHA256
+		std::string sql = "SELECT password_hash FROM Users WHERE email=?;";
+		auto stmt = _SQLDB->stmt(sql);
+		stmt.bind_text(1, username);
+		std::string stored_hash = "";
+		if (stmt.step()) {
+			stored_hash = std::string(reinterpret_cast<const char*>(stmt.read_text(0)));
+		}
+
+		bool auth_ok = false;
+		if (!stored_hash.empty()) {
+			if (stored_hash.substr(0, 7) == "pbkdf2:") {
+				// New PBKDF2 hash
+				auth_ok = PBKDF2Hasher::verify_password(password, stored_hash);
+			} else {
+				// Legacy SHA256 hash - verify then auto-migrate
+				auto legacy_hash = SHA256::sha256(password);
+				if (legacy_hash == stored_hash) {
+					auth_ok = true;
+					// Auto-migrate to PBKDF2
+					auto new_hash = PBKDF2Hasher::hash_password(password);
+					std::string sql_migrate = "UPDATE Users SET password_hash=? WHERE email=?;";
+					auto stmt_mig = _SQLDB->stmt(sql_migrate);
+					stmt_mig.bind_text(1, new_hash);
+					stmt_mig.bind_text(2, username);
+					stmt_mig.step();
+					std::cout << "Migrated password hash for " << username << " to PBKDF2" << std::endl;
+				}
+			}
+		}
+
+		if (!auth_ok) {
 			THROW_EX_CUSTOM(HttpException, 2101, "Invalid Username or Password",
                             401, "/login");
 		}
 
+		// Update last_login
+		std::string sql_update = "UPDATE Users SET last_login=datetime('now','localtime') WHERE email=?;";
+		auto stmt_upd = _SQLDB->stmt(sql_update);
+		stmt_upd.bind_text(1, username);
+		stmt_upd.step();
+
 		auto _PRIV = MyRSA::Private_Key::from_pem(_KEYGEN->get_private_key_pem());
 
+		int  keep_time  = 3600;
 
-		//int  created_at = 0;
-		int  keep_time  = 3600;	// second
-
-		/* 用于token的json对象 */
 		json::value jv_t = {
 			{"user", username},
 			{"created_at", LocalTime::getCurrent()},
@@ -373,10 +684,9 @@ http::response<http::string_body> handleLogin(
 		std::string token = Base64::base64_encode(data);
 		std::string sign = _PRIV.Sign(data);
 
-		/* 用于返回结果的json对象 */
 		json::value jv_rr = {
 			{"success", true},
-			{"data", json::object{{"token", token + "_" + sign}}}	// 双大括号
+			{"data", json::object{{"token", token + "_" + sign}}}
 		};
 		res.set("Connection", "close");
 		res.result(http::status::ok);
@@ -384,7 +694,7 @@ http::response<http::string_body> handleLogin(
 	}
 
 	catch (const HttpException& e) {
-		
+
 		json::value jv_r = {
 			{"success", false},
 			{"message", e.what()}
@@ -398,14 +708,26 @@ http::response<http::string_body> handleLogin(
 	return res;
 }
 
-/* curl -X POST http://127.0.0.1:9201/register -d '{"username": "qing", "password": "12345678"}'  */
-/* FIXME: strong password check */
 http::response<http::string_body> handleRegister(
 	const http::request<http::string_body>& req,
 	const std::unordered_map<std::string, std::string>& params)
 {
 	http::response<http::string_body> res;
 	res.version(req.version());
+
+	// IP rate limit check
+	std::string client_ip = "direct";
+	if (!_REGISTER_RATE.check_and_record(client_ip, 3, 600)) {
+		json::value jv_r = {
+			{"success", false},
+			{"message", "Too many registration attempts. Please try again later."}
+		};
+		res.set(http::field::content_type, "application/json");
+		res.result(http::status::too_many_requests);
+		res.body() = json::serialize(jv_r);
+		res.prepare_payload();
+		return res;
+	}
 
 	try {
 
@@ -417,7 +739,47 @@ http::response<http::string_body> handleRegister(
 		auto username = std::string(obj.at("username").as_string());
 		auto password = std::string(obj.at("password").as_string());
 
-		auto password_hash = SHA256::sha256(password);
+		// Strong password check
+		auto pw_result = PasswordValidator::validate(password);
+		if (!pw_result.valid) {
+			json::value jv_r = {
+				{"success", false},
+				{"message", pw_result.message}
+			};
+			res.set(http::field::content_type, "application/json");
+			res.result(http::status::bad_request);
+			res.body() = json::serialize(jv_r);
+			res.prepare_payload();
+			return res;
+		}
+
+		// Email format check
+		std::regex email_regex(R"(^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$)");
+		if (!std::regex_match(username, email_regex)) {
+			json::value jv_r = {
+				{"success", false},
+				{"message", "Invalid email format"}
+			};
+			res.set(http::field::content_type, "application/json");
+			res.result(http::status::bad_request);
+			res.body() = json::serialize(jv_r);
+			res.prepare_payload();
+			return res;
+		}
+
+		// CAPTCHA verification
+		auto captcha_it = obj.find("captcha_token");
+		auto captcha_ans_it = obj.find("captcha_answer");
+		if (captcha_it != obj.end() && captcha_ans_it != obj.end()) {
+			std::string ct = std::string(captcha_it->value().as_string());
+			std::string ca = std::string(captcha_ans_it->value().as_string());
+			if (!verify_captcha(ct, ca)) {
+				THROW_EX_CUSTOM(HttpException, 2201, "Invalid CAPTCHA",
+                                400, "/register");
+			}
+		}
+
+		auto password_hash = PBKDF2Hasher::hash_password(password);
 
 		std::string sql = "INSERT INTO Users (email, password_hash, last_login) VALUES (?, ?, datetime('now', 'localtime'));";
 		auto stmt = _SQLDB->stmt(sql);
@@ -429,7 +791,16 @@ http::response<http::string_body> handleRegister(
 		res.result(http::status::ok);
 		res.body() = json::serialize(jv_r);
 	}
-	//catch
+
+	catch (const HttpException& e) {
+		json::value jv_r = {
+			{"success", false},
+			{"message", e.what()}
+		};
+		res.set(http::field::content_type, "application/json");
+		res.result(e.status());
+		res.body() = json::serialize(jv_r);
+	}
 
 	catch (const std::exception& e) {
 		const auto& ti = typeid(e);
@@ -442,7 +813,6 @@ http::response<http::string_body> handleRegister(
 	return res;
 }
 
-/* curl -H "Target-Url: https://www.baidu.com" http://127.0.0.1:9201 -X GET */
 http::response<http::string_body> handleProxy(
 	const http::request<http::string_body>& req,
 	const std::unordered_map<std::string, std::string>& params,
@@ -457,7 +827,7 @@ http::response<http::string_body> handleProxy(
 		std::string t_url = "";
 		std::string url = "";
 		std::string auth = "";
-		json::value jv_t;	/* json value of the token */
+		json::value jv_t;
 		{
 			auto flag = false;
 			auto it = req.base().find("Target-Url");
@@ -480,7 +850,7 @@ http::response<http::string_body> handleProxy(
 			url += req.target();
 
 			it = req.base().find("Authorization");
-			if (it == req.base().end() && !flag) {	/* 不是默认代理地址且无令牌 */
+			if (it == req.base().end() && !flag) {
 				throw std::runtime_error("401");
 			}
 			std::string raw = req["Authorization"];
@@ -496,31 +866,29 @@ http::response<http::string_body> handleProxy(
 				if (!_PUBL.Verify(auth, sign)) {
 					throw std::runtime_error("Header 401 Unauthorized");
 				}
-				std::cout << "auth data: " << auth  << std::endl;
 			}
 
-			if (!flag) {	/* 令牌是否过期 */
-		
-				/* TODO: 放进try包裹 */
+			if (!flag) {
 				jv_t = json::parse(auth);
 				json::object& obj = jv_t.as_object();
 
 				auto t = json::value_to<std::string>(obj["created_at"]);
-				bool r = LocalTime::isExpired(t);
-
-				if (!r) {
-					THROW_EX_CUSTOM(HttpException, 2000, "Authorization Expired",
-        	        	            401, "*");
+				auto keep_time_val = json::value_to<int>(obj["keep_time"]);
+				auto created_tp = LocalTime::parse(t);
+				if (created_tp) {
+					auto now = std::chrono::system_clock::now();
+					auto expire_tp = *created_tp + std::chrono::seconds(keep_time_val);
+					if (now > expire_tp) {
+						THROW_EX_CUSTOM(HttpException, 2000, "Authorization Expired",
+            	        	            401, "*");
+					}
 				}
 			}
 		}
 
-		/* 代理地址是否开放、合法 */
 		{
-			std::cout << t_url << std::endl;
 			bool flag = false;
 			for (auto& s: _OPEN_URL) {
-				std::cout << s << std::endl;
 				if (s == t_url) {
 					flag = true;
 					break;
@@ -532,7 +900,7 @@ http::response<http::string_body> handleProxy(
 		}
 
 		auto callback = [&res](const auto& ret) {
-			res.body() += ret;	// TODO: too big file
+			res.body() += ret;
 		};
 
 
@@ -550,7 +918,7 @@ http::response<http::string_body> handleProxy(
 
 		if (method == "get")
 			client.get_stream_sync(url, callback);
-	
+
 		else if (method == "post") {
 			std::string payload = req.body();
 			client.post_stream_sync(url, payload, callback);
@@ -563,7 +931,6 @@ http::response<http::string_body> handleProxy(
 		res.set("Connection", "close");
 		res.result(client.get_response_code());
 	}
-	//catch
 
 	catch (const std::exception& e) {
 		const auto& ti = typeid(e);
@@ -581,10 +948,8 @@ http::response<http::string_body> handleProxy(
 	return res;
 }
 
-/* they are special because they point to raw request */
 bool is_special_header(const std::string &header) {
 
 	return  header == "Host" || header == "connection"
 		|| header == "Accept-Encoding";
 }
-

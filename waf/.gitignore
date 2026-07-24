@@ -1,0 +1,15 @@
+# 编译产物
+waf.bin
+*.exe
+
+# 证书与密钥（不入库）
+certs/
+
+# OWASP CRS（按需 clone，不入库）
+rules/crs/
+
+# 本地覆盖配置
+config.local.yaml
+
+# Go
+vendor/
