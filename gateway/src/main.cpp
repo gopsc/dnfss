@@ -152,9 +152,12 @@ public:
 
         bool has_upper = false, has_lower = false, has_digit = false, has_special = false;
         for (char c : password) {
-            if (std::isupper(c)) has_upper = true;
-            else if (std::islower(c)) has_lower = true;
-            else if (std::isdigit(c)) has_digit = true;
+            // std::isupper 等函数参数为 int，char 为有符号且非 ASCII 时是 UB
+            // 必须 static_cast<unsigned char> 后再传入（P1-2）
+            unsigned char uc = static_cast<unsigned char>(c);
+            if (std::isupper(uc)) has_upper = true;
+            else if (std::islower(uc)) has_lower = true;
+            else if (std::isdigit(uc)) has_digit = true;
             else has_special = true;
         }
 
