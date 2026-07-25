@@ -19,6 +19,7 @@
 #include "ExpBase.hpp"
 #include "LocalTime.hpp"
 #include "Conf.hpp"
+#include "DbC.hpp"
 
 using namespace pmc::net;
 using namespace qing;
@@ -398,7 +399,7 @@ int main(int argc, char **argv) {
 	{
 		try {
 
-			ConfIni cf(vm["input"].as<std::string>());
+		ConfIni cf(vm["input"].as<std::string>());
 		_ADDR = cf.get<std::string>("Server.address", "");
 		_PORT = cf.get<int> ("Server.port", -1);
 		_TLS = cf.get<bool>     ("Server.tls", false);
@@ -481,26 +482,22 @@ void db_init() {
 }
 
 
-
+/* 注册http路由 */
 void registerRoutes(HttpServer &server) {
 
 	server.post("/captcha", [](const auto& req, const auto& params) {
 		return handleCaptcha(req, params);
 	});
 
-	server.post("/login", [](
-			const http::request<http::string_body>& req,
-			const std::unordered_map<std::string, std::string>& params
-	) -> http::response<http::string_body>  {
-		return wrapperHttp(req, params, [](
-				const auto& req, const auto& params
-		) {
-			return handleLogin(req, params);
-		});
+	/* const http::request<http::string_body>& req, const std::unordered_map<std::string, std::string>& params */
+	server.post("/login", [](const auto& req, const auto& params) -> http::response<http::string_body>  {
+		return wrapperHttp(req, params,
+			[](const auto& req, const auto& params) {return handleLogin(req, params);});
 	});
 
-	server.post("/register", [](const auto& req, const auto& params) {
-		return handleRegister(req, params);
+	server.post("/register", [](const auto& req, const auto& params) -> http::response<http::string_body> {
+		return wrapperHttp(req, params,
+			[](const auto& req, const auto& params) { return handleRegister(req, params); });
 	});
 
 	server.get("*", [](const auto& req, const auto& params) {
@@ -539,16 +536,36 @@ void registerRoutes(HttpServer &server) {
 	});
 }
 
+/* Http视图包装器
+ *
+ * 该函数收集视图函数抛出的异常 将信息发送给浏览器。这样视图函数有问题就可以直接抛出异常。 */
 http::response<http::string_body> wrapperHttp(
 		const http::request<http::string_body>& req,
 		const std::unordered_map<std::string, std::string>& params,
 		HttpRequestHandler _main)
 
-try {
+try { return _main(req, params); }
 
-	return _main(req, params);
+
+/* 主动抛出的异常 */
+catch (const HttpException& e) {
+	http::response<http::string_body> res;
+	res.version(req.version());
+	// 详细错误信息（e.what() 含源码路径/行号/C++ 模板类型）暂时以注释方式保留（同 handleLogin）
+	std::cerr << "[handleRegister HttpException] " << e.what() << std::endl;
+	json::value jv_r = {
+		{"success", false},
+		{"message", e.what()} // 泄露源码信息，已禁用
+		/* {"message", "Registration failed"} */
+	};
+	res.set(http::field::content_type, "application/json");
+	res.result(e.status());
+	res.body() = json::serialize(jv_r);
+	res.prepare_payload();
+	return res;
 }
 
+/* 预料之外的异常 */
 catch (const std::exception& e) {
 
 	http::response<http::string_body> res;
@@ -572,6 +589,7 @@ catch (const std::exception& e) {
 }
 
 // CAPTCHA endpoint: generates a random text, stores it, returns a simple token
+// by shuiyu
 http::response<http::string_body> handleCaptcha(
 	const http::request<http::string_body>& req,
 	const std::unordered_map<std::string, std::string>& params)
@@ -608,6 +626,9 @@ http::response<http::string_body> handleCaptcha(
 	return res;
 }
 
+/* 处理登陆
+ *
+ * /login  */
 http::response<http::string_body> handleLogin(
 	const http::request<http::string_body>& req,
 	const std::unordered_map<std::string, std::string>& params)
@@ -618,11 +639,10 @@ http::response<http::string_body> handleLogin(
 	// IP rate limit check
 	std::string client_ip = "";
 	auto it_host = req.base().find("X-Forwarded-For");
-	if (it_host != req.base().end()) {
+	if (it_host != req.base().end())
 		client_ip = std::string(it_host->value());
-	} else {
+	else
 		client_ip = "direct";
-	}
 
 	if (!_LOGIN_RATE.check_and_record(client_ip, 5, 300)) {
 		json::value jv_r = {
@@ -636,118 +656,125 @@ http::response<http::string_body> handleLogin(
 		return res;
 	}
 
-	try {
-		json::value jv;
-		try {
-			jv = json::parse(req.body());
-		}
-		catch (const boost::wrapexcept<boost::system::system_error>& e) {
-			THROW_EX_CUSTOM(HttpException, 2001, "Invalid_json_Argument",
-                            400, "/login");
-		}
+	json::value jv;
+	try { jv = json::parse(req.body()); }
+	catch (const boost::wrapexcept<boost::system::system_error>& e) {
+		THROW_EX_CUSTOM(HttpException, 2001, "Invalid_json_Argument",
+                           400, "/login");
+	}
 
-		if (!jv.is_object()) {
-			THROW_EX_CUSTOM(HttpException, 2002, "Invalid_json_object_Argument",
-                            400, "/login");
-		}
-		auto& obj = jv.as_object();
-		auto username = std::string(obj.at("username").as_string());
-		auto password = std::string(obj.at("password").as_string());
+	if (!jv.is_object()) THROW_EX_CUSTOM(HttpException, 2002, "Invalid_json_object_Argument", 400, "/login");
+	auto& obj = jv.as_object();
+	auto username = std::string(obj.at("username").as_string());
+	auto password = std::string(obj.at("password").as_string());
 
-		// CAPTCHA verification
-		auto captcha_it = obj.find("captcha_token");
-		auto captcha_ans_it = obj.find("captcha_answer");
-		if (captcha_it != obj.end() && captcha_ans_it != obj.end()) {
-			std::string ct = std::string(captcha_it->value().as_string());
-			std::string ca = std::string(captcha_ans_it->value().as_string());
-			if (!verify_captcha(ct, ca)) {
-				THROW_EX_CUSTOM(HttpException, 2201, "Invalid CAPTCHA",
-                                400, "/login");
-			}
-		}
+	// CAPTCHA verification
+	auto captcha_it = obj.find("captcha_token");
+	auto captcha_ans_it = obj.find("captcha_answer");
+	if (captcha_it != obj.end() && captcha_ans_it != obj.end()) {
+		std::string ct = std::string(captcha_it->value().as_string());
+		std::string ca = std::string(captcha_ans_it->value().as_string());
+		if (!verify_captcha(ct, ca)) THROW_EX_CUSTOM(HttpException, 2201, "Invalid CAPTCHA", 400, "/login");
+	}
 
+	std::string stored_hash = "";
+	{
 		// Fetch stored hash - support both PBKDF2 and legacy SHA256
-		std::string sql = "SELECT password_hash FROM Users WHERE email=?;";
-		auto stmt = _SQLDB->stmt(sql);
-		stmt.bind_text(1, username);
-		std::string stored_hash = "";
-		if (stmt.step()) {
-			stored_hash = std::string(reinterpret_cast<const char*>(stmt.read_text(0)));
-		}
+		//std::string sql = "SELECT password_hash FROM Users WHERE email=?;";
+		//auto stmt = _SQLDB->stmt(sql);
+		//stmt.bind_text(1, username);
+		//if (stmt.step()) {
+		//	stored_hash = std::string(reinterpret_cast<const char*>(stmt.read_text(0)));
+		//}
 
-		bool auth_ok = false;
-		if (!stored_hash.empty()) {
-			if (stored_hash.substr(0, 7) == "pbkdf2:") {
-				// New PBKDF2 hash
-				auth_ok = PBKDF2Hasher::verify_password(password, stored_hash);
-			} else {
-				// Legacy SHA256 hash - verify then auto-migrate
-				auto legacy_hash = SHA256::sha256(password);
-				if (legacy_hash == stored_hash) {
-					auth_ok = true;
-					// Auto-migrate to PBKDF2
-					auto new_hash = PBKDF2Hasher::hash_password(password);
-					std::string sql_migrate = "UPDATE Users SET password_hash=? WHERE email=?;";
-					auto stmt_mig = _SQLDB->stmt(sql_migrate);
-					stmt_mig.bind_text(1, new_hash);
-					stmt_mig.bind_text(2, username);
-					stmt_mig.step();
-					std::cout << "Migrated password hash for " << username << " to PBKDF2" << std::endl;
-				}
-			}
-		}
-
-		if (!auth_ok) {
-			THROW_EX_CUSTOM(HttpException, 2101, "Invalid Username or Password",
-                            401, "/login");
-		}
-
-		// Update last_login
-		std::string sql_update = "UPDATE Users SET last_login=datetime('now','localtime') WHERE email=?;";
-		auto stmt_upd = _SQLDB->stmt(sql_update);
-		stmt_upd.bind_text(1, username);
-		stmt_upd.step();
-
-		auto _PRIV = MyRSA::Private_Key::from_pem(_KEYGEN->get_private_key_pem());
-
-		json::value jv_t = {
-			{"user", username},
-			{"created_at", LocalTime::getCurrent()},
-			{"keep_time", _TOKEN_KEEP_TIME}
+		// 新版调用db模块
+		json::value jv_select = {
+			{"action", "select"},
+			{"table", "Users"},
+			{"where", json::object{
+				{"username", username},
+			}}
 		};
-		std::string data = json::serialize(jv_t);
-		std::string token = Base64::base64_encode(data);
-		std::string sign = _PRIV.Sign(data);
-
-		json::value jv_rr = {
-			{"success", true},
-			{"data", json::object{{"token", token + "_" + sign}}}
-		};
-		res.set("Connection", "close");
-		res.result(http::status::ok);
-		res.body() = json::serialize(jv_rr);
+		auto jv_db_r = DbC::call_http(jv_select);
+		auto obj_r = jv_db_r.as_object();
+		auto success = obj_r["success"].as_bool();
+		if (!success) THROW_EX_CUSTOM(HttpException, 2102, "Login (Update Step) Failed", 500, "/login");
+		auto obj_rd = obj_r.at("data").as_array();
+		auto obj_ru = obj_rd.at(0).as_object();
+		stored_hash = obj_ru.at("password_hash").as_string();
 	}
 
-	catch (const HttpException& e) {
 
-		// 详细错误信息（e.what() 含源码路径/行号/C++ 模板类型）暂时以注释方式保留
-		// 原因：黑盒检测发现透传到客户端会泄露内部实现，便于攻击者定位代码（P0-3）
-		// 排障：完整信息仍输出到服务端 stderr
-		std::cerr << "[handleLogin HttpException] " << e.what() << std::endl;
-		json::value jv_r = {
-			{"success", false},
-			/* {"message", e.what()}, */ // 泄露源码信息，已禁用
-			{"message", "Invalid Username or Password"}
-		};
-		res.set(http::field::content_type, "application/json");
-		res.result(e.status());
-		res.body() = json::serialize(jv_r);
+
+	bool auth_ok = false;
+	if (!stored_hash.empty()) {
+		if (stored_hash.substr(0, 7) == "pbkdf2:")
+			// New PBKDF2 hash
+			auth_ok = PBKDF2Hasher::verify_password(password, stored_hash);
+		else {
+			// Legacy SHA256 hash - verify then auto-migrate
+			//auto legacy_hash = SHA256::sha256(password);
+			//if (legacy_hash == stored_hash) {
+			//	auth_ok = true;
+				// Auto-migrate to PBKDF2
+			//	auto new_hash = PBKDF2Hasher::hash_password(password);
+			//	std::string sql_migrate = "UPDATE Users SET password_hash=? WHERE email=?;";
+			//	auto stmt_mig = _SQLDB->stmt(sql_migrate);
+			//	stmt_mig.bind_text(1, new_hash);
+			//	stmt_mig.bind_text(2, username);
+			//	stmt_mig.step();
+			//	std::cout << "Migrated password hash for " << username << " to PBKDF2" << std::endl;
+		}
 	}
 
+	if (!auth_ok) THROW_EX_CUSTOM(HttpException, 2101, "Invalid Username or Password", 401, "/login");
+
+	// Update last_login
+	//std::string sql_update = "UPDATE Users SET last_login=datetime('now','localtime') WHERE email=?;";
+	//auto stmt_upd = _SQLDB->stmt(sql_update);
+	//stmt_upd.bind_text(1, username);
+	//stmt_upd.step();
+	//
+	// 新版调用db模块 无法通过DB上传时间戳目前
+	//json::value jv_upd = {
+	//	{"action", "update"},
+	//	{"table", "Users"},
+	//	{"values", json::object{
+	//		{"last_login", LocalTime::getCurrent()},
+	//	}},
+	//	{"where", json::object{
+	//		{"username", username},
+	//	}}
+	//};
+	//auto jv_db_r = DbC::call_http(jv_upd);
+	//auto obj_r = jv_db_r.as_object();
+	//auto success = obj_r["success"].as_bool();
+	//if (!success) THROW_EX_CUSTOM(HttpException, 2102, json::serialize(jv_db_r)+"Login (Update Step) Failed", 500, "/login");
+
+
+	auto _PRIV = MyRSA::Private_Key::from_pem(_KEYGEN->get_private_key_pem());
+
+	json::value jv_t = {
+		{"user", username},
+		{"created_at", LocalTime::getCurrent()},
+		{"keep_time", _TOKEN_KEEP_TIME}
+	};
+	std::string data = json::serialize(jv_t);
+	std::string token = Base64::base64_encode(data);
+	std::string sign = _PRIV.Sign(data);
+
+	json::value jv_rr = {
+		{"success", true},
+		{"data", json::object{{"token", token + "_" + sign}}}
+	};
+	res.set("Connection", "close");
+	res.result(http::status::ok);
+	res.body() = json::serialize(jv_rr);
 	res.prepare_payload();
 	return res;
 }
 
+/* 处理注册 /register  */
 http::response<http::string_body> handleRegister(
 	const http::request<http::string_body>& req,
 	const std::unordered_map<std::string, std::string>& params)
@@ -758,114 +785,64 @@ http::response<http::string_body> handleRegister(
 	// IP rate limit check
 	std::string client_ip = "direct";
 	auto it_host = req.base().find("X-Forwarded-For");
-	if (it_host != req.base().end()) {
+	if (it_host != req.base().end())
 		client_ip = std::string(it_host->value());
-	}
-	if (!_REGISTER_RATE.check_and_record(client_ip, 3, 600)) {
-		json::value jv_r = {
-			{"success", false},
-			{"message", "Too many registration attempts. Please try again later."}
-		};
-		res.set(http::field::content_type, "application/json");
-		res.result(http::status::too_many_requests);
-		res.body() = json::serialize(jv_r);
-		res.prepare_payload();
-		return res;
-	}
+	if (!_REGISTER_RATE.check_and_record(client_ip, 3, 600))
+		THROW_EX_CUSTOM(HttpException, 3001, "Too many registration attempts. Please try again later.",
+			403, "/register");
 
-	try {
+	auto jv = json::parse(req.body());
+	if (!jv.is_object()) 
+		THROW_EX_CUSTOM(HttpException, 3002, "Invalid Argument", 401, "/register");
 
-		auto jv = json::parse(req.body());
-		if (!jv.is_object()) {
-			throw std::runtime_error("400");
-		}
-		auto& obj = jv.as_object();
-		auto username = std::string(obj.at("username").as_string());
-		auto password = std::string(obj.at("password").as_string());
+	auto& obj = jv.as_object();
+	auto username = std::string(obj.at("username").as_string());
+	auto password = std::string(obj.at("password").as_string());
 
-		// Strong password check
-		auto pw_result = PasswordValidator::validate(password);
-		if (!pw_result.valid) {
-			json::value jv_r = {
-				{"success", false},
-				{"message", pw_result.message}
-			};
-			res.set(http::field::content_type, "application/json");
-			res.result(http::status::bad_request);
-			res.body() = json::serialize(jv_r);
-			res.prepare_payload();
-			return res;
-		}
+	// Strong password check
+	auto pw_result = PasswordValidator::validate(password);
+	if (!pw_result.valid)
+		THROW_EX_CUSTOM(HttpException, 3003, pw_result.message, 401, "/register");
 
-		// Email format check
-		std::regex email_regex(R"(^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$)");
-		if (!std::regex_match(username, email_regex)) {
-			json::value jv_r = {
-				{"success", false},
-				{"message", "Invalid email format"}
-			};
-			res.set(http::field::content_type, "application/json");
-			res.result(http::status::bad_request);
-			res.body() = json::serialize(jv_r);
-			res.prepare_payload();
-			return res;
-		}
+	// Email format check
+	std::regex email_regex(R"(^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$)");
+	if (!std::regex_match(username, email_regex))
+		THROW_EX_CUSTOM(HttpException, 3004, "Invalid email format", 400, "/register");
 
-		// CAPTCHA verification
-		auto captcha_it = obj.find("captcha_token");
-		auto captcha_ans_it = obj.find("captcha_answer");
-		if (captcha_it != obj.end() && captcha_ans_it != obj.end()) {
-			std::string ct = std::string(captcha_it->value().as_string());
-			std::string ca = std::string(captcha_ans_it->value().as_string());
-			if (!verify_captcha(ct, ca)) {
-				THROW_EX_CUSTOM(HttpException, 2201, "Invalid CAPTCHA",
-                                400, "/register");
-			}
-		}
-
-		auto password_hash = PBKDF2Hasher::hash_password(password);
-
-		std::string sql = "INSERT INTO Users (email, password_hash, last_login) VALUES (?, ?, datetime('now', 'localtime'));";
-		auto stmt = _SQLDB->stmt(sql);
-		stmt.bind_text(1, username);
-		stmt.bind_text(2, password_hash);
-		stmt.step();
-
-		json::value jv_r = {{"success", true}};
-		res.result(http::status::ok);
-		res.body() = json::serialize(jv_r);
+	// CAPTCHA verification
+	auto captcha_it = obj.find("captcha_token");
+	auto captcha_ans_it = obj.find("captcha_answer");
+	if (captcha_it != obj.end() && captcha_ans_it != obj.end()) {
+		std::string ct = std::string(captcha_it->value().as_string());
+		std::string ca = std::string(captcha_ans_it->value().as_string());
+		if (!verify_captcha(ct, ca))
+			THROW_EX_CUSTOM(HttpException, 2201, "Invalid CAPTCHA", 400, "/register");
 	}
 
-	catch (const HttpException& e) {
-		// 详细错误信息（e.what() 含源码路径/行号/C++ 模板类型）暂时以注释方式保留（同 handleLogin）
-		std::cerr << "[handleRegister HttpException] " << e.what() << std::endl;
-		json::value jv_r = {
-			{"success", false},
-			/* {"message", e.what()}, */ // 泄露源码信息，已禁用
-			{"message", "Registration failed"}
-		};
-		res.set(http::field::content_type, "application/json");
-		res.result(e.status());
-		res.body() = json::serialize(jv_r);
-	}
+	auto password_hash = PBKDF2Hasher::hash_password(password);
 
-	catch (const std::exception& e) {
-		const auto& ti = typeid(e);
-		// 详细错误信息（ti.name() 含 mangled 类型名、e.what() 含内部细节）暂时以注释方式保留
-		// 原因：mangled 类型名会确认技术栈与 STL 容器，e.what() 可能泄露内部路径（P0-3）
-		// 排障：完整信息仍输出到服务端 stderr
-		std::cerr << "[handleRegister std::exception] <" << ti.name() << "> " << e.what() << std::endl;
-		res.set(http::field::content_type, "application/json");
-		res.result(http::status::internal_server_error);
-		json::value jv_r = {
-			{"success", false},
-			/* {"err_name", ti.name()},    // 泄露 C++ 类型信息，已禁用 */
-			/* {"err_message", e.what()}   // 泄露内部细节，已禁用 */
-			{"message", "Internal Server Error"}
-		};
-		res.body() = json::serialize(jv_r);
-	}
-
+	//std::string sql = "INSERT INTO Users (email, password_hash, last_login) VALUES (?, ?, datetime('now', 'localtime'));";
+	//auto stmt = _SQLDB->stmt(sql);
+	//stmt.bind_text(1, username);
+	//stmt.bind_text(2, password_hash);
+	//stmt.step();
+	//
+	// 新版调用db模块
+	json::value jv_insert = {
+		{"action", "insert"},
+		{"table", "Users"},
+		{"values", json::object{
+			{"username", username},
+			{"password_hash", password_hash}
+		}}
+	};
+	auto jv_result = DbC::call_http(jv_insert);
+	auto obj_r = jv_result.as_object();
+	auto success = obj_r["success"].as_bool();
+	if (!success) THROW_EX_CUSTOM(HttpException, 2202, "Registe Failed", 400, "/register");
+	auto jv_r = json::value{{"success", success}};
+	res.result(http::status::ok);
+	res.body() = json::serialize(jv_r);
 	res.prepare_payload();
 	return res;
 }
