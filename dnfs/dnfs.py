@@ -100,7 +100,11 @@ def review_content(content: str, timeout: int = 10) -> Dict[str, Any]:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             resp_data = resp.read().decode("utf-8")
             data =  json.loads(resp_data)
-            return not data['invalid']
+            invalid: bool = data['invalid']
+            return invalid == False
+            #invalid = data
+            #return invalid
+
     except urllib.error.HTTPError as e:
         # 服务端返回 4xx/5xx 错误时，尝试解析错误正文
         error_body = e.read().decode("utf-8")
@@ -197,8 +201,9 @@ def add_note():
 
 
     # 内容审查
-    review = review_content(title + '\n\n' + content, 10)
-    if not review:
+    review = review_content(title + '\n' + content, 10)
+    if True != review:
+        #return jsonify({'error': 'review failed', 'data': review}), 400
         return jsonify({'error': 'review failed'}), 400
 
     insert_payload = {
@@ -350,6 +355,29 @@ def update_note():
 
         return jsonify({"error": "Invalid param"}), 400
 
+
+    if pid != 0:
+
+        select_payload = {
+            'action': 'select',
+            'table': 'Notes',
+            'where': {
+                'id': pid
+            }
+        }
+
+        notes = call_db_service(DB_SERVER_URL, select_payload)
+
+        # 不存在的父节点
+        if len( notes['data']) == 0:
+            return jsonify({'error': 'the new node need a parent'}), 400
+
+
+    # 内容审查
+    review = review_content(title + '\n' + content, 10)
+    if True != review:
+        #return jsonify({'error': 'review failed', 'data': review}), 400
+        return jsonify({'error': 'review failed'}), 400
 
     #with app.app_context():
 

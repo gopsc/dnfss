@@ -20,8 +20,8 @@ SYSTEM_PROMPT = """You are a strict content moderation AI. Your task is to revie
 
 ## Output format:
 Return ONLY a valid JSON object, no other text.
-For violation: {{"invalid": "true"}}
-For safe content: {{"invalid": "false"}}
+For violation: {{"invalid": true}}
+For safe content: {{"invalid": false}}
 
 ## Reference examples:
 {examples}
@@ -42,7 +42,7 @@ class ReviewAgent:
             base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         )
         self.rag = RAGStore()
-        self.model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+        self.model = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
         self.temperature = float(os.getenv("DEEPSEEK_TEMPERATURE", "0.0"))
         self.max_tokens = int(os.getenv("DEEPSEEK_MAX_TOKENS", "128"))
 
@@ -68,7 +68,7 @@ class ReviewAgent:
             )
             raw = response.choices[0].message.content.strip()
         except Exception as e:
-            return {"invalid": "false", "error": "api_error", "detail": str(e)}
+            return {"invalid": "true", "error": "api_error", "detail": str(e)}
 
         try:
             result = json.loads(raw)
@@ -77,8 +77,8 @@ class ReviewAgent:
             if '"invalid"' in raw_lower and 'true' in raw_lower:
                 result = {"invalid": "true"}
             elif '"invalid"' in raw_lower and 'false' in raw_lower:
-                result = {"invalid": "false"}
+                result = {"invalid": "true"}
             else:
-                result = {"invalid": "false", "error": "parse_failed", "raw": raw}
+                result = {"invalid": "true", "error": "parse_failed", "raw": raw}
 
         return result
