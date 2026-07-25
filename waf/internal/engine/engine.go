@@ -11,6 +11,8 @@ import (
 
 	"github.com/corazawaf/coraza/v3"
 	"github.com/corazawaf/coraza/v3/types"
+
+	"github.com/micro_servers/waf/internal/logclient"
 )
 
 // Engine 持有当前生效的 WAF 实例，支持通过 Reload 热替换。
@@ -257,8 +259,8 @@ func TestFile(file string) error {
 	return nil
 }
 
-// LogError 默认错误回调，输出到 stderr。
+// LogError 默认错误回调，推送到日志库。
 func LogError(mr types.MatchedRule) {
-	fmt.Fprintf(os.Stderr, "[coraza] rule_id=%d severity=%s msg=%s\n",
-		mr.Rule().ID(), mr.Rule().Severity(), mr.ErrorLog())
+	logclient.Error("waf", fmt.Sprintf("coraza rule_id=%d severity=%s", mr.Rule().ID(), mr.Rule().Severity()),
+		map[string]any{"rule_id": mr.Rule().ID(), "msg": mr.ErrorLog()})
 }

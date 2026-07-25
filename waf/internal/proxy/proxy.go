@@ -3,9 +3,8 @@ package proxy
 
 import (
 	"bytes"
-	"encoding/json"
+	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/micro_servers/waf/internal/engine"
+	"github.com/micro_servers/waf/internal/logclient"
 )
 
 // Proxy 持有 ReverseProxy 与 WAF 引擎引用。
@@ -46,7 +46,8 @@ func New(upstream string, waf *engine.Engine) (*Proxy, error) {
 	}
 	// 透传错误，不暴露内部堆栈
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		log.Printf("[proxy] upstream_error ip=%s path=%s err=%v", r.RemoteAddr, r.URL.Path, err)
+		logclient.Error("waf", fmt.Sprintf("upstream_error path=%s err=%v", r.URL.Path, err),
+			map[string]any{"ip": r.RemoteAddr})
 		http.Error(w, "upstream unavailable", http.StatusBadGateway)
 	}
 	return p, nil
@@ -111,27 +112,20 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	tx.ProcessResponseHeaders(rw.status, "HTTP/1.1")
-
-	log.Printf("[proxy] pass ip=%s method=%s path=%s status=%d rule=- cost=%s",
-		r.RemoteAddr, r.Method, r.URL.Path, rw.status, time.Since(start))
 }
 
-// block 命中规则时统一返回 403，并打 JSON 日志便于 jq 分析。
+// block 命中规则时统一返回 403，并将关键输入推送到日志库。
 func (p *Proxy) block(w http.ResponseWriter, r *http.Request, ruleID int, start time.Time) {
-	rec := map[string]any{
-		"ts":      time.Now().UTC().Format(time.RFC3339),
-		"action":  "block",
-		"rule_id": ruleID,
-		"ip":      r.RemoteAddr,
-		"method":  r.Method,
-		"path":    r.URL.Path,
-		"query":   r.URL.RawQuery,
-		"ua":      r.UserAgent(),
-		"cost_ms": time.Since(start).Milliseconds(),
-	}
-	if raw, err := json.Marshal(rec); err == nil {
-		log.Println(string(raw))
-	}
+	logclient.Warning("waf", fmt.Sprintf("block rule_id=%d %s %s", ruleID, r.Method, r.URL.Path),
+		map[string]any{
+			"rule_id": ruleID,
+			"ip":      r.RemoteAddr,
+			"method":  r.Method,
+			"path":    r.URL.Path,
+			"query":   r.URL.RawQuery,
+			"ua":      r.UserAgent(),
+			"cost_ms": time.Since(start).Milliseconds(),
+		})
 	w.WriteHeader(http.StatusForbidden)
 	_, _ = w.Write([]byte("blocked by WAF\n"))
 }

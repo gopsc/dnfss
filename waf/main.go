@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -25,6 +26,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/micro_servers/waf/internal/engine"
+	"github.com/micro_servers/waf/internal/logclient"
 	"github.com/micro_servers/waf/internal/proxy"
 )
 
@@ -82,9 +84,14 @@ func main() {
 	}
 
 	// 服务模式
+	logclient.Init()
+	log.SetOutput(io.Discard) // 静默标准 log
+
 	p, err := proxy.New(cfg.Upstream, eng)
 	if err != nil {
-		log.Fatalf("代理初始化失败: %v", err)
+		logclient.Error("waf", fmt.Sprintf("代理初始化失败: %v", err), nil)
+		logclient.Flush()
+		os.Exit(1)
 	}
 
 	// SIGHUP 热加载
@@ -92,11 +99,10 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGHUP)
 	go func() {
 		for range sigCh {
-			log.Println("[reload] 收到 SIGHUP，重新加载规则")
 			if err := eng.Reload(); err != nil {
-				log.Printf("[reload] 失败，保留旧规则: %v", err)
+				logclient.Error("waf", fmt.Sprintf("热加载失败，保留旧规则: %v", err), nil)
 			} else {
-				log.Println("[reload] 成功")
+				logclient.Info("waf", "规则热加载成功", nil)
 			}
 		}
 	}()
@@ -109,13 +115,13 @@ func main() {
 		},
 	}
 
-	log.Printf("waf listening on %s, upstream=%s, rules=%s",
-		cfg.Listen, cfg.Upstream, cfg.RulesDir)
-	log.Printf("  - 热加载: kill -HUP %d", os.Getpid())
-	log.Printf("  - 列规则: %s -c %s -list", os.Args[0], *configFile)
+	logclient.Info("waf", fmt.Sprintf("服务启动 listen=%s upstream=%s rules=%s pid=%d",
+		cfg.Listen, cfg.Upstream, cfg.RulesDir, os.Getpid()), nil)
 
 	if err := server.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey); err != nil {
-		log.Fatal(err)
+		logclient.Error("waf", fmt.Sprintf("TLS 监听失败: %v", err), nil)
+		logclient.Flush()
+		os.Exit(1)
 	}
 }
 
