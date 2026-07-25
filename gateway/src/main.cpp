@@ -5,6 +5,7 @@
 #include <us/SHA256.hpp>
 #include <us/Sqlite3.hpp>
 #include <iostream>
+#include <cctype>
 #include <typeinfo>
 #include <memory>
 #include <csignal>
@@ -276,6 +277,9 @@ http::response<http::string_body> handleCaptcha(
 
 /*  headers can't processed */
 bool is_special_header(const std::string &header);
+
+/* 请求路径安全性校验（防路径遍历/协议注入/空字节） */
+bool is_safe_target(const std::string& target);
 
 /* configure items */
 static std::string		_ADDR;
@@ -875,9 +879,17 @@ http::response<http::string_body> handleProxy(
 				flag = true;
 			}
 
+			// 路径规范化校验（P1-1）：防止路径遍历、协议注入、空字节等
+			// 校验在 url 拼接前完成，避免恶意 target 污染下游请求
+			std::string target_path = std::string(req.target());
+			if (!is_safe_target(target_path)) {
+				THROW_EX_CUSTOM(HttpException, 2300, "Invalid request path",
+    			                400, "*");
+			}
+
 			url = t_url;
 			url += "/";
-			url += req.target();
+			url += target_path;
 
 			it = req.base().find("Authorization");
 			if (it == req.base().end() && !flag) {
@@ -945,6 +957,18 @@ http::response<http::string_body> handleProxy(
 			client.set_header(h);
 		}
 
+		// 主动设置可信的 X-Forwarded-For（P1-1）
+		// 说明：is_special_header 已剥离客户端可能伪造的 XFF/X-Real-IP/Forwarded
+		//       WAF → Gateway 为可信内网链路，收到的 XFF 即客户端真实 IP
+		//       下游服务应信任此值做限流/审计，不再被客户端伪造
+		auto xff_it = req.base().find("X-Forwarded-For");
+		if (xff_it != req.base().end()) {
+			client.set_header(std::string("X-Forwarded-For: ") + std::string(xff_it->value()));
+		} else {
+			// WAF 未传 XFF 时，标记为 unknown，避免下游拿到空值
+			client.set_header("X-Forwarded-For: unknown");
+		}
+
 
 		if (method == "get")
 			client.get_stream_sync(url, callback);
@@ -985,6 +1009,42 @@ http::response<http::string_body> handleProxy(
 
 bool is_special_header(const std::string &header) {
 
+	// 原过滤：传输层/编码相关，由 HttpClient 自行处理
+	// 新增过滤（P1-1）：客户端可伪造的 IP 相关头
+	//   - X-Forwarded-For / X-Real-IP / Forwarded
+	//   剥离后由 gateway 主动设置可信值（见 handleProxy 转发逻辑）
+	//   防止客户端伪造 IP 绕过下游限流/审计
 	return  header == "Host" || header == "connection"
-		|| header == "Accept-Encoding";
+		|| header == "Accept-Encoding"
+		|| header == "X-Forwarded-For"
+		|| header == "X-Real-IP"
+		|| header == "Forwarded";
+}
+
+bool is_safe_target(const std::string& target) {
+	// 请求路径安全性校验（P1-1）
+	// 防御目标：路径遍历、协议注入、空字节、非绝对路径形式
+
+	if (target.empty()) return false;
+
+	// 必须以 '/' 开头（拒绝 "http://evil.com/..." 等绝对 URI 形式）
+	if (target[0] != '/') return false;
+
+	// 拒绝空字节（防止截断绕过）
+	if (target.find('\0') != std::string::npos) return false;
+
+	// 拒绝路径遍历：明文 ".."
+	if (target.find("..") != std::string::npos) return false;
+
+	// 拒绝路径遍历：URL 编码形式（%2e / %2E，含 %2f / %5c 的编码变体）
+	std::string lower_target;
+	lower_target.reserve(target.size());
+	for (char c : target) {
+		lower_target.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+	}
+	if (lower_target.find("%2e") != std::string::npos) return false;
+	if (lower_target.find("%2f") != std::string::npos) return false;
+	if (lower_target.find("%5c") != std::string::npos) return false;
+
+	return true;
 }
