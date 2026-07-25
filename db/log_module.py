@@ -16,7 +16,7 @@ import threading
 import time
 from datetime import datetime, timezone, timedelta
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import (
     Table, insert, select, delete, func, and_, or_, MetaData
 )
@@ -128,13 +128,8 @@ def init_log_routes(app, engine, metadata,
     app.config['LOG_CLEANUP_INTERVAL'] = cleanup_interval
 
     # 建表 + 反射
-    count = 0
     try:
-        table = _ensure_logs_table(metadata, engine)
-        with engine.connect() as conn:
-            count = conn.execute(
-                select(func.count()).select_from(table)
-            ).scalar() or 0
+        _ensure_logs_table(metadata, engine)
     except Exception as e:
         log_internal(engine, metadata, 'db', 'ERROR',
                      f'Logs 表初始化失败: {e}')
@@ -165,8 +160,8 @@ def ingest():
             'error': f'单次最多 {MAX_BATCH} 条，当前 {len(logs)} 条'
         }), 400
 
-    engine = app.config['LOG_ENGINE']
-    metadata = app.config['LOG_METADATA']
+    engine = current_app.config['LOG_ENGINE']
+    metadata = current_app.config['LOG_METADATA']
 
     try:
         table = _ensure_logs_table(metadata, engine)
@@ -236,8 +231,8 @@ def query():
     """结构化查询日志。"""
     data = request.get_json(silent=True) or {}
 
-    engine = app.config['LOG_ENGINE']
-    metadata = app.config['LOG_METADATA']
+    engine = current_app.config['LOG_ENGINE']
+    metadata = current_app.config['LOG_METADATA']
 
     try:
         table = _ensure_logs_table(metadata, engine)
@@ -337,8 +332,8 @@ def stats():
     """日志分类统计。"""
     data = request.get_json(silent=True) or {}
 
-    engine = app.config['LOG_ENGINE']
-    metadata = app.config['LOG_METADATA']
+    engine = current_app.config['LOG_ENGINE']
+    metadata = current_app.config['LOG_METADATA']
 
     try:
         table = _ensure_logs_table(metadata, engine)
@@ -400,8 +395,8 @@ def purge():
     if not before:
         return jsonify({'success': False, 'error': '缺少 before 字段'}), 400
 
-    engine = app.config['LOG_ENGINE']
-    metadata = app.config['LOG_METADATA']
+    engine = current_app.config['LOG_ENGINE']
+    metadata = current_app.config['LOG_METADATA']
 
     try:
         table = _ensure_logs_table(metadata, engine)
@@ -429,8 +424,8 @@ def purge():
 @bp.route('/health', methods=['GET'])
 def health():
     """日志模块健康检查。"""
-    engine = app.config['LOG_ENGINE']
-    metadata = app.config['LOG_METADATA']
+    engine = current_app.config['LOG_ENGINE']
+    metadata = current_app.config['LOG_METADATA']
 
     try:
         table = _ensure_logs_table(metadata, engine)
