@@ -22,6 +22,7 @@ from flask_cors import CORS
 from waitress import serve
 import os
 import json
+import base64
 import urllib.request
 import urllib.error
 from typing import Dict, Any
@@ -157,7 +158,18 @@ CORS(app)
 #    "pid": 0,
 #    "title": "test",
 #    "content": "hello"
-#} 
+#}
+
+def decode_token(token:  str):
+    idx = token.find('_')
+    if idx != -1:
+        raw = token[:idx]
+        # FIXME: 验证数字签名
+        decoded = base64.b64decode(raw)
+        jj = decoded.decode('utf-8')
+        return json.loads(jj)
+       
+
 @app.route('/add_note', methods=['POST'])
 
 def add_note():
@@ -174,14 +186,14 @@ def add_note():
 
         return jsonify({"error": "Pid, title and content are required"}), 400
 
-    #new_note = Note(pid=int(pid), title=title, content=content)
-    
-    #with app.app_context():
+    info = None
+    auth: str = request.headers.get('Authorization', '')
+    if auth.startswith('Bearer '):
+        token: str = auth[7:]
+        info  = decode_token(token)
 
-    #    db.session.add(new_note)
-
-    #    db.session.commit()
-
+    if info is None:
+        return jsonify({"error": "Warning: no Authorization"}), 401
 
     if pid != 0:
 
@@ -211,6 +223,7 @@ def add_note():
         'table': 'Notes',
         'values': {
             "pid": pid,
+            'owner': info['user'],
             "title": title,
             'content': content
         }
@@ -247,17 +260,6 @@ def get_notes():
 
     notes = call_db_service(DB_SERVER_URL, select_payload)
 
-    #with app.app_context():
-
-    #    notes = Note.query.filter(Note.pid == int(pid))
-
-    #result = [{
-    #    'id': note['id'],
-    #    'pid': note['pid'],
-    #    'title': note['title'],
-    #    'content':note['content']
-    #} for note in notes]
-
     result = notes['data']
 
     return jsonify(result), 200
@@ -275,6 +277,15 @@ def delete_note():
     if not note_id:
 
         return jsonify({"error": "Note ID is required"}), 400
+
+    info = None
+    auth: str = request.headers.get('Authorization', '')
+    if auth.startswith('Bearer '):
+        token: str = auth[7:]
+        info  = decode_token(token)
+
+    if info is None:
+        return jsonify({"error": "Warning: no Authorization"}), 401
 
     #with app.app_context():
 
@@ -310,6 +321,20 @@ def delete_note():
 
         return jsonify({'error': 'this node has a child '}), 400
 
+    # 检查所有权
+    select_payload = {
+        'action': 'select',
+        'table': 'Notes',
+        'where': {
+            'id': note_id
+        }
+    }
+
+    data = call_db_service(DB_SERVER_URL, select_payload)
+    notes = data['data']
+    if not info['user'] == 'admin':
+        if not len(notes) == 1 or not notes[0]['owner'] == info['user']:
+            return jsonify({"error": 'It\'s not your note'}), 403
 
 
     delete_payload = {
