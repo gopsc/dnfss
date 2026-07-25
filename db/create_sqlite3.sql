@@ -20,3 +20,20 @@ CREATE TABLE IF NOT EXISTS Notes (
 
 -- 旧版增量
 -- ALTER TABLE Notes ADD COLUMN owner VARCHAR(128) DEFAULT 'Unknow';
+
+-- ── 日志表（db 内置日志模块）─────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS Logs (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts        TEXT    NOT NULL,
+    service   TEXT    NOT NULL,
+    level     TEXT    NOT NULL,
+    message   TEXT    NOT NULL,
+    trace_id  TEXT,
+    extra     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_logs_service_ts ON Logs(service, ts);
+CREATE INDEX IF NOT EXISTS idx_logs_level_ts   ON Logs(level, ts);
+CREATE INDEX IF NOT EXISTS idx_logs_ts          ON Logs(ts);
+CREATE INDEX IF NOT EXISTS idx_logs_trace       ON Logs(trace_id);
