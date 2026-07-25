@@ -125,6 +125,15 @@ default = http://127.0.0.1:9200
 closed  = http://127.0.0.1:8005;http://127.0.0.1:8007;
 opened  = http://127.0.0.1:9200;http://127.0.0.1:8006;
 
+[Token]
+# Token 有效期（秒），默认 3600 = 1 小时
+keep_time = 3600
+
+[CORS]
+# 允许跨域的 Origin 白名单（分号分隔）
+# 仅命中的 Origin 才会回填 Access-Control-Allow-Origin；缺省为空（不回填）
+allowed_origins = https://qsont.me;https://www.qsont.me;http://127.0.0.1:8443;http://localhost:8443
+
 [Database]
 path = sqlite3.db
 ```
@@ -132,6 +141,8 @@ path = sqlite3.db
 - `Proxy.default`：未带 `Target-Url` header 时的默认转发地址（不需 Token，主要服务前端静态资源）。
 - `Proxy.opened`：允许外部带 Token 访问的内部服务白名单（分号分隔）。
 - `Proxy.closed`：仅记录用途，实际靠"不在 opened 中即拒绝"实现隔离。
+- `Token.keep_time`：登录签发 Token 的有效期（秒），缺省 3600。
+- `CORS.allowed_origins`：OPTIONS 预检允许跨域的 Origin 白名单（分号分隔），缺省为空（不回填 ACAO）。
 
 ## 部署模式
 

@@ -37,7 +37,11 @@ std::vector<std::string> split(const std::string& s, char delim) {
     std::istringstream stream(s);
     std::string token;
     while (std::getline(stream, token, delim)) {
-        tokens.push_back(token);
+        // 跳过空串：避免 "a;b;" 末尾分号产生 "" 元素
+        // 防御白名单匹配场景下空串被误判为命中
+        if (!token.empty()) {
+            tokens.push_back(token);
+        }
     }
     return tokens;
 }
@@ -291,6 +295,8 @@ static bool			_TLS = false;
 static std::string		_DEFT_URL;
 static std::vector<std::string>	_OPEN_URL;
 static std::string		_DB_PATH;
+static int			_TOKEN_KEEP_TIME = 3600;	// Token 有效期（秒），可由 [Token] keep_time 配置
+static std::vector<std::string>	_CORS_ORIGINS;			// CORS 允许的 Origin 白名单，可由 [CORS] allowed_origins 配置
 
 /* instance items */
 static std::unique_ptr<HttpServer>		_SERVE;
@@ -399,6 +405,8 @@ int main(int argc, char **argv) {
 		_DEFT_URL = cf.get<std::string>("Proxy.default", "");
 		_OPEN_URL = split(cf.get<std::string>("Proxy.opened", ""), ';');
 		_DB_PATH = cf.get<std::string>("Database.path", "");
+		_TOKEN_KEEP_TIME = cf.get<int>("Token.keep_time", 3600);
+		_CORS_ORIGINS = split(cf.get<std::string>("CORS.allowed_origins", ""), ';');
 		}
 		catch (ConfIni::IniConfigureFileParseException &e) {
 			std::cerr << "ERROR: "  << e.what() << std::endl;
@@ -507,19 +515,12 @@ void registerRoutes(HttpServer &server) {
 			pmc::net::http::response<pmc::net::http::string_body> res;
 			res.result(pmc::net::http::status::ok);
 
-			// CORS 白名单（P1-4）：仅允许官方域名，防止任意网站跨域调用
-			// 原配置 Access-Control-Allow-Origin: * 过宽，XSS 拿到 token 后可跨域读取数据
+			// CORS 白名单：从 [CORS] allowed_origins 加载，缺省为空（不回填 ACAO）
 			// 动态回填 Origin：仅当请求 Origin 命中白名单时才返回该值，否则不返回 ACAO 头
-			static const std::vector<std::string> allowed_origins = {
-				"https://qsont.me",
-				"https://www.qsont.me",
-				"http://127.0.0.1:8443",  // 本地开发调试
-				"http://localhost:8443"
-			};
 			auto origin_it = req.base().find("Origin");
 			if (origin_it != req.base().end()) {
 				std::string origin = std::string(origin_it->value());
-				for (const auto& allowed : allowed_origins) {
+				for (const auto& allowed : _CORS_ORIGINS) {
 					if (origin == allowed) {
 						res.set(pmc::net::http::field::access_control_allow_origin, origin);
 						res.set(pmc::net::http::field::vary, "Origin");
@@ -709,12 +710,10 @@ http::response<http::string_body> handleLogin(
 
 		auto _PRIV = MyRSA::Private_Key::from_pem(_KEYGEN->get_private_key_pem());
 
-		int  keep_time  = 3600;
-
 		json::value jv_t = {
 			{"user", username},
 			{"created_at", LocalTime::getCurrent()},
-			{"keep_time", keep_time}
+			{"keep_time", _TOKEN_KEEP_TIME}
 		};
 		std::string data = json::serialize(jv_t);
 		std::string token = Base64::base64_encode(data);
