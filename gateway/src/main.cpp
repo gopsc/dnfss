@@ -304,8 +304,10 @@ static std::mutex _CAPTCHA_MTX;
 
 std::string generate_captcha_text() {
     static const char chars[] = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
-    static std::mt19937 rng(std::random_device{}());
-    static std::uniform_int_distribution<int> dist(0, sizeof(chars) - 2);
+    // thread_local：每个线程独立 rng 实例，避免多线程并发调用 dist(rng) 时的数据竞争
+    // （static 变量初始化本身线程安全，但 mt19937::operator() 修改内部状态非线程安全）
+    thread_local std::mt19937 rng(std::random_device{}());
+    thread_local std::uniform_int_distribution<int> dist(0, sizeof(chars) - 2);
 
     std::string text;
     for (int i = 0; i < 5; i++) {
@@ -717,6 +719,10 @@ http::response<http::string_body> handleRegister(
 
 	// IP rate limit check
 	std::string client_ip = "direct";
+	auto it_host = req.base().find("X-Forwarded-For");
+	if (it_host != req.base().end()) {
+		client_ip = std::string(it_host->value());
+	}
 	if (!_REGISTER_RATE.check_and_record(client_ip, 3, 600)) {
 		json::value jv_r = {
 			{"success", false},
