@@ -525,11 +525,17 @@ catch (const std::exception& e) {
 	http::response<http::string_body> res;
 	res.version(req.version());
 	const auto& ti = typeid(e);
+	// 详细错误信息（ti.name() 含 mangled 类型名、e.what() 含内部细节）暂时以注释方式保留
+	// 原因：此处为 wrapperHttp 外层 catch，会捕获 handler 内未处理的 std::exception
+	//       透传到客户端会泄露 C++ 类型信息与内部路径（P0-3 遗漏点，已补全）
+	// 排障：完整信息仍输出到服务端 stderr
+	std::cerr << "[wrapperHttp std::exception] <" << ti.name() << "> " << e.what() << std::endl;
 	json::value jv_r = {
 		{"success", false},
-		{"message", std::string("<") + ti.name() + "> " + e.what()}
+		/* {"message", std::string("<") + ti.name() + "> " + e.what()}, */ // 泄露源码信息，已禁用
+		{"message", "Internal Server Error"}
 	};
-	res.set(http::field::content_type, "text/plain");
+	res.set(http::field::content_type, "application/json");
 	res.result(http::status::internal_server_error);
 	res.body() = json::serialize(jv_r);
 	res.prepare_payload();
