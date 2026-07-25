@@ -1,3 +1,4 @@
+#pragma once
 #include <chrono>
 #include <string>
 #include <format>
@@ -13,7 +14,7 @@ public:
         auto now = system_clock::now();
         auto zone = current_zone();
         zoned_time zt{zone, now};
-        return std::vformat(format, std::make_format_args(zt));
+        return std::vformat("{:" + format + "}", std::make_format_args(zt));
     }
 
     // 解析时间字符串为 system_clock::time_point（本地时间 → UTC）

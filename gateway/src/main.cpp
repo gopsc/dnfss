@@ -697,9 +697,14 @@ http::response<http::string_body> handleLogin(
 
 	catch (const HttpException& e) {
 
+		// 详细错误信息（e.what() 含源码路径/行号/C++ 模板类型）暂时以注释方式保留
+		// 原因：黑盒检测发现透传到客户端会泄露内部实现，便于攻击者定位代码（P0-3）
+		// 排障：完整信息仍输出到服务端 stderr
+		std::cerr << "[handleLogin HttpException] " << e.what() << std::endl;
 		json::value jv_r = {
 			{"success", false},
-			{"message", e.what()}
+			/* {"message", e.what()}, */ // 泄露源码信息，已禁用
+			{"message", "Invalid Username or Password"}
 		};
 		res.set(http::field::content_type, "application/json");
 		res.result(e.status());
@@ -799,9 +804,12 @@ http::response<http::string_body> handleRegister(
 	}
 
 	catch (const HttpException& e) {
+		// 详细错误信息（e.what() 含源码路径/行号/C++ 模板类型）暂时以注释方式保留（同 handleLogin）
+		std::cerr << "[handleRegister HttpException] " << e.what() << std::endl;
 		json::value jv_r = {
 			{"success", false},
-			{"message", e.what()}
+			/* {"message", e.what()}, */ // 泄露源码信息，已禁用
+			{"message", "Registration failed"}
 		};
 		res.set(http::field::content_type, "application/json");
 		res.result(e.status());
@@ -810,9 +818,19 @@ http::response<http::string_body> handleRegister(
 
 	catch (const std::exception& e) {
 		const auto& ti = typeid(e);
-		res.set(http::field::content_type, "text/plain");
+		// 详细错误信息（ti.name() 含 mangled 类型名、e.what() 含内部细节）暂时以注释方式保留
+		// 原因：mangled 类型名会确认技术栈与 STL 容器，e.what() 可能泄露内部路径（P0-3）
+		// 排障：完整信息仍输出到服务端 stderr
+		std::cerr << "[handleRegister std::exception] <" << ti.name() << "> " << e.what() << std::endl;
+		res.set(http::field::content_type, "application/json");
 		res.result(http::status::internal_server_error);
-		res.body() = std::string("<") + ti.name() + "> " + e.what();
+		json::value jv_r = {
+			{"success", false},
+			/* {"err_name", ti.name()},    // 泄露 C++ 类型信息，已禁用 */
+			/* {"err_message", e.what()}   // 泄露内部细节，已禁用 */
+			{"message", "Internal Server Error"}
+		};
+		res.body() = json::serialize(jv_r);
 	}
 
 	res.prepare_payload();
@@ -940,12 +958,17 @@ http::response<http::string_body> handleProxy(
 
 	catch (const std::exception& e) {
 		const auto& ti = typeid(e);
-		res.set(http::field::content_type, "text/plain");
+		// 详细错误信息（ti.name() 含 mangled 类型名、e.what() 含内部细节）暂时以注释方式保留
+		// 原因：mangled 类型名会确认技术栈与 STL 容器，e.what() 可能泄露内部路径（P0-3）
+		// 排障：完整信息仍输出到服务端 stderr
+		std::cerr << "[handleProxy std::exception] <" << ti.name() << "> " << e.what() << std::endl;
+		res.set(http::field::content_type, "application/json");
 		res.result(http::status::internal_server_error);
 		json::value jv_r = {
 			{"success", false},
-			{"err_name", ti.name()},
-			{"err_message", e.what()}
+			/* {"err_name", ti.name()},    // 泄露 C++ 类型信息，已禁用 */
+			/* {"err_message", e.what()}   // 泄露内部细节，已禁用 */
+			{"message", "Internal Server Error"}
 		};
 		res.body() = json::serialize(jv_r);
 	}
