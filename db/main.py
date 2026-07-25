@@ -6,6 +6,7 @@ from sqlalchemy import (
 from sqlalchemy.exc import SQLAlchemyError
 from waitress import serve
 from security_middleware import apply_security_headers
+from log_module import init_log_routes, log_internal
 
 app = Flask(__name__)
 apply_security_headers(app)
@@ -16,6 +17,9 @@ engine = create_engine(DATABASE_URL)
 
 # 缓存反射的元数据（避免每次请求都反射）
 metadata = MetaData()
+
+# 注册日志模块（/log/* 路由 + 后台清理线程）
+init_log_routes(app, engine, metadata)
 
 def get_table(table_name):
     """反射表对象（若已缓存则直接返回）"""
@@ -134,20 +138,35 @@ def execute_structured():
         else:
             return jsonify({'success': False, 'error': f'不支持的操作: {action}'}), 400
 
+        # 记录操作日志（同进程直接写库，无 HTTP 往返，无循环依赖）
+        log_internal(engine, metadata, 'db', 'INFO',
+                     f'{action} {table_name} OK',
+                     extra={'rowcount': len(result) if isinstance(result, list) else 0,
+                            'client_ip': request.remote_addr})
+
         return jsonify({'success': True, 'data': result})
 
     except SQLAlchemyError as e:
         if conn:
             conn.rollback()
+        log_internal(engine, metadata, 'db', 'ERROR',
+                     f'{action} {table_name} FAILED: {e}',
+                     extra={'client_ip': request.remote_addr})
         return jsonify({'success': False, 'error': str(e)}), 400
     except Exception as e:
         if conn:
             conn.rollback()
+        log_internal(engine, metadata, 'db', 'ERROR',
+                     f'{action} {table_name} EXCEPTION: {e}',
+                     extra={'client_ip': request.remote_addr})
         return jsonify({'success': False, 'error': str(e)}), 400
     finally:
         if conn:
             conn.close()
 
 if __name__ == '__main__':
+    # 日志模块的初始化输出在 init_log_routes 调用时已完成
+    log_internal(engine, metadata, 'db', 'INFO',
+                 '服务启动，监听 http://127.0.0.1:8005')
     # 单线程单进程，绑定 127.0.0.1
     serve(app, host='127.0.0.1', port=8005, threads=1)
