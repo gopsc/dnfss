@@ -108,7 +108,11 @@ class LogClient:
                     except queue.Empty:
                         break
             except queue.Empty:
-                pass  # 超时，没有新日志
+                # 【核心修复 1】：如果没有新日志，必须重置上次刷新时间。
+                # 否则下次 timeout 会变成 0，导致疯狂空转。
+                last_flush = time.monotonic()
+                # 【核心修复 2】：跳出本次循环，避免重复执行下面的 `if should_flush` 判断
+                continue
 
             # 满了或超时了就发
             should_flush = (
