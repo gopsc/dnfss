@@ -403,9 +403,8 @@ def update_note():
 
     data = call_db_service(DB_SERVER_URL, select_payload)
     notes = data['data']
-    if not info['user'] == 'admin':
-        if not len(notes) == 1 or not notes[0]['owner'] == info['user']:
-            return jsonify({"error": 'It\'s not your note'}), 403
+    if not len(notes) == 1 or not notes[0]['owner'] == info['user']:
+        return jsonify({"error": 'It\'s not your note'}), 403
 
     # 内容审查
     review = review_content(title + '\n' + content, 10)
