@@ -120,7 +120,6 @@ def init_log_routes(app, engine, metadata,
                     max_records=DEFAULT_MAX_RECORDS,
                     cleanup_interval=DEFAULT_CLEANUP_INTERVAL):
     """把日志蓝图注册到 Flask app，并注入 engine/metadata。"""
-    print('[logs] 正在初始化日志模块 ...')
 
     app.config['LOG_ENGINE'] = engine
     app.config['LOG_METADATA'] = metadata
@@ -129,38 +128,23 @@ def init_log_routes(app, engine, metadata,
     app.config['LOG_CLEANUP_INTERVAL'] = cleanup_interval
 
     # 建表 + 反射
+    count = 0
     try:
         table = _ensure_logs_table(metadata, engine)
         with engine.connect() as conn:
             count = conn.execute(
                 select(func.count()).select_from(table)
             ).scalar() or 0
-        print(f'[logs] Logs 表就绪，当前 {count} 条日志')
     except Exception as e:
-        print(f'[logs] 警告: Logs 表初始化失败: {e}')
+        log_internal(engine, metadata, 'db', 'ERROR',
+                     f'Logs 表初始化失败: {e}')
 
     # 注册路由
     app.register_blueprint(bp)
-    routes = [
-        'POST /log/ingest',
-        'POST /log/query',
-        'POST /log/stats',
-        'POST /log/purge',
-        'GET  /log/health',
-    ]
-    for r in routes:
-        print(f'[logs] 路由注册: {r}')
-
-    # 配置摘要
-    print(f'[logs] 保留策略: {retention_days} 天 / 上限 {max_records} 条')
-    print(f'[logs] 自动清理: 每 {cleanup_interval} 秒执行一次')
 
     # 启动后台清理线程
     _start_cleanup_thread(engine, metadata,
                           retention_days, max_records, cleanup_interval)
-    print('[logs] 后台清理线程已启动')
-
-    print('[logs] 日志模块初始化完成')
 
 
 # ── 5.1 推送日志 ──────────────────────────────────────────────────────
@@ -506,6 +490,6 @@ def _do_cleanup(engine, metadata, retention_days, max_records):
                 conn.commit()
                 trimmed = trim_result.rowcount
 
-    print(f'[logs] 自动清理完成: 过期删除 {expired_deleted} 条, 超量裁剪 {trimmed} 条')
-    log_internal(engine, metadata, 'db', 'INFO',
-                 f'自动清理: 过期删除 {expired_deleted} 条, 超量裁剪 {trimmed} 条')
+    if expired_deleted or trimmed:
+        log_internal(engine, metadata, 'db', 'INFO',
+                     f'自动清理: 过期删除 {expired_deleted} 条, 超量裁剪 {trimmed} 条')

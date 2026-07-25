@@ -27,6 +27,7 @@ import urllib.request
 import urllib.error
 from typing import Dict, Any
 from security_middleware import apply_security_headers
+from log_client import logs
 
 DB_SERVER_URL = 'http://127.0.0.1:8005/execute'
 def call_db_service(url: str, payload: dict, timeout: int  = 10) -> dict:
@@ -184,6 +185,7 @@ def add_note():
 
     if pid is None or not title or not content:
 
+        logs.warning('dnfs', 'add_note 参数缺失', extra={'ip': request.remote_addr})
         return jsonify({"error": "Pid, title and content are required"}), 400
 
     info = None
@@ -193,6 +195,7 @@ def add_note():
         info  = decode_token(token)
 
     if info is None:
+        logs.warning('dnfs', 'add_note 未授权访问', extra={'ip': request.remote_addr})
         return jsonify({"error": "Warning: no Authorization"}), 401
 
     if pid != 0:
@@ -209,6 +212,7 @@ def add_note():
 
         # 不存在的父节点
         if len( notes['data']) == 0:
+            logs.warning('dnfs', f'add_note 父节点不存在 pid={pid}', extra={'user': info['user']})
             return jsonify({'error': 'the new node need a parent'}), 400
 
 
@@ -216,6 +220,7 @@ def add_note():
     review = review_content(title + '\n' + content, 10)
     if True != review:
         #return jsonify({'error': 'review failed', 'data': review}), 400
+        logs.warning('dnfs', f'add_note 内容审核未通过 title={title}', extra={'user': info['user']})
         return jsonify({'error': 'review failed'}), 400
 
     insert_payload = {
@@ -234,8 +239,10 @@ def add_note():
     success = result['success']
 
     if success is True:
+        logs.info('dnfs', f'add_note 成功 title={title} pid={pid}', extra={'user': info['user']})
         return jsonify({'success': success}), 200
     else:
+        logs.error('dnfs', f'add_note 写入失败 title={title}', extra={'user': info['user']})
         return jsonify({'success': success}), 400
 
 
@@ -262,6 +269,7 @@ def get_notes():
 
     result = notes['data']
 
+    logs.info('dnfs', f'get_notes 查询 pid={pid} 返回{len(result)}条', extra={'ip': request.remote_addr})
     return jsonify(result), 200
 
 
@@ -276,6 +284,7 @@ def delete_note():
 
     if not note_id:
 
+        logs.warning('dnfs', 'delete_note 参数缺失 id', extra={'ip': request.remote_addr})
         return jsonify({"error": "Note ID is required"}), 400
 
     info = None
@@ -285,6 +294,7 @@ def delete_note():
         info  = decode_token(token)
 
     if info is None:
+        logs.warning('dnfs', 'delete_note 未授权访问', extra={'ip': request.remote_addr})
         return jsonify({"error": "Warning: no Authorization"}), 401
 
     #with app.app_context():
@@ -320,6 +330,7 @@ def delete_note():
     # 有子节点的情况不可删除
     if len(notes['data']) > 0:
 
+        logs.warning('dnfs', f'delete_note 存在子节点 id={note_id}', extra={'user': info['user']})
         return jsonify({'error': 'this node has a child '}), 400
 
     # 检查所有权
@@ -335,6 +346,7 @@ def delete_note():
     notes = data['data']
     if not info['user'] == 'admin':
         if not len(notes) == 1 or not notes[0]['owner'] == info['user']:
+            logs.warning('dnfs', f'delete_note 所有权拒绝 id={note_id}', extra={'user': info['user']})
             return jsonify({"error": 'It\'s not your note'}), 403
 
 
@@ -350,10 +362,12 @@ def delete_note():
 
     if result is True:
 
+        logs.info('dnfs', f'delete_note 成功 id={note_id}', extra={'user': info['user']})
         return jsonify({'success': True}), 200
 
     else:
 
+        logs.error('dnfs', f'delete_note 失败 id={note_id}', extra={'user': info['user']})
         return jsonify({'success': False}), 400
 
 
@@ -379,6 +393,7 @@ def update_note():
 
     if id is None or pid is None or not title or not content:
 
+        logs.warning('dnfs', 'update_note 参数缺失', extra={'ip': request.remote_addr})
         return jsonify({"error": "Invalid param"}), 400
 
     # 获取用户名
@@ -389,6 +404,7 @@ def update_note():
         info  = decode_token(token)
 
     if info is None:
+        logs.warning('dnfs', 'update_note 未授权访问', extra={'ip': request.remote_addr})
         return jsonify({"error": "Warning: no Authorization"}), 401
 
 
@@ -404,12 +420,14 @@ def update_note():
     data = call_db_service(DB_SERVER_URL, select_payload)
     notes = data['data']
     if not len(notes) == 1 or not notes[0]['owner'] == info['user']:
+        logs.warning('dnfs', f'update_note 所有权拒绝 id={id}', extra={'user': info['user']})
         return jsonify({"error": 'It\'s not your note'}), 403
 
     # 内容审查
     review = review_content(title + '\n' + content, 10)
     if True != review:
         #return jsonify({'error': 'review failed', 'data': review}), 400
+        logs.warning('dnfs', f'update_note 内容审核未通过 id={id} title={title}', extra={'user': info['user']})
         return jsonify({'error': 'review failed'}), 400
 
     #with app.app_context():
@@ -443,10 +461,12 @@ def update_note():
 
     if result is True:
 
+        logs.info('dnfs', f'update_note 成功 id={id} title={title}', extra={'user': info['user']})
         return jsonify({'success': True}), 200
 
     else:
 
+        logs.error('dnfs', f'update_note 失败 id={id}', extra={'user': info['user']})
         return jsonify({'success': False}), 400
 
 
@@ -460,6 +480,7 @@ def update_note():
 ADDR='127.0.0.1'
 PORT=8006
 if __name__ == "__main__":
+    logs.info('dnfs', f'服务启动，监听 http://{ADDR}:{PORT}')
     print(f'Listen at http://{ADDR}:{PORT}')
     #app.run(host="127.0.0.1", port=8006)
     serve(app, host='127.0.0.1', port=8006)

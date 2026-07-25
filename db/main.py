@@ -138,12 +138,6 @@ def execute_structured():
         else:
             return jsonify({'success': False, 'error': f'不支持的操作: {action}'}), 400
 
-        # 记录操作日志（同进程直接写库，无 HTTP 往返，无循环依赖）
-        log_internal(engine, metadata, 'db', 'INFO',
-                     f'{action} {table_name} OK',
-                     extra={'rowcount': len(result) if isinstance(result, list) else 0,
-                            'client_ip': request.remote_addr})
-
         return jsonify({'success': True, 'data': result})
 
     except SQLAlchemyError as e:
