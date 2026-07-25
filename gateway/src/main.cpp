@@ -506,7 +506,28 @@ void registerRoutes(HttpServer &server) {
 	server.options("*", [](const auto& req, const auto& params) {
 			pmc::net::http::response<pmc::net::http::string_body> res;
 			res.result(pmc::net::http::status::ok);
-			res.set(pmc::net::http::field::access_control_allow_origin, "*");
+
+			// CORS 白名单（P1-4）：仅允许官方域名，防止任意网站跨域调用
+			// 原配置 Access-Control-Allow-Origin: * 过宽，XSS 拿到 token 后可跨域读取数据
+			// 动态回填 Origin：仅当请求 Origin 命中白名单时才返回该值，否则不返回 ACAO 头
+			static const std::vector<std::string> allowed_origins = {
+				"https://qsont.me",
+				"https://www.qsont.me",
+				"http://127.0.0.1:8443",  // 本地开发调试
+				"http://localhost:8443"
+			};
+			auto origin_it = req.base().find("Origin");
+			if (origin_it != req.base().end()) {
+				std::string origin = std::string(origin_it->value());
+				for (const auto& allowed : allowed_origins) {
+					if (origin == allowed) {
+						res.set(pmc::net::http::field::access_control_allow_origin, origin);
+						res.set(pmc::net::http::field::vary, "Origin");
+						break;
+					}
+				}
+			}
+
 			res.set(pmc::net::http::field::access_control_allow_methods, "GET, POST, OPTIONS");
 			res.set(pmc::net::http::field::access_control_allow_headers, "Content-Type, Authorization");
 			res.set(pmc::net::http::field::access_control_max_age, "86400");
