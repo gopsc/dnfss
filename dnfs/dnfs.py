@@ -306,6 +306,7 @@ def delete_note():
     #        return jsonify({"error": "Note not found"}), 404
 
 
+    # 检查是否有子节点
     select_payload = {
         'action': 'select',
         'table': 'Notes',
@@ -380,23 +381,31 @@ def update_note():
 
         return jsonify({"error": "Invalid param"}), 400
 
+    # 获取用户名
+    info = None
+    auth: str = request.headers.get('Authorization', '')
+    if auth.startswith('Bearer '):
+        token: str = auth[7:]
+        info  = decode_token(token)
 
-    if pid != 0:
+    if info is None:
+        return jsonify({"error": "Warning: no Authorization"}), 401
 
-        select_payload = {
-            'action': 'select',
-            'table': 'Notes',
-            'where': {
-                'id': pid
-            }
+
+    # 检查所有权
+    select_payload = {
+        'action': 'select',
+        'table': 'Notes',
+        'where': {
+            'id': id
         }
+    }
 
-        notes = call_db_service(DB_SERVER_URL, select_payload)
-
-        # 不存在的父节点
-        if len( notes['data']) == 0:
-            return jsonify({'error': 'the new node need a parent'}), 400
-
+    data = call_db_service(DB_SERVER_URL, select_payload)
+    notes = data['data']
+    if not info['user'] == 'admin':
+        if not len(notes) == 1 or not notes[0]['owner'] == info['user']:
+            return jsonify({"error": 'It\'s not your note'}), 403
 
     # 内容审查
     review = review_content(title + '\n' + content, 10)
