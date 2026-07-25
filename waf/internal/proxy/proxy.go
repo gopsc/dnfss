@@ -35,7 +35,13 @@ func New(upstream string, waf *engine.Engine) (*Proxy, error) {
 	origDirector := rp.Director
 	rp.Director = func(req *http.Request) {
 		origDirector(req)
-		req.Header.Set("X-Forwarded-For", req.RemoteAddr)
+		// RemoteAddr 形如 "1.2.3.4:54321"，剥离端口只保留 IP，
+		// 否则 gateway RateLimiter 会把同 IP 不同端口的连接当成不同客户端
+		clientIP := req.RemoteAddr
+		if idx := strings.LastIndexByte(req.RemoteAddr, ':'); idx != -1 {
+			clientIP = req.RemoteAddr[:idx]
+		}
+		req.Header.Set("X-Forwarded-For", clientIP)
 		req.Header.Set("X-Forwarded-Proto", "https")
 	}
 	// 透传错误，不暴露内部堆栈

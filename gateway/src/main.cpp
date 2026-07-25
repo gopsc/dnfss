@@ -5,6 +5,7 @@
 #include <us/SHA256.hpp>
 #include <us/Sqlite3.hpp>
 #include <iostream>
+#include <cctype>
 #include <typeinfo>
 #include <memory>
 #include <csignal>
@@ -151,9 +152,12 @@ public:
 
         bool has_upper = false, has_lower = false, has_digit = false, has_special = false;
         for (char c : password) {
-            if (std::isupper(c)) has_upper = true;
-            else if (std::islower(c)) has_lower = true;
-            else if (std::isdigit(c)) has_digit = true;
+            // std::isupper 等函数参数为 int，char 为有符号且非 ASCII 时是 UB
+            // 必须 static_cast<unsigned char> 后再传入（P1-2）
+            unsigned char uc = static_cast<unsigned char>(c);
+            if (std::isupper(uc)) has_upper = true;
+            else if (std::islower(uc)) has_lower = true;
+            else if (std::isdigit(uc)) has_digit = true;
             else has_special = true;
         }
 
@@ -277,6 +281,9 @@ http::response<http::string_body> handleCaptcha(
 /*  headers can't processed */
 bool is_special_header(const std::string &header);
 
+/* 请求路径安全性校验（防路径遍历/协议注入/空字节） */
+bool is_safe_target(const std::string& target);
+
 /* configure items */
 static std::string		_ADDR;
 static int			_PORT;
@@ -304,8 +311,10 @@ static std::mutex _CAPTCHA_MTX;
 
 std::string generate_captcha_text() {
     static const char chars[] = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
-    static std::mt19937 rng(std::random_device{}());
-    static std::uniform_int_distribution<int> dist(0, sizeof(chars) - 2);
+    // thread_local：每个线程独立 rng 实例，避免多线程并发调用 dist(rng) 时的数据竞争
+    // （static 变量初始化本身线程安全，但 mt19937::operator() 修改内部状态非线程安全）
+    thread_local std::mt19937 rng(std::random_device{}());
+    thread_local std::uniform_int_distribution<int> dist(0, sizeof(chars) - 2);
 
     std::string text;
     for (int i = 0; i < 5; i++) {
@@ -497,7 +506,28 @@ void registerRoutes(HttpServer &server) {
 	server.options("*", [](const auto& req, const auto& params) {
 			pmc::net::http::response<pmc::net::http::string_body> res;
 			res.result(pmc::net::http::status::ok);
-			res.set(pmc::net::http::field::access_control_allow_origin, "*");
+
+			// CORS 白名单（P1-4）：仅允许官方域名，防止任意网站跨域调用
+			// 原配置 Access-Control-Allow-Origin: * 过宽，XSS 拿到 token 后可跨域读取数据
+			// 动态回填 Origin：仅当请求 Origin 命中白名单时才返回该值，否则不返回 ACAO 头
+			static const std::vector<std::string> allowed_origins = {
+				"https://qsont.me",
+				"https://www.qsont.me",
+				"http://127.0.0.1:8443",  // 本地开发调试
+				"http://localhost:8443"
+			};
+			auto origin_it = req.base().find("Origin");
+			if (origin_it != req.base().end()) {
+				std::string origin = std::string(origin_it->value());
+				for (const auto& allowed : allowed_origins) {
+					if (origin == allowed) {
+						res.set(pmc::net::http::field::access_control_allow_origin, origin);
+						res.set(pmc::net::http::field::vary, "Origin");
+						break;
+					}
+				}
+			}
+
 			res.set(pmc::net::http::field::access_control_allow_methods, "GET, POST, OPTIONS");
 			res.set(pmc::net::http::field::access_control_allow_headers, "Content-Type, Authorization");
 			res.set(pmc::net::http::field::access_control_max_age, "86400");
@@ -523,11 +553,17 @@ catch (const std::exception& e) {
 	http::response<http::string_body> res;
 	res.version(req.version());
 	const auto& ti = typeid(e);
+	// 详细错误信息（ti.name() 含 mangled 类型名、e.what() 含内部细节）暂时以注释方式保留
+	// 原因：此处为 wrapperHttp 外层 catch，会捕获 handler 内未处理的 std::exception
+	//       透传到客户端会泄露 C++ 类型信息与内部路径（P0-3 遗漏点，已补全）
+	// 排障：完整信息仍输出到服务端 stderr
+	std::cerr << "[wrapperHttp std::exception] <" << ti.name() << "> " << e.what() << std::endl;
 	json::value jv_r = {
 		{"success", false},
-		{"message", std::string("<") + ti.name() + "> " + e.what()}
+		/* {"message", std::string("<") + ti.name() + "> " + e.what()}, */ // 泄露源码信息，已禁用
+		{"message", "Internal Server Error"}
 	};
-	res.set(http::field::content_type, "text/plain");
+	res.set(http::field::content_type, "application/json");
 	res.result(http::status::internal_server_error);
 	res.body() = json::serialize(jv_r);
 	res.prepare_payload();
@@ -695,9 +731,14 @@ http::response<http::string_body> handleLogin(
 
 	catch (const HttpException& e) {
 
+		// 详细错误信息（e.what() 含源码路径/行号/C++ 模板类型）暂时以注释方式保留
+		// 原因：黑盒检测发现透传到客户端会泄露内部实现，便于攻击者定位代码（P0-3）
+		// 排障：完整信息仍输出到服务端 stderr
+		std::cerr << "[handleLogin HttpException] " << e.what() << std::endl;
 		json::value jv_r = {
 			{"success", false},
-			{"message", e.what()}
+			/* {"message", e.what()}, */ // 泄露源码信息，已禁用
+			{"message", "Invalid Username or Password"}
 		};
 		res.set(http::field::content_type, "application/json");
 		res.result(e.status());
@@ -717,6 +758,10 @@ http::response<http::string_body> handleRegister(
 
 	// IP rate limit check
 	std::string client_ip = "direct";
+	auto it_host = req.base().find("X-Forwarded-For");
+	if (it_host != req.base().end()) {
+		client_ip = std::string(it_host->value());
+	}
 	if (!_REGISTER_RATE.check_and_record(client_ip, 3, 600)) {
 		json::value jv_r = {
 			{"success", false},
@@ -793,9 +838,12 @@ http::response<http::string_body> handleRegister(
 	}
 
 	catch (const HttpException& e) {
+		// 详细错误信息（e.what() 含源码路径/行号/C++ 模板类型）暂时以注释方式保留（同 handleLogin）
+		std::cerr << "[handleRegister HttpException] " << e.what() << std::endl;
 		json::value jv_r = {
 			{"success", false},
-			{"message", e.what()}
+			/* {"message", e.what()}, */ // 泄露源码信息，已禁用
+			{"message", "Registration failed"}
 		};
 		res.set(http::field::content_type, "application/json");
 		res.result(e.status());
@@ -804,9 +852,19 @@ http::response<http::string_body> handleRegister(
 
 	catch (const std::exception& e) {
 		const auto& ti = typeid(e);
-		res.set(http::field::content_type, "text/plain");
+		// 详细错误信息（ti.name() 含 mangled 类型名、e.what() 含内部细节）暂时以注释方式保留
+		// 原因：mangled 类型名会确认技术栈与 STL 容器，e.what() 可能泄露内部路径（P0-3）
+		// 排障：完整信息仍输出到服务端 stderr
+		std::cerr << "[handleRegister std::exception] <" << ti.name() << "> " << e.what() << std::endl;
+		res.set(http::field::content_type, "application/json");
 		res.result(http::status::internal_server_error);
-		res.body() = std::string("<") + ti.name() + "> " + e.what();
+		json::value jv_r = {
+			{"success", false},
+			/* {"err_name", ti.name()},    // 泄露 C++ 类型信息，已禁用 */
+			/* {"err_message", e.what()}   // 泄露内部细节，已禁用 */
+			{"message", "Internal Server Error"}
+		};
+		res.body() = json::serialize(jv_r);
 	}
 
 	res.prepare_payload();
@@ -845,9 +903,17 @@ http::response<http::string_body> handleProxy(
 				flag = true;
 			}
 
+			// 路径规范化校验（P1-1）：防止路径遍历、协议注入、空字节等
+			// 校验在 url 拼接前完成，避免恶意 target 污染下游请求
+			std::string target_path = std::string(req.target());
+			if (!is_safe_target(target_path)) {
+				THROW_EX_CUSTOM(HttpException, 2300, "Invalid request path",
+    			                400, "*");
+			}
+
 			url = t_url;
 			url += "/";
-			url += req.target();
+			url += target_path;
 
 			it = req.base().find("Authorization");
 			if (it == req.base().end() && !flag) {
@@ -915,6 +981,18 @@ http::response<http::string_body> handleProxy(
 			client.set_header(h);
 		}
 
+		// 主动设置可信的 X-Forwarded-For（P1-1）
+		// 说明：is_special_header 已剥离客户端可能伪造的 XFF/X-Real-IP/Forwarded
+		//       WAF → Gateway 为可信内网链路，收到的 XFF 即客户端真实 IP
+		//       下游服务应信任此值做限流/审计，不再被客户端伪造
+		auto xff_it = req.base().find("X-Forwarded-For");
+		if (xff_it != req.base().end()) {
+			client.set_header(std::string("X-Forwarded-For: ") + std::string(xff_it->value()));
+		} else {
+			// WAF 未传 XFF 时，标记为 unknown，避免下游拿到空值
+			client.set_header("X-Forwarded-For: unknown");
+		}
+
 
 		if (method == "get")
 			client.get_stream_sync(url, callback);
@@ -934,12 +1012,17 @@ http::response<http::string_body> handleProxy(
 
 	catch (const std::exception& e) {
 		const auto& ti = typeid(e);
-		res.set(http::field::content_type, "text/plain");
+		// 详细错误信息（ti.name() 含 mangled 类型名、e.what() 含内部细节）暂时以注释方式保留
+		// 原因：mangled 类型名会确认技术栈与 STL 容器，e.what() 可能泄露内部路径（P0-3）
+		// 排障：完整信息仍输出到服务端 stderr
+		std::cerr << "[handleProxy std::exception] <" << ti.name() << "> " << e.what() << std::endl;
+		res.set(http::field::content_type, "application/json");
 		res.result(http::status::internal_server_error);
 		json::value jv_r = {
 			{"success", false},
-			{"err_name", ti.name()},
-			{"err_message", e.what()}
+			/* {"err_name", ti.name()},    // 泄露 C++ 类型信息，已禁用 */
+			/* {"err_message", e.what()}   // 泄露内部细节，已禁用 */
+			{"message", "Internal Server Error"}
 		};
 		res.body() = json::serialize(jv_r);
 	}
@@ -950,6 +1033,42 @@ http::response<http::string_body> handleProxy(
 
 bool is_special_header(const std::string &header) {
 
+	// 原过滤：传输层/编码相关，由 HttpClient 自行处理
+	// 新增过滤（P1-1）：客户端可伪造的 IP 相关头
+	//   - X-Forwarded-For / X-Real-IP / Forwarded
+	//   剥离后由 gateway 主动设置可信值（见 handleProxy 转发逻辑）
+	//   防止客户端伪造 IP 绕过下游限流/审计
 	return  header == "Host" || header == "connection"
-		|| header == "Accept-Encoding";
+		|| header == "Accept-Encoding"
+		|| header == "X-Forwarded-For"
+		|| header == "X-Real-IP"
+		|| header == "Forwarded";
+}
+
+bool is_safe_target(const std::string& target) {
+	// 请求路径安全性校验（P1-1）
+	// 防御目标：路径遍历、协议注入、空字节、非绝对路径形式
+
+	if (target.empty()) return false;
+
+	// 必须以 '/' 开头（拒绝 "http://evil.com/..." 等绝对 URI 形式）
+	if (target[0] != '/') return false;
+
+	// 拒绝空字节（防止截断绕过）
+	if (target.find('\0') != std::string::npos) return false;
+
+	// 拒绝路径遍历：明文 ".."
+	if (target.find("..") != std::string::npos) return false;
+
+	// 拒绝路径遍历：URL 编码形式（%2e / %2E，含 %2f / %5c 的编码变体）
+	std::string lower_target;
+	lower_target.reserve(target.size());
+	for (char c : target) {
+		lower_target.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+	}
+	if (lower_target.find("%2e") != std::string::npos) return false;
+	if (lower_target.find("%2f") != std::string::npos) return false;
+	if (lower_target.find("%5c") != std::string::npos) return false;
+
+	return true;
 }

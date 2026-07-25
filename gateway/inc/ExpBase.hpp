@@ -161,15 +161,23 @@ protected:
     
     virtual std::string build_message() const {
         std::string result;
-        
+
         // 错误码
         if (m_code != 0) {
             result += "[Error " + std::to_string(m_code) + "] ";
         }
-        
+
         // 错误消息
         result += m_message;
-        
+
+        /* ===== 以下「位置信息」与「嵌套异常」暂时以注释方式保留 =====
+         * 原因：黑盒检测发现 what() 的返回值会透传到 HTTP 响应体，
+         *       导致泄露源码文件路径、行号、C++ 模板类型签名（函数名），
+         *       便于攻击者定位代码、确认技术栈、构造针对性 payload（P0-3）。
+         * 排障：完整信息仍由各 handler 通过 std::cerr 输出到服务端日志。
+         * 恢复：如需调试可临时取消下方注释；生产环境必须保持注释状态，
+         *       并确保 what() 不直接进入客户端响应。
+         * ====================================================================
         // 位置信息
         if (!m_file.empty()) {
             result += " (at " + m_file;
@@ -181,12 +189,13 @@ protected:
             }
             result += ")";
         }
-        
+
         // 嵌套异常
         if (m_nested) {
             result += "\n  Caused by: " + std::string(m_nested->what());
         }
-        
+         * ==================================================================== */
+
         return result;
     }
 
