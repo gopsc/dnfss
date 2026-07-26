@@ -522,8 +522,8 @@ void registerRoutes(HttpServer &server) {
 	});
 
 	server.get("*", [](const auto& req, const auto& params) -> http::response<http::string_body> {
-		return wapperHttp(req, params,
-			[](const auto& req, const auto& params) { return handleProxy(req, params, "get"); })
+		return wrapperHttp(req, params,
+			[](const auto& req, const auto& params) { return handleProxy(req, params, "get"); });
 	});
 
 	server.post("*", [](const auto& req, const auto& params) {
@@ -943,7 +943,7 @@ http::response<http::string_body> handleProxy(
 			catch (const boost::wrapexcept<boost::system::system_error>& e) {
 				THROW_EX_CUSTOM(HttpException, 2302, "Bad token", 400, "*");
 			}
-			if (!jv_r.is_object()) THROW_EX_CUSTOM(HttpException, 2302, "Bad token", 400, "*");
+			if (!jv_t.is_object()) THROW_EX_CUSTOM(HttpException, 2302, "Bad token", 400, "*");
 			json::object& obj = jv_t.as_object();
 
 			auto t = json::value_to<std::string>(obj["created_at"]);
