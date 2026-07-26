@@ -2,7 +2,7 @@
 统一日志客户端 — 各服务共用。
 
 设计要点：
-  - 使用 urllib.request（标准库，不引入 requests）
+  - 通过 pymsg TCP 调用 dbv2 execute 路由，逐条 INSERT 到 Logs 表
   - 异步非阻塞：内存队列 + 后台线程批量推送，不拖慢业务
   - fail-safe：db 服务不可用时静默丢弃，绝不影响业务
   - 缓冲批量：队列满 50 条或超时 2 秒时自动 flush
@@ -23,6 +23,7 @@ import threading
 import queue
 import time
 import atexit
+from datetime import datetime, timezone
 
 _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
 from pymsg import MsgClient  # noqa: E402
@@ -111,10 +112,11 @@ class LogClient:
                     except queue.Empty:
                         break
             except queue.Empty:
-                # 【核心修复 1】：如果没有新日志，必须重置上次刷新时间。
-                # 否则下次 timeout 会变成 0，导致疯狂空转。
+                # 超时无新日志：如果 batch 中已有积攒的条目，强制 flush
+                if batch:
+                    self._send(batch)
+                    batch = []
                 last_flush = time.monotonic()
-                # 【核心修复 2】：跳出本次循环，避免重复执行下面的 `if should_flush` 判断
                 continue
 
             # 满了或超时了就发
@@ -132,14 +134,35 @@ class LogClient:
             self._send(batch)
 
     def _send(self, batch):
-        """通过 pymsg 短连接发送一批日志到 dbv2。失败时静默丢弃。"""
+        """通过 pymsg 使用 execute 路由逐条 INSERT 到 dbv2 Logs 表。"""
+        now = datetime.now(timezone.utc).isoformat()
         try:
             client = MsgClient(_DBV2_ADDR, _DBV2_PORT, "dnfs-log")
-            payload = {"_route": "log/ingest", "logs": batch}
-            client.call(json.dumps(payload), timeout=_TIMEOUT)
-        except Exception:
-            # fail-safe：日志服务不可用，静默丢弃，不影响业务
-            pass
+            for entry in batch:
+                extra_val = entry.get("extra")
+                payload = {
+                    "_route": "execute",
+                    "action": "insert",
+                    "table": "Logs",
+                    "values": {
+                        "ts": now,
+                        "service": entry.get("service"),
+                        "level": entry.get("level"),
+                        "message": entry.get("message"),
+                        "trace_id": entry.get("trace_id"),
+                        "extra": json.dumps(extra_val, ensure_ascii=False)
+                        if extra_val is not None else None,
+                    },
+                }
+                resp = client.call(json.dumps(payload), timeout=_TIMEOUT)
+                resp_obj = json.loads(resp)
+                if not resp_obj.get("success"):
+                    import sys
+                    print(f"[log_client] INSERT 失败: {resp_obj.get('error')}",
+                          file=sys.stderr)
+        except Exception as e:
+            import sys
+            print(f"[log_client] 发送失败: {e}", file=sys.stderr)
 
     def _shutdown(self):
         """进程退出时 flush 剩余日志。"""
