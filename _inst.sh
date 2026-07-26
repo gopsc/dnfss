@@ -34,4 +34,5 @@ inst_module "waf"	# waf 在 gateway 之前编译，部署时由 core 先拉起 w
 inst_module "static"
 inst_module "dnfs"
 inst_module "db"
+inst_module "smtp"
 inst_module "core"	# core last
