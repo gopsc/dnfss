@@ -700,7 +700,9 @@ http::response<http::string_body> handleLogin(
 		//	stored_hash = std::string(reinterpret_cast<const char*>(stmt.read_text(0)));
 		//}
 
-		// 新版调用db模块
+		// 新版调用db模块（通过 MsgClient pymsg TCP 协议）
+		// 【保留】旧版 HTTP 调用方式：
+		//   auto jv_db_r = DbC::call_http(jv_select);
 		json::value jv_select = {
 			{"action", "select"},
 			{"table", "Users"},
@@ -708,7 +710,7 @@ http::response<http::string_body> handleLogin(
 				{"username", username},
 			}}
 		};
-		auto jv_db_r = DbC::call_http(jv_select);
+		auto jv_db_r = DbC::call_msg(jv_select);
 		auto obj_r = jv_db_r.as_object();
 		auto success = obj_r["success"].as_bool();
 		if (!success) THROW_EX_CUSTOM(HttpException, 2102, "Login (Update Step) Failed", 500, "/login");
@@ -853,7 +855,9 @@ http::response<http::string_body> handleRegister(
 	//stmt.bind_text(2, password_hash);
 	//stmt.step();
 	//
-	// 新版调用db模块
+	// 新版调用db模块（通过 MsgClient pymsg TCP 协议）
+	// 【保留】旧版 HTTP 调用方式：
+	//   auto jv_result = DbC::call_http(jv_insert);
 	json::value jv_insert = {
 		{"action", "insert"},
 		{"table", "Users"},
@@ -862,7 +866,7 @@ http::response<http::string_body> handleRegister(
 			{"password_hash", password_hash}
 		}}
 	};
-	auto jv_result = DbC::call_http(jv_insert);
+	auto jv_result = DbC::call_msg(jv_insert);
 	auto obj_r = jv_result.as_object();
 	auto success = obj_r["success"].as_bool();
 	if (!success) THROW_EX_CUSTOM(HttpException, 2202, "Registe Failed", 400, "/register");
