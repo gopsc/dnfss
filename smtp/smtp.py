@@ -1,62 +1,84 @@
-from flask import Flask,app
-from urllib import request
+#!/usr/bin/env python3
+
+from flask import Flask, request, jsonify
 from email.mime.text import MIMEText
-from email.header import Header
+from email import header
+from log_client import logs
+import waitress
 import smtplib
 import random
-from waitress import serve
+import time
 
-verification_code = 0
+app = Flask(__name__)
+captchas: dict[str, list[str, str]] = {}
 
-@app.route('/send_email', methods=["POST"])
+@app.route("/send_email", methods=["POST"])
 
 def send_email():
+    def build_captcha() -> str:
+        captcha: str = ""
+        for i in range(0,4):
+            digit: int = random.randint(0,9)
+            captcha += str(digit)
+        return captcha
+
+    SMTP_SERVER: str = ""
+    SMTP_PORT: str = 0
+    SMTP_USER: str = ""
+    __PASSWORD: str = ""
+
     data = request.get_json()
 
-    reciver_email = data.get('email')
-    SMTP_SERVER = ''
-    SMTP_PORT = 587
-    SENDER_EMAIL = ''
-    __PASS = ''
+    recipient: str = data.get("email")
+    subject: str = "DNFS 邮箱验证"
+    captcha: str = build_captcha()
+    content: str = f"DNFS: 您的邮箱验证码为 {captcha}，一分钟内有效。"
 
-    verification_code = random.randint(1000,9999)
+    captchas[recipient] = ["", ""]
+    captchas[recipient][0] = captcha
+    captchas[recipient][1] = str(int(time.time())+60)
 
-    subject = "DNFS 验证码"
-    content = f"DNFS: 您的验证码为{str(verification_code)}"
-
-    email_message = MIMEText(content, 'plain', 'utf-8')
-    email_message['From'] = Header(SENDER_EMAIL, 'utf-8')
-    email_message['To'] = Header(reciver_email, 'utf-8')
-    email_message['Subject'] = Header(subject)
+    message = MIMEText(content, "plain", "UTF-8")
+    message["From"] = "dnfs@qsont.me"
+    message["To"] = recipient
+    message["Subject"] = subject
 
     try:
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(SENDER_EMAIL, __PASS)
-        server.sendmail(SENDER_EMAIL, [reciver_email], email_message.as_string())
-        return 200
+        server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=10)
+        server.login(SMTP_USER, __PASSWORD)
+        server.sendmail(SMTP_USER, [recipient], message.as_string())
+        logs.info("smtp", f"{recipient}: 验证码发送成功({captcha})")
+        return jsonify({"success": "验证码发送成功"}), 200
 
     except Exception as err:
-        raise err
-        return 400
+        logs.error("smtp", f"{recipient}: 验证码发送失败({err})")
+        return jsonify({"error": f"验证码发送失败：{err}"}), 400
 
     finally:
         server.quit()
 
-@app.route('/get_verification_code', method=["POST"])
 
-def get_verification_code():
-    data=request.get_json()
+@app.route("/verify_email", methods=["POST"])
 
-    input_verification_code = data.get('verification_code')
+def verify_email():
+    data = request.get_json()
 
-    if verification_code == input_verification_code:
-        return 200
+    for i in list(captchas.keys()):
+        if int(captchas[i][1]) < int(time.time()):
+            del captchas[i]
+
+    email: str = data.get("email")
+    input_captcha: str = data.get("input_captcha")
+
+    if captchas[email][0] == input_captcha:
+        logs.info("smtp", f"{email}: 验证通过")
+        return jsonify({"success": "验证通过"}), 200
     else:
-        return 400
+        logs.info("smtp", f"{email}: 验证失败")
+        return jsonify({"error": "验证失败"}), 400
 
-ADDR = '127.0.0.1'
-PORT = 8007
+
 if __name__ == "__main__":
-    print(f'Listen at http://{ADDR}:{PORT}')
-    serve(app, host=ADDR, port=PORT)
+    logs.info("smtp", "开始监听http://127.0.0.1:1234")
+    print("Listen at http://127.0.0.1:1234")
+    waitress.serve(app, host="127.0.0.1", port=1234)
