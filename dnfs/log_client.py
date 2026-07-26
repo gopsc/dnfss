@@ -17,28 +17,32 @@
 """
 
 import json
+import os as _os
+import sys as _sys
+import socket as _socket
 import threading
 import queue
 import time
-import urllib.request
-import urllib.error
 import atexit
+
+_sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+from pymsg import send as _pmsg_send, recv as _pmsg_recv  # noqa: E402
 
 # ── 配置 ──────────────────────────────────────────────────────────────
 
-DB_LOG_URL = 'http://127.0.0.1:8005/log/ingest'
+_DBV2_ADDR = '127.0.0.1'
+_DBV2_PORT = 8005
 
 _BATCH_SIZE = 50         # 队列满 50 条时 flush
 _FLUSH_INTERVAL = 2.0    # 超时 2 秒强制 flush
-_TIMEOUT = 5             # HTTP 请求超时（秒）
+_TIMEOUT = 5             # socket 超时（秒）
 
 
 class LogClient:
     """异步批量日志推送客户端。"""
 
-    def __init__(self, url=DB_LOG_URL, batch_size=_BATCH_SIZE,
+    def __init__(self, batch_size=_BATCH_SIZE,
                  flush_interval=_FLUSH_INTERVAL):
-        self._url = url
         self._batch_size = batch_size
         self._flush_interval = flush_interval
         self._queue = queue.Queue()
@@ -129,20 +133,21 @@ class LogClient:
             self._send(batch)
 
     def _send(self, batch):
-        """发送一批日志到 db 服务。失败时静默丢弃。"""
-        data = json.dumps({'logs': batch}).encode('utf-8')
-        req = urllib.request.Request(
-            self._url, data=data,
-            headers={'Content-Type': 'application/json'},
-            method='POST'
-        )
+        """通过 pymsg 短连接发送一批日志到 dbv2。失败时静默丢弃。"""
         try:
-            with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-                resp.read()  # 消费响应体
-        except (urllib.error.URLError, urllib.error.HTTPError, OSError):
-            # fail-safe：日志服务不可用，静默丢弃，不影响业务
-            pass
+            sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            sock.settimeout(_TIMEOUT)
+            sock.connect((_DBV2_ADDR, _DBV2_PORT))
+            payload = {"_route": "log/ingest", "logs": batch}
+            _pmsg_send(sock, json.dumps(payload))
+            # 消费应答
+            try:
+                _pmsg_recv(sock, timeout=_TIMEOUT)
+            except Exception:
+                pass
+            sock.close()
         except Exception:
+            # fail-safe：日志服务不可用，静默丢弃，不影响业务
             pass
 
     def _shutdown(self):

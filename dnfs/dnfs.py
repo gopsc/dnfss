@@ -23,52 +23,38 @@ from waitress import serve
 import os
 import json
 import base64
+import socket as _socket
 import urllib.request
 import urllib.error
 from typing import Dict, Any
 from security_middleware import apply_security_headers
 from log_client import logs
 
-DB_SERVER_URL = 'http://127.0.0.1:8005/execute'
-def call_db_service(url: str, payload: dict, timeout: int  = 10) -> dict:
-    '''
-    使用标准库向数据库服务发送 JSON 请求并返回解析后的响应。
+# pymsg 导入
+import sys as _sys
+_sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from pymsg import send as _pmsg_send, recv as _pmsg_recv  # noqa: E402
 
-    Args:
-        url: 服务端点 URL (例如 'http://127.0.0.1:8005/execute')
-        payload: 要发送的 JSON 数据字典
-        timeout: 请求超时秒数
+_DBV2_ADDR = '127.0.0.1'
+_DBV2_PORT = 8005
 
-    Returns:
-        dict: 服务返回的 JSON 响应
-
-    Raises:
-        urllib.error.URLError: 网络连接错误
-        urllib.error.HTTPError: HTTP 状态错误 (4xx, 5xx)
-        json.JSONDecodeError: 响应不是有效的 JSON
-    '''
-
-    data = json.dumps(payload).encode('utf-8')
-
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={'Content-Type': 'application/json'},
-        method='POST'
-    )
-
+def _call_dbv2(payload: dict, timeout: int = 10) -> dict:
+    """通过 pymsg 短连接调用 dbv2 数据库服务。
+    自动注入 ``_route: "execute"``。
+    """
+    payload = {**payload, "_route": "execute"}
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            raw = response.read().decode('utf-8')
-            return json.loads(raw)
-    except urllib.error.HTTPError as e:
-        # HTTP错误，尝试读取错误响应体
-        error_body = e.read().decode('utf-8', errors='replace')
-        raise urllib.error.HTTPError(
-            e.url, e.code, f'HTTP Error {e.code}: {error_body}', e.hdrs, e.fp
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        sock.connect((_DBV2_ADDR, _DBV2_PORT))
+        _pmsg_send(sock, json.dumps(payload))
+        resp_text = _pmsg_recv(sock, timeout=timeout)
+        sock.close()
+        return json.loads(resp_text)
+    except Exception as e:
+        raise ConnectionError(
+            f"dbv2 调用失败 ({_DBV2_ADDR}:{_DBV2_PORT}): {e}"
         ) from None
-    except urllib.error.URLError as e:
-        raise urllib.error.URLError(f'连接失败: {e.reason}') from None
 
 REVIEW_SERVER_URL = 'http://127.0.0.1:8007/review'
 def review_content(content: str, timeout: int = 10) -> Dict[str, Any]:
@@ -208,7 +194,7 @@ def add_note():
             }
         }
 
-        notes = call_db_service(DB_SERVER_URL, select_payload)
+        notes = _call_dbv2(select_payload)
 
         # 不存在的父节点
         if len( notes['data']) == 0:
@@ -234,7 +220,7 @@ def add_note():
         }
     }
 
-    result = call_db_service(DB_SERVER_URL, insert_payload)
+    result = _call_dbv2(insert_payload)
 
     success = result['success']
 
@@ -265,7 +251,7 @@ def get_notes():
         }
     }
 
-    notes = call_db_service(DB_SERVER_URL, select_payload)
+    notes = _call_dbv2(select_payload)
 
     result = notes['data']
 
@@ -325,7 +311,7 @@ def delete_note():
         }
     }
 
-    notes = call_db_service(DB_SERVER_URL, select_payload)
+    notes = _call_dbv2(select_payload)
 
     # 有子节点的情况不可删除
     if len(notes['data']) > 0:
@@ -342,7 +328,7 @@ def delete_note():
         }
     }
 
-    data = call_db_service(DB_SERVER_URL, select_payload)
+    data = _call_dbv2(select_payload)
     notes = data['data']
     if not info['user'] == 'admin':
         if not len(notes) == 1 or not notes[0]['owner'] == info['user']:
@@ -356,7 +342,7 @@ def delete_note():
         'where': {'id': note_id}
     }
 
-    result = call_db_service(DB_SERVER_URL, delete_payload)
+    result = _call_dbv2(delete_payload)
 
     result = result['success']
 
@@ -417,7 +403,7 @@ def update_note():
         }
     }
 
-    data = call_db_service(DB_SERVER_URL, select_payload)
+    data = _call_dbv2(select_payload)
     notes = data['data']
     if not len(notes) == 1 or not notes[0]['owner'] == info['user']:
         logs.warning('dnfs', f'update_note 所有权拒绝 id={id}', extra={'user': info['user']})
@@ -455,7 +441,7 @@ def update_note():
         'where': {'id': id}
     }
 
-    result = call_db_service(DB_SERVER_URL, update_payload)
+    result = _call_dbv2(update_payload)
 
     result = result['success']
 
