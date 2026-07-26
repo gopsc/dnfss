@@ -2,7 +2,7 @@
 统一日志客户端 — 各服务共用。
 
 设计要点：
-  - 使用 urllib.request（标准库，不引入 requests）
+  - 通过 pymsg TCP 调用 dbv2 execute 路由，逐条 INSERT 到 Logs 表
   - 异步非阻塞：内存队列 + 后台线程批量推送，不拖慢业务
   - fail-safe：db 服务不可用时静默丢弃，绝不影响业务
   - 缓冲批量：队列满 50 条或超时 2 秒时自动 flush
@@ -17,28 +17,32 @@
 """
 
 import json
+import os as _os
+import sys as _sys
 import threading
 import queue
 import time
-import urllib.request
-import urllib.error
 import atexit
+from datetime import datetime, timezone
+
+_sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+from pymsg import MsgClient  # noqa: E402
 
 # ── 配置 ──────────────────────────────────────────────────────────────
 
-DB_LOG_URL = 'http://127.0.0.1:8005/log/ingest'
+_DBV2_ADDR = '127.0.0.1'
+_DBV2_PORT = 8005
 
 _BATCH_SIZE = 50         # 队列满 50 条时 flush
 _FLUSH_INTERVAL = 2.0    # 超时 2 秒强制 flush
-_TIMEOUT = 5             # HTTP 请求超时（秒）
+_TIMEOUT = 5             # socket 超时（秒）
 
 
 class LogClient:
     """异步批量日志推送客户端。"""
 
-    def __init__(self, url=DB_LOG_URL, batch_size=_BATCH_SIZE,
+    def __init__(self, batch_size=_BATCH_SIZE,
                  flush_interval=_FLUSH_INTERVAL):
-        self._url = url
         self._batch_size = batch_size
         self._flush_interval = flush_interval
         self._queue = queue.Queue()
@@ -108,10 +112,11 @@ class LogClient:
                     except queue.Empty:
                         break
             except queue.Empty:
-                # 【核心修复 1】：如果没有新日志，必须重置上次刷新时间。
-                # 否则下次 timeout 会变成 0，导致疯狂空转。
+                # 超时无新日志：如果 batch 中已有积攒的条目，强制 flush
+                if batch:
+                    self._send(batch)
+                    batch = []
                 last_flush = time.monotonic()
-                # 【核心修复 2】：跳出本次循环，避免重复执行下面的 `if should_flush` 判断
                 continue
 
             # 满了或超时了就发
@@ -129,21 +134,35 @@ class LogClient:
             self._send(batch)
 
     def _send(self, batch):
-        """发送一批日志到 db 服务。失败时静默丢弃。"""
-        data = json.dumps({'logs': batch}).encode('utf-8')
-        req = urllib.request.Request(
-            self._url, data=data,
-            headers={'Content-Type': 'application/json'},
-            method='POST'
-        )
+        """通过 pymsg 使用 execute 路由逐条 INSERT 到 dbv2 Logs 表。"""
+        now = datetime.now(timezone.utc).isoformat()
         try:
-            with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-                resp.read()  # 消费响应体
-        except (urllib.error.URLError, urllib.error.HTTPError, OSError):
-            # fail-safe：日志服务不可用，静默丢弃，不影响业务
-            pass
-        except Exception:
-            pass
+            client = MsgClient(_DBV2_ADDR, _DBV2_PORT, "dnfs-log")
+            for entry in batch:
+                extra_val = entry.get("extra")
+                payload = {
+                    "_route": "execute",
+                    "action": "insert",
+                    "table": "Logs",
+                    "values": {
+                        "ts": now,
+                        "service": entry.get("service"),
+                        "level": entry.get("level"),
+                        "message": entry.get("message"),
+                        "trace_id": entry.get("trace_id"),
+                        "extra": json.dumps(extra_val, ensure_ascii=False)
+                        if extra_val is not None else None,
+                    },
+                }
+                resp = client.call(json.dumps(payload), timeout=_TIMEOUT)
+                resp_obj = json.loads(resp)
+                if not resp_obj.get("success"):
+                    import sys
+                    print(f"[log_client] INSERT 失败: {resp_obj.get('error')}",
+                          file=sys.stderr)
+        except Exception as e:
+            import sys
+            print(f"[log_client] 发送失败: {e}", file=sys.stderr)
 
     def _shutdown(self):
         """进程退出时 flush 剩余日志。"""
