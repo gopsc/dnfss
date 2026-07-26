@@ -79,6 +79,6 @@ def verify_email():
 
 
 if __name__ == "__main__":
-    logs.info("smtp", "开始监听http://127.0.0.1:1234")
-    print("Listen at http://127.0.0.1:1234")
-    waitress.serve(app, host="127.0.0.1", port=1234)
+    logs.info("smtp", "开始监听http://127.0.0.1:8008")
+    print("Listen at http://127.0.0.1:8008")
+    waitress.serve(app, host="127.0.0.1", port=8008)
