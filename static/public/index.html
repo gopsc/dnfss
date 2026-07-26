@@ -1,58 +1,40 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-	<head>
-		<meta charset="utf-8">
-		<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
-		<title>树状菜单 · 开源社区</title>
-		<link rel="stylesheet" href="css/theme.css">
-		<style>
-			.hero { text-align: center; margin-bottom: 1.5rem; }
-			.hero h1 { font-size: 1.6rem; margin-bottom: 0.4rem; }
-			.hero p { font-size: 0.9rem; color: var(--fg-secondary); line-height: 1.6; }
-			.btn-row {
-				display: flex;
-				gap: 0.75rem;
-				justify-content: center;
-				margin-top: 1.5rem;
-			}
-			.btn-row a {
-				display: inline-block;
-				padding: 0.6rem 1.8rem;
-				font-size: 0.9rem;
-				font-weight: 600;
-				border-radius: var(--radius-sm);
-				text-decoration: none;
-				transition: opacity 0.15s, transform 0.1s;
-			}
-			.btn-row a:active { transform: scale(0.96); }
-			.btn-primary { background: var(--accent); color: #fff; }
-			.btn-primary:hover { opacity: 0.85; }
-			.btn-ghost { background: transparent; color: var(--accent-dark); border: 1.5px solid var(--border); }
-			.btn-ghost:hover { border-color: var(--accent); opacity: 0.85; }
-			.tagline {
-				margin-top: 1.5rem;
-				padding-top: 1rem;
-				border-top: 1px solid var(--border-light);
-				font-size: 0.8rem;
-				color: var(--muted);
-				text-align: center;
-			}
-		</style>
-	</head>
-	<body>
-		<div class="card">
-			<div class="hero">
-				<h1>树状菜单</h1>
-				<p>一个轻量的开源社区，用树的结构组织知识与文件。<br>自由生长，自由分享。</p>
-			</div>
-			<div class="btn-row">
-				<a class="btn-primary" href="login.html">登录</a>
-				<a class="btn-ghost" href="register.html">注册</a>
-			</div>
-			<div class="tagline">开源 · 轻量 · 自托管</div>
-		</div>
-		<footer class="footer">
-			<a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">蜀ICP备2024107064号-2</a>
-		</footer>
-	</body>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+    <title>树状笔记 · 开源社区</title>
+    <link rel="stylesheet" href="css/theme.css">
+</head>
+<body>
+    <div id="landing" style="display:none">
+        <div class="card" style="max-width:400px;margin:60px auto;padding:40px;text-align:center">
+            <h1 style="color:var(--accent)">树状笔记</h1>
+            <p style="color:var(--fg-secondary);line-height:1.6">一个开源的、基于树状结构的知识组织文件管理工具</p>
+            <div style="margin-top:1.5rem;display:flex;gap:0.75rem;justify-content:center">
+                <a class="btn-primary" href="login.html" style="padding:0.6rem 1.8rem;font-size:0.9rem;font-weight:600;border-radius:var(--radius-sm);text-decoration:none;color:#fff;background:var(--accent)">登录</a>
+                <a class="btn-ghost" href="register.html" style="padding:0.6rem 1.8rem;font-size:0.9rem;font-weight:600;border-radius:var(--radius-sm);text-decoration:none;color:var(--accent-dark);border:1.5px solid var(--border)">注册</a>
+            </div>
+            <p style="margin-top:1.5rem;font-size:0.8rem;color:var(--muted)">开源 · 免费 · 共享</p>
+        </div>
+    </div>
+    <div id="app" style="display:none">
+        <iframe src="dnfs.html" style="width:100%;height:100vh;border:none"></iframe>
+    </div>
+    <script>
+    (function(){
+        var t = sessionStorage.getItem('q4_token') || localStorage.getItem('q4_token');
+        if(t){
+            document.getElementById('landing').style.display='none';
+            document.getElementById('app').style.display='block';
+        } else {
+            document.getElementById('landing').style.display='block';
+            document.getElementById('app').style.display='none';
+        }
+    })();
+    </script>
+    <footer style="text-align:center;padding:1rem;font-size:0.75rem;color:var(--muted)">
+        <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener" style="color:var(--muted)">蜀ICP备2024107064号-2</a>
+    </footer>
+</body>
 </html>

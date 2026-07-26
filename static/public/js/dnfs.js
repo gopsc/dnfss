@@ -1,3 +1,5 @@
+// Session restore from localStorage
+if(!sessionStorage.getItem('q4_token')){var t=localStorage.getItem('q4_token');if(t)sessionStorage.setItem('q4_token',t);}
 
 /* by qing.
  *
