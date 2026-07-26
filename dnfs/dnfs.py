@@ -23,7 +23,6 @@ from waitress import serve
 import os
 import json
 import base64
-import socket as _socket
 import urllib.request
 import urllib.error
 from typing import Dict, Any
@@ -33,7 +32,7 @@ from log_client import logs
 # pymsg 导入
 import sys as _sys
 _sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from pymsg import send as _pmsg_send, recv as _pmsg_recv  # noqa: E402
+from pymsg import MsgClient  # noqa: E402
 
 _DBV2_ADDR = '127.0.0.1'
 _DBV2_PORT = 8005
@@ -44,12 +43,8 @@ def _call_dbv2(payload: dict, timeout: int = 10) -> dict:
     """
     payload = {**payload, "_route": "execute"}
     try:
-        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        sock.connect((_DBV2_ADDR, _DBV2_PORT))
-        _pmsg_send(sock, json.dumps(payload))
-        resp_text = _pmsg_recv(sock, timeout=timeout)
-        sock.close()
+        client = MsgClient(_DBV2_ADDR, _DBV2_PORT, "dnfs")
+        resp_text = client.call(json.dumps(payload), timeout=timeout)
         return json.loads(resp_text)
     except Exception as e:
         raise ConnectionError(

@@ -146,7 +146,7 @@ class MsgClient:
         self._sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
         self._sock.connect((self.addr, self.port))
 
-    # ---- 发送单条消息（短连接）--------------------------------------------
+    # ---- 发送单条消息（短连接，不等待回复）--------------------------------
     def send(self, msg: str) -> None:
         """发送一条消息到服务器（使用短连接，pymsg 协议）。"""
         try:
@@ -154,6 +154,36 @@ class MsgClient:
                 s.settimeout(3)
                 s.connect((self.addr, self.port))
                 send(s, f"{self.name}: {msg}")
+        except ConnectionRefusedError:
+            raise ConnectionRefusedError(
+                f"Could not connect to {self.addr}:{self.port}"
+            )
+
+    # ---- 请求-应答（短连接）------------------------------------------------
+    def call(self, msg: str, *, timeout: "float | None" = None) -> str:
+        """发送一条消息并阻塞等待单条回复（短连接：connect → send → recv → close）。
+
+        适合请求-应答模式，如 RPC 调用。不会给消息添加 name 前缀。
+
+        Args:
+            msg:     要发送的原始字符串。
+            timeout: 超时秒数，默认 10 秒。
+
+        Returns:
+            str: 服务器返回的字符串。
+
+        Raises:
+            ConnectionRefusedError: 目标服务不可达。
+            TimeoutError:           等待响应超时。
+            ConnectionError:        连接在收全数据前断开。
+        """
+        _tout = timeout if timeout is not None else 10.0
+        try:
+            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
+                s.settimeout(_tout)
+                s.connect((self.addr, self.port))
+                send(s, msg)
+                return recv(s, timeout=_tout)
         except ConnectionRefusedError:
             raise ConnectionRefusedError(
                 f"Could not connect to {self.addr}:{self.port}"

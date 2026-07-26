@@ -19,14 +19,13 @@
 import json
 import os as _os
 import sys as _sys
-import socket as _socket
 import threading
 import queue
 import time
 import atexit
 
 _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
-from pymsg import send as _pmsg_send, recv as _pmsg_recv  # noqa: E402
+from pymsg import MsgClient  # noqa: E402
 
 # ── 配置 ──────────────────────────────────────────────────────────────
 
@@ -135,17 +134,9 @@ class LogClient:
     def _send(self, batch):
         """通过 pymsg 短连接发送一批日志到 dbv2。失败时静默丢弃。"""
         try:
-            sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
-            sock.settimeout(_TIMEOUT)
-            sock.connect((_DBV2_ADDR, _DBV2_PORT))
+            client = MsgClient(_DBV2_ADDR, _DBV2_PORT, "dnfs-log")
             payload = {"_route": "log/ingest", "logs": batch}
-            _pmsg_send(sock, json.dumps(payload))
-            # 消费应答
-            try:
-                _pmsg_recv(sock, timeout=_TIMEOUT)
-            except Exception:
-                pass
-            sock.close()
+            client.call(json.dumps(payload), timeout=_TIMEOUT)
         except Exception:
             # fail-safe：日志服务不可用，静默丢弃，不影响业务
             pass
