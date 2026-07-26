@@ -4,10 +4,15 @@ from flask import Flask, request, jsonify
 from email.mime.text import MIMEText
 from email import header
 from log_client import logs
+from dotenv import load_dotenv
 import waitress
 import smtplib
 import random
 import time
+import sys, os
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 app = Flask(__name__)
 captchas: dict[str, list[str, str]] = {}
@@ -21,11 +26,6 @@ def send_email():
             digit: int = random.randint(0,9)
             captcha += str(digit)
         return captcha
-
-    SMTP_SERVER: str = ""
-    SMTP_PORT: str = 0
-    SMTP_USER: str = ""
-    __PASSWORD: str = ""
 
     data = request.get_json()
 
