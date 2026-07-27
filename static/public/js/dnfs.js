@@ -224,20 +224,6 @@ function load_notes(main_node) {
 
 
 	recommend_list.replaceChildren();
-	//alert(stack.length)
-	if (stack.length > 0) {	/* 如果不在根节点 */
-		var bak = document.createElement('center');
-		bak.addEventListener('click', function (event) {
-			stack.pop();
-			var id = (stack.length > 1) ? stack[stack.length - 1] : 0;
-			getNode(token, id).then(load_notes)
-			getNode(token, id).then(loadMap)
-		});
-		var bak1 = document.createElement('h1');
-		bak1.textContent = "返回上一层";
-		bak.appendChild(bak1)
-		recommend_list.appendChild(bak)
-	}
 	for (let i in main_node) {
 		let item = main_node[i]
 		let card = document.createElement('div');
@@ -273,6 +259,18 @@ function load_notes(main_node) {
 
 function loadMap(children_json) {
     minimap.replaceChildren();
+    if (stack.length > 0) {
+        let back = document.createElement("div");
+        back.className = "tag back";
+        back.textContent = "← 返回上一层";
+        back.addEventListener("click", () => {
+            stack.pop();
+            var id = (stack.length > 0) ? stack[stack.length - 1] : 0;
+            getNode(token, id).then(load_notes);
+            getNode(token, id).then(loadMap);
+        });
+        minimap.appendChild(back);
+    }
     for (let i in children_json) {
         let item = children_json[i];
         let tag = document.createElement("div");
