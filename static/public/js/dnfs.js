@@ -265,7 +265,7 @@ function loadMap(children_json) {
         back.textContent = "← 返回上一层";
         back.addEventListener("click", () => {
             stack.pop();
-            var id = (stack.length > 0) ? stack[stack.length - 1] : 0;
+            var id = (stack.length >= 0) ? stack[stack.length - 1] : 0;
             getNode(token, id).then(load_notes);
             getNode(token, id).then(loadMap);
         });
