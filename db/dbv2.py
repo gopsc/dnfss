@@ -15,19 +15,9 @@ dbv2 — 基于 pymsg 协议（MsgServer）的数据库服务。
         "limit": 10
     }
 
-    {
-        "_route": "log/ingest",
-        "logs": [{"service": "waf", "level": "INFO", "message": "..."}]
-    }
-
 支持的路由::
 
-    execute      → 原 /execute
-    log/ingest   → 原 /log/ingest
-    log/query    → 原 /log/query
-    log/stats    → 原 /log/stats
-    log/purge    → 原 /log/purge
-    log/health   → 原 /log/health
+    execute  → 通用 CRUD（select / insert / update / delete）
 """
 
 import json
@@ -53,15 +43,8 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///database.db")
 
 # ── 日志模块常量 ────────────────────────────────────────────────────────
 
-VALID_SERVICES = {
-    "waf", "gateway", "static", "dnfs", "db",
-    "ai_review", "captcha", "core",
-}
-VALID_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
-
-MAX_BATCH = 100
-MAX_MESSAGE_LEN = 8192
-MAX_EXTRA_LEN = 4096
+MAX_MESSAGE_LEN = 8192   # message 上限 8KB
+MAX_EXTRA_LEN = 4096     # extra 上限 4KB
 
 DEFAULT_RETENTION_DAYS = 30
 DEFAULT_MAX_RECORDS = 1_000_000
@@ -82,23 +65,19 @@ class DBServer:
         self.metadata = MetaData()
         self._server = MsgServer(addr, port)
 
-        # 日志模块内部状态
+        # 日志表缓存（避免重复反射）
         self._logs_table_cache = {}
 
         # 路由表
         self._routes = {
-            "execute":    self._handle_execute,
-            "log/ingest": self._handle_log_ingest,
-            "log/query":  self._handle_log_query,
-            "log/stats":  self._handle_log_stats,
-            "log/purge":  self._handle_log_purge,
-            "log/health": self._handle_log_health,
+            "execute": self._handle_execute,
         }
 
     # ── 启动 / 停止 ──────────────────────────────────────────────────
     def start(self) -> None:
         """启动服务（阻塞当前线程）。"""
         print(f"[dbv2] 监听 tcp://{self.addr}:{self.port}")
+        self._ensure_logs_table()   # 确保 Logs 表已建好（外部 MsgClient 写日志前）
         self._start_cleanup_thread()
         self._server.start(self._dispatch)
 
@@ -251,7 +230,7 @@ class DBServer:
         return [{"rowcount": res.rowcount}]
 
     # ═══════════════════════════════════════════════════════════════════
-    # 路由处理 — log/*
+    # 日志表管理 + 后台清理
     # ═══════════════════════════════════════════════════════════════════
 
     # ── 日志表管理 ────────────────────────────────────────────────────
@@ -312,186 +291,6 @@ class DBServer:
                 conn.commit()
         except Exception:
             pass
-
-    # ── log/ingest ────────────────────────────────────────────────────
-    def _handle_log_ingest(self, data, **kw):
-        logs = data.get("logs")
-        if not isinstance(logs, list) or not logs:
-            raise ValueError("logs 必须是非空数组")
-        if len(logs) > MAX_BATCH:
-            raise ValueError(f"单次最多 {MAX_BATCH} 条，当前 {len(logs)} 条")
-
-        table = self._ensure_logs_table()
-        now = datetime.now(timezone.utc).isoformat()
-        rows = []
-
-        for i, log in enumerate(logs):
-            if not isinstance(log, dict):
-                raise ValueError(f"第 {i} 条日志不是有效对象")
-
-            service = log.get("service")
-            level = log.get("level")
-            message = log.get("message")
-
-            if not service or service not in VALID_SERVICES:
-                raise ValueError(f"第 {i} 条: service 无效或缺失")
-            if not level or level not in VALID_LEVELS:
-                raise ValueError(f"第 {i} 条: level 无效或缺失")
-            if not message or not isinstance(message, str):
-                raise ValueError(f"第 {i} 条: message 缺失或非字符串")
-
-            if len(message) > MAX_MESSAGE_LEN:
-                message = message[:MAX_MESSAGE_LEN]
-
-            trace_id = log.get("trace_id")
-            extra = log.get("extra")
-            extra_json = None
-            if extra is not None:
-                extra_json = json.dumps(extra, ensure_ascii=False)
-                if len(extra_json) > MAX_EXTRA_LEN:
-                    extra_json = extra_json[:MAX_EXTRA_LEN]
-
-            rows.append({
-                "ts": log.get("ts") or now,
-                "service": service,
-                "level": level,
-                "message": message,
-                "trace_id": trace_id,
-                "extra": extra_json,
-            })
-
-        with self.engine.connect() as conn:
-            conn.execute(insert(table), rows)
-            conn.commit()
-
-        return {"inserted": len(rows)}
-
-    # ── log/query ─────────────────────────────────────────────────────
-    def _handle_log_query(self, data, **kw):
-        table = self._ensure_logs_table()
-        clauses = []
-
-        svc = data.get("service")
-        if svc:
-            col = table.columns["service"]
-            clauses.append(col.in_(svc) if isinstance(svc, list) else col == svc)
-
-        lvl = data.get("level")
-        if lvl:
-            col = table.columns["level"]
-            clauses.append(col.in_(lvl) if isinstance(lvl, list) else col == lvl)
-
-        tid = data.get("trace_id")
-        if tid:
-            clauses.append(table.columns["trace_id"] == tid)
-
-        since = data.get("since")
-        until = data.get("until")
-        ts_col = table.columns["ts"]
-        if since:
-            clauses.append(ts_col >= since)
-        if until:
-            clauses.append(ts_col <= until)
-
-        keyword = data.get("keyword")
-        if keyword:
-            clauses.append(table.columns["message"].like(f"%{keyword}%"))
-
-        where_cond = and_(*clauses) if clauses else None
-
-        order_col_name = data.get("order_by", "ts")
-        if order_col_name not in ("id", "ts", "service", "level"):
-            order_col_name = "ts"
-        order_col = table.columns[order_col_name]
-        order_expr = order_col.desc() if data.get("desc", True) else order_col.asc()
-
-        limit = min(data.get("limit", 100), 1000)
-        offset = data.get("offset", 0)
-
-        with self.engine.connect() as conn:
-            count_stmt = select(func.count()).select_from(table)
-            if where_cond is not None:
-                count_stmt = count_stmt.where(where_cond)
-            total = conn.execute(count_stmt).scalar() or 0
-
-            stmt = select(table)
-            if where_cond is not None:
-                stmt = stmt.where(where_cond)
-            stmt = stmt.order_by(order_expr).limit(limit).offset(offset)
-
-            rows = conn.execute(stmt).fetchall()
-            logs = []
-            for row in rows:
-                d = dict(row._mapping)
-                if d.get("extra"):
-                    try:
-                        d["extra"] = json.loads(d["extra"])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-                logs.append(d)
-
-        return {"total": total, "logs": logs}
-
-    # ── log/stats ─────────────────────────────────────────────────────
-    def _handle_log_stats(self, data, **kw):
-        table = self._ensure_logs_table()
-        group_by = data.get("group_by", "service")
-        group_fields = [g.strip() for g in group_by.split(",") if g.strip()]
-        for g in group_fields:
-            if g not in ("service", "level"):
-                raise ValueError(f"group_by 仅支持 service / level，收到: {g}")
-
-        clauses = []
-        since = data.get("since")
-        until = data.get("until")
-        ts_col = table.columns["ts"]
-        if since:
-            clauses.append(ts_col >= since)
-        if until:
-            clauses.append(ts_col <= until)
-        where_cond = and_(*clauses) if clauses else None
-
-        with self.engine.connect() as conn:
-            cols = [table.columns[g] for g in group_fields] + [func.count().label("count")]
-            stmt = select(*cols)
-            if where_cond is not None:
-                stmt = stmt.where(where_cond)
-            stmt = stmt.group_by(*[table.columns[g] for g in group_fields])
-
-            rows = conn.execute(stmt).fetchall()
-            groups = [dict(row._mapping) for row in rows]
-
-            count_stmt = select(func.count()).select_from(table)
-            if where_cond is not None:
-                count_stmt = count_stmt.where(where_cond)
-            total = conn.execute(count_stmt).scalar() or 0
-
-        return {"groups": groups, "total": total}
-
-    # ── log/purge ─────────────────────────────────────────────────────
-    def _handle_log_purge(self, data, **kw):
-        before = data.get("before")
-        if not before:
-            raise ValueError("缺少 before 字段")
-
-        table = self._ensure_logs_table()
-        with self.engine.connect() as conn:
-            stmt = delete(table).where(table.columns["ts"] < before)
-            result = conn.execute(stmt)
-            conn.commit()
-        deleted = result.rowcount
-        self._log_internal("db", "INFO",
-                           f"purge 清理 {deleted} 条 (before={before})")
-        return {"deleted": deleted}
-
-    # ── log/health ────────────────────────────────────────────────────
-    def _handle_log_health(self, data, **kw):
-        table = self._ensure_logs_table()
-        with self.engine.connect() as conn:
-            count = conn.execute(
-                select(func.count()).select_from(table)
-            ).scalar() or 0
-        return {"status": "ok", "count": count}
 
     # ── 后台自动清理线程 ──────────────────────────────────────────────
     def _start_cleanup_thread(self):
