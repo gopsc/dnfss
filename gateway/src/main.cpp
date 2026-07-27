@@ -26,7 +26,7 @@ using namespace qing;
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-constexpr const char *_VER = "0.3.0-security";
+constexpr const char *_VER = "0.4.0";
 
 //////////////////////////////////
 #include <sstream>
@@ -311,7 +311,7 @@ static std::vector<std::string>	_CORS_ORIGINS;			// CORS 允许的 Origin 白名
 /* instance items */
 static std::unique_ptr<HttpServer>		_SERVE;
 static std::unique_ptr<MyRSA::Generator>	_KEYGEN;
-static std::unique_ptr<Sqlite3>			_SQLDB;
+//static std::unique_ptr<Sqlite3>			_SQLDB;
 static RateLimiter				_LOGIN_RATE;
 static RateLimiter				_REGISTER_RATE;
 
@@ -383,6 +383,9 @@ int main(int argc, char **argv) {
 		("version,v",					"output version message")
 		("input,i", 	po::value<std::string>(),	"input a configure text file")
 	;
+
+
+	/* 执行解析（类似） */
 	po::variables_map vm;
 	{
 		try {
@@ -397,14 +400,19 @@ int main(int argc, char **argv) {
 		}
 	}
 
+
+	/* 分支：拉起帮助页面 */
 	if (vm.count("help")) {
 		std::cout << desc << std::endl;
 		return 0;
 	}
 
+
+
+	/* 异常：没输入配置文件 */
 	if (!vm.count("input")) {
 		std::cerr << "Please input configure file via -i"  << std::endl;
-		return 0;
+		return 1;
 	}
 
 	{
@@ -420,6 +428,9 @@ int main(int argc, char **argv) {
 		_TOKEN_KEEP_TIME = cf.get<int>("Token.keep_time", 3600);
 		_CORS_ORIGINS = split(cf.get<std::string>("CORS.allowed_origins", ""), ';');
 		}
+
+
+		/* 常规输出 */
 		catch (ConfIni::IniConfigureFileParseException &e) {
 			std::cerr << "ERROR: "  << e.what() << std::endl;
 			std::cerr << "ini format input file error" << std::endl;
@@ -530,32 +541,6 @@ void registerRoutes(HttpServer &server) {
 		return handleProxy(req, params, "post");
 	});
 
-	//server.options("*", [](const auto& req, const auto& params) {
-	//		pmc::net::http::response<pmc::net::http::string_body> res;
-	//		res.result(pmc::net::http::status::ok);
-	//
-	//		// CORS 白名单：从 [CORS] allowed_origins 加载，缺省为空（不回填 ACAO）
-	//		// 动态回填 Origin：仅当请求 Origin 命中白名单时才返回该值，否则不返回 ACAO 头
-	//		auto origin_it = req.base().find("Origin");
-	//		if (origin_it != req.base().end()) {
-	//			std::string origin = std::string(origin_it->value());
-	//			for (const auto& allowed : _CORS_ORIGINS) {
-	//				if (origin == allowed) {
-	//					res.set(pmc::net::http::field::access_control_allow_origin, origin);
-	//					res.set(pmc::net::http::field::vary, "Origin");
-	//					break;
-	//				}
-	//			}
-	//		}
-//
-//			res.set(pmc::net::http::field::access_control_allow_methods, "GET, POST, OPTIONS");
-//			res.set(pmc::net::http::field::access_control_allow_headers, "Content-Type, Authorization");
-//			res.set(pmc::net::http::field::access_control_max_age, "86400");
-//			res.body() = "";
-//			res.content_length(0);
-//			res.prepare_payload();
-//			return res;
-//	});
 }
 
 /* Http视图包装器
@@ -681,14 +666,14 @@ http::response<http::string_body> handleLogin(
 	auto username = std::string(obj.at("username").as_string());
 	auto password = std::string(obj.at("password").as_string());
 
-	// CAPTCHA verification
-	auto captcha_it = obj.find("captcha_token");
-	auto captcha_ans_it = obj.find("captcha_answer");
-	if (captcha_it != obj.end() && captcha_ans_it != obj.end()) {
-		std::string ct = std::string(captcha_it->value().as_string());
-		std::string ca = std::string(captcha_ans_it->value().as_string());
-		if (!verify_captcha(ct, ca)) THROW_EX_CUSTOM(HttpException, 2201, "Invalid CAPTCHA", 400, "/login");
-	}
+	// CAPTCHA verification 验证码
+	//auto captcha_it = obj.find("captcha_token");
+	//auto captcha_ans_it = obj.find("captcha_answer");
+	//if (captcha_it == obj.end() || captcha_ans_it == obj.end())
+	//	THROW_EX_CUSTOM(HttpException, 2002, "Bad_Request", 400, "/login");
+	//std::string ct = std::string(captcha_it->value().as_string());
+	//std::string ca = std::string(captcha_ans_it->value().as_string());
+	//if (!verify_captcha(ct, ca)) THROW_EX_CUSTOM(HttpException, 2201, "Invalid CAPTCHA", 400, "/login");
 
 	std::string stored_hash = "";
 	{
