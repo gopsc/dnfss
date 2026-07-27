@@ -25,7 +25,7 @@
                             ├────────────────► static:9200
                             └────────────────► dnfs:8006 ──► ai_review:8007
 
- 日志链路: waf / gateway / static / dnfs / ai_review / captcha ──(log_client)──► db:8005/log/ingest
+ 日志链路: waf / gateway / static / dnfs / ai_review / captcha / smtp / aibox ──(log_client)──► db:8005/log/ingest
 ```
 
 ### 请求链路
@@ -49,13 +49,16 @@
 | [dnfs](dnfs/) | Python(Flask) | 8006 | 树状网络文件系统（Dendrachy Network File-System），基于父子 pid 的节点树增删改查，集成 AI 内容审核 |
 | [db](db/) | Python(Flask) | 8005 | 通用数据库服务，基于 SQLAlchemy Core 的 SQL-over-HTTP，支持 select/insert/update/delete，参数化查询防注入；内置集中式日志收集（/log/* 路由） |
 | [ai_review](ai_review/) | Python(Flask) | 8007 | AI 内容审核服务，DeepSeek LLM + ChromaDB RAG，支持人工反馈纠偏 |
+| [captcha](captcha/) | Python(Flask) | 8009 | 验证码服务，生成图形验证码（5 分钟过期、一次性），供 gateway 登录/注册可选启用 CAPTCHA 校验 |
+| [smtp](smtp/) | Python(Flask) | 8008 | 邮件服务，发送/校验邮箱验证码（/send_email、/verify_email），注册流程的邮件验证码后端，SMTP 账号配置在 .env |
+| [aibox](aibox/) | Python | 8765 | 独立 AI 智能体系统（DeepSeek + WebSocket），自带技能系统/记忆/任务调度，由 core 拉起但与主干微服务无调用关系 |
 
 ### core（核心模块 · 进程托管服务）
 
 - 可执行文件 `nidus.out`，作为 systemd 服务（`Nidus.service`）常驻运行。
 - 支持两种工作模式：命令行子系统调用（`--send/--exec/--list/--kill`）与 HTTP 伺服器模式（`--serve <port>`）。
 - 通过命名管道（Pipe）与消息队列（Mq）实现进程间通信。
-- 读取 `init.txt` 自启动列表，按行拉起各业务服务（ai_review / db / dnfs / static / waf / gateway / captcha）。
+- 读取 `init.txt` 自启动列表，按行拉起各业务服务（ai_review / db / dnfs / smtp / static / waf / gateway / captcha / aibox）。
 
 ### waf（WAF 网关）
 
@@ -119,6 +122,25 @@
 - RAG 检索 top-3 相似已标注样本注入 prompt，MD5 去重，API 异常时 fail-open。
 - 配置通过 `.env` 文件（已 gitignore），含 DeepSeek API 密钥、模型参数、监听地址。
 
+### captcha（验证码服务）
+
+- 生成图形验证码，Token 一次性使用、5 分钟过期。
+- 接口：`GET /captcha`（生成）、`POST /verify`（校验）、`POST /new`（刷新）；答案错误返回 `200 {valid:false}`（Token 照常消费），仅参数 / Token 错误返回 `400`。
+- 由 `gateway` 在 `/login`、`/register` 中可选启用 CAPTCHA 校验（字段 `captcha_token` / `captcha_answer`）。
+- 内存存储，不支持多实例水平扩展（需换 Redis）；详见 [captcha/README.md](captcha/README.md)。
+
+### smtp（邮件服务）
+
+- 注册流程的邮箱验证码后端，基于 Flask + waitress，监听 127.0.0.1:8008。
+- 接口：`POST /send_email`（生成 6 位验证码并经 SMTP_SSL 发送至收件人，60 秒有效）、`POST /verify_email`（校验）。
+- 验证码存于进程内存，SMTP 账号通过 `.env` 配置（`SMTP_SERVER` / `SMTP_PORT` / `SMTP_USER` / `__PASSWORD`）。
+
+### aibox（独立 AI 智能体系统）
+
+- 一套相对独立的单智能体产品，基于 DeepSeek + WebSocket（:8765），由 `core` 拉起但与 waf / gateway / dnfs 等主干微服务无调用关系。
+- 自带技能系统（`skills/`）、任务调度器、记忆管理、前端页面与语音客户端（`voice_client.py`）。
+- 默认模型 `deepseek-v4-flash`，配置在 `config.json`；详见 [aibox/README.md](aibox/README.md)。
+
 ## 共享基础库
 
 | 库 | 说明 |
@@ -147,6 +169,8 @@
 | 8005 | db | 127.0.0.1 | 数据库服务（仅内部调用） |
 | 8007 | ai_review | 127.0.0.1 | AI 审核（仅内部调用） |
 | 8009 | captcha | 127.0.0.1 | 验证码服务（独立组件） |
+| 8008 | smtp | 127.0.0.1 | 邮件服务（仅内部调用，注册验证码邮件后端） |
+| 8765 | aibox | 127.0.0.1 | AI 智能体（WebSocket，独立产品） |
 
 ## 依赖
 
@@ -189,10 +213,12 @@ bash _run.sh   # 运行
 bash /opt/micro_servers/ai_review/_run.sh
 bash /opt/micro_servers/db/_run.sh
 bash /opt/micro_servers/dnfs/_run.sh
+bash /opt/micro_servers/smtp/_run.sh
 bash /opt/micro_servers/static/_run.sh
 bash /opt/micro_servers/waf/_run.sh
 bash /opt/micro_servers/gateway/_run.sh
 bash /opt/micro_servers/captcha/_run.sh
+bash /opt/micro_servers/aibox/_run.sh
 ```
 
 启动 `core`（需 root 或 systemd）：
