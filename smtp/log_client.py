@@ -114,7 +114,7 @@ class LogClient:
         while not self._stop.is_set():
             timeout = self._flush_interval - (time.monotonic() - last_flush)
             # 限制最长阻塞时间，以便及时响应 flush() 信号
-            chk_timeout = max(0.0, min(timeout, 0.5))
+            chk_timeout = max(0.1, min(timeout, 0.5))
             try:
                 item = self._queue.get(timeout=chk_timeout)
                 batch.append(item)
