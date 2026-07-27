@@ -219,20 +219,23 @@ button[type="button"], input[type="button"] { background: var(--accent-soft); co
 
 /* ===== Minimap (dnfs) ===== */
 .minimap {
-    position: sticky;
-    top: 0.5rem;
-    z-index: 10;
+    position: fixed;
+    right: 1rem;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 100;
     display: flex;
-    flex-wrap: wrap;
+    flex-direction: column;
     gap: 0.4rem;
+    max-height: 80vh;
+    overflow-y: auto;
     padding: 0.6rem 0.75rem;
-    margin-bottom: 1rem;
     border-radius: var(--radius-md);
     background: rgba(253, 246, 238, 0.72);
     border: 1px solid var(--border-light);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
-    box-shadow: var(--shadow-sm);
+    box-shadow: var(--shadow-md);
     transition: background 0.2s, border-color 0.2s;
 }
 @media (prefers-color-scheme: dark) {
