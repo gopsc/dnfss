@@ -217,6 +217,50 @@ button[type="button"], input[type="button"] { background: var(--accent-soft); co
 .recommend-list .card h3 { transition: color 0.15s; }
 .recommend-list .card p { font-size: 0.9rem; line-height: 1.6; color: var(--fg-secondary); }
 
+/* ===== Minimap (dnfs) ===== */
+.minimap {
+    position: sticky;
+    top: 0.5rem;
+    z-index: 10;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    padding: 0.6rem 0.75rem;
+    margin-bottom: 1rem;
+    border-radius: var(--radius-md);
+    background: rgba(253, 246, 238, 0.72);
+    border: 1px solid var(--border-light);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    box-shadow: var(--shadow-sm);
+    transition: background 0.2s, border-color 0.2s;
+}
+@media (prefers-color-scheme: dark) {
+    .minimap {
+        background: rgba(30, 23, 18, 0.72);
+        border-color: var(--border);
+    }
+}
+.minimap:empty { display: none; }
+.minimap .tag {
+    display: inline-block;
+    padding: 0.25rem 0.6rem;
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--fg-secondary);
+    background: rgba(232, 133, 58, 0.08);
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.minimap .tag:hover {
+    color: var(--accent-dark);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
 /* ===== Node Form (dnfs) ===== */
 .node-form { margin-top: 1rem; }
 .node-form .form-actions { margin-top: 0.75rem; }
