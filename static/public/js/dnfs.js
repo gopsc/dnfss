@@ -174,6 +174,7 @@ var input_note_clear = document.getElementById('input-note-clear');
 var recommend_list = document.getElementById('recommend-list');
 var delete_note = document.getElementById('delete-note');
 var minimap = document.getElementById("minimap");
+var is_expand = true;
 
 input_note_submit.addEventListener('click', function(event) {
 	var title = input_note_title.value
@@ -258,7 +259,29 @@ function load_notes(main_node) {
 };
 
 function loadMap(children_json) {
+	let need_return = false;
     minimap.replaceChildren();
+	var fold_div = document.createElement("div");
+	if (is_expand == true) {
+		fold_div.textContent = "v 折叠";
+		minimap.appendChild(fold_div);
+	} else {
+		fold_div.textContent = "> 展开";
+		minimap.appendChild(fold_div);
+		need_return = true;
+	}
+	fold_div.addEventListener("click", () => {
+		if (is_expand == true) {
+			is_expand = false;
+			getNode(token, stack.length == 0 ? 0 : stack[stack.length - 1]).then(loadMap);
+		} else {
+			is_expand = true;
+			getNode(token, stack.length == 0 ? 0 : stack[stack.length - 1]).then(loadMap);
+		}
+	});
+	if (need_return == true) {
+		return;
+	}
     if (stack.length > 0) {
         let back = document.createElement("div");
         back.className = "tag back";
