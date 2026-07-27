@@ -1,3 +1,4 @@
+../pymsg
 nuitka
 flask
 flask-cors
