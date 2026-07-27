@@ -10,6 +10,10 @@ from pathlib import Path
 import configparser
 import sys
 
+# pymsg 日志客户端（集中式日志 → dbv2 Logs 表）
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from log_client import logs  # noqa: E402
+
 # 基准目录：编译后取可执行文件所在目录，开发时取脚本所在目录
 # 解决 Nuitka onefile 解压到 /tmp 后相对路径失效的问题
 if getattr(sys, 'frozen', False):
@@ -64,8 +68,11 @@ if FILESYSTEM_ENABLED:
     try:
         Path(HTML_ROOT_DIR).mkdir(parents=True, exist_ok=True)
         logger.info(f"Created directory: {HTML_ROOT_DIR}")
+        logs.info("static", f"目录已创建: {HTML_ROOT_DIR}")
     except Exception as e:
         logger.error(f"Failed to create directory: {str(e)}")
+        logs.error("static", f"目录创建失败: {str(e)}",
+                    extra={"path": HTML_ROOT_DIR})
         FILESYSTEM_ENABLED = False
 
 SSL_ENABLED = file_config['ssl'].get('enabled', 'false').lower() == 'true'
@@ -168,6 +175,8 @@ def get_file_list():
         })
     except Exception as e:
         logger.error(f"Get file list error: {str(e)}")
+        logs.error("static", f"获取文件列表失败: {str(e)}",
+                    extra={"path": requested_path})
         return jsonify({'error': str(e)}), 500
 
 @app.route('/video/<path:file_path>', methods=['GET'])
@@ -212,6 +221,8 @@ def stream_video(file_path):
             return send_file(full_path, mimetype=mime_type, as_attachment=False)
     except Exception as e:
         logger.error(f"Video streaming error: {str(e)}")
+        logs.error("static", f"视频流传输失败: {str(e)}",
+                    extra={"file": file_path})
         return jsonify({'error': str(e)}), 500
 
 GATEWAY_DB = '/opt/micro_servers/gateway/sqlite3.db'
@@ -239,6 +250,7 @@ def api_reset_password():
     conn.execute("UPDATE Users SET password_hash=? WHERE email=?", (new_hash, email))
     conn.commit()
     conn.close()
+    logs.info("static", "密码重置", extra={"email": email[:3] + "***"})
     return jsonify({"success": True})
 
 
@@ -302,6 +314,7 @@ def yhdet_callback():
         fake_hash = hashlib.sha256(password.encode()).hexdigest()
         conn.execute("INSERT INTO Users (email, password_hash) VALUES (?, ?)", (email, fake_hash))
         conn.commit()
+        logs.info("static", "OAuth 新用户注册", extra={"email": email})
     conn.close()
     try:
         login_data = _json.dumps({"username": email, "password": password}).encode()
@@ -335,9 +348,15 @@ def yhdet_login():
     rows = conn.execute("SELECT email, password_hash FROM Users WHERE email=?", (email,)).fetchall()
     conn.close()
     if not rows:
+        logs.warning("static", "yhdet 登录失败-用户不存在",
+                      extra={"email": email[:8] + "***"})
         return jsonify({"success": False, "error": "Invalid credentials"})
     if rows[0][1] != pwd_hash:
+        logs.warning("static", "yhdet 登录失败-密码错误",
+                      extra={"email": email[:8] + "***"})
         return jsonify({"success": False, "error": "Invalid credentials"})
+    logs.info("static", "yhdet 登录成功",
+               extra={"email": email[:8] + "***"})
     token_data = f"{email}:{password}"
     token = base64.urlsafe_b64encode(token_data.encode()).decode()
     return jsonify({"success": True, "token": token})
@@ -396,6 +415,8 @@ def proxy_get_notes():
         with _urlreq.urlopen(req, timeout=15) as r:
             return _cors(make_response(r.read().decode(), 200, {"Content-Type": "application/json"}))
     except Exception as e:
+        logs.warning("static", "dnfs get_notes 代理失败",
+                      extra={"error": str(e)})
         return _cors(make_response(_json.dumps({"error": str(e)}), 502, {"Content-Type": "application/json"}))
 
 @app.route('/add_note', methods=['POST', 'OPTIONS'])
@@ -409,6 +430,7 @@ def proxy_add_note():
         with _urlreq.urlopen(req, timeout=15) as r:
             return _cors(make_response(r.read().decode(), 200, {"Content-Type": "application/json"}))
     except Exception as e:
+        logs.warning("static", "dnfs add_note 代理失败", extra={"error": str(e)})
         return _cors(make_response(_json.dumps({"error": str(e)}), 502, {"Content-Type": "application/json"}))
 
 @app.route('/delete_note', methods=['POST', 'OPTIONS'])
@@ -422,6 +444,7 @@ def proxy_delete_note():
         with _urlreq.urlopen(req, timeout=15) as r:
             return _cors(make_response(r.read().decode(), 200, {"Content-Type": "application/json"}))
     except Exception as e:
+        logs.warning("static", "dnfs delete_note 代理失败", extra={"error": str(e)})
         return _cors(make_response(_json.dumps({"error": str(e)}), 502, {"Content-Type": "application/json"}))
 
 @app.route('/update_note', methods=['POST', 'OPTIONS'])
@@ -435,6 +458,8 @@ def proxy_update_note():
         with _urlreq.urlopen(req, timeout=15) as r:
             return _cors(make_response(r.read().decode(), 200, {"Content-Type": "application/json"}))
     except Exception as e:
+        logs.warning("static", "dnfs update_note 代理失败",
+                      extra={"error": str(e)})
         return _cors(make_response(_json.dumps({"error": str(e)}), 502, {"Content-Type": "application/json"}))
 
 
@@ -520,6 +545,8 @@ def serve_file(path):
 
     except Exception as e:
         logger.error(f"Error: {str(e)}")
+        logs.error("static", f"静态文件服务错误: {str(e)}",
+                    extra={"path": path})
         import traceback
         traceback.print_exc()
         return f"服务器内部错误: {str(e)}", 500
