@@ -279,6 +279,22 @@ button[type="button"], input[type="button"] { background: var(--accent-soft); co
     border-color: var(--accent);
     margin-bottom: 0.25rem;
 }
+.minimap .tag.fold-btn {
+    color: var(--fg-secondary);
+    background: transparent;
+    border: 1px solid var(--border);
+    font-weight: 600;
+    margin-bottom: 0.3rem;
+    text-align: center;
+    max-width: none;
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.minimap .tag.fold-btn:hover {
+    color: var(--accent-dark);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
 
 /* ===== Node Form (dnfs) ===== */
 .node-form { margin-top: 1rem; }

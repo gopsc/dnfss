@@ -262,6 +262,7 @@ function loadMap(children_json) {
 	let need_return = false;
     minimap.replaceChildren();
 	var fold_div = document.createElement("div");
+	fold_div.className = "tag fold-btn";
 	if (is_expand == true) {
 		fold_div.textContent = "v 折叠";
 		minimap.appendChild(fold_div);
