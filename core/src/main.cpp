@@ -279,20 +279,21 @@ try {
 		return;
 	}
 
-	else if (typ == "kill") {
-		int trg = jv.at("kill").as_int64();
-		auto flag = pmc_mtd::kill(trg);
-		std::string msg = flag ? "OK" : "Nope";
-		pipe.writePipe(msg);
-		return;
-	}
+	/* 20260727(qing): 在身份验证之前禁止操作 */
+	//else if (typ == "kill") {
+	//	int trg = jv.at("kill").as_int64();
+	//	auto flag = pmc_mtd::kill(trg);
+	//	std::string msg = flag ? "OK" : "Nope";
+	//	pipe.writePipe(msg);
+	//	return;
+	//}
 
-	else if (typ == "exec"){
-		std::string cmd = jv.at("exec").as_string().c_str();
-		std::string msg = (pmc_mtd::exec(cmd)) ? "OK" : "ERR";
-		pipe.writePipe(msg);
-		return;
-	}
+	//else if (typ == "exec"){
+	//	std::string cmd = jv.at("exec").as_string().c_str();
+	//	std::string msg = (pmc_mtd::exec(cmd)) ? "OK" : "ERR";
+	//	pipe.writePipe(msg);
+	//	return;
+	//}
 }
 
 /* 捕获异常后，仅仅只是打印出来？ */

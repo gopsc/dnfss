@@ -1,8 +1,8 @@
 """
-统一日志客户端 — 各服务共用。
+统一日志客户端 — 通过 pymsg TCP 调用 dbv2 execute 路由，逐条 INSERT 到 Logs 表。
 
 设计要点：
-  - 使用 urllib.request（标准库，不引入 requests）
+  - 通过 pymsg TCP 调用 dbv2 execute 路由，逐条 INSERT 到 Logs 表
   - 异步非阻塞：内存队列 + 后台线程批量推送，不拖慢业务
   - fail-safe：db 服务不可用时静默丢弃，绝不影响业务
   - 缓冲批量：队列满 50 条或超时 2 秒时自动 flush
@@ -10,39 +10,49 @@
 用法：
     from log_client import logs
 
-    logs.info("dnfs", "节点新增成功 id=42")
-    logs.error("dnfs", "数据库连接失败", extra={"errno": 2002})
-    logs.push("gateway", "WARNING", "登录失败次数超限",
+    logs.info("smtp", "验证码发送成功")
+    logs.error("smtp", "验证码发送失败", extra={"errno": 2002})
+    logs.push("smtp", "WARNING", "登录失败次数超限",
               trace_id="req-abc", extra={"ip": "1.2.3.4"})
 """
 
 import json
+import os as _os
+import sys as _sys
 import threading
 import queue
 import time
-import urllib.request
-import urllib.error
 import atexit
+from datetime import datetime, timezone
+
+_sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+from pymsg import MsgClient  # noqa: E402
 
 # ── 配置 ──────────────────────────────────────────────────────────────
 
-DB_LOG_URL = 'http://127.0.0.1:8005/log/ingest'
+_DBV2_ADDR = '127.0.0.1'
+_DBV2_PORT = 8005
 
 _BATCH_SIZE = 50         # 队列满 50 条时 flush
 _FLUSH_INTERVAL = 2.0    # 超时 2 秒强制 flush
-_TIMEOUT = 5             # HTTP 请求超时（秒）
+_TIMEOUT = 5             # socket 超时（秒）
 
 
 class LogClient:
-    """异步批量日志推送客户端。"""
+    """异步批量日志推送客户端。
 
-    def __init__(self, url=DB_LOG_URL, batch_size=_BATCH_SIZE,
+    通过 MsgClient（pymsg TCP 协议）逐条 INSERT 到 dbv2 的 Logs 表。
+    """
+
+    def __init__(self, service_name="smtp",
+                 batch_size=_BATCH_SIZE,
                  flush_interval=_FLUSH_INTERVAL):
-        self._url = url
+        self._service_name = service_name
         self._batch_size = batch_size
         self._flush_interval = flush_interval
         self._queue = queue.Queue()
         self._stop = threading.Event()
+        self._flush_signal = threading.Event()
         self._thread = threading.Thread(target=self._flush_loop,
                                         daemon=True, name='log-client')
         self._thread.start()
@@ -76,7 +86,11 @@ class LogClient:
         self.push(service, 'CRITICAL', message, **kw)
 
     def flush(self):
-        """手动 flush 队列中剩余的日志。"""
+        """手动 flush 队列中剩余的日志（含后台线程持有的局部 batch）。"""
+        self._flush_signal.set()  # 通知后台线程立即 flush 其局部 batch
+        # 等待后台线程响应（queue.get 超时最长 0.5s）
+        time.sleep(0.6)
+        # 排空主队列中尚未被线程取走的条目
         batch = []
         while True:
             try:
@@ -88,6 +102,7 @@ class LogClient:
                 break
         if batch:
             self._send(batch)
+        self._flush_signal.clear()
 
     # ── 内部实现 ────────────────────────────────────────────────────────
 
@@ -97,25 +112,26 @@ class LogClient:
         last_flush = time.monotonic()
 
         while not self._stop.is_set():
-            timeout = max(0, self._flush_interval - (time.monotonic() - last_flush))
+            timeout = self._flush_interval - (time.monotonic() - last_flush)
+            # 限制最长阻塞时间，以便及时响应 flush() 信号
+            chk_timeout = max(0.1, min(timeout, 0.5))
             try:
-                item = self._queue.get(timeout=timeout)
+                item = self._queue.get(timeout=chk_timeout)
                 batch.append(item)
-                # 继续非阻塞地取，直到满 batch_size
                 while len(batch) < self._batch_size:
                     try:
                         batch.append(self._queue.get_nowait())
                     except queue.Empty:
                         break
             except queue.Empty:
-                pass  # 超时，没有新日志
+                pass
 
-            # 满了或超时了就发
             should_flush = (
                 len(batch) >= self._batch_size or
+                self._flush_signal.is_set() or
                 (batch and time.monotonic() - last_flush >= self._flush_interval)
             )
-            if should_flush:
+            if should_flush and batch:
                 self._send(batch)
                 batch = []
                 last_flush = time.monotonic()
@@ -125,21 +141,35 @@ class LogClient:
             self._send(batch)
 
     def _send(self, batch):
-        """发送一批日志到 db 服务。失败时静默丢弃。"""
-        data = json.dumps({'logs': batch}).encode('utf-8')
-        req = urllib.request.Request(
-            self._url, data=data,
-            headers={'Content-Type': 'application/json'},
-            method='POST'
-        )
+        """通过 pymsg 使用 execute 路由逐条 INSERT 到 dbv2 Logs 表。"""
+        now = datetime.now(timezone.utc).isoformat()
         try:
-            with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-                resp.read()  # 消费响应体
-        except (urllib.error.URLError, urllib.error.HTTPError, OSError):
-            # fail-safe：日志服务不可用，静默丢弃，不影响业务
-            pass
-        except Exception:
-            pass
+            client = MsgClient(_DBV2_ADDR, _DBV2_PORT, self._service_name + "-log")
+            for entry in batch:
+                extra_val = entry.get("extra")
+                payload = {
+                    "_route": "execute",
+                    "action": "insert",
+                    "table": "Logs",
+                    "values": {
+                        "ts": now,
+                        "service": entry.get("service"),
+                        "level": entry.get("level"),
+                        "message": entry.get("message"),
+                        "trace_id": entry.get("trace_id"),
+                        "extra": json.dumps(extra_val, ensure_ascii=False)
+                        if extra_val is not None else None,
+                    },
+                }
+                resp = client.call(json.dumps(payload), timeout=_TIMEOUT)
+                resp_obj = json.loads(resp)
+                if not resp_obj.get("success"):
+                    import sys
+                    print(f"[log_client] INSERT 失败: {resp_obj.get('error')}",
+                          file=sys.stderr)
+        except Exception as e:
+            import sys
+            print(f"[log_client] 发送失败: {e}", file=sys.stderr)
 
     def _shutdown(self):
         """进程退出时 flush 剩余日志。"""
@@ -149,4 +179,4 @@ class LogClient:
 
 # ── 全局单例 ──────────────────────────────────────────────────────────
 
-logs = LogClient()
+logs = LogClient(service_name="smtp")

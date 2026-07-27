@@ -92,7 +92,7 @@ function checkCode() {
 		codeTip.classList.add('tip-yellow');
 		return false;
 	}
-	if (code !== sendCode) {
+	if (sendCode === 'email_sent') { /* Server-verified, skip client check */ } else if (code !== sendCode) {
 		codeTip.textContent = '验证码错误，请核对！';
 		codeTip.classList.add('tip-red');
 		return false;

@@ -28,17 +28,34 @@
 
 ```
 rules/
-├── waf.conf              # 主入口，Include 各子文件
+├── waf.conf              # 主入口：基础配置（SecRuleEngine / SecRequestBodyLimit 等）
 ├── local/                # 本地自定义规则（ID 段 100000-199999）
 │   ├── custom.conf       # 示例：SQL注入/XSS/路径遍历/命令注入/扫描器UA
 │   └── exceptions.conf   # 误报白名单（SecRuleRemoveById / ctl:ruleRemoveById）
-└── crs/                  # OWASP CRS（git clone，不入库，ID 段 900000-999999）
+└── crs/                  # OWASP CRS（不入库，由 _fetch_crs.sh 拉取）
+    ├── coraza.conf       # CRS 入口（请求体处理器初始化 + tx.crs_setup_version）
+    ├── LICENSE           # Apache-2.0
+    └── rules/*.conf      # CRS 规则文件
 ```
+
+> **注意**：engine 不使用 coraza 的 `Include` 指令（其路径相对 cwd 解析易出错），改为在 [engine.Reload](internal/engine/engine.go) 中自行扫描目录、逐个 `WithDirectivesFromFile` 加载。
+
+### 规则加载顺序
+
+由 [engine.go:50-89](internal/engine/engine.go#L50) `Reload` 控制，固定顺序：
+
+1. `waf.conf` — 基础配置
+2. `local/*.conf` — 本地自定义规则（按文件名字母序）
+3. `crs/coraza.conf` — OWASP CRS 入口（**仅当文件存在时加载**）
+4. `crs/rules/*.conf` — OWASP CRS 规则（按文件名字母序）
 
 ### 规则 ID 分段
 
-- `100000-199999` 本地自定义
-- `900000-999999` OWASP CRS
+| ID 段 | 用途 |
+|-------|------|
+| 100000-199999 | 本地自定义规则 |
+| 200000-200006 | CRS 请求体处理器初始化（XML/JSON，由 `crs/coraza.conf` 定义） |
+| 900000-999999 | OWASP CRS 规则（由 `crs/rules/` 提供，不手改） |
 
 ### 规则语法（SecLang）
 
@@ -70,9 +87,20 @@ WAF 必须终止 TLS 才能看到明文 body，因此证书需从 gateway 迁到
 listen: ":443"
 tls_cert: "./certs/full_chain.crt"
 tls_key:  "./certs/server.key"
+
+# gateway 内部 HTTP 端口（gateway 需改为监听 127.0.0.1:8443 不启用 TLS）
 upstream: "http://127.0.0.1:8443"
+
+# 规则根目录，主入口为 <rules_dir>/waf.conf
 rules_dir: "./rules"
 ```
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `listen` | `:443` | 监听地址 |
+| `tls_cert` / `tls_key` | — | TLS 证书与私钥路径 |
+| `upstream` | — | gateway 地址，**必填** |
+| `rules_dir` | `./rules` | 规则根目录 |
 
 ## 目录结构
 
@@ -83,7 +111,7 @@ waf/
 ├── go.mod
 ├── internal/
 │   ├── engine/
-│   │   └── engine.go        # coraza 封装：加载/热加载/列举/单测
+│   │   └── engine.go        # coraza 封装：加载/热加载/列举/单测/输入检测
 │   └── proxy/
 │       └── proxy.go         # ReverseProxy + WAF 事务接入
 ├── rules/
@@ -91,8 +119,10 @@ waf/
 │   └── local/
 │       ├── custom.conf
 │       └── exceptions.conf
-├── _set.sh                  # 编译
+├── _set.sh                  # 编译（含 go mod tidy + download + build）
 ├── _run.sh                  # 运行
+├── _goproxy.sh              # 设置 GOPROXY 国内镜像（由 _set.sh 调用）
+├── _fetch_crs.sh            # 拉取 OWASP CRS（可选）
 ├── .gitignore
 └── README.md
 ```
@@ -100,11 +130,11 @@ waf/
 ## 安装
 
 ```bash
-# 1. 安装 Go 1.21+
+# 1. 安装 Go 1.21+（实际要求 1.22+，见 go.mod）
 brew install go    # macOS
 # 或 sudo apt install golang-go  # Debian/Ubuntu
 
-# 2. 编译
+# 2. 编译（_set.sh 会自动设置 GOPROXY 国内镜像 + GOTOOLCHAIN=local）
 bash _set.sh
 
 # 3. 准备证书
@@ -113,6 +143,8 @@ mkdir certs && cp /path/to/full_chain.crt /path/to/server.key certs/
 # 4. 运行
 bash _run.sh
 ```
+
+> **国内环境**：[_set.sh](_set.sh) 会调用 [_goproxy.sh](_goproxy.sh) 自动设置 `GOPROXY=https://goproxy.cn,direct` 与 `GOSUMDB=sum.golang.google.cn`；并强制 `GOTOOLCHAIN=local` 避免 Go 1.21+ 自动从 `proxy.golang.org` 下载 toolchain 超时。用户已显式配置非默认代理时尊重不覆盖。
 
 ## 接入 core 自启动
 
@@ -126,13 +158,19 @@ bash /opt/micro_servers/waf/_run.sh
 
 ## 命中日志
 
-命中规则时输出 JSON 一行，便于 `jq` 分析：
+命中规则时输出 JSON 一行，便于 `jq` 分析（见 [proxy.go:120-137](internal/proxy/proxy.go#L120)）：
 
 ```json
 {"ts":"2026-07-25T10:00:00Z","action":"block","rule_id":100001,"ip":"1.2.3.4","method":"GET","path":"/","query":"id=1'+OR+'1'='1","ua":"curl/8.0","cost_ms":0}
 ```
 
-聚合统计：
+放行请求时输出一行 pass 日志（见 [proxy.go:115](internal/proxy/proxy.go#L115)）：
+
+```
+[proxy] pass ip=1.2.3.4:54321 method=GET path=/ status=200 rule=- cost=1.2ms
+```
+
+聚合统计命中规则：
 
 ```bash
 journalctl -u Nidus -o cat | grep '"action":"block"' | \
@@ -141,31 +179,63 @@ journalctl -u Nidus -o cat | grep '"action":"block"' | \
 
 ## 启用 OWASP CRS（可选）
 
+通过 Go module proxy 拉取（不依赖 GitHub 直连，国内可用）：
+
 ```bash
-cd rules
-git clone --depth 1 https://github.com/coreruleset/coreruleset.git crs
+bash _fetch_crs.sh            # 拉取最新版
+# 或
+bash _fetch_crs.sh v4.25.0    # 拉取指定版本
 ```
 
-在 `rules/waf.conf` 取消注释：
+脚本会：
 
-```apache
-Include crs/coraza.conf
-Include crs/rules/*.conf
+1. 通过 `GOPROXY=https://goproxy.cn,direct` 下载 `github.com/corazawaf/coraza-coreruleset/v4` 到模块缓存
+2. 复制规则文件（`*.conf` + `*.data`）到 `rules/crs/rules/`
+3. 自动生成 `rules/crs/coraza.conf`（含请求体处理器初始化规则 200000-200006 与 `tx.crs_setup_version`）
+4. 复制 Apache-2.0 LICENSE
+
+完成后 `rules/crs/coraza.conf` 存在，[engine.Reload](internal/engine/engine.go) 会**自动检测并加载**，无需改 `waf.conf`。直接热加载即可生效：
+
+```bash
+kill -HUP $(pgrep waf)
 ```
 
-然后 `kill -HUP $(pgrep waf)`。
+校验加载结果：
+
+```bash
+./waf.bin -list | head
+```
+
+> `rules/crs/` 整个目录已在 `.gitignore` 中，不入库。如需升级 CRS，重跑 `_fetch_crs.sh` 即可。
+
+## 请求处理流程
+
+[proxy.go:57-117](internal/proxy/proxy.go#L57) `ServeHTTP`：
+
+1. `ProcessConnection` + `ProcessURI` + 添加请求头（含 Host）
+2. `ProcessRequestHeaders` → 命中即 `block` 返回 403
+3. 读全量请求体 → `ReadRequestBodyFrom` → `ProcessRequestBody` → 命中即 block
+4. `httputil.ReverseProxy.ServeHTTP` 转发到 gateway
+5. 捕获响应头 → `ProcessResponseHeaders`
+
+Director 改写（[proxy.go:36-46](internal/proxy/proxy.go#L36)）：剥离 `RemoteAddr` 端口，设置 `X-Forwarded-For` 与 `X-Forwarded-Proto: https`，供 gateway 的 RateLimiter 取真实客户端 IP。
+
+ErrorHandler（[proxy.go:48-51](internal/proxy/proxy.go#L48)）：upstream 不可达时返回 502，不暴露内部堆栈，仅服务端 log。
 
 ## 已知限制
 
 - 请求体全量读入内存检测，10MB 上限（`SecRequestBodyLimit`）。大文件上传场景需调大或加白名单。
-- 响应体检测未启用（需缓冲整个响应，延迟成本高）。
+- **响应体检测未启用**：仅 `ProcessResponseHeaders`，未 `ProcessResponseBody`（缓冲整个响应延迟成本高）。SQL 报错回显等响应体泄漏检测缺失。
 - 限流/黑白名单未实现，可后续作为 coraza 规则或独立中间件加。
+- `http.Server` 未设 `ReadTimeout` / `WriteTimeout` / `IdleTimeout`，存在慢连接攻击风险。
+- TLS 仅设 `MinVersion: TLS1.2`，未限定 cipher suites，允许弱加密套件。
+- `X-Forwarded-For` 直接覆盖原值，未按 RFC 7239 追加；当前 gateway 也只取第一个 IP，无实际影响，但语义不严格。
 
 ## 依赖
 
-- Go 1.21+
-- github.com/corazawaf/coraza/v3 v3.7.0
-- gopkg.in/yaml.v3
+- Go 1.22+（见 [go.mod](go.mod)，锁 `go 1.22.0`）
+- `github.com/corazawaf/coraza/v3` **v3.3.0**（锁版本，避免 v3.7.0 要求 Go 1.25+）
+- `gopkg.in/yaml.v3` v3.0.1
 
 ## 许可证
 

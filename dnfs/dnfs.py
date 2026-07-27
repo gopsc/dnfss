@@ -27,47 +27,29 @@ import urllib.request
 import urllib.error
 from typing import Dict, Any
 from security_middleware import apply_security_headers
+from log_client import logs
 
-DB_SERVER_URL = 'http://127.0.0.1:8005/execute'
-def call_db_service(url: str, payload: dict, timeout: int  = 10) -> dict:
-    '''
-    使用标准库向数据库服务发送 JSON 请求并返回解析后的响应。
+# pymsg 导入
+import sys as _sys
+_sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from pymsg import MsgClient  # noqa: E402
 
-    Args:
-        url: 服务端点 URL (例如 'http://127.0.0.1:8005/execute')
-        payload: 要发送的 JSON 数据字典
-        timeout: 请求超时秒数
+_DBV2_ADDR = '127.0.0.1'
+_DBV2_PORT = 8005
 
-    Returns:
-        dict: 服务返回的 JSON 响应
-
-    Raises:
-        urllib.error.URLError: 网络连接错误
-        urllib.error.HTTPError: HTTP 状态错误 (4xx, 5xx)
-        json.JSONDecodeError: 响应不是有效的 JSON
-    '''
-
-    data = json.dumps(payload).encode('utf-8')
-
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={'Content-Type': 'application/json'},
-        method='POST'
-    )
-
+def _call_dbv2(payload: dict, timeout: int = 10) -> dict:
+    """通过 pymsg 短连接调用 dbv2 数据库服务。
+    自动注入 ``_route: "execute"``。
+    """
+    payload = {**payload, "_route": "execute"}
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            raw = response.read().decode('utf-8')
-            return json.loads(raw)
-    except urllib.error.HTTPError as e:
-        # HTTP错误，尝试读取错误响应体
-        error_body = e.read().decode('utf-8', errors='replace')
-        raise urllib.error.HTTPError(
-            e.url, e.code, f'HTTP Error {e.code}: {error_body}', e.hdrs, e.fp
+        client = MsgClient(_DBV2_ADDR, _DBV2_PORT, "dnfs")
+        resp_text = client.call(json.dumps(payload), timeout=timeout)
+        return json.loads(resp_text)
+    except Exception as e:
+        raise ConnectionError(
+            f"dbv2 调用失败 ({_DBV2_ADDR}:{_DBV2_PORT}): {e}"
         ) from None
-    except urllib.error.URLError as e:
-        raise urllib.error.URLError(f'连接失败: {e.reason}') from None
 
 REVIEW_SERVER_URL = 'http://127.0.0.1:8007/review'
 def review_content(content: str, timeout: int = 10) -> Dict[str, Any]:
@@ -184,6 +166,7 @@ def add_note():
 
     if pid is None or not title or not content:
 
+        logs.warning('dnfs', 'add_note 参数缺失', extra={'ip': request.remote_addr})
         return jsonify({"error": "Pid, title and content are required"}), 400
 
     info = None
@@ -193,6 +176,7 @@ def add_note():
         info  = decode_token(token)
 
     if info is None:
+        logs.warning('dnfs', 'add_note 未授权访问', extra={'ip': request.remote_addr})
         return jsonify({"error": "Warning: no Authorization"}), 401
 
     if pid != 0:
@@ -205,10 +189,11 @@ def add_note():
             }
         }
 
-        notes = call_db_service(DB_SERVER_URL, select_payload)
+        notes = _call_dbv2(select_payload)
 
         # 不存在的父节点
         if len( notes['data']) == 0:
+            logs.warning('dnfs', f'add_note 父节点不存在 pid={pid}', extra={'user': info['user']})
             return jsonify({'error': 'the new node need a parent'}), 400
 
 
@@ -216,6 +201,7 @@ def add_note():
     review = review_content(title + '\n' + content, 10)
     if True != review:
         #return jsonify({'error': 'review failed', 'data': review}), 400
+        logs.warning('dnfs', f'add_note 内容审核未通过 title={title}', extra={'user': info['user']})
         return jsonify({'error': 'review failed'}), 400
 
     insert_payload = {
@@ -229,13 +215,15 @@ def add_note():
         }
     }
 
-    result = call_db_service(DB_SERVER_URL, insert_payload)
+    result = _call_dbv2(insert_payload)
 
     success = result['success']
 
     if success is True:
+        logs.info('dnfs', f'add_note 成功 title={title} pid={pid}', extra={'user': info['user']})
         return jsonify({'success': success}), 200
     else:
+        logs.error('dnfs', f'add_note 写入失败 title={title}', extra={'user': info['user']})
         return jsonify({'success': success}), 400
 
 
@@ -258,10 +246,11 @@ def get_notes():
         }
     }
 
-    notes = call_db_service(DB_SERVER_URL, select_payload)
+    notes = _call_dbv2(select_payload)
 
     result = notes['data']
 
+    logs.info('dnfs', f'get_notes 查询 pid={pid} 返回{len(result)}条', extra={'ip': request.remote_addr})
     return jsonify(result), 200
 
 
@@ -276,6 +265,7 @@ def delete_note():
 
     if not note_id:
 
+        logs.warning('dnfs', 'delete_note 参数缺失 id', extra={'ip': request.remote_addr})
         return jsonify({"error": "Note ID is required"}), 400
 
     info = None
@@ -285,6 +275,7 @@ def delete_note():
         info  = decode_token(token)
 
     if info is None:
+        logs.warning('dnfs', 'delete_note 未授权访问', extra={'ip': request.remote_addr})
         return jsonify({"error": "Warning: no Authorization"}), 401
 
     #with app.app_context():
@@ -315,11 +306,12 @@ def delete_note():
         }
     }
 
-    notes = call_db_service(DB_SERVER_URL, select_payload)
+    notes = _call_dbv2(select_payload)
 
     # 有子节点的情况不可删除
     if len(notes['data']) > 0:
 
+        logs.warning('dnfs', f'delete_note 存在子节点 id={note_id}', extra={'user': info['user']})
         return jsonify({'error': 'this node has a child '}), 400
 
     # 检查所有权
@@ -331,10 +323,11 @@ def delete_note():
         }
     }
 
-    data = call_db_service(DB_SERVER_URL, select_payload)
+    data = _call_dbv2(select_payload)
     notes = data['data']
     if not info['user'] == 'admin':
         if not len(notes) == 1 or not notes[0]['owner'] == info['user']:
+            logs.warning('dnfs', f'delete_note 所有权拒绝 id={note_id}', extra={'user': info['user']})
             return jsonify({"error": 'It\'s not your note'}), 403
 
 
@@ -344,16 +337,18 @@ def delete_note():
         'where': {'id': note_id}
     }
 
-    result = call_db_service(DB_SERVER_URL, delete_payload)
+    result = _call_dbv2(delete_payload)
 
     result = result['success']
 
     if result is True:
 
+        logs.info('dnfs', f'delete_note 成功 id={note_id}', extra={'user': info['user']})
         return jsonify({'success': True}), 200
 
     else:
 
+        logs.error('dnfs', f'delete_note 失败 id={note_id}', extra={'user': info['user']})
         return jsonify({'success': False}), 400
 
 
@@ -379,6 +374,7 @@ def update_note():
 
     if id is None or pid is None or not title or not content:
 
+        logs.warning('dnfs', 'update_note 参数缺失', extra={'ip': request.remote_addr})
         return jsonify({"error": "Invalid param"}), 400
 
     # 获取用户名
@@ -389,6 +385,7 @@ def update_note():
         info  = decode_token(token)
 
     if info is None:
+        logs.warning('dnfs', 'update_note 未授权访问', extra={'ip': request.remote_addr})
         return jsonify({"error": "Warning: no Authorization"}), 401
 
 
@@ -401,15 +398,17 @@ def update_note():
         }
     }
 
-    data = call_db_service(DB_SERVER_URL, select_payload)
+    data = _call_dbv2(select_payload)
     notes = data['data']
     if not len(notes) == 1 or not notes[0]['owner'] == info['user']:
+        logs.warning('dnfs', f'update_note 所有权拒绝 id={id}', extra={'user': info['user']})
         return jsonify({"error": 'It\'s not your note'}), 403
 
     # 内容审查
     review = review_content(title + '\n' + content, 10)
     if True != review:
         #return jsonify({'error': 'review failed', 'data': review}), 400
+        logs.warning('dnfs', f'update_note 内容审核未通过 id={id} title={title}', extra={'user': info['user']})
         return jsonify({'error': 'review failed'}), 400
 
     #with app.app_context():
@@ -437,18 +436,57 @@ def update_note():
         'where': {'id': id}
     }
 
-    result = call_db_service(DB_SERVER_URL, update_payload)
+    result = _call_dbv2(update_payload)
 
     result = result['success']
 
     if result is True:
 
+        logs.info('dnfs', f'update_note 成功 id={id} title={title}', extra={'user': info['user']})
         return jsonify({'success': True}), 200
 
     else:
 
+        logs.error('dnfs', f'update_note 失败 id={id}', extra={'user': info['user']})
         return jsonify({'success': False}), 400
 
+## by shufeng
+## 读取单个节点
+'''@app.route("/get_note", methods=["POST"])
+
+def get_note():
+    data = request.get_json()
+
+    id: int = data.get("id")
+    auth: str = request.headers.get("Authorization", "")
+    info = None
+
+    if auth.startswith("Bearer "):
+        token: str = auth[7:]
+        info = decode_token(token)
+
+    if id is None:
+        logs.error("dnfs", "get_note: 参数不足，缺少id")
+        return jsonify({"error": "Invalid param"}), 401
+
+    select_payload = {
+        "method": "select",
+        "tables": "Notes",
+        "where": {
+            "id": id
+        }
+    }
+
+    data = _call_dbv2(select_payload)
+    notes = data["data"]
+
+    if not len(notes) == 1 or not notes[0]["owner"] == info["user"]:
+        logs.error("dnfs", "没有读取权")
+        return jsonify({"error": "你没有读取这个的权力"}), 403
+
+    logs.info("dnfs", f"get_note 查询 id={id}")
+    return jsonify()
+'''
 
 
 
@@ -460,6 +498,7 @@ def update_note():
 ADDR='127.0.0.1'
 PORT=8006
 if __name__ == "__main__":
+    logs.info('dnfs', f'服务启动，监听 http://{ADDR}:{PORT}')
     print(f'Listen at http://{ADDR}:{PORT}')
     #app.run(host="127.0.0.1", port=8006)
     serve(app, host='127.0.0.1', port=8006)
