@@ -90,6 +90,7 @@ async function addNode(token, pid, title, content) {
 		input_note_title.value = "";
 		input_note_content.value = "";
 		getNode(token, stack[stack.length - 1]).then(load_notes);
+		getNode(token, stack[stack.length - 1]).then(loadMap)
 
 		//if (result.success) {
 		alert(`添加节点成功`, result);
@@ -142,6 +143,7 @@ async function deleteNode(token, id) {
 
 		stack.pop();
 		getNode(token, stack[stack.length - 1]).then(load_notes);
+		getNode(token, stack[stack.length - 1]).then(loadMap)
 
 		console.log(`删除节点成功`);
 		return result
@@ -171,6 +173,7 @@ var input_note_submit = document.getElementById('input-note-submit');
 var input_note_clear = document.getElementById('input-note-clear');
 var recommend_list = document.getElementById('recommend-list');
 var delete_note = document.getElementById('delete-note');
+var minimap = document.getElementById("minimap");
 
 input_note_submit.addEventListener('click', function(event) {
 	var title = input_note_title.value
@@ -228,6 +231,7 @@ function load_notes(main_node) {
 			stack.pop();
 			var id = (stack.length > 1) ? stack[stack.length - 1] : 0;
 			getNode(token, id).then(load_notes)
+			getNode(token, id).then(loadMap)
 		});
 		var bak1 = document.createElement('h1');
 		bak1.textContent = "返回上一层";
@@ -236,16 +240,18 @@ function load_notes(main_node) {
 	}
 	for (let i in main_node) {
 		let item = main_node[i]
-		let card = document.createElement('div'); 
+		let card = document.createElement('div');
 		card.className = "card";
 		card.addEventListener('click', function(event) {
 			var id = Number(item.id)
 			stack.push(id)
 			getNode(token, id).then(load_notes)
+			getNode(token, id).then(loadMap)
 		});
 		let ttl = document.createElement('center');
 		let ttl1 =document.createElement('h3');
 		ttl1.textContent = item.title;
+		card.id = item.title;
 		ttl.appendChild(ttl1);
 		card.appendChild(ttl);
 		let vit_div = document.createElement('p');
@@ -265,5 +271,22 @@ function load_notes(main_node) {
 	}
 };
 
+function loadMap(children_json) {
+    minimap.replaceChildren();
+    for (let i in children_json) {
+        let item = children_json[i];
+        let tag = document.createElement("div");
+        let title = item.title;
+        tag.className = "tag";
+        tag.textContent = title;
+        tag.addEventListener("click", () => {
+            window.location.href = `#${title}`;
+            console.log(`跳转到${title}`);
+        })
+        minimap.appendChild(tag);
+    }
+}
+
 var token = sessionStorage.getItem('q4_token')
 getNode(token, 0).then(load_notes);
+getNode(token, 0).then(loadMap)

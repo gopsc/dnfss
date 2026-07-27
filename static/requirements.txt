@@ -1,3 +1,4 @@
+../pymsg
 nuitka
 Flask>=2.3.0,<3.0.0
 Flask-CORS>=4.0.0,<5.0.0
