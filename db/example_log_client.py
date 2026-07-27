@@ -54,6 +54,7 @@ class LogClient:
         self._flush_interval = flush_interval
         self._queue = queue.Queue()
         self._stop = threading.Event()
+        self._flush_signal = threading.Event()
         self._thread = threading.Thread(target=self._flush_loop,
                                         daemon=True, name='log-client')
         self._thread.start()
@@ -87,7 +88,9 @@ class LogClient:
         self.push(service, 'CRITICAL', message, **kw)
 
     def flush(self):
-        """手动 flush 队列中剩余的日志。"""
+        """手动 flush 队列中剩余的日志（含后台线程持有的局部 batch）。"""
+        self._flush_signal.set()  # 通知后台线程立即 flush 其局部 batch
+        time.sleep(0.6)  # 等待后台线程响应
         batch = []
         while True:
             try:
@@ -99,6 +102,7 @@ class LogClient:
                 break
         if batch:
             self._send(batch)
+        self._flush_signal.clear()
 
     # ── 内部实现 ────────────────────────────────────────────────────────
 
@@ -108,30 +112,25 @@ class LogClient:
         last_flush = time.monotonic()
 
         while not self._stop.is_set():
-            timeout = max(0, self._flush_interval - (time.monotonic() - last_flush))
+            timeout = self._flush_interval - (time.monotonic() - last_flush)
+            chk_timeout = max(0.0, min(timeout, 0.5))
             try:
-                item = self._queue.get(timeout=timeout)
+                item = self._queue.get(timeout=chk_timeout)
                 batch.append(item)
-                # 继续非阻塞地取，直到满 batch_size
                 while len(batch) < self._batch_size:
                     try:
                         batch.append(self._queue.get_nowait())
                     except queue.Empty:
                         break
             except queue.Empty:
-                # 超时无新日志：如果 batch 中已有积攒的条目，强制 flush
-                if batch:
-                    self._send(batch)
-                    batch = []
-                last_flush = time.monotonic()
-                continue
+                pass
 
-            # 满了或超时了就发
             should_flush = (
                 len(batch) >= self._batch_size or
+                self._flush_signal.is_set() or
                 (batch and time.monotonic() - last_flush >= self._flush_interval)
             )
-            if should_flush:
+            if should_flush and batch:
                 self._send(batch)
                 batch = []
                 last_flush = time.monotonic()

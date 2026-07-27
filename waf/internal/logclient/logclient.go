@@ -1,24 +1,30 @@
-// Package logclient 提供异步批量日志推送客户端，将日志发送到 db 服务的 /log/ingest 接口。
+// Package logclient 提供异步批量日志推送客户端。
 //
-// 设计要点（与 Python log_client.py 对齐）：
+// 通过 pymsg TCP 协议调用 dbv2 execute 路由，逐条 INSERT 到 Logs 表。
+//
+// 设计要点（与 Python example_log_client.py 对齐）：
 //   - 异步非阻塞：内存 channel + 后台 goroutine 批量推送，不拖慢业务
 //   - fail-safe：db 服务不可用时静默丢弃，绝不影响业务
 //   - 缓冲批量：队列满 50 条或超时 2 秒时自动 flush
+//
+// 协议：pymsg 长度前缀帧（4 字节 big-endian uint32 长度 + UTF-8 载荷）
 package logclient
 
 import (
-	"bytes"
+	"encoding/binary"
 	"encoding/json"
-	"net/http"
+	"fmt"
+	"io"
+	"net"
 	"sync"
 	"time"
 )
 
 const (
-	defaultURL     = "http://127.0.0.1:8005/log/ingest"
-	batchSize      = 50
-	flushInterval  = 2 * time.Second
-	requestTimeout = 5 * time.Second
+	dbAddr        = "127.0.0.1:8005"
+	batchSize     = 50
+	flushInterval = 2 * time.Second
+	socketTimeout = 5 * time.Second
 )
 
 // Entry 单条日志。
@@ -30,11 +36,23 @@ type Entry struct {
 	Extra   map[string]any `json:"extra,omitempty"`
 }
 
+// dbV2Request execute 路由的 INSERT 请求体。
+type dbV2Request struct {
+	Route  string         `json:"_route"`
+	Action string         `json:"action"`
+	Table  string         `json:"table"`
+	Values map[string]any `json:"values"`
+}
+
+// dbV2Response execute 路由的通用响应。
+type dbV2Response struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
+
 // Client 异步批量日志推送客户端。
 type Client struct {
-	url     string
 	ch      chan Entry
-	client  *http.Client
 	stop    chan struct{}
 	wg      sync.WaitGroup
 	stopped bool
@@ -46,16 +64,14 @@ var global *Client
 
 // Init 初始化全局日志客户端并启动后台 flush goroutine。
 func Init() {
-	global = New(defaultURL)
+	global = New()
 }
 
 // New 创建客户端实例。
-func New(url string) *Client {
+func New() *Client {
 	c := &Client{
-		url:    url,
-		ch:     make(chan Entry, 256),
-		client: &http.Client{Timeout: requestTimeout},
-		stop:   make(chan struct{}),
+		ch:   make(chan Entry, 256),
+		stop: make(chan struct{}),
 	}
 	c.wg.Add(1)
 	go c.flushLoop()
@@ -153,21 +169,90 @@ func (c *Client) flushLoop() {
 }
 
 func (c *Client) send(batch []Entry) {
-	payload := map[string]any{"logs": batch}
-	data, err := json.Marshal(payload)
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, entry := range batch {
+		c.sendOne(entry, now)
+	}
+}
+
+// sendOne 通过 pymsg TCP 协议发送单条日志到 dbv2。
+func (c *Client) sendOne(entry Entry, ts string) {
+	extraJSON := ""
+	if entry.Extra != nil {
+		b, err := json.Marshal(entry.Extra)
+		if err != nil {
+			return
+		}
+		extraJSON = string(b)
+	}
+
+	values := map[string]any{
+		"ts":      ts,
+		"service": entry.Service,
+		"level":   entry.Level,
+		"message": entry.Message,
+	}
+	if entry.TraceID != "" {
+		values["trace_id"] = entry.TraceID
+	}
+	if extraJSON != "" {
+		values["extra"] = extraJSON
+	}
+
+	req := dbV2Request{
+		Route:  "execute",
+		Action: "insert",
+		Table:  "Logs",
+		Values: values,
+	}
+	data, err := json.Marshal(req)
 	if err != nil {
 		return
 	}
-	req, err := http.NewRequest("POST", c.url, bytes.NewReader(data))
+
+	// pymsg 协议：4 字节 big-endian 长度 + UTF-8 载荷
+	resp, err := pymsgCall(data)
 	if err != nil {
-		return
+		return // fail-safe
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.client.Do(req)
+
+	var r dbV2Response
+	if json.Unmarshal(resp, &r) != nil || !r.Success {
+		fmt.Printf("[logclient] INSERT failed: %s\n", r.Error)
+	}
+}
+
+// pymsgCall 发送一条 pymsg 请求并读取响应（短连接模式）。
+func pymsgCall(payload []byte) ([]byte, error) {
+	conn, err := net.DialTimeout("tcp", dbAddr, socketTimeout)
 	if err != nil {
-		return // fail-safe：静默丢弃
+		return nil, err
 	}
-	resp.Body.Close()
+	defer conn.Close()
+
+	conn.SetDeadline(time.Now().Add(socketTimeout))
+
+	// 发送：4 字节长度前缀 + 载荷
+	header := make([]byte, 4)
+	binary.BigEndian.PutUint32(header, uint32(len(payload)))
+	if _, err := conn.Write(header); err != nil {
+		return nil, err
+	}
+	if _, err := conn.Write(payload); err != nil {
+		return nil, err
+	}
+
+	// 接收：4 字节长度前缀 + 载荷
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return nil, err
+	}
+	respLen := binary.BigEndian.Uint32(header)
+	resp := make([]byte, respLen)
+	if _, err := io.ReadFull(conn, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
 }
 
 func (c *Client) flush() {
