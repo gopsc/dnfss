@@ -450,6 +450,43 @@ def update_note():
         logs.error('dnfs', f'update_note 失败 id={id}', extra={'user': info['user']})
         return jsonify({'success': False}), 400
 
+## by shufeng
+## 读取单个节点
+'''@app.route("/get_note", methods=["POST"])
+
+def get_note():
+    data = request.get_json()
+
+    id: int = data.get("id")
+    auth: str = request.headers.get("Authorization", "")
+    info = None
+
+    if auth.startswith("Bearer "):
+        token: str = auth[7:]
+        info = decode_token(token)
+
+    if id is None:
+        logs.error("dnfs", "get_note: 参数不足，缺少id")
+        return jsonify({"error": "Invalid param"}), 401
+
+    select_payload = {
+        "method": "select",
+        "tables": "Notes",
+        "where": {
+            "id": id
+        }
+    }
+
+    data = _call_dbv2(select_payload)
+    notes = data["data"]
+
+    if not len(notes) == 1 or not notes[0]["owner"] == info["user"]:
+        logs.error("dnfs", "没有读取权")
+        return jsonify({"error": "你没有读取这个的权力"}), 403
+
+    logs.info("dnfs", f"get_note 查询 id={id}")
+    return jsonify()
+'''
 
 
 

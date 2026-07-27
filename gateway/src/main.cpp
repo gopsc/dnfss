@@ -667,6 +667,8 @@ http::response<http::string_body> handleLogin(
 	auto password = std::string(obj.at("password").as_string());
 
 	// CAPTCHA verification 验证码
+	// 浏览器请求验证码端口，获取验证图片和身份证（速率限制），身份证对应验证码
+	// gateway请求验证端口，输入用户的验证和身份证
 	//auto captcha_it = obj.find("captcha_token");
 	//auto captcha_ans_it = obj.find("captcha_answer");
 	//if (captcha_it == obj.end() || captcha_ans_it == obj.end())
