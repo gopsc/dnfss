@@ -127,7 +127,10 @@ function render() {
 }
 
 // ===== 数据拉取（接口与参数与原版本一致） =====
+let isLoading = false;	// 防重复点击：请求进行中忽略再次触发
 async function loadData() {
+    if (isLoading) return;
+    isLoading = true;
     loading.style.display = "block";
     fileList.innerHTML = "";
     empty.style.display = "none";
@@ -145,6 +148,8 @@ async function loadData() {
     } catch (e) {
         fileList.innerHTML = `<div class="error">❌ 加载失败: ${esc(e.message)}</div>`;
         loading.style.display = "none";
+    } finally {
+        isLoading = false;
     }
 }
 
@@ -173,7 +178,10 @@ document.addEventListener("keydown", function (e) {
     }
 });
 
-btnRefresh.addEventListener("click", loadData);
+btnRefresh.addEventListener("click", function (e) {
+    e.preventDefault();	// <a href="#"> 默认会跳页顶，拦截
+    loadData();
+});
 
 // ===== 启动 =====
 renderBreadcrumb();

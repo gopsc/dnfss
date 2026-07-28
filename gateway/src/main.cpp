@@ -26,7 +26,7 @@ using namespace qing;
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-constexpr const char *_VER = "0.4.0";
+constexpr const char *_VER = "0.4.4";
 
 //////////////////////////////////
 #include <sstream>
@@ -291,6 +291,18 @@ http::response<http::string_body> handleCaptcha(
 		const http::request<http::string_body>& req,
 		const std::unordered_map<std::string, std::string>& params);
 
+http::response<http::string_body> handleLogout(
+		const http::request<http::string_body>& req,
+		const std::unordered_map<std::string, std::string>& params);
+
+/* 代理 captcha 图形验证码：pymsg 调 captcha 服务，返回 PNG 图片 */
+http::response<http::string_body> handleCaptchaImage(
+		const http::request<http::string_body>& req,
+		const std::unordered_map<std::string, std::string>& params);
+
+/* 从 Cookie 头中解析指定名称的值（找不到返回空串） */
+std::string get_cookie_value(const std::string& cookie_header, const std::string& name);
+
 
 /*  headers can't processed */
 bool is_special_header(const std::string &header);
@@ -354,6 +366,27 @@ bool verify_captcha(const std::string& token, const std::string& answer) {
     bool match = (it->second.answer == answer);
     _CAPTCHA_STORE.erase(it); // one-time use
     return match;
+}
+
+/* 调用 captcha 服务（pymsg/TCP :8009）校验图形验证码。
+ * Token 一次性消费；服务不可用或响应异常一律视为校验失败（fail-closed）。
+ * 与内置 verify_captcha 并存：登录/注册可任选其一接入。 */
+bool verify_captcha_remote(const std::string& token, const std::string& answer) {
+	try {
+		pmc::net::MsgClient client("127.0.0.1", 8009, "gateway");
+		json::value jv_req = {
+			{"_route", "verify"},
+			{"token", token},
+			{"answer", answer}
+		};
+		std::string resp = client.call(json::serialize(jv_req), 5.0);
+		auto jv = json::parse(resp);
+		auto& obj = jv.as_object();
+		if (!obj.at("success").as_bool()) return false;
+		return obj.at("data").as_object().at("valid").as_bool();
+	} catch (const std::exception&) {
+		return false;
+	}
 }
 
 /* -------- 信号处理回调函数 -------- */
@@ -532,6 +565,17 @@ void registerRoutes(HttpServer &server) {
 			[](const auto& req, const auto& params) { return handleRegister(req, params); });
 	});
 
+	server.post("/logout", [](const auto& req, const auto& params) -> http::response<http::string_body> {
+		return wrapperHttp(req, params,
+			[](const auto& req, const auto& params) { return handleLogout(req, params); });
+	});
+
+	/* 代理 captcha 图形验证码（须在 get("*") 通配符之前注册） */
+	server.get("/captcha/image", [](const auto& req, const auto& params) -> http::response<http::string_body> {
+		return wrapperHttp(req, params,
+			[](const auto& req, const auto& params) { return handleCaptchaImage(req, params); });
+	});
+
 	server.get("*", [](const auto& req, const auto& params) -> http::response<http::string_body> {
 		return wrapperHttp(req, params,
 			[](const auto& req, const auto& params) { return handleProxy(req, params, "get"); });
@@ -666,16 +710,14 @@ http::response<http::string_body> handleLogin(
 	auto username = std::string(obj.at("username").as_string());
 	auto password = std::string(obj.at("password").as_string());
 
-	// CAPTCHA verification 验证码
-	// 浏览器请求验证码端口，获取验证图片和身份证（速率限制），身份证对应验证码
-	// gateway请求验证端口，输入用户的验证和身份证
-	//auto captcha_it = obj.find("captcha_token");
-	//auto captcha_ans_it = obj.find("captcha_answer");
-	//if (captcha_it == obj.end() || captcha_ans_it == obj.end())
-	//	THROW_EX_CUSTOM(HttpException, 2002, "Bad_Request", 400, "/login");
-	//std::string ct = std::string(captcha_it->value().as_string());
-	//std::string ca = std::string(captcha_ans_it->value().as_string());
-	//if (!verify_captcha(ct, ca)) THROW_EX_CUSTOM(HttpException, 2201, "Invalid CAPTCHA", 400, "/login");
+	// CAPTCHA verification 验证码（对接 captcha pymsg 服务，图形码 Token 一次性消费）
+	auto captcha_it = obj.find("captcha_token");
+	auto captcha_ans_it = obj.find("captcha_answer");
+	if (captcha_it == obj.end() || captcha_ans_it == obj.end())
+		THROW_EX_CUSTOM(HttpException, 2002, "Bad_Request", 400, "/login");
+	std::string ct = std::string(captcha_it->value().as_string());
+	std::string ca = std::string(captcha_ans_it->value().as_string());
+	if (!verify_captcha_remote(ct, ca)) THROW_EX_CUSTOM(HttpException, 2201, "Invalid CAPTCHA", 400, "/login");
 
 	std::string stored_hash = "";
 	{
@@ -776,8 +818,84 @@ http::response<http::string_body> handleLogin(
 		}
 	};
 	res.set("Connection", "close");
+
+	/* 签发 HttpOnly Cookie（防 XSS 窃取 Token；JS 不再经手 Token） */
+	{
+		std::string ck = "q4_token=" + token +
+			"; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=" +
+			std::to_string(_TOKEN_KEEP_TIME);
+		res.set("Set-Cookie", ck);
+	}
+
 	res.result(http::status::ok);
 	res.body() = json::serialize(jv_rr);
+	res.prepare_payload();
+	return res;
+}
+
+/* 退出登录 /logout：清除 q4_token Cookie */
+http::response<http::string_body> handleLogout(
+	const http::request<http::string_body>& req,
+	const std::unordered_map<std::string, std::string>& params)
+{
+	http::response<http::string_body> res;
+	res.version(req.version());
+
+	res.set("Set-Cookie",
+		"q4_token=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0");
+	res.set("Connection", "close");
+	res.result(http::status::ok);
+	res.body() = R"({"success": true, "message": "logged out"})";
+	res.prepare_payload();
+	return res;
+}
+
+/* 代理 captcha 图形验证码：GET /captcha/image
+ *
+ * captcha 服务为 pymsg/TCP（:8009），浏览器无法直接访问，
+ * 由本路由做 HTTP → pymsg 转换：调 image 路由拿到 base64 PNG 与 token，
+ * 解码后以 image/png + X-Captcha-Token 响应头返回（与旧直出接口契约一致）。
+ */
+http::response<http::string_body> handleCaptchaImage(
+	const http::request<http::string_body>& req,
+	const std::unordered_map<std::string, std::string>& params)
+{
+	http::response<http::string_body> res;
+	res.version(req.version());
+
+	/* 调 captcha 服务（pymsg/TCP），连接失败/超时视为 502 */
+	pmc::net::MsgClient client("127.0.0.1", 8009, "gateway");
+	std::string resp;
+	try {
+		resp = client.call(R"({"_route":"image"})", 5.0);
+	} catch (const std::exception& e) {
+		THROW_EX_CUSTOM(HttpException, 2400, "Captcha service unavailable", 502, "/captcha/image");
+	}
+
+	/* 解析响应（格式错误同样视为 502） */
+	std::string token;
+	std::string png;
+	try {
+		auto jv = json::parse(resp);
+		auto& obj = jv.as_object();
+		if (!obj.at("success").as_bool())
+			THROW_EX_CUSTOM(HttpException, 2401, "Captcha service error", 502, "/captcha/image");
+		auto& data = obj.at("data").as_object();
+		token = json::value_to<std::string>(data.at("token"));
+		auto image_b64 = json::value_to<std::string>(data.at("image"));
+		png = Base64::base64_decode_to_string(image_b64);
+	} catch (const HttpException&) {
+		throw;
+	} catch (const std::exception& e) {
+		THROW_EX_CUSTOM(HttpException, 2402, "Bad captcha response", 502, "/captcha/image");
+	}
+
+	res.set(http::field::content_type, "image/png");
+	res.set("X-Captcha-Token", token);
+	res.set("Cache-Control", "no-store");   /* 验证码图片禁止缓存 */
+	res.set("Connection", "close");
+	res.result(http::status::ok);
+	res.body() = std::move(png);
 	res.prepare_payload();
 	return res;
 }
@@ -878,6 +996,7 @@ http::response<http::string_body> handleProxy(
 	std::string t_url = "";
 	std::string url = "";
 	std::string auth = "";
+	std::string cookie_token = "";	/* 从 Cookie 提取的 Token（用于向下游注入 Authorization） */
 	json::value jv_t;
 	{
 		auto flag = false;
@@ -912,24 +1031,41 @@ http::response<http::string_body> handleProxy(
 		url += "/";
 		url += target_path;
 
+		std::string raw = "";
 		it = req.base().find("Authorization");
-		if (it == req.base().end() && !flag)
-			THROW_EX_CUSTOM(HttpException, 2301, "Unauthorization", 401, "*");
-		std::string raw = req["Authorization"];
-		if (raw.substr(0, 7) == "Bearer ") {
-			raw = raw.substr(7, raw.size() - 7);
-			size_t idx  = raw.find("_");
-			if (idx == std::string::npos)
-				THROW_EX_CUSTOM(HttpException, 2301, "Unauthorization", 400, "*");
-			std::string data = raw.substr(0, idx);
-			std::string sign = raw.substr(idx+1, raw.size()-idx-1);
-			auth = Base64::base64_decode_to_string(data);
-			if (!_PUBL.Verify(auth, sign))
-				THROW_EX_CUSTOM(HttpException, 2301, "Unauthorization", 401, "*");
+		if (it != req.base().end()) {
+			raw = std::string(it->value());
+		} else {
+			/* 回退：从 HttpOnly Cookie 读取 q4_token（浏览器同源请求自动携带） */
+			auto cit = req.base().find("Cookie");
+			if (cit != req.base().end()) {
+				cookie_token = get_cookie_value(std::string(cit->value()), "q4_token");
+				if (!cookie_token.empty())
+					raw = "Bearer " + cookie_token;
+			}
 		}
+		if (raw.empty() && !flag)
+			THROW_EX_CUSTOM(HttpException, 2301, "Unauthorization", 401, "*");
 
-		/* 是否过期 */
 		if (!flag) {
+			/* 仅在需要鉴权的目标上校验凭证。
+			 * 默认目标（公开静态资源）必须跳过校验：
+			 * 浏览器会给每个请求自动携带 q4_token Cookie，
+			 * gateway 重启（内存 RSA 密钥对轮换）或 Token 过期后，
+			 * 旧 Cookie 验签失败会让公开页面也误返回 401 */
+			if (raw.substr(0, 7) == "Bearer ") {
+				raw = raw.substr(7, raw.size() - 7);
+				size_t idx  = raw.find("_");
+				if (idx == std::string::npos)
+					THROW_EX_CUSTOM(HttpException, 2301, "Unauthorization", 400, "*");
+				std::string data = raw.substr(0, idx);
+				std::string sign = raw.substr(idx+1, raw.size()-idx-1);
+				auth = Base64::base64_decode_to_string(data);
+				if (!_PUBL.Verify(auth, sign))
+					THROW_EX_CUSTOM(HttpException, 2301, "Unauthorization", 401, "*");
+			}
+
+			/* 是否过期 */
 			try { jv_t = json::parse(auth); }
 			catch (const boost::wrapexcept<boost::system::system_error>& e) {
 				THROW_EX_CUSTOM(HttpException, 2302, "Bad token", 400, "*");
@@ -945,6 +1081,9 @@ http::response<http::string_body> handleProxy(
 				auto expire_tp = *created_tp + std::chrono::seconds(keep_time_val);
 				if (now > expire_tp) THROW_EX_CUSTOM(HttpException, 2000, "Authorization Expired", 401, "*");
 			}
+		} else {
+			/* 公开目标不做凭证校验，也不向下游注入 Authorization */
+			cookie_token = "";
 		}
 	}
 
@@ -996,6 +1135,11 @@ http::response<http::string_body> handleProxy(
 		client.set_header("X-Forwarded-For: unknown");
 	}
 
+	/* Token 来自 Cookie 时，向下游补齐 Authorization 头（dnfs 等下游仍按 Bearer 解析，无需改动） */
+	if (!cookie_token.empty()) {
+		client.set_header("Authorization: Bearer " + cookie_token);
+	}
+
 	/* 转发请求 */
 	if (method == "get")
 		client.get_stream_sync(url, callback);
@@ -1029,6 +1173,27 @@ bool is_special_header(const std::string &header) {
 		|| header == "X-Forwarded-For"
 		|| header == "X-Real-IP"
 		|| header == "Forwarded";
+}
+
+std::string get_cookie_value(const std::string& cookie_header, const std::string& name) {
+	// Cookie 头格式："k1=v1; k2=v2; q4_token=xxx"
+	size_t pos = 0;
+	while (pos <= cookie_header.size()) {
+		size_t end = cookie_header.find(';', pos);
+		if (end == std::string::npos) end = cookie_header.size();
+		std::string pair = cookie_header.substr(pos, end - pos);
+		size_t eq = pair.find('=');
+		if (eq != std::string::npos) {
+			std::string k = pair.substr(0, eq);
+			size_t b = k.find_first_not_of(" \t");
+			size_t e = k.find_last_not_of(" \t");
+			if (b != std::string::npos) k = k.substr(b, e - b + 1);
+			if (k == name) return pair.substr(eq + 1);
+		}
+		if (end == cookie_header.size()) break;
+		pos = end + 1;
+	}
+	return "";
 }
 
 bool is_safe_target(const std::string& target) {

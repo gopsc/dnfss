@@ -198,7 +198,6 @@ def fetch_emails(limit=10, folder="INBOX", mark_seen=False, since_days=None):
         
         status, messages = imap.select(folder)
         if status != 'OK':
-            imap.close()
             imap.logout()
             return False, f"❌ 无法打开邮件夹 {folder}"
         
@@ -209,7 +208,6 @@ def fetch_emails(limit=10, folder="INBOX", mark_seen=False, since_days=None):
         
         status, message_ids = imap.search(None, search_criteria)
         if status != 'OK':
-            imap.close()
             imap.logout()
             return False, "❌ 搜索邮件失败"
         
@@ -217,7 +215,6 @@ def fetch_emails(limit=10, folder="INBOX", mark_seen=False, since_days=None):
         total = len(msg_ids)
         
         if total == 0:
-            imap.close()
             imap.logout()
             return True, f"📭 邮件夹 '{folder}' 中没有邮件"
         
@@ -275,7 +272,6 @@ def fetch_emails(limit=10, folder="INBOX", mark_seen=False, since_days=None):
             except Exception as e:
                 continue
         
-        imap.close()
         imap.logout()
         
         result = f"📨 邮件夹 '{folder}' 中共有 {total} 封邮件，显示最新 {len(emails)} 封:\n\n"
@@ -308,13 +304,11 @@ def read_email(msg_id, folder="INBOX", mark_seen=True):
         
         status, messages = imap.select(folder)
         if status != 'OK':
-            imap.close()
             imap.logout()
             return False, f"❌ 无法打开邮件夹 {folder}"
         
         status, msg_data = imap.fetch(str(msg_id).encode(), '(RFC822)')
         if status != 'OK':
-            imap.close()
             imap.logout()
             return False, f"❌ 无法获取邮件 ID: {msg_id}"
         
@@ -351,7 +345,6 @@ def read_email(msg_id, folder="INBOX", mark_seen=True):
         if not mark_seen:
             imap.store(str(msg_id).encode(), '-FLAGS', '\\Seen')
         
-        imap.close()
         imap.logout()
         
         result = f"📧 邮件详情 (ID: {msg_id})\n"
@@ -391,7 +384,6 @@ def list_folders():
         
         status, folders = imap.list()
         if status != 'OK':
-            imap.close()
             imap.logout()
             return False, "❌ 无法获取邮件夹列表"
         
@@ -403,7 +395,6 @@ def list_folders():
                 folder_name = parts[1].strip('"')
                 folder_list.append(folder_name)
         
-        imap.close()
         imap.logout()
         
         result = "📂 邮件夹列表:\n"
@@ -447,7 +438,6 @@ def get_email_stats():
             except:
                 continue
         
-        imap.close()
         imap.logout()
         
         result = f"📊 邮箱统计 ({username})\n"

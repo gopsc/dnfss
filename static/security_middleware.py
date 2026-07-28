@@ -11,8 +11,8 @@ def apply_security_headers(app, csp_policy=None):
 
     @app.after_request
     def set_security_headers(response):
-        # Prevent clickjacking
-        response.headers['X-Frame-Options'] = 'DENY'
+        # Prevent clickjacking (SAMEORIGIN: 允许本站 iframe 嵌套，如登录页条例弹窗)
+        response.headers['X-Frame-Options'] = 'SAMEORIGIN'
         # XSS protection (legacy browsers)
         response.headers['X-XSS-Protection'] = '1; mode=block'
         # Prevent MIME type sniffing
@@ -30,10 +30,10 @@ def apply_security_headers(app, csp_policy=None):
                 "default-src 'self'; "
                 "script-src 'self' 'unsafe-inline'; "
                 "style-src 'self' 'unsafe-inline'; "
-                "img-src 'self' data:; "
+                "img-src 'self' data: blob:; "
                 "font-src 'self'; "
                 "connect-src 'self'; "
-                "frame-ancestors 'none'"
+                "frame-ancestors 'self'"
             )
 
         # Remove server header info

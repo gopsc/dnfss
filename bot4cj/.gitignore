@@ -1,0 +1,38 @@
+# prjs
+nn/
+bot
+bot?
+test_*
+
+.git/
+.vscode/
+.idea/
+.cache/
+
+#
+*.so
+*.o
+*.cjo
+*.dll
+*.exe
+*.lib
+*.exp
+main
+
+# cangjie
+build/
+target/
+output/
+module-resolve.json
+module-lock.json
+cjpm.lock
+.cjpm-history
+*.macrocall
+*.gcda
+*.gcno
+
+
+# 其他
+log
+report
+tmp
