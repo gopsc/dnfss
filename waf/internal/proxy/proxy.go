@@ -48,9 +48,31 @@ func New(upstream string, waf *engine.Engine) (*Proxy, error) {
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		logclient.Error("waf", fmt.Sprintf("upstream_error path=%s err=%v", r.URL.Path, err),
 			map[string]any{"ip": r.RemoteAddr})
+		setSecurityHeaders(w.Header())
 		http.Error(w, "upstream unavailable", http.StatusBadGateway)
 	}
+	// 统一注入安全响应头：在边缘单点覆盖所有出站响应。
+	// Header.Set 覆盖下游同名头，不会产生重复字段
+	rp.ModifyResponse = func(res *http.Response) error {
+		setSecurityHeaders(res.Header)
+		return nil
+	}
 	return p, nil
+}
+
+// setSecurityHeaders 设置安全响应头基线（与 static/security_middleware.py 保持一致）。
+// CSP 暂保留 unsafe-inline：forgot.html 与 games/*.html 含内联脚本。
+// HSTS 半年期、不含子域，站点全量 HTTPS 后可按需收紧。
+func setSecurityHeaders(h http.Header) {
+	h.Set("X-Frame-Options", "DENY")
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("X-XSS-Protection", "1; mode=block")
+	h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+	h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+	h.Set("Strict-Transport-Security", "max-age=15552000")
+	h.Set("Content-Security-Policy",
+		"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "+
+			"img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'")
 }
 
 // ServeHTTP 实现 http.Handler。
@@ -126,6 +148,7 @@ func (p *Proxy) block(w http.ResponseWriter, r *http.Request, ruleID int, start 
 			"ua":      r.UserAgent(),
 			"cost_ms": time.Since(start).Milliseconds(),
 		})
+	setSecurityHeaders(w.Header())
 	w.WriteHeader(http.StatusForbidden)
 	_, _ = w.Write([]byte("blocked by WAF\n"))
 }

@@ -13,6 +13,7 @@ import sys
 # pymsg 日志客户端（集中式日志 → dbv2 Logs 表）
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from log_client import logs  # noqa: E402
+from security_middleware import apply_security_headers  # noqa: E402
 
 # 基准目录：编译后取可执行文件所在目录，开发时取脚本所在目录
 # 解决 Nuitka onefile 解压到 /tmp 后相对路径失效的问题
@@ -38,6 +39,7 @@ args = parser.parse_args()
 
 app = Flask(__name__)
 CORS(app, origins=["https://qsont.me", "https://yhdet.top", "http://localhost:9200"])
+apply_security_headers(app)
 
 # ==================== 配置文件加载 ====================
 CONFIG_FILE = args.config
