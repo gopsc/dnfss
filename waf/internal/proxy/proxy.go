@@ -64,7 +64,8 @@ func New(upstream string, waf *engine.Engine) (*Proxy, error) {
 // CSP 暂保留 unsafe-inline：forgot.html 与 games/*.html 含内联脚本。
 // HSTS 半年期、不含子域，站点全量 HTTPS 后可按需收紧。
 func setSecurityHeaders(h http.Header) {
-	h.Set("X-Frame-Options", "DENY")
+	// SAMEORIGIN：允许本站 iframe 嵌套（登录页条例弹窗），仍防跨站点击劫持
+	h.Set("X-Frame-Options", "SAMEORIGIN")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("X-XSS-Protection", "1; mode=block")
 	h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -72,7 +73,7 @@ func setSecurityHeaders(h http.Header) {
 	h.Set("Strict-Transport-Security", "max-age=15552000")
 	h.Set("Content-Security-Policy",
 		"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "+
-			"img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'")
+			"img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-ancestors 'self'")
 }
 
 // ServeHTTP 实现 http.Handler。
