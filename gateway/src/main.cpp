@@ -26,7 +26,7 @@ using namespace qing;
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-constexpr const char *_VER = "0.5.1";
+constexpr const char *_VER = "0.5.2";
 
 //////////////////////////////////
 #include <sstream>
@@ -333,6 +333,14 @@ static RateLimiter				_LOGIN_RATE;
 static RateLimiter				_REGISTER_RATE;
 static RateLimiter				_EMAIL_CODE_RATE;	// 发送邮箱验证码限流
 
+/* pymsg 下游调用超时（秒）：
+ * captcha / smtp verify_email 均为本机内存操作，5s 足够；
+ * smtp send_email 需完成一次完整外部 SMTP 会话（握手 + TLS + 投递），放宽到 20s。
+ * db 调用的默认超时见 DbC.hpp 的 DbC::DEFAULT_TIMEOUT。 */
+static constexpr double			_TIMEOUT_CAPTCHA = 5.0;
+static constexpr double			_TIMEOUT_SMTP_VERIFY = 5.0;
+static constexpr double			_TIMEOUT_SMTP_SEND = 20.0;
+
 /* CAPTCHA store: token -> answer (in-memory, with expiry) */
 #include <unordered_map>
 #include <mutex>
@@ -385,7 +393,7 @@ bool verify_captcha_remote(const std::string& token, const std::string& answer) 
 			{"token", token},
 			{"answer", answer}
 		};
-		std::string resp = client.call(json::serialize(jv_req), 5.0);
+		std::string resp = client.call(json::serialize(jv_req), _TIMEOUT_CAPTCHA);
 		auto jv = json::parse(resp);
 		auto& obj = jv.as_object();
 		if (!obj.at("success").as_bool()) return false;
@@ -405,7 +413,7 @@ bool verify_email_code_remote(const std::string& email, const std::string& code)
 			{"email", email},
 			{"code", code}
 		};
-		std::string resp = client.call(json::serialize(jv_req), 5.0);
+		std::string resp = client.call(json::serialize(jv_req), _TIMEOUT_SMTP_VERIFY);
 		auto jv = json::parse(resp);
 		auto& obj = jv.as_object();
 		if (!obj.at("success").as_bool()) return false;
@@ -728,7 +736,7 @@ http::response<http::string_body> handleLogin(
 		client_ip = "direct";
 
 	if (!_LOGIN_RATE.check_and_record(client_ip, 5, 300))
-		THROW_EX_CUSTOM(HttpException, 2001, "Too many login attampts. Please try again later.", 400, "/login");
+		THROW_EX_CUSTOM(HttpException, 2001, "Too many login attempts. Please try again later.", 429, "/login");
 
 	// parse json req body
 	json::value jv;
@@ -774,10 +782,14 @@ http::response<http::string_body> handleLogin(
 		auto jv_db_r = DbC::call_msg(jv_select);
 		auto obj_r = jv_db_r.as_object();
 		auto success = obj_r["success"].as_bool();
-		if (!success) THROW_EX_CUSTOM(HttpException, 2102, "Login (Update Step) Failed", 500, "/login");
+		if (!success) THROW_EX_CUSTOM(HttpException, 2102, "Login (Query Step) Failed", 500, "/login");
 		auto obj_rd = obj_r.at("data").as_array();
-		auto obj_ru = obj_rd.at(0).as_object();
-		stored_hash = obj_ru.at("password_hash").as_string();
+		/* 用户不存在时 data 为空数组：直接 at(0) 会抛异常被 wrapper 兜底成 500，
+		 * 此处保持 stored_hash 为空，统一走下面的 401 分支 */
+		if (!obj_rd.empty()) {
+			auto obj_ru = obj_rd.at(0).as_object();
+			stored_hash = obj_ru.at("password_hash").as_string();
+		}
 	}
 
 
@@ -801,6 +813,14 @@ http::response<http::string_body> handleLogin(
 			//	stmt_mig.step();
 			//	std::cout << "Migrated password hash for " << username << " to PBKDF2" << std::endl;
 		//}
+	}
+	else {
+		/* 用户不存在：执行一次等价的 dummy PBKDF2 校验拉平响应时序，
+		 * 防止通过响应时间差异枚举有效用户名（用户不存在/密码错误一律 401） */
+		static const std::string dummy_hash =
+			"pbkdf2:100000:00000000000000000000000000000000:"
+			"0000000000000000000000000000000000000000000000000000000000000000";
+		PBKDF2Hasher::verify_password(password, dummy_hash);
 	}
 
 	if (!auth_ok) THROW_EX_CUSTOM(HttpException, 2101, "Invalid Username or Password", 401, "/login");
@@ -899,7 +919,7 @@ http::response<http::string_body> handleCaptchaImage(
 	pmc::net::MsgClient client("127.0.0.1", 8009, "gateway");
 	std::string resp;
 	try {
-		resp = client.call(R"({"_route":"image"})", 5.0);
+		resp = client.call(R"({"_route":"image"})", _TIMEOUT_CAPTCHA);
 	} catch (const std::exception& e) {
 		THROW_EX_CUSTOM(HttpException, 2400, "Captcha service unavailable", 502, "/captcha/image");
 	}
@@ -947,7 +967,7 @@ http::response<http::string_body> handleRegister(
 		client_ip = std::string(it_host->value());
 	if (!_REGISTER_RATE.check_and_record(client_ip, 3, 600))
 		THROW_EX_CUSTOM(HttpException, 3001, "Too many registration attempts. Please try again later.",
-			403, "/register");
+			429, "/register");
 
 	// parse the req body
 	json::value jv;
@@ -1041,7 +1061,7 @@ http::response<http::string_body> handleSendEmailCode(
 		client_ip = std::string(it_host->value());
 	if (!_EMAIL_CODE_RATE.check_and_record(client_ip, 5, 600))
 		THROW_EX_CUSTOM(HttpException, 3101, "Too many code requests. Please try again later.",
-			403, "/register/send_code");
+			429, "/register/send_code");
 
 	// parse the req body
 	json::value jv;
@@ -1072,7 +1092,7 @@ http::response<http::string_body> handleSendEmailCode(
 			{"_route", "send_email"},
 			{"email", email}
 		};
-		std::string resp = client.call(json::serialize(jv_req), 20.0);
+		std::string resp = client.call(json::serialize(jv_req), _TIMEOUT_SMTP_SEND);
 		auto jv_r = json::parse(resp);
 		auto& obj_r = jv_r.as_object();
 		if (obj_r.at("success").as_bool())

@@ -68,7 +68,7 @@
 - 极客操作：`kill -HUP <pid>` 热加载规则；`waf -list` 列规则；`waf -test <file>` 校验语法；`waf -check "<input>"` 测试单条输入。
 - 配置见 [waf/config.yaml](waf/config.yaml)，详见 [waf/README.md](waf/README.md)。
 
-### gateway（应用层网关 · v0.4.3）
+### gateway（应用层网关 · v0.5.2）
 
 - 内部 HTTP 服务，默认监听 127.0.0.1:8443，不再承载 TLS（TLS 已由 WAF 终止）。
 - 通过 `Server.tls = on/off` 配置切换 HTTPS/HTTP 模式（[example.ini](gateway/example.ini)），独立部署时仍可启用 TLS。
@@ -79,7 +79,7 @@
 - **CAPTCHA**：`/captcha` 接口生成验证码（5 分钟过期、一次性使用），登录与注册均可选启用；`GET /captcha/image` 为 captcha 服务（pymsg/TCP :8009）的图形验证码代理路由。
 - **速率限制**：登录 5 次/5 分钟、注册 3 次/10 分钟，按 `X-Forwarded-For`（WAF 注入）客户端 IP 计数。
 - **反向代理**：`Target-Url` 必须在 `Proxy.opened` 白名单中（`closed` 仅记录用途，实际隔离靠"不在 opened 中即拒绝"），缺省走 `Proxy.default`（不需 Token，服务前端静态资源）。
-- **自动建表**：启动时若 `Users` 表不存在则自动创建，首位注册者即为管理员。
+- **用户表**：`Users` 表由 [db/create_sqlite3.sql](db/create_sqlite3.sql) 建立（gateway 不再自动建表），无默认管理员账号，首位注册者即为管理员。
 - 详见 [gateway/README.md](gateway/README.md)。
 
 ### static（前端托管服务）

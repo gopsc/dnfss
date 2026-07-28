@@ -6,6 +6,10 @@ namespace qing {
 	namespace json = boost::json;
 	class DbC {
 		public:
+			/* 本机 db 轻量查询的默认超时（秒）；慢操作由调用方显式放宽。
+			 * smtp/captcha 等其他下游的超时常量见 main.cpp。 */
+			static constexpr double DEFAULT_TIMEOUT = 5.0;
+
 			// 【保留】旧版 HTTP 接口：通过 HttpClient POST 到 dbv2 HTTP /execute 端点。
 			// 保留用于兼容性参考，新代码优先使用 call_msg()（pymsg TCP 协议，更可靠）。
 			static json::value call_http(json::value& params) {
@@ -25,7 +29,7 @@ namespace qing {
 			//   {"success":..., "data":[...]}。
 			// 响应格式与 call_http 兼容，调用方可直接替换。
 			static json::value call_msg(const json::value& params,
-					double timeout = 5.0) {
+					double timeout = DEFAULT_TIMEOUT) {
 				json::value jv_route = params;
 				jv_route.as_object()["_route"] = "execute";
 				pmc::net::MsgClient client("127.0.0.1", 8005, "gateway");

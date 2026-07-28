@@ -10,7 +10,7 @@ UniServe Framework 的应用层网关，C++20 实现。
 - **反向代理**：携带 Token 的请求校验后转发到 `Proxy.opened` 中放开的内部服务。
 - **CAPTCHA 接口**：`/captcha` 生成验证码 token + 文本（内存存储，5 分钟过期，一次性使用）。
 - **邮箱验证码**：`/register/send_code` 发送 6 位验证码邮件（60 秒有效）；注册时校验，一次性消费。
-- **速率限制**：登录 5 次/5 分钟、注册 3 次/10 分钟、发验证码 5 次/10 分钟，按 `X-Forwarded-For` 客户端 IP 计数（由 WAF 注入）。
+- **速率限制**：登录 5 次/5 分钟、注册 3 次/10 分钟、发验证码 5 次/10 分钟，按 `X-Forwarded-For` 客户端 IP 计数（由 WAF 注入），超限一律返回 429。
 - **OPTIONS 预检**：通配 `*` 返回 CORS 头，允许跨域。
 
 ## 安全特性
@@ -80,7 +80,7 @@ UniServe Framework 的应用层网关，C++20 实现。
 
 校验顺序：密码强度 → 邮箱格式 → CAPTCHA（可选）→ **邮箱验证码**（经 pymsg 调 smtp:8008 `verify_email`，一次性消费，fail-closed），全部通过后写入 `Users` 表。
 
-错误码：`400`（密码/邮箱/CAPTCHA/邮箱验证码不合规）、`403`（速率超限）、`500`（数据库异常）。
+错误码：`400`（密码/邮箱/CAPTCHA/邮箱验证码不合规）、`429`（速率超限）、`500`（数据库异常）。
 
 ### `POST /register/send_code`
 
@@ -90,7 +90,7 @@ UniServe Framework 的应用层网关，C++20 实现。
 { "email": "user@example.com" }
 ```
 
-限流 5 次/10 分钟/IP。错误码：`400`（邮箱格式错误）、`403`（速率超限）、`502`（smtp 服务不可用）、`500`（发送失败）。
+限流 5 次/10 分钟/IP。错误码：`400`（邮箱格式错误）、`429`（速率超限）、`502`（smtp 服务不可用）、`500`（发送失败）。
 
 ### `GET/POST *`（反向代理）
 
@@ -112,18 +112,18 @@ Target-Url: http://127.0.0.1:9200   // 可选，缺省取 Proxy.default
 
 ## 数据库
 
-SQLite3，表 `Users`：
+用户数据存于 db 服务（pymsg/TCP :8005）的 SQLite 库，表 `Users`（由 [db/create_sqlite3.sql](../db/create_sqlite3.sql) 建立，gateway 不再自动建表）：
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | id | INTEGER PK AUTOINCREMENT | |
-| email | TEXT UNIQUE NOT NULL | 登录账号 |
+| username | TEXT UNIQUE NOT NULL | 登录账号（邮箱格式） |
 | password_hash | TEXT NOT NULL | `pbkdf2:100000:<salt_hex>:<hash_hex>` |
 | create_at | DATETIME DEFAULT CURRENT_TIMESTAMP | |
 | last_login | DATETIME | 每次登录更新 |
 | is_active | BOOLEAN DEFAULT 1 | |
 
-启动时若 `Users` 表不存在则自动建表（含 `idx_users_email` 索引），无默认管理员账号——首位注册者即为管理员。
+gateway 不直连数据库（早期直连本地 sqlite 的代码已注释保留），所有读写经 `DbC::call_msg` 调 db 的 `execute` 路由。无默认管理员账号——首位注册者即为管理员。
 
 ## 配置
 
@@ -226,13 +226,16 @@ gateway/
 
 ## 版本
 
-`0.5.1`（见 [src/main.cpp:29](src/main.cpp#L29)）。启动时打印：
+`0.5.2`（见 [src/main.cpp:29](src/main.cpp#L29)）。启动时打印：
 
 ```
-Gateway 0.5.1 started
+Gateway 0.5.2 started
 ```
 
-近期变更：登录成功后通过 db 更新 `Users.last_login`（`"$now"` 哨兵，db 日期适配层转为服务端当前 UTC 时间；更新失败经 THROW_EX_CUSTOM 抛 500，与其他步骤一致）。
+近期变更：
+
+- `0.5.2`：限流错误码统一为 429（登录原 400、注册/发码原 403，并修正 "attampts" 拼写）；登录时用户不存在不再兜底 500——空结果统一走 401，并执行 dummy PBKDF2 校验拉平时序防用户名枚举；db 查询失败消息由误名的 "Login (Update Step) Failed" 改为 "Login (Query Step) Failed"；pymsg 下游调用超时常量化（`DbC::DEFAULT_TIMEOUT`、`_TIMEOUT_CAPTCHA/_SMTP_VERIFY/_SMTP_SEND`）。
+- `0.5.1`：登录成功后通过 db 更新 `Users.last_login`（`"$now"` 哨兵，db 日期适配层转为服务端当前 UTC 时间；更新失败经 THROW_EX_CUSTOM 抛 500，与其他步骤一致）。
 
 ## 依赖
 
