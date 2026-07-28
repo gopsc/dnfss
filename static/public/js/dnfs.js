@@ -197,9 +197,16 @@ input_note_submit.addEventListener('click', function(event) {
 	var pid = (stack.length == 0) ? 0 : stack[stack.length - 1];
 	//alert(stack.length)
 	//alert(pid)
+	// 发布期间同时禁用重置/删除，避免误触干扰
 	input_note_submit.disabled = true;
+	input_note_clear.disabled = true;
+	delete_note.disabled = true;
 	addNode(pid, title, content)
-		.finally(() => { input_note_submit.disabled = false; });
+		.finally(() => {
+			input_note_submit.disabled = false;
+			input_note_clear.disabled = false;
+			delete_note.disabled = false;
+		});
 })
 
 input_note_clear.addEventListener('click', function(event) {
