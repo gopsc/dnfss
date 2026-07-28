@@ -191,14 +191,15 @@ var minimap = document.getElementById("minimap");
 var is_expand = true;
 
 input_note_submit.addEventListener('click', function(event) {
+	if (input_note_submit.disabled) return;	// 防重复点击
 	var title = input_note_title.value
 	var content = input_note_content.value
 	var pid = (stack.length == 0) ? 0 : stack[stack.length - 1];
 	//alert(stack.length)
 	//alert(pid)
-	addNode(pid, title, content).then(result => {
-		//alert(result.message);
-	})
+	input_note_submit.disabled = true;
+	addNode(pid, title, content)
+		.finally(() => { input_note_submit.disabled = false; });
 })
 
 input_note_clear.addEventListener('click', function(event) {
@@ -207,13 +208,17 @@ input_note_clear.addEventListener('click', function(event) {
 })
 
 delete_note.addEventListener('click', (event) => {
+	if (delete_note.disabled) return;	// 防重复点击
 	var id = (stack.length == 0) ? 0 : stack[stack.length - 1];
 	if (id == 0) {
 		alert('无法删除根节点');
 		console.log("节点未删除");
 	}
 	else {
-		deleteNode(id);
+		delete_note.disabled = true;
+		// confirm 取消时 deleteNode 直接返回 undefined，统一用 Promise.resolve 兜底恢复按钮
+		Promise.resolve(deleteNode(id))
+			.finally(() => { delete_note.disabled = false; });
 	}
 })
 

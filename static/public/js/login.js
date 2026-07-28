@@ -14,8 +14,11 @@ const loginButton = document.getElementById('loginBtn');
 
 /* ── 图形验证码（gateway 代理 captcha 服务：GET /captcha/image） ── */
 let captchaToken = '';
+let captchaLoading = false;	// 防重复点击：加载中忽略再次触发
 
 async function refreshCaptcha() {
+	if (captchaLoading) return;
+	captchaLoading = true;
 	captchaToken = '';
 	try {
 		const res = await fetch('/captcha/image', { cache: 'no-store' });
@@ -28,6 +31,8 @@ async function refreshCaptcha() {
 	} catch (e) {
 		captchaImg.removeAttribute('src');
 		captchaImg.alt = '加载失败，点击重试';
+	} finally {
+		captchaLoading = false;
 	}
 }
 captchaImg.addEventListener('click', refreshCaptcha);
