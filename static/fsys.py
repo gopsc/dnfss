@@ -38,7 +38,6 @@ parser.add_argument('--config', type=str, default='config.ini', help='Configurat
 args = parser.parse_args()
 
 app = Flask(__name__)
-CORS(app, origins=["https://qsont.me", "https://yhdet.top", "http://localhost:9200"])
 apply_security_headers(app)
 
 # ==================== 配置文件加载 ====================
@@ -50,16 +49,22 @@ file_config = {
     'server': {'host': '0.0.0.0', 'port': '5000'},
     'directory': {'root': './public'},
     'ssl': {'enabled': 'false', 'cert_file': 'cert.pem', 'key_file': 'key.pem'},
+    # CORS 白名单（逗号分隔），生产环境默认值；localhost 仅限本地开发时显式写入 config.ini
+    'cors': {'allowed_origins': 'https://qsont.me,https://yhdet.top'},
 }
 
 if os.path.exists(CONFIG_FILE):
     config_parser = configparser.ConfigParser()
     config_parser.read(CONFIG_FILE, encoding='utf-8')
-    for section in ['server', 'directory', 'ssl']:
+    for section in ['server', 'directory', 'ssl', 'cors']:
         if section in config_parser:
             for key, value in config_parser[section].items():
                 if key in file_config[section]:
                     file_config[section][key] = value
+
+# ==================== CORS（配置加载完成后初始化） ====================
+_cors_origins = [o.strip() for o in file_config['cors']['allowed_origins'].split(',') if o.strip()]
+CORS(app, origins=_cors_origins)
 
 HTML_ROOT_DIR = file_config['directory']['root']
 if HTML_ROOT_DIR and not os.path.isabs(HTML_ROOT_DIR):
