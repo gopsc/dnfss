@@ -15,6 +15,15 @@ from typing import Optional, Dict, Any, List
 import websockets
 from colorama import init, Fore, Style as ColoramaStyle
 
+# rich 为可选依赖：有则流式渲染 Markdown，无则回退纯文本流式输出
+try:
+    from rich.console import Console
+    from rich.live import Live
+    from rich.markdown import Markdown
+    _RICH = True
+except ImportError:
+    _RICH = False
+
 init(autoreset=True)
 
 class Colors:
@@ -155,6 +164,11 @@ class SimpleCLI:
         # 自动重连状态
         self._manual_disconnect = False   # 用户主动 /disconnect、/quit、/connect 后置 True，抑制自动重连
         self._reconnect_task: Optional[asyncio.Task] = None
+
+        # Markdown 流式渲染状态（rich 可用时启用）
+        self._console = Console() if _RICH else None
+        self._md_live = None           # rich.Live 实例（渲染进行中）
+        self._md_buffer = ""           # 当前累计的 AI 回复全文
         
         # 流式输出状态
         self.streaming_line = False  # 是否正在流式输出行
@@ -180,6 +194,7 @@ class SimpleCLI:
     
     def _print_line(self, line: str = "", end: str = "\n"):
         """打印一行，并恢复提示符"""
+        self._md_stream_stop()   # 打印普通行前，先定格进行中的 Markdown 渲染
         with self.lock:
             current = self.current_input
             sys.stdout.write('\r' + ' ' * 120 + '\r')
@@ -247,16 +262,27 @@ class SimpleCLI:
         """流式显示增量内容"""
         if not content:
             return
-        
+
         # 清理内容
         clean = self._clean_content(content)
         if not clean:
             return
-        
+
         key = clean[:200]
         if key in self.displayed_messages:
             return
-        
+
+        # rich 可用：累计文本直接整体渲染为 Markdown（服务端 chunk 为累计全文）
+        if _RICH:
+            with self.lock:
+                self.waiting_for_response = True
+                self.prompt_shown = False
+                self.streaming_line = True
+            self._md_stream_update(clean)
+            self.ai_previous = clean
+            self.ai_full = clean
+            return
+
         # 检测增量
         if self.ai_previous and clean.startswith(self.ai_previous):
             new_part = clean[len(self.ai_previous):]
@@ -290,6 +316,37 @@ class SimpleCLI:
         self.ai_previous = clean
         self.ai_full = clean
     
+    # ── Markdown 流式渲染（rich）─────────────────────────────────────────
+    def _md_stream_start(self):
+        """开启 Live 渲染区域（若 rich 不可用或已开启则忽略）。"""
+        if not _RICH or self._md_live is not None:
+            return
+        self._md_buffer = ""
+        # transient=False：结束后保留最终渲染结果；vertical_overflow=visible 不裁剪长文
+        self._md_live = Live(Markdown(""), console=self._console,
+                             refresh_per_second=8, vertical_overflow="visible")
+        self._md_live.start()
+
+    def _md_stream_update(self, full_text: str):
+        """用累计全文刷新渲染（服务端 chunk 即累计文本）。"""
+        if not _RICH:
+            return
+        self._md_stream_start()
+        self._md_buffer = full_text
+        self._md_live.update(Markdown(full_text))
+
+    def _md_stream_stop(self):
+        """结束渲染：最终刷新一次后停住（内容定格保留在终端）。"""
+        if self._md_live is not None:
+            try:
+                if self._md_buffer:
+                    self._md_live.update(Markdown(self._md_buffer))
+                self._md_live.stop()
+            except Exception:
+                pass
+            finally:
+                self._md_live = None
+
     def _remember_displayed(self, key: str):
         """记录已显示消息（LRU：超 DISPLAYED_MAX 淘汰最旧，防长对话内存膨胀）。"""
         self.displayed_messages[key] = None
@@ -308,6 +365,7 @@ class SimpleCLI:
         elif msg_type == 'task_complete':
             self._handle_task_complete(extra)
         elif msg_type == 'dialogue_ended':
+            self._md_stream_stop()
             with self.lock:
                 if self.streaming_line:
                     sys.stdout.write('\n')
@@ -340,6 +398,7 @@ class SimpleCLI:
         """处理流式块"""
         # 检查是否是工具调用相关的消息
         if content.startswith('🔧 调用工具'):
+            self._md_stream_stop()   # 工具消息与 Markdown 渲染区域交替，先定格
             with self.lock:
                 self.in_tool_phase = True
                 self.prompt_shown = False
@@ -350,9 +409,10 @@ class SimpleCLI:
                 sys.stdout.write(f"{Colors.TASK}{content}{Colors.RESET}\n")
                 sys.stdout.flush()
             return
-        
+
         # 检查是否是工具结果
         if content.startswith(('✅ 对话记忆已保存', '💾 保存记忆', '❌', '⚠️')):
+            self._md_stream_stop()
             with self.lock:
                 # 打印工具结果
                 sys.stdout.write(f"{Colors.TASK}{content}{Colors.RESET}\n")
@@ -377,6 +437,27 @@ class SimpleCLI:
     
     def _handle_complete(self, content: str):
         """处理完成事件 - 只负责结束流式输出，不重复显示内容"""
+        # rich 渲染路径：最终全文已在 Live 区域定格，只需收尾并恢复提示符
+        if _RICH:
+            clean = self._clean_content(content) if content else ""
+            if clean:
+                self._md_stream_update(clean)
+                self._remember_displayed(clean[:200])
+            self._md_stream_stop()
+            with self.lock:
+                self.in_tool_phase = False
+                self.waiting_for_response = False
+                self.streaming_line = False
+                self.prompt_shown = True
+                current = self.current_input
+                sys.stdout.write('\r' + ' ' * 120 + '\r')
+                sys.stdout.write(self._get_prompt() + current)
+                sys.stdout.flush()
+            self.ai_previous = ""
+            self.ai_full = ""
+            self.ai_prefix_shown = False
+            return
+
         # 如果之前在工具阶段，现在退出
         if self.in_tool_phase:
             with self.lock:
@@ -578,6 +659,7 @@ class SimpleCLI:
             else:
                 self.display("system", "未连接")
         elif cmd == '/clear':
+            self._md_stream_stop()
             os.system('clear' if os.name == 'posix' else 'cls')
             self.displayed_messages.clear()
             self.current_input = ""
@@ -648,7 +730,8 @@ class SimpleCLI:
         if not self.client or not self.client.connected:
             self.display("error", "未连接到服务器")
             return
-        
+
+        self._md_stream_stop()   # 发送新消息前定格上一段渲染
         # 重置流式状态
         with self.lock:
             if self.streaming_line:
