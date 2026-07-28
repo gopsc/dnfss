@@ -56,28 +56,34 @@ def generate_text():
 
 def generate_image(text):
     width, height = 160, 50
-    bg = random.choice([(255, 255, 255), (240, 240, 240), (230, 240, 250)])
+    bg = (random.randint(1,256), random.randint(1,256), random.randint(1,256))
     img = Image.new('RGB', (width, height), bg)
     draw = ImageDraw.Draw(img)
 
     for i, ch in enumerate(text):
-        color = random.choice([(30, 30, 30), (50, 80, 150), (150, 50, 50), (50, 130, 50)])
+        color = (random.randint(1,256), random.randint(1,256), random.randint(1,256))
         y = random.randint(2, 12)
         x = 15 + i * 32 + random.randint(-3, 3)   # 4 位字符在 160px 宽度内均匀分布
         try:
             font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                                      random.choice([28, 30, 32, 34]))
+                                      random.choice(range(20,40,2)))
         except (IOError, OSError):
             font = ImageFont.load_default()
-        draw.text((x, y), ch, fill=color, font=font)
+
+        char = Image.new("RGBA", (64, 64), (0,0,0,0))
+        draw_char = ImageDraw.Draw(char)
+        draw_char.text((20,20), ch, fill=color, font=font)
+        rotated_char = char.rotate(random.randint(-30, 30), expand=True)
+        img.paste(rotated_char, (x-32, y-32), mask=rotated_char)
+        # draw.text((x, y), ch, fill=color, font=font)
 
     for _ in range(4):
         draw.line([(random.randint(0, width), random.randint(0, height)),
                    (random.randint(0, width), random.randint(0, height))],
-                  fill=random.choice([(30, 30, 30), (50, 80, 150)]), width=1)
+                  fill=(random.randint(1,256), random.randint(1,256), random.randint(1,256)))
     for _ in range(50):
         draw.point((random.randint(0, width - 1), random.randint(0, height - 1)),
-                   fill=random.choice([(30, 30, 30), (50, 80, 150)]))
+                   fill=(random.randint(1,256), random.randint(1,256), random.randint(1,256)))
 
     buf = io.BytesIO()
     img.save(buf, format='PNG')
