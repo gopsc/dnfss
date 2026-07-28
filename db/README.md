@@ -1,62 +1,55 @@
-# 跨数据库通用查询服务（基于 SQLAlchemy Core）
+# 通用数据库服务 db（pymsg/TCP + SQLAlchemy Core）
 
-一个安全的 HTTP 服务，通过结构化 JSON 描述查询意图，后端自动转换为对应数据库的 SQL，无需手写 SQL，即可无缝切换 SQLite、PostgreSQL、MySQL 等数据库。
+一个安全的数据库访问服务。各业务服务通过自研 pymsg 协议（TCP 长度前缀帧 + JSON）发送结构化查询意图，db 翻译为 SQL 执行，全程参数绑定，业务侧无需直连数据库、无需手写 SQL。
 
 ## 功能特点
 
-- **跨数据库**：基于 SQLAlchemy Core 表达式语言，一套接口适配多种数据库
+- **跨数据库**：基于 SQLAlchemy Core 表达式语言，一套接口适配 SQLite / PostgreSQL / MySQL
 - **零 SQL 注入**：所有条件、值均通过 SQLAlchemy 参数绑定处理
-- **统一 JSON 接口**：`action` + `table` + `conditions` 模式
-- **支持增删改查**：select, insert, update, delete 全覆盖
-- **单线程本地监听**：waitress + 127.0.0.1:8005，简单可靠
+- **统一 JSON 接口**：`_route` + `action` + `table` + `where` 模式
+- **支持增删改查**：select / insert / update / delete 全覆盖
+- **内置日志表**：启动自动建 Logs 表，供全系统集中写日志；带后台自动清理
+- **仅监听本机**：默认 `127.0.0.1:8005`，不对外暴露
 
 ## 快速开始
 
 ### 安装依赖
+
 ```bash
-pip install flask sqlalchemy waitress
-# 根据需要安装数据库驱动，例如：
-# pip install psycopg2-binary   # PostgreSQL
-# pip install pymysql            # MySQL
+./_set.sh     # 建 venv 并安装 requirements.txt（SQLAlchemy + 本地 ../pymsg）
 ```
 
-### 启动服务（默认 SQLite）
-```bash
-python app.py
-```
-服务运行在 `http://127.0.0.1:8005`。
+### 启动服务
 
-使用其他数据库：
 ```bash
-export DATABASE_URL="postgresql://user:pass@localhost/dbname"
-python app.py
+./_run.sh     # venv 中执行 python3 dbv2.py
 ```
 
-**注意**：新接口依赖表已存在（通过反射获取结构）。首次使用时请先手动建表：
-```bash
-sqlite3 database.db "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)"
-```
+服务监听 `tcp://127.0.0.1:8005`。生产环境由 core（Nidus）按 init.txt 统一拉起，守护靠 systemd。
 
-## API 文档
+**注意**：`execute` 路由依赖表已存在（通过反射获取结构）。建表见 `create_sqlite3.sql`（Users / Notes；Logs 表由服务启动时自建）。
 
-### 请求格式
+## 协议与 API
 
-**端点**：`POST /execute`  
-**Content-Type**：`application/json`
+### 传输协议（pymsg）
+
+每条消息为一个完整 JSON，帧格式：`[4 字节大端长度][UTF-8 JSON]`。
+请求中的 `_route` 字段指定路由，目前仅有一个路由：**`execute`**。
+
+### execute 路由 — 通用 CRUD
 
 ```json
 {
-  "action": "操作类型",       // select | insert | update | delete
-  "table": "表名",
-  "columns": ["列1", "列2"], // select/insert 时可选
-  "values": {                 // insert/update 时必填
-    "列名": "值"
-  },
-  "where": {                  // 条件，支持组合操作符
+  "_route": "execute",
+  "action": "select",          // select | insert | update | delete
+  "table": "Users",
+  "columns": ["id", "name"],   // select 时可选（缺省全列）
+  "values": {"name": "Bob"},   // insert / update 时必填
+  "where": {                   // 可选，条件见下表
     "age": {"ge": 18, "lt": 60},
     "name": "Alice"
   },
-  "order_by": [{"column": "age", "desc": true}],
+  "order_by": [{"column": "id", "desc": true}],
   "limit": 10,
   "offset": 0
 }
@@ -84,48 +77,46 @@ sqlite3 database.db "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age 
 ```json
 {
   "success": true,
-  "data": [                  // 查询结果数组（insert/update/delete 时包含影响行数或 lastrowid）
-    {"id": 1, "name": "Alice"}
+  "data": [
+    {"id": 1, "username": "Alice"}
   ]
 }
 ```
+- select → 行对象数组
+- insert → `[{"lastrowid": N}]`
+- update / delete → `[{"rowcount": N}]`
 
 失败：
 ```json
-{
-  "success": false,
-  "error": "错误描述"
-}
+{"success": false, "error": "错误描述"}
 ```
 
-## 使用示例（curl）
+## 使用示例（Python + pymsg）
 
-**插入**：
-```bash
-curl -X POST http://127.0.0.1:8005/execute \
-  -H "Content-Type: application/json" \
-  -d '{"action":"insert","table":"users","values":{"name":"Bob","age":25}}'
-```
+```python
+import json
+from pymsg import MsgClient
 
-**查询**：
-```bash
-curl -X POST http://127.0.0.1:8005/execute \
-  -H "Content-Type: application/json" \
-  -d '{"action":"select","table":"users","where":{"age":{"gt":20}},"order_by":[{"column":"id","desc":true}],"limit":5}'
-```
+client = MsgClient("127.0.0.1", 8005, "myservice")
 
-**更新**：
-```bash
-curl -X POST http://127.0.0.1:8005/execute \
-  -H "Content-Type: application/json" \
-  -d '{"action":"update","table":"users","values":{"age":26},"where":{"name":"Bob"}}'
-```
+# 查询
+resp = client.call(json.dumps({
+    "_route": "execute",
+    "action": "select",
+    "table": "Users",
+    "where": {"id": {"gt": 0}},
+    "order_by": [{"column": "id", "desc": True}],
+    "limit": 5,
+}))
+print(json.loads(resp))
 
-**删除**：
-```bash
-curl -X POST http://127.0.0.1:8005/execute \
-  -H "Content-Type: application/json" \
-  -d '{"action":"delete","table":"users","where":{"id":{"in":[1,2]}}}'
+# 插入
+client.call(json.dumps({
+    "_route": "execute",
+    "action": "insert",
+    "table": "Users",
+    "values": {"username": "bob", "password_hash": "..."},
+}))
 ```
 
 ## 安全机制
@@ -133,17 +124,17 @@ curl -X POST http://127.0.0.1:8005/execute \
 - 强制使用 SQLAlchemy 参数绑定，杜绝 SQL 注入。
 - 仅反射已有表，无法创建或删除表（保证结构安全）。
 - 所有异常自动回滚事务。
-- 默认监听 `127.0.0.1`，仅本机可访问。
+- 仅监听 `127.0.0.1`，仅本机服务可访问。
 
-## 内置日志模块
+## 内置日志能力
 
-db 服务内置了统一日志收集能力，各业务服务通过 HTTP 推送日志到 `/log/*` 系列接口，db 自身的操作日志通过 `log_internal()` 直接写入（同进程，无 HTTP 往返，无循环依赖）。
+db 内置统一日志收集：全系统各服务（waf / gateway / static / dnfs / db / ai_review / captcha / core / smtp）的日志集中写入 db 的 `Logs` 表。
 
 ### 为什么集成在 db 而不是独立服务
 
 独立 logs 服务会导致**循环调用**：db 记日志→调 logs，logs 存库→调 db，无限递归。集成在 db 内部后，db 自己记日志直接写表，彻底消除循环依赖。
 
-### 日志表
+### 日志表（启动时自建）
 
 ```sql
 CREATE TABLE IF NOT EXISTS Logs (
@@ -155,152 +146,66 @@ CREATE TABLE IF NOT EXISTS Logs (
     trace_id  TEXT,
     extra     TEXT
 );
+-- 索引: (service,ts) / (level,ts) / (ts) / (trace_id)
 ```
 
-- `service`：来源服务名（`waf`/`gateway`/`static`/`dnfs`/`db`/`ai_review`/`captcha`/`core`）
-- `level`：`DEBUG`/`INFO`/`WARNING`/`ERROR`/`CRITICAL`
+- `level`：`DEBUG` / `INFO` / `WARNING` / `ERROR` / `CRITICAL`
 - `trace_id`：可选，请求追踪 ID
 - `extra`：可选，JSON 字符串，存放附加结构化字段
 
-### 接口
+### 写入方式
 
-| 接口 | 方法 | 说明 |
-|------|------|------|
-| `/log/ingest` | POST | 推送日志（支持批量） |
-| `/log/query` | POST | 查询日志（按服务/级别/时间/关键字过滤） |
-| `/log/stats` | POST | 统计聚合（按 service/level 分组计数） |
-| `/log/purge` | POST | 清理过期日志 |
-| `/log/health` | GET | 健康检查 |
+**外部服务**：复制 `example_log_client.py` 为各自目录下的 `log_client.py`，改 `service_name` 即用。客户端底层通过 pymsg 调 `execute` 路由逐条 INSERT 到 Logs 表：
 
-所有接口的响应格式与 `/execute` 统一：`{success, data, error}`。
+```python
+from log_client import logs
 
-#### POST /log/ingest
-
-```json
-请求:
-{
-  "logs": [
-    {
-      "service": "dnfs",
-      "level": "INFO",
-      "message": "节点新增成功 id=42",
-      "ts": "2026-07-25T08:30:00.123Z",
-      "trace_id": "req-abc-123",
-      "extra": {"path": "/add_note", "status": 200}
-    }
-  ]
-}
-
-响应:
-{"success": true, "data": {"inserted": 1}}
+logs.info("dnfs", "节点新增成功 id=42")
+logs.error("dnfs", "数据库连接失败", extra={"errno": 2002})
+logs.push("gateway", "WARNING", "登录失败次数超限",
+          trace_id="req-abc", extra={"ip": "1.2.3.4"})
 ```
 
-- `ts` 可选，缺省自动填当前 UTC 时间
-- 单次最多 100 条
-- `message` 上限 8KB，`extra` 上限 4KB
+客户端特性：
+- 纯标准库实现，异步非阻塞：内存队列 + 后台线程批量推送
+- fail-safe：db 不可用时静默丢弃，绝不影响业务
+- 缓冲批量：队列满 50 条或超时 2 秒时自动 flush
 
-#### POST /log/query
+**db 自身**：`_log_internal()` 直接写库，无网络往返（防递归）。
 
-```json
-请求:
-{
-  "service": "dnfs",          // 可选，支持数组匹配多个
-  "level": "WARNING",         // 可选，支持数组匹配多个
-  "since": "2026-07-25T00:00:00Z",  // 可选
-  "until": "2026-07-25T23:59:59Z",  // 可选
-  "keyword": "节点",           // 可选，message 模糊搜索
-  "trace_id": "req-abc-123",   // 可选
-  "order_by": "ts",            // 默认 ts，可选 id/service/level
-  "desc": true,                // 默认 true（最新在前）
-  "limit": 50,                 // 默认 100，上限 1000
-  "offset": 0                  // 分页偏移
-}
+### 查询日志
 
-响应:
-{
-  "success": true,
-  "data": {
-    "total": 128,
-    "logs": [{"id":1024,"ts":"...","service":"dnfs","level":"INFO","message":"...","trace_id":"...","extra":{...}}]
-  }
-}
-```
+日志查询直接走 `execute` 路由 select Logs 表，或用工具脚本 `_view_db.sqlite3.py`：
 
-#### POST /log/stats
-
-```json
-请求:
-{"since":"...","until":"...","group_by":"service"}
-
-响应:
-{
-  "success": true,
-  "data": {
-    "groups": [{"service":"dnfs","level":"INFO","count":320}],
-    "total": 325
-  }
-}
-```
-
-`group_by` 支持 `service` / `level` / `service,level`。
-
-#### POST /log/purge
-
-```json
-请求: {"before": "2026-07-18T00:00:00Z"}
-响应: {"success": true, "data": {"deleted": 1523}}
-```
-
-#### GET /log/health
-
-```json
-{"success": true, "data": {"status": "ok", "count": 10240}}
+```bash
+python3 _view_db.sqlite3.py                    # 列出所有表及行数
+python3 _view_db.sqlite3.py Logs -n 20         # 最近 20 条日志
+python3 _view_db.sqlite3.py Logs -w "level='ERROR'"
+python3 _view_db.sqlite3.py -s "SELECT service, COUNT(*) FROM Logs GROUP BY service"
 ```
 
 ### 自动清理
 
 - 服务启动时开启后台守护线程，每 1 小时清理一次
 - 默认保留 30 天日志，超期自动删除
-- 日志总条数超过 100 万时，按时间倒序保留最新 N 条
-
-### 各服务接入方式
-
-把 `db/log_client.py` 复制到各服务目录（或加入 `PYTHONPATH`），即可使用：
-
-```python
-from log_client import logs
-
-# 替换原来的 print
-logs.info("dnfs", "节点新增成功 id=42")
-logs.error("dnfs", "数据库连接失败", extra={"errno": 2002})
-
-# 带追踪 ID
-logs.push("gateway", "WARNING", "登录失败次数超限",
-          trace_id="req-abc", extra={"ip": "1.2.3.4"})
-```
-
-特性：
-- 使用 `urllib.request`（标准库，不引入 requests）
-- 异步非阻塞：内存队列 + 后台线程批量推送
-- fail-safe：db 服务不可用时静默丢弃，绝不影响业务
-- 缓冲批量：队列满 50 条或超时 2 秒时自动 flush
-
-### 防递归设计
-
-| 场景 | 调用路径 | 是否安全 |
-|------|---------|---------|
-| 外部服务记日志 | `服务 → POST /log/ingest → 写 Logs 表` | 安全 |
-| db 自己记日志 | `/execute → log_internal() → 直接写 Logs 表` | 安全（无 HTTP） |
-| /log/ingest 成功 | `写入成功 → 直接返回` | 安全（不再记日志） |
-| /log/ingest 失败 | `写入失败 → log_internal() → 直接写表` | 安全（log_internal 不回调 ingest） |
+- 日志总条数超过 100 万时，按时间倒序保留最新 100 万条
 
 ## 切换数据库
 
 只需修改环境变量 `DATABASE_URL`，并安装对应驱动：
 
-- SQLite：`sqlite:///database.db`
-- PostgreSQL：`postgresql://user:pass@localhost/dbname` （需 `pip install psycopg2`）
-- MySQL：`mysql+pymysql://user:pass@localhost/dbname` （需 `pip install pymysql`）
+- SQLite（默认）：`sqlite:///database.db`
+- PostgreSQL：`postgresql://user:pass@localhost/dbname`（需 `pip install psycopg2`）
+- MySQL：`mysql+pymysql://user:pass@localhost/dbname`（需 `pip install pymysql`）
 
 SQLAlchemy 会自动生成适配各数据库的 SQL 方言，无需修改接口调用。
 
+## 文件说明
+
+| 文件 | 说明 |
+|------|------|
+| `dbv2.py` | 服务主程序（pymsg/TCP，唯一在跑的实现） |
+| `example_log_client.py` | 日志客户端 SDK 模板，各服务复制为 `log_client.py` 使用 |
+| `create_sqlite3.sql` | Users / Notes / Logs 建表脚本 |
+| `_view_db.sqlite3.py` | 非交互式查看 database.db 的工具脚本 |
+| `_set.sh` / `_run.sh` | 环境安装 / 启动脚本 |

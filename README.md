@@ -112,7 +112,6 @@
   - 外部服务通过 `log_client.py` 以 pymsg 调 execute 路由逐条 INSERT 写入日志。
   - `_log_internal()` — db 进程内部直接写 Logs 表，无网络往返，防递归设计。
   - 后台守护线程每小时自动清理：保留 30 天 / 上限 100 万条。
-  - 注：`db/log_module.py`（Flask `/log/*` Blueprint）为旧版 HTTP 接口的遗留文件，当前 dbv2 未挂载。
 - **统一日志客户端 SDK**（各服务目录下的 `log_client.py`，如 [dnfs/log_client.py](dnfs/log_client.py)）：各服务复制即用，纯标准库实现，异步非阻塞（内存队列 + 后台线程，50 条/2 秒批量 flush），fail-safe 设计（db 不可用时静默丢弃，不影响业务）。
 
 ### ai_review（AI 内容审核服务）

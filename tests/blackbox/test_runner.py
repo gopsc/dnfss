@@ -17,7 +17,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import SERVICES, PORT_MAP, detect_service, get_url
-from helpers import check_service
+from helpers import check_service, check_tcp_service
 
 TEST_MODULES = {
     "gateway": "test_gateway",
@@ -53,7 +53,11 @@ def run_service_test(name: str, url: str) -> tuple:
     print(f"  {svc['description']}  ({url})")
     print(f"{'='*60}")
 
-    reachable, detail = check_service(url)
+    # pymsg/TCP 服务无 HTTP 接口，用 TCP 直连探测
+    if svc.get("protocol") == "pymsg":
+        reachable, detail = check_tcp_service(svc["host"], svc["port"])
+    else:
+        reachable, detail = check_service(url)
     if not reachable:
         print(f"  [WARN] 服务不可达: {url}")
         if detail:
