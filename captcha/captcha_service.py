@@ -38,7 +38,7 @@ from pymsg import MsgServer  # noqa: E402
 
 # ── 配置 ────────────────────────────────────────────────────────────────
 
-CAPTCHA_LEN = 5
+CAPTCHA_LEN = 4
 CAPTCHA_TTL = 300        # Token 有效期（秒）
 
 CHARS = string.ascii_letters + string.digits
@@ -63,7 +63,7 @@ def generate_image(text):
     for i, ch in enumerate(text):
         color = random.choice([(30, 30, 30), (50, 80, 150), (150, 50, 50), (50, 130, 50)])
         y = random.randint(2, 12)
-        x = 10 + i * 28 + random.randint(-3, 3)
+        x = 15 + i * 32 + random.randint(-3, 3)   # 4 位字符在 160px 宽度内均匀分布
         try:
             font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
                                       random.choice([28, 30, 32, 34]))
