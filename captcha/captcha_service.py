@@ -1,29 +1,54 @@
 """
-CAPTCHA Image Service (stdlib only, no Flask dependency)
+captcha — 基于 pymsg 协议（MsgServer）的图形验证码服务。
+
+替代原 http.server HTTP 接口，通过 TCP 长度前缀帧收发 JSON。
+协议：每条消息为完整 JSON，``_route`` 字段对应路由名。
+
+请求示例::
+
+    {"_route": "image"}                          → 生成验证码图片
+    {"_route": "verify", "token": "...", "answer": "AB3XY"}  → 校验
+    {"_route": "health"}                         → 健康检查
+
+响应格式（与 dbv2 一致）::
+
+    {"success": true,  "data": {...}}
+    {"success": false, "error": "..."}
+
+说明：PNG 图片为二进制，经 base64 编码后放入 JSON 返回；
+调用方（gateway）解码后以 image/png 代理给浏览器。
 """
-import os
+
+import base64
 import io
 import json
-import time
+import os
 import random
-import string
 import secrets
+import string
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+import time
+
 from PIL import Image, ImageDraw, ImageFont
 
+# pymsg 导入
+import sys as _sys
+_sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from pymsg import MsgServer  # noqa: E402
+
+# ── 配置 ────────────────────────────────────────────────────────────────
+
 CAPTCHA_LEN = 5
-CAPTCHA_TTL = 300
-ADDR = '127.0.0.1'
-PORT = 8009
+CAPTCHA_TTL = 300        # Token 有效期（秒）
 
 CHARS = string.ascii_letters + string.digits
-CHARS = CHARS.translate(str.maketrans('', '', 'lI1O0o'))
+CHARS = CHARS.translate(str.maketrans('', '', 'lI1O0o'))   # 剔除易混淆字符
 
-captcha_store = {}
+captcha_store = {}       # token -> {'answer': str, 'created_at': float}
 STORE_LOCK = threading.Lock()
 
+
+# ── 验证码生成 ──────────────────────────────────────────────────────────
 
 def generate_text():
     return ''.join(random.choices(CHARS, k=CAPTCHA_LEN))
@@ -31,114 +56,157 @@ def generate_text():
 
 def generate_image(text):
     width, height = 160, 50
-    bg = random.choice([(255,255,255), (240,240,240), (230,240,250)])
+    bg = random.choice([(255, 255, 255), (240, 240, 240), (230, 240, 250)])
     img = Image.new('RGB', (width, height), bg)
     draw = ImageDraw.Draw(img)
 
     for i, ch in enumerate(text):
-        color = random.choice([(30,30,30),(50,80,150),(150,50,50),(50,130,50)])
+        color = random.choice([(30, 30, 30), (50, 80, 150), (150, 50, 50), (50, 130, 50)])
         y = random.randint(2, 12)
         x = 10 + i * 28 + random.randint(-3, 3)
         try:
             font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                                      random.choice([28,30,32,34]))
+                                      random.choice([28, 30, 32, 34]))
         except (IOError, OSError):
             font = ImageFont.load_default()
         draw.text((x, y), ch, fill=color, font=font)
 
     for _ in range(4):
-        draw.line([(random.randint(0,width), random.randint(0,height)),
-                   (random.randint(0,width), random.randint(0,height))],
-                  fill=random.choice([(30,30,30),(50,80,150)]), width=1)
+        draw.line([(random.randint(0, width), random.randint(0, height)),
+                   (random.randint(0, width), random.randint(0, height))],
+                  fill=random.choice([(30, 30, 30), (50, 80, 150)]), width=1)
     for _ in range(50):
-        draw.point((random.randint(0,width-1), random.randint(0,height-1)),
-                   fill=random.choice([(30,30,30),(50,80,150)]))
+        draw.point((random.randint(0, width - 1), random.randint(0, height - 1)),
+                   fill=random.choice([(30, 30, 30), (50, 80, 150)]))
 
     buf = io.BytesIO()
     img.save(buf, format='PNG')
-    buf.seek(0)
-    return buf
+    return buf.getvalue()
 
 
-def json_response(handler, data, status=200):
-    body = json.dumps(data).encode('utf-8')
-    handler.send_response(status)
-    handler.send_header('Content-Type', 'application/json')
-    handler.send_header('Content-Length', str(len(body)))
-    handler.end_headers()
-    handler.wfile.write(body)
+# ═══════════════════════════════════════════════════════════════════════
+# CaptchaServer — 主服务类
+# ═══════════════════════════════════════════════════════════════════════
 
+class CaptchaServer:
+    """基于 pymsg 的验证码服务，通过 TCP 长连接收发 JSON。"""
 
-class CaptchaHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass
+    def __init__(self, addr="127.0.0.1", port=8009):
+        self.addr = addr
+        self.port = port
+        self._server = MsgServer(addr, port)
 
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        if parsed.path == '/captcha/image':
-            text = generate_text()
-            token = secrets.token_hex(16)
-            with STORE_LOCK:
-                captcha_store[token] = {'answer': text.lower(), 'created_at': time.time()}
-                now = time.time()
-                expired = [k for k, v in captcha_store.items() if now - v['created_at'] > CAPTCHA_TTL]
-                for k in expired:
-                    del captcha_store[k]
+        # 路由表
+        self._routes = {
+            "image": self._handle_image,
+            "verify": self._handle_verify,
+            "health": self._handle_health,
+        }
 
-            img_buf = generate_image(text)
-            data = img_buf.read()
-            self.send_response(200)
-            self.send_header('Content-Type', 'image/png')
-            self.send_header('Content-Length', str(len(data)))
-            self.send_header('X-Captcha-Token', token)
-            self.end_headers()
-            self.wfile.write(data)
-        elif parsed.path == '/health':
-            json_response(self, {'status': 'ok', 'service': 'captcha'})
+    # ── 启动 / 停止 ──────────────────────────────────────────────────
+    def start(self) -> None:
+        """启动服务（阻塞当前线程）。"""
+        print(f"[captcha] 监听 tcp://{self.addr}:{self.port}")
+        self._server.start(self._dispatch)
+
+    def stop(self) -> None:
+        """从另一线程停止服务。"""
+        self._server.stop()
+
+    # ── 消息调度 -------------------------------------------------------
+    def _dispatch(self, sock, addr, text):
+        """解析 JSON 中的 _route，分发给对应的 handler，并回复结果。"""
+        try:
+            req = json.loads(text)
+        except json.JSONDecodeError as e:
+            self._reply(sock, False, error=f"JSON 解析失败: {e}")
+            return
+
+        route = req.pop("_route", "")
+        handler = self._routes.get(route)
+        if handler is None:
+            self._reply(sock, False, error=f"未知路由: {route}")
+            return
+
+        try:
+            result = handler(req)
+            self._reply(sock, True, data=result)
+        except Exception as e:
+            self._reply(sock, False, error=str(e))
+
+    def _reply(self, sock, success, data=None, error=None):
+        resp = {"success": success}
+        if data is not None:
+            resp["data"] = data
+        if error is not None:
+            resp["error"] = error
+        self._server.reply(sock, json.dumps(resp, ensure_ascii=False))
+
+    # ═══════════════════════════════════════════════════════════════════
+    # 路由处理
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _handle_image(self, _req):
+        """生成验证码图片，返回 token 与 base64 编码的 PNG。"""
+        text = generate_text()
+        token = secrets.token_hex(16)
+
+        with STORE_LOCK:
+            captcha_store[token] = {'answer': text.lower(), 'created_at': time.time()}
+            # 惰性清理过期项
+            now = time.time()
+            expired = [k for k, v in captcha_store.items() if now - v['created_at'] > CAPTCHA_TTL]
+            for k in expired:
+                del captcha_store[k]
+
+        png_bytes = generate_image(text)
+        return {
+            "token": token,
+            "image": base64.b64encode(png_bytes).decode('ascii'),
+        }
+
+    def _handle_verify(self, req):
+        """校验答案，Token 一次性消费；恒定时间比较防计时攻击。"""
+        token = str(req.get("token", "")).strip()
+        answer = str(req.get("answer", "")).strip().lower()
+        if not token or not answer:
+            return {"valid": False, "error": "token and answer required"}
+
+        with STORE_LOCK:
+            entry = captcha_store.pop(token, None)
+
+        if not entry:
+            return {"valid": False, "error": "invalid or expired token"}
+
+        expected = entry['answer']
+        if len(answer) != len(expected):
+            valid = False
         else:
-            self.send_response(404)
-            self.end_headers()
+            diff = 0
+            for a, b in zip(answer, expected):
+                diff |= ord(a) ^ ord(b)
+            valid = diff == 0
 
-    def do_POST(self):
-        parsed = urlparse(self.path)
-        if parsed.path == '/captcha/verify':
-            length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(length)
-            try:
-                data = json.loads(body)
-            except json.JSONDecodeError:
-                json_response(self, {'valid': False, 'error': 'invalid json'}, 400)
-                return
+        return {"valid": valid}
 
-            token = data.get('token', '').strip()
-            answer = data.get('answer', '').strip().lower()
-            if not token or not answer:
-                json_response(self, {'valid': False, 'error': 'token and answer required'}, 400)
-                return
+    def _handle_health(self, _req):
+        return {"status": "ok", "service": "captcha"}
 
-            with STORE_LOCK:
-                entry = captcha_store.pop(token, None)
 
-            if not entry:
-                json_response(self, {'valid': False, 'error': 'invalid or expired token'}, 400)
-                return
-
-            expected = entry['answer']
-            if len(answer) != len(expected):
-                valid = False
-            else:
-                diff = 0
-                for a, b in zip(answer, expected):
-                    diff |= ord(a) ^ ord(b)
-                valid = diff == 0
-
-            json_response(self, {'valid': valid})
-        else:
-            self.send_response(404)
-            self.end_headers()
-
+# ═══════════════════════════════════════════════════════════════════════
+# 入口
+# ═══════════════════════════════════════════════════════════════════════
 
 if __name__ == '__main__':
-    server = HTTPServer((ADDR, PORT), CaptchaHandler)
-    print(f'CAPTCHA service listening at http://{ADDR}:{PORT}')
-    server.serve_forever()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="captcha — pymsg 验证码服务")
+    parser.add_argument("--addr", default="127.0.0.1", help="监听地址")
+    parser.add_argument("--port", type=int, default=8009, help="监听端口")
+    args = parser.parse_args()
+
+    server = CaptchaServer(args.addr, args.port)
+    try:
+        server.start()
+    except KeyboardInterrupt:
+        server.stop()

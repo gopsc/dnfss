@@ -48,7 +48,7 @@
 | [dnfs](dnfs/) | Python(Flask) | 8006 | 树状网络文件系统（Dendrachy Network File-System），基于父子 pid 的节点树增删改查，集成 AI 内容审核 |
 | [db](db/) | Python(pymsg) | 8005 | 通用数据库服务，基于 pymsg 协议（TCP 长度前缀帧 + JSON）的 SQL-over-TCP，SQLAlchemy Core 参数化查询防注入；内置集中式日志收集（Logs 表 + 自动清理） |
 | [ai_review](ai_review/) | Python(Flask) | 8007 | AI 内容审核服务，DeepSeek LLM + ChromaDB RAG，支持人工反馈纠偏 |
-| [captcha](captcha/) | Python(stdlib+PIL) | 8009 | 验证码服务，生成图形验证码（5 分钟过期、一次性），供 gateway 登录/注册可选启用 CAPTCHA 校验 |
+| [captcha](captcha/) | Python(pymsg) | 8009 | 验证码服务（pymsg/TCP），生成图形验证码（5 分钟过期、一次性），经 gateway 的 `GET /captcha/image` 代理给浏览器 |
 | [smtp](smtp/) | Python(Flask) | 8008 | 邮件服务，发送/校验邮箱验证码（/send_email、/verify_email），注册流程的邮件验证码后端，SMTP 账号配置在 .env |
 | [aibox](aibox/) | Python | 8765 | 独立 AI 智能体系统（DeepSeek + WebSocket），自带技能系统/记忆/任务调度，由 core 拉起但与主干微服务无调用关系 |
 
@@ -68,14 +68,15 @@
 - 极客操作：`kill -HUP <pid>` 热加载规则；`waf -list` 列规则；`waf -test <file>` 校验语法；`waf -check "<input>"` 测试单条输入。
 - 配置见 [waf/config.yaml](waf/config.yaml)，详见 [waf/README.md](waf/README.md)。
 
-### gateway（应用层网关 · v0.3.0-security）
+### gateway（应用层网关 · v0.4.3）
 
 - 内部 HTTP 服务，默认监听 127.0.0.1:8443，不再承载 TLS（TLS 已由 WAF 终止）。
 - 通过 `Server.tls = on/off` 配置切换 HTTPS/HTTP 模式（[example.ini](gateway/example.ini)），独立部署时仍可启用 TLS。
-- **密码安全**：PBKDF2-HMAC-SHA256（10 万轮 + 16 字节随机盐），密码强度校验（8+ 字符、4 类中至少 3 类），登录时自动迁移旧 SHA256 哈希，常数时间比较防 timing attack。
+- **密码安全**：PBKDF2-HMAC-SHA256（10 万轮 + 16 字节随机盐），密码强度校验（8+ 字符、4 类中至少 3 类），常数时间比较防 timing attack。
 - **用户存储**：用户数据通过 pymsg/TCP 调用 `db:8005`（`DbC::call_msg`）存取，不再直连本地 SQLite。
 - **Token 机制**：`Base64(payload) + "_" + RSA-Sign(payload)`，默认 1 小时过期，验签通过才放行；RSA 密钥对启动时内存生成，重启后旧 Token 全部失效。
-- **CAPTCHA**：`/captcha` 接口生成验证码（5 分钟过期、一次性使用），登录与注册均可选启用。
+- **Cookie 认证**：登录成功同时签发 `HttpOnly + Secure + SameSite=Lax` 的 `q4_token` Cookie；代理时无 `Authorization` 头则回退读 Cookie 验签，并向下游注入 `Authorization: Bearer`（下游零改动）；`POST /logout` 清除 Cookie。公开目标（`Proxy.default`）不做凭证校验，避免旧 Cookie 影响公开页面。
+- **CAPTCHA**：`/captcha` 接口生成验证码（5 分钟过期、一次性使用），登录与注册均可选启用；`GET /captcha/image` 为 captcha 服务（pymsg/TCP :8009）的图形验证码代理路由。
 - **速率限制**：登录 5 次/5 分钟、注册 3 次/10 分钟，按 `X-Forwarded-For`（WAF 注入）客户端 IP 计数。
 - **反向代理**：`Target-Url` 必须在 `Proxy.opened` 白名单中（`closed` 仅记录用途，实际隔离靠"不在 opened 中即拒绝"），缺省走 `Proxy.default`（不需 Token，服务前端静态资源）。
 - **自动建表**：启动时若 `Users` 表不存在则自动创建，首位注册者即为管理员。
@@ -125,9 +126,10 @@
 
 ### captcha（验证码服务）
 
-- 生成图形验证码，Token 一次性使用、5 分钟过期；纯标准库实现（http.server + PIL，无 Flask）。
-- 接口：`GET /captcha/image`（生成 PNG，Token 在 `X-Captcha-Token` 响应头）、`POST /captcha/verify`（校验，body 含 token/answer）、`GET /health`。
-- 答案错误返回 `200 {valid:false}`（Token 照常消费），仅参数 / Token 错误返回 `400`；比较采用 XOR 防时序攻击。
+- 生成图形验证码，Token 一次性使用、5 分钟过期；基于 [pymsg](pymsg/) 协议（TCP 长度前缀帧 + JSON），仅依赖 PIL。
+- pymsg 路由：`image`（生成，返回 token + base64 PNG）、`verify`（校验，一次性消费）、`health`。
+- 答案比较采用 XOR 防时序攻击；错误答案与无效 Token 分别返回 `{valid:false}` 与 `{valid:false, error:...}`。
+- **gateway 代理路由**：`GET /captcha/image` 经 pymsg 调 captcha 后解码 PNG，以 `image/png` + `X-Captcha-Token` 响应头返回浏览器（`Cache-Control: no-store`）。
 - 由 `gateway` 在 `/login`、`/register` 中可选启用 CAPTCHA 校验（字段 `captcha_token` / `captcha_answer`）。
 - 内存存储，不支持多实例水平扩展（需换 Redis）；详见 [captcha/README.md](captcha/README.md)。
 
@@ -171,7 +173,7 @@
 | 8006 | dnfs | 127.0.0.1 | 树状菜单（经 gateway 代理） |
 | 8005 | db | 127.0.0.1 | 数据库服务（pymsg/TCP，仅内部调用） |
 | 8007 | ai_review | 127.0.0.1 | AI 审核（仅内部调用） |
-| 8009 | captcha | 127.0.0.1 | 验证码服务（stdlib http.server，独立组件） |
+| 8009 | captcha | 127.0.0.1 | 验证码服务（pymsg/TCP，经 gateway 代理） |
 | 8008 | smtp | 127.0.0.1 | 邮件服务（仅内部调用，注册验证码邮件后端） |
 | 8765 | aibox | 127.0.0.1 | AI 智能体（WebSocket，独立产品） |
 

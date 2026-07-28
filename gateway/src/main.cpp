@@ -26,7 +26,7 @@ using namespace qing;
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-constexpr const char *_VER = "0.4.2";
+constexpr const char *_VER = "0.4.3";
 
 //////////////////////////////////
 #include <sstream>
@@ -295,6 +295,11 @@ http::response<http::string_body> handleLogout(
 		const http::request<http::string_body>& req,
 		const std::unordered_map<std::string, std::string>& params);
 
+/* 代理 captcha 图形验证码：pymsg 调 captcha 服务，返回 PNG 图片 */
+http::response<http::string_body> handleCaptchaImage(
+		const http::request<http::string_body>& req,
+		const std::unordered_map<std::string, std::string>& params);
+
 /* 从 Cookie 头中解析指定名称的值（找不到返回空串） */
 std::string get_cookie_value(const std::string& cookie_header, const std::string& name);
 
@@ -542,6 +547,12 @@ void registerRoutes(HttpServer &server) {
 	server.post("/logout", [](const auto& req, const auto& params) -> http::response<http::string_body> {
 		return wrapperHttp(req, params,
 			[](const auto& req, const auto& params) { return handleLogout(req, params); });
+	});
+
+	/* 代理 captcha 图形验证码（须在 get("*") 通配符之前注册） */
+	server.get("/captcha/image", [](const auto& req, const auto& params) -> http::response<http::string_body> {
+		return wrapperHttp(req, params,
+			[](const auto& req, const auto& params) { return handleCaptchaImage(req, params); });
 	});
 
 	server.get("*", [](const auto& req, const auto& params) -> http::response<http::string_body> {
@@ -816,6 +827,56 @@ http::response<http::string_body> handleLogout(
 	res.set("Connection", "close");
 	res.result(http::status::ok);
 	res.body() = R"({"success": true, "message": "logged out"})";
+	res.prepare_payload();
+	return res;
+}
+
+/* 代理 captcha 图形验证码：GET /captcha/image
+ *
+ * captcha 服务为 pymsg/TCP（:8009），浏览器无法直接访问，
+ * 由本路由做 HTTP → pymsg 转换：调 image 路由拿到 base64 PNG 与 token，
+ * 解码后以 image/png + X-Captcha-Token 响应头返回（与旧直出接口契约一致）。
+ */
+http::response<http::string_body> handleCaptchaImage(
+	const http::request<http::string_body>& req,
+	const std::unordered_map<std::string, std::string>& params)
+{
+	http::response<http::string_body> res;
+	res.version(req.version());
+
+	/* 调 captcha 服务（pymsg/TCP），连接失败/超时视为 502 */
+	pmc::net::MsgClient client("127.0.0.1", 8009, "gateway");
+	std::string resp;
+	try {
+		resp = client.call(R"({"_route":"image"})", 5.0);
+	} catch (const std::exception& e) {
+		THROW_EX_CUSTOM(HttpException, 2400, "Captcha service unavailable", 502, "/captcha/image");
+	}
+
+	/* 解析响应（格式错误同样视为 502） */
+	std::string token;
+	std::string png;
+	try {
+		auto jv = json::parse(resp);
+		auto& obj = jv.as_object();
+		if (!obj.at("success").as_bool())
+			THROW_EX_CUSTOM(HttpException, 2401, "Captcha service error", 502, "/captcha/image");
+		auto& data = obj.at("data").as_object();
+		token = json::value_to<std::string>(data.at("token"));
+		auto image_b64 = json::value_to<std::string>(data.at("image"));
+		png = Base64::base64_decode_to_string(image_b64);
+	} catch (const HttpException&) {
+		throw;
+	} catch (const std::exception& e) {
+		THROW_EX_CUSTOM(HttpException, 2402, "Bad captcha response", 502, "/captcha/image");
+	}
+
+	res.set(http::field::content_type, "image/png");
+	res.set("X-Captcha-Token", token);
+	res.set("Cache-Control", "no-store");   /* 验证码图片禁止缓存 */
+	res.set("Connection", "close");
+	res.result(http::status::ok);
+	res.body() = std::move(png);
 	res.prepare_payload();
 	return res;
 }
