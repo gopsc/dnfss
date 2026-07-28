@@ -49,7 +49,7 @@
 | [db](db/) | Python(pymsg) | 8005 | 通用数据库服务，基于 pymsg 协议（TCP 长度前缀帧 + JSON）的 SQL-over-TCP，SQLAlchemy Core 参数化查询防注入；内置集中式日志收集（Logs 表 + 自动清理） |
 | [ai_review](ai_review/) | Python(Flask) | 8007 | AI 内容审核服务，DeepSeek LLM + ChromaDB RAG，支持人工反馈纠偏 |
 | [captcha](captcha/) | Python(pymsg) | 8009 | 验证码服务（pymsg/TCP），生成图形验证码（5 分钟过期、一次性），经 gateway 的 `GET /captcha/image` 代理给浏览器 |
-| [smtp](smtp/) | Python(Flask) | 8008 | 邮件服务，发送/校验邮箱验证码（/send_email、/verify_email），注册流程的邮件验证码后端，SMTP 账号配置在 .env |
+| [smtp](smtp/) | Python(pymsg) | 8008 | 邮件服务，发送/校验邮箱验证码（pymsg 路由 send_email/verify_email/health），注册流程的邮件验证码后端，SMTP 账号配置在 .env |
 | [aibox](aibox/) | Python | 8765 | 独立 AI 智能体系统（DeepSeek + WebSocket），自带技能系统/记忆/任务调度，由 core 拉起但与主干微服务无调用关系 |
 
 ### core（核心模块 · 进程托管服务）
@@ -135,9 +135,9 @@
 
 ### smtp（邮件服务）
 
-- 注册流程的邮箱验证码后端，基于 Flask + waitress，监听 127.0.0.1:8008。
-- 接口：`POST /send_email`（生成 6 位验证码并经 SMTP_SSL 发送至收件人，60 秒有效）、`POST /verify_email`（校验）。
-- 验证码存于进程内存，SMTP 账号通过 `.env` 配置（`SMTP_SERVER` / `SMTP_PORT` / `SMTP_USER` / `__PASSWORD`）。
+- 注册流程的邮箱验证码后端，基于 pymsg（MsgServer，TCP 长度前缀帧 + JSON），监听 127.0.0.1:8008。
+- pymsg 路由：`send_email`（生成 6 位验证码并经 SMTP_SSL 发送，60 秒有效，发送失败自动作废）、`verify_email`（校验，通过即一次性消费防重放，兼容旧字段 `input_captcha`）、`health`。
+- 验证码存于进程内存（锁保护 + 惰性过期清理），SMTP 账号通过 `.env` 配置（`SMTP_SERVER` / `SMTP_PORT` / `SMTP_USER` / `__PASSWORD`，`__PASSWORD` 兼容别名 `SMTP_PASSWORD`）。
 
 ### aibox（独立 AI 智能体系统）
 
