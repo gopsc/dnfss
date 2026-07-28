@@ -78,7 +78,7 @@
 {
   "success": true,
   "data": [
-    {"id": 1, "username": "Alice"}
+    {"id": 1, "username": "Alice", "create_at": "2026-07-28T14:30:00"}
   ]
 }
 ```
@@ -89,6 +89,40 @@
 失败：
 ```json
 {"success": false, "error": "错误描述"}
+```
+
+## 日期/时间列的处理
+
+JSON 没有日期类型，db 内置了类型适配层：按反射得到的列类型自动在
+ISO 8601 字符串与数据库 DATETIME / DATE / TIME 之间转换。
+
+**写入（values / where 条件值）**：
+
+| 输入 | 说明 |
+|------|------|
+| `"2026-07-28T22:30:00"` | ISO 8601（T 分隔），推荐 |
+| `"2026-07-28 22:30:00"` | 空格分隔同样接受（SQLite 原生格式） |
+| `"2026-07-28T22:30:00+08:00"` | 带时区偏移：自动转 UTC 后存储 |
+| `"2026-07-28T14:30:00Z"` | Z 后缀等同 +00:00 |
+| `"$now"` | 哨兵值：服务端当前 UTC 时间（DATETIME/DATE 列可用） |
+
+存储统一为 UTC 朴素时间（无时区）。非法日期字符串会返回明确的错误：
+`{"success": false, "error": "列 last_login 的日期时间值无法解析（需 ISO 8601 或 \"$now\"）: ..."}`
+
+**读取（select 响应）**：日期时间值一律序列化为 ISO 8601（T 分隔），
+如 `"2026-07-28T22:30:00"`，客户端可用 `datetime.fromisoformat()` 直接解析。
+
+**注意**：`like` 运算符是字符串模式匹配，对日期列使用时不做转换。
+
+```json
+// 示例：登录后更新 last_login 为服务端当前时间
+{
+  "_route": "execute",
+  "action": "update",
+  "table": "Users",
+  "values": {"last_login": "$now"},
+  "where": {"username": "alice"}
+}
 ```
 
 ## 使用示例（Python + pymsg）

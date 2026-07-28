@@ -107,6 +107,7 @@
 - 基于 SQLAlchemy Core 表反射，参数化查询，零 SQL 注入风险。
 - 仅监听 127.0.0.1，自动提交/回滚，不暴露 DDL 操作。
 - 默认使用 SQLite（`database.db`），可通过 `DATABASE_URL` 环境变量切换至 PostgreSQL / MySQL。
+- **日期/时间列适配**：values 与 where 中的 DATETIME/DATE/TIME 列接受 ISO 8601 字符串（带时区偏移自动转 UTC）或哨兵值 `"$now"`（服务端当前 UTC）；响应中的日期时间一律序列化为 ISO 8601（T 分隔）。
 - **内置日志子模块**：
   - 启动时自动建 `Logs` 表（service / level / message / trace_id / extra + 4 个索引）。
   - 外部服务通过 `log_client.py` 以 pymsg 调 execute 路由逐条 INSERT 写入日志。

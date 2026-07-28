@@ -6,6 +6,7 @@ db 黑盒用户模拟测试 — pymsg 协议 CRUD。
   2. 通过 pymsg 协议查询 Logs 表
   3. 通过 pymsg 协议带 where 条件查询
   4. 无效路由被拒绝
+  5. 日期列 where（ISO 字符串 / $now 哨兵 / 非法值拒绝）
 
 注意: dbv2.py 为纯 pymsg/TCP 服务（无 HTTP 接口），日志通过
 log_client.py 走 execute 路由 INSERT 写入 Logs 表。
@@ -99,6 +100,48 @@ def run(url: str = None):
     assert_true(
         result.get("success") is False,
         "pymsg-无效路由-拒绝", c,
+    )
+
+    # 场景 5: 日期列 where — ISO 8601 字符串（dbv2 日期适配层）
+    result = client.call({
+        "_route": "execute",
+        "action": "select",
+        "table": "Users",
+        "columns": ["id", "username", "create_at"],
+        "where": {"create_at": {"lt": "2999-01-01T00:00:00"}},
+        "limit": 1,
+    })
+    assert_true(
+        result.get("success") is True,
+        "pymsg-日期列where-ISO字符串", c,
+        f"error={result.get('error', '')}",
+    )
+
+    # 场景 6: 日期列 where — $now 哨兵
+    result = client.call({
+        "_route": "execute",
+        "action": "select",
+        "table": "Users",
+        "columns": ["id", "username", "create_at"],
+        "where": {"create_at": {"lt": "$now"}},
+        "limit": 1,
+    })
+    assert_true(
+        result.get("success") is True,
+        "pymsg-日期列where-$now哨兵", c,
+        f"error={result.get('error', '')}",
+    )
+
+    # 场景 7: 日期列 where — 非法日期字符串应报错
+    result = client.call({
+        "_route": "execute",
+        "action": "select",
+        "table": "Users",
+        "where": {"create_at": {"lt": "not-a-date"}},
+    })
+    assert_true(
+        result.get("success") is False,
+        "pymsg-日期列where-非法值-拒绝", c,
     )
 
     # ------------------------------------------------------------------
