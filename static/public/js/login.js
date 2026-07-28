@@ -1,13 +1,37 @@
 const msgTip = document.getElementById('msgTip');
 const pwdTip = document.getElementById('pwdTip');
 const agreeTip = document.getElementById('agreeTip');
+const captchaTip = document.getElementById('captchaTip');
 const form = document.getElementById('form');
 const usernameInput = document.getElementById('loginUsername');
 const passwordInput = document.getElementById('loginPassword');
+const captchaInput = document.getElementById('captchaAnswer');
+const captchaImg = document.getElementById('captchaImg');
 const agreeBox = document.getElementById('agreeBox');
 const resetUser = document.getElementById('resetUser');
 const registerBtn = document.getElementById('registerBtn');
 const loginButton = document.getElementById('loginBtn');
+
+/* ── 图形验证码（gateway 代理 captcha 服务：GET /captcha/image） ── */
+let captchaToken = '';
+
+async function refreshCaptcha() {
+	captchaToken = '';
+	try {
+		const res = await fetch('/captcha/image', { cache: 'no-store' });
+		if (!res.ok) throw new Error('captcha load failed');
+		captchaToken = res.headers.get('X-Captcha-Token') || '';
+		const blob = await res.blob();
+		if (captchaImg.src && captchaImg.src.startsWith('blob:')) URL.revokeObjectURL(captchaImg.src);
+		captchaImg.src = URL.createObjectURL(blob);
+		captchaImg.alt = '点击刷新';
+	} catch (e) {
+		captchaImg.removeAttribute('src');
+		captchaImg.alt = '加载失败，点击重试';
+	}
+}
+captchaImg.addEventListener('click', refreshCaptcha);
+refreshCaptcha();
 
 resetUser.addEventListener('click', function() { clearTipStyle(); });
 
@@ -15,9 +39,11 @@ function clearTipStyle() {
 	msgTip.innerHTML = '';
 	pwdTip.innerHTML = '';
 	agreeTip.innerHTML = '';
+	captchaTip.innerHTML = '';
 	msgTip.classList.remove('tip-red', 'tip-yellow', 'tip-green');
 	pwdTip.classList.remove('tip-red', 'tip-yellow', 'tip-green');
 	agreeTip.classList.remove('tip-red');
+	captchaTip.classList.remove('tip-red');
 }
 clearTipStyle();
 
@@ -33,6 +59,23 @@ function checkPwd() {
 	pwdTip.textContent = result.message;
 	pwdTip.className = result.className;
 	return result.valid ? result.value : false;
+}
+
+function checkCaptcha() {
+	captchaTip.innerHTML = '';
+	captchaTip.classList.remove('tip-red');
+	const v = captchaInput.value.trim();
+	if (!v) {
+		captchaTip.innerHTML = '请输入验证码！';
+		captchaTip.classList.add('tip-red');
+		return false;
+	}
+	if (!captchaToken) {
+		captchaTip.innerHTML = '验证码未加载，请点击图片刷新';
+		captchaTip.classList.add('tip-red');
+		return false;
+	}
+	return v;
 }
 
 function checkAgree() {
@@ -60,10 +103,16 @@ form.addEventListener('submit', async function(e) {
 	clearTipStyle();
 	const userOk = checkUsername();
 	const pwdOk = checkPwd();
+	const captchaOk = checkCaptcha();
 	const agreeOk = checkAgree();
-	if (!userOk || !pwdOk || !agreeOk) return;
+	if (!userOk || !pwdOk || !captchaOk || !agreeOk) return;
 
-	const jsonBody = JSON.stringify({ username: userOk, password: pwdOk });
+	const jsonBody = JSON.stringify({
+		username: userOk,
+		password: pwdOk,
+		captcha_token: captchaToken,
+		captcha_answer: captchaOk
+	});
 	try {
 		loginButton.disabled = true;
 		const res = await fetch('/login', {
@@ -85,6 +134,9 @@ form.addEventListener('submit', async function(e) {
 	} catch (err) {
 		alert(err.message || '接口请求失败');
 	} finally {
+		// 无论成败都刷新验证码：Token 已被一次性消费，或需防重试
+		captchaInput.value = '';
+		refreshCaptcha();
 		loginButton.disabled = false;
 	}
 });

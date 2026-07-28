@@ -26,7 +26,7 @@ using namespace qing;
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-constexpr const char *_VER = "0.4.3";
+constexpr const char *_VER = "0.4.4";
 
 //////////////////////////////////
 #include <sstream>
@@ -368,6 +368,27 @@ bool verify_captcha(const std::string& token, const std::string& answer) {
     return match;
 }
 
+/* 调用 captcha 服务（pymsg/TCP :8009）校验图形验证码。
+ * Token 一次性消费；服务不可用或响应异常一律视为校验失败（fail-closed）。
+ * 与内置 verify_captcha 并存：登录/注册可任选其一接入。 */
+bool verify_captcha_remote(const std::string& token, const std::string& answer) {
+	try {
+		pmc::net::MsgClient client("127.0.0.1", 8009, "gateway");
+		json::value jv_req = {
+			{"_route", "verify"},
+			{"token", token},
+			{"answer", answer}
+		};
+		std::string resp = client.call(json::serialize(jv_req), 5.0);
+		auto jv = json::parse(resp);
+		auto& obj = jv.as_object();
+		if (!obj.at("success").as_bool()) return false;
+		return obj.at("data").as_object().at("valid").as_bool();
+	} catch (const std::exception&) {
+		return false;
+	}
+}
+
 /* -------- 信号处理回调函数 -------- */
 void signalHandler(int signum) {
 
@@ -689,16 +710,14 @@ http::response<http::string_body> handleLogin(
 	auto username = std::string(obj.at("username").as_string());
 	auto password = std::string(obj.at("password").as_string());
 
-	// CAPTCHA verification 验证码
-	// 浏览器请求验证码端口，获取验证图片和身份证（速率限制），身份证对应验证码
-	// gateway请求验证端口，输入用户的验证和身份证
-	//auto captcha_it = obj.find("captcha_token");
-	//auto captcha_ans_it = obj.find("captcha_answer");
-	//if (captcha_it == obj.end() || captcha_ans_it == obj.end())
-	//	THROW_EX_CUSTOM(HttpException, 2002, "Bad_Request", 400, "/login");
-	//std::string ct = std::string(captcha_it->value().as_string());
-	//std::string ca = std::string(captcha_ans_it->value().as_string());
-	//if (!verify_captcha(ct, ca)) THROW_EX_CUSTOM(HttpException, 2201, "Invalid CAPTCHA", 400, "/login");
+	// CAPTCHA verification 验证码（对接 captcha pymsg 服务，图形码 Token 一次性消费）
+	auto captcha_it = obj.find("captcha_token");
+	auto captcha_ans_it = obj.find("captcha_answer");
+	if (captcha_it == obj.end() || captcha_ans_it == obj.end())
+		THROW_EX_CUSTOM(HttpException, 2002, "Bad_Request", 400, "/login");
+	std::string ct = std::string(captcha_it->value().as_string());
+	std::string ca = std::string(captcha_ans_it->value().as_string());
+	if (!verify_captcha_remote(ct, ca)) THROW_EX_CUSTOM(HttpException, 2201, "Invalid CAPTCHA", 400, "/login");
 
 	std::string stored_hash = "";
 	{

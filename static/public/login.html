@@ -17,6 +17,10 @@
 					<label>密码：</label>
 					<input type="password" id="loginPassword" placeholder="请输入密码">
 					<span id="pwdTip"></span>
+					<label>验证码：</label>
+					<input type="text" id="captchaAnswer" placeholder="请输入验证码" maxlength="5" autocomplete="off" style="width:110px">
+					<img id="captchaImg" alt="加载中…" title="点击刷新验证码" style="width:120px;height:38px;vertical-align:middle;cursor:pointer;margin-left:8px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box">
+					<span id="captchaTip"></span>
 				</div>
 				<div class="form-actions">
 					<button type="button" id="registerBtn">注册</button>
