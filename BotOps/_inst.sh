@@ -5,6 +5,8 @@ cd "$(dirname "$0")" || exit
 source venv/bin/activate
 python3 -m nuitka --standalone --onefile \
     --assume-yes-for-downloads \
+    --include-package=websockets \
+    --include-package=textual \
     --include-package-data=textual \
     --output-filename=botops.bin \
     app.py
