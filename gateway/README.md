@@ -226,11 +226,13 @@ gateway/
 
 ## 版本
 
-`0.3.0-security`（见 [src/main.cpp:27](src/main.cpp#L27)）。启动时打印：
+`0.5.1`（见 [src/main.cpp:29](src/main.cpp#L29)）。启动时打印：
 
 ```
-Gateway 0.3.0-security started (PBKDF2 + CAPTCHA + RateLimit)
+Gateway 0.5.1 started
 ```
+
+近期变更：登录成功后通过 db 更新 `Users.last_login`（`"$now"` 哨兵，db 日期适配层转为服务端当前 UTC 时间；更新失败经 THROW_EX_CUSTOM 抛 500，与其他步骤一致）。
 
 ## 依赖
 

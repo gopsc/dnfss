@@ -73,7 +73,7 @@
 - 内部 HTTP 服务，默认监听 127.0.0.1:8443，不再承载 TLS（TLS 已由 WAF 终止）。
 - 通过 `Server.tls = on/off` 配置切换 HTTPS/HTTP 模式（[example.ini](gateway/example.ini)），独立部署时仍可启用 TLS。
 - **密码安全**：PBKDF2-HMAC-SHA256（10 万轮 + 16 字节随机盐），密码强度校验（8+ 字符、4 类中至少 3 类），常数时间比较防 timing attack。
-- **用户存储**：用户数据通过 pymsg/TCP 调用 `db:8005`（`DbC::call_msg`）存取，不再直连本地 SQLite。
+- **用户存储**：用户数据通过 pymsg/TCP 调用 `db:8005`（`DbC::call_msg`）存取，不再直连本地 SQLite；登录成功即更新 `Users.last_login`（`"$now"` 哨兵）。
 - **Token 机制**：`Base64(payload) + "_" + RSA-Sign(payload)`，默认 1 小时过期，验签通过才放行；RSA 密钥对启动时内存生成，重启后旧 Token 全部失效。
 - **Cookie 认证**：登录成功同时签发 `HttpOnly + Secure + SameSite=Lax` 的 `q4_token` Cookie；代理时无 `Authorization` 头则回退读 Cookie 验签，并向下游注入 `Authorization: Bearer`（下游零改动）；`POST /logout` 清除 Cookie。公开目标（`Proxy.default`）不做凭证校验，避免旧 Cookie 影响公开页面。
 - **CAPTCHA**：`/captcha` 接口生成验证码（5 分钟过期、一次性使用），登录与注册均可选启用；`GET /captcha/image` 为 captcha 服务（pymsg/TCP :8009）的图形验证码代理路由。

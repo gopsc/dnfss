@@ -26,7 +26,7 @@ using namespace qing;
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-constexpr const char *_VER = "0.5.0";
+constexpr const char *_VER = "0.5.1";
 
 //////////////////////////////////
 #include <sstream>
@@ -811,21 +811,21 @@ http::response<http::string_body> handleLogin(
 	//stmt_upd.bind_text(1, username);
 	//stmt_upd.step();
 	//
-	// 新版调用db模块 无法通过DB上传时间戳目前
-	//json::value jv_upd = {
-	//	{"action", "update"},
-	//	{"table", "Users"},
-	//	{"values", json::object{
-	//		{"last_login", LocalTime::getCurrent()},
-	//	}},
-	//	{"where", json::object{
-	//		{"username", username},
-	//	}}
-	//};
-	//auto jv_db_r = DbC::call_http(jv_upd);
-	//auto obj_r = jv_db_r.as_object();
-	//auto success = obj_r["success"].as_bool();
-	//if (!success) THROW_EX_CUSTOM(HttpException, 2102, json::serialize(jv_db_r)+"Login (Update Step) Failed", 500, "/login");
+	// 新版调用db模块：values 中的 "$now" 哨兵由 db 日期适配层替换为服务端当前 UTC 时间
+	//（此前因 db 无法处理日期列而注释，dbv2 增加 _coerce_value 后可用）。
+	json::value jv_upd = {
+		{"action", "update"},
+		{"table", "Users"},
+		{"values", json::object{
+			{"last_login", "$now"},
+		}},
+		{"where", json::object{
+			{"username", username},
+		}}
+	};
+	auto jv_upd_r = DbC::call_msg(jv_upd);
+	if (!jv_upd_r.as_object()["success"].as_bool())
+		THROW_EX_CUSTOM(HttpException, 2102, "Login (Update Step) Failed", 500, "/login");
 
 
 	/* 生成令牌 */
