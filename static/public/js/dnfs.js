@@ -28,6 +28,12 @@ async function getNode(id) {
 			throw new Error('服务器响应格式异常，请稍后重试');
 		}
 
+		if (res.status === 401) {
+			// 凭证失效（过期或网关重启），跳转重新登录
+			location.href = '/login.html';
+			return;
+		}
+
 		if (!res.ok) {
 			throw new Error(result.message || `获取节点失败（HTTP ${res.status}）`);
 		}
@@ -78,6 +84,12 @@ async function addNode(pid, title, content) {
 		} catch {
 			console.error(`添加笔记接口返回非 JSON 内容（HTTP ${res.status}）：`, responseText);
 			throw new Error('服务器响应格式异常，请稍后重试');
+		}
+
+		if (res.status === 401) {
+			// 凭证失效（过期或网关重启），跳转重新登录
+			location.href = '/login.html';
+			return;
 		}
 
 		if (!res.ok) {
@@ -131,6 +143,12 @@ async function deleteNode(id) {
 		} catch {
 			console.error(`删除笔记接口返回非 JSON 内容（HTTP ${res.status}）：`, responseText);
 			throw new Error('服务器响应格式异常，请稍后重试');
+		}
+
+		if (res.status === 401) {
+			// 凭证失效（过期或网关重启），跳转重新登录
+			location.href = '/login.html';
+			return;
 		}
 
 		if (!res.ok) {

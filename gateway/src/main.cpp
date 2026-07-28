@@ -26,7 +26,7 @@ using namespace qing;
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-constexpr const char *_VER = "0.4.1";
+constexpr const char *_VER = "0.4.2";
 
 //////////////////////////////////
 #include <sstream>
@@ -966,20 +966,26 @@ http::response<http::string_body> handleProxy(
 		}
 		if (raw.empty() && !flag)
 			THROW_EX_CUSTOM(HttpException, 2301, "Unauthorization", 401, "*");
-		if (raw.substr(0, 7) == "Bearer ") {
-			raw = raw.substr(7, raw.size() - 7);
-			size_t idx  = raw.find("_");
-			if (idx == std::string::npos)
-				THROW_EX_CUSTOM(HttpException, 2301, "Unauthorization", 400, "*");
-			std::string data = raw.substr(0, idx);
-			std::string sign = raw.substr(idx+1, raw.size()-idx-1);
-			auth = Base64::base64_decode_to_string(data);
-			if (!_PUBL.Verify(auth, sign))
-				THROW_EX_CUSTOM(HttpException, 2301, "Unauthorization", 401, "*");
-		}
 
-		/* 是否过期 */
 		if (!flag) {
+			/* 仅在需要鉴权的目标上校验凭证。
+			 * 默认目标（公开静态资源）必须跳过校验：
+			 * 浏览器会给每个请求自动携带 q4_token Cookie，
+			 * gateway 重启（内存 RSA 密钥对轮换）或 Token 过期后，
+			 * 旧 Cookie 验签失败会让公开页面也误返回 401 */
+			if (raw.substr(0, 7) == "Bearer ") {
+				raw = raw.substr(7, raw.size() - 7);
+				size_t idx  = raw.find("_");
+				if (idx == std::string::npos)
+					THROW_EX_CUSTOM(HttpException, 2301, "Unauthorization", 400, "*");
+				std::string data = raw.substr(0, idx);
+				std::string sign = raw.substr(idx+1, raw.size()-idx-1);
+				auth = Base64::base64_decode_to_string(data);
+				if (!_PUBL.Verify(auth, sign))
+					THROW_EX_CUSTOM(HttpException, 2301, "Unauthorization", 401, "*");
+			}
+
+			/* 是否过期 */
 			try { jv_t = json::parse(auth); }
 			catch (const boost::wrapexcept<boost::system::system_error>& e) {
 				THROW_EX_CUSTOM(HttpException, 2302, "Bad token", 400, "*");
@@ -995,6 +1001,9 @@ http::response<http::string_body> handleProxy(
 				auto expire_tp = *created_tp + std::chrono::seconds(keep_time_val);
 				if (now > expire_tp) THROW_EX_CUSTOM(HttpException, 2000, "Authorization Expired", 401, "*");
 			}
+		} else {
+			/* 公开目标不做凭证校验，也不向下游注入 Authorization */
+			cookie_token = "";
 		}
 	}
 
