@@ -27,11 +27,25 @@ import threading
 import time
 from email.mime.text import MIMEText
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
-except ImportError:
-    pass  # 无 dotenv 时直接读进程环境变量
+# 手动加载 .env（支持 KEY=VALUE 和 KEY VALUE 两种格式，容忍空行/注释/引号）
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.isfile(_env_path):
+    with open(_env_path, "r") as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if not _line or _line.startswith("#"):
+                continue
+            # 支持 KEY=VALUE 与 KEY VALUE 两种写法
+            if "=" in _line:
+                _key, _, _val = _line.partition("=")
+            else:
+                _parts = _line.split(None, 1)
+                _key = _parts[0]
+                _val = _parts[1] if len(_parts) > 1 else ""
+            _key = _key.strip()
+            _val = _val.strip().strip("\"'")
+            if _key and _key not in os.environ:
+                os.environ[_key] = _val
 
 from log_client import logs
 
