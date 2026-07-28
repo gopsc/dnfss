@@ -72,7 +72,7 @@ func setSecurityHeaders(h http.Header) {
 	h.Set("Strict-Transport-Security", "max-age=15552000")
 	h.Set("Content-Security-Policy",
 		"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "+
-			"img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'")
+			"img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'")
 }
 
 // ServeHTTP 实现 http.Handler。
