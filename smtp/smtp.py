@@ -27,14 +27,17 @@ import threading
 import time
 from email.mime.text import MIMEText
 
-# 手动加载 .env（支持 KEY=VALUE 和 KEY VALUE 两种格式，容忍空行/注释/引号）
+# 手动加载 .env（支持 KEY=VALUE / KEY VALUE / export KEY=... 格式，容忍空行/注释/引号）
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+_env_loaded = 0
 if os.path.isfile(_env_path):
     with open(_env_path, "r") as _f:
         for _line in _f:
             _line = _line.strip()
             if not _line or _line.startswith("#"):
                 continue
+            if _line.startswith("export "):
+                _line = _line[len("export "):].strip()
             # 支持 KEY=VALUE 与 KEY VALUE 两种写法
             if "=" in _line:
                 _key, _, _val = _line.partition("=")
@@ -46,6 +49,9 @@ if os.path.isfile(_env_path):
             _val = _val.strip().strip("\"'")
             if _key and _key not in os.environ:
                 os.environ[_key] = _val
+                _env_loaded += 1
+else:
+    print(f"[smtp] 警告: 未找到 .env 文件: {_env_path}")
 
 from log_client import logs
 
@@ -95,9 +101,13 @@ class SmtpServer:
     def start(self) -> None:
         """启动服务（阻塞当前线程）。"""
         if not all([SMTP_SERVER, SMTP_USER, SMTP_PASSWORD]):
-            logs.error("smtp", "SMTP 配置不完整（.env 缺 SMTP_SERVER/SMTP_USER/__PASSWORD），"
-                               "send_email 将始终失败")
-            print("[smtp] 警告: SMTP 配置不完整，send_email 将失败")
+            # 只报缺失的 key 名，绝不报值
+            missing = [k for k, v in (("SMTP_SERVER", SMTP_SERVER),
+                                      ("SMTP_USER", SMTP_USER),
+                                      ("__PASSWORD", SMTP_PASSWORD)) if not v]
+            logs.error("smtp", f"SMTP 配置缺失: {','.join(missing)}"
+                               f"（.env 加载 {_env_loaded} 项），send_email 将始终失败")
+            print(f"[smtp] 警告: SMTP 配置缺失: {','.join(missing)}（.env 加载 {_env_loaded} 项）")
         print(f"[smtp] 监听 tcp://{self.addr}:{self.port}")
         logs.info("smtp", f"开始监听 tcp://{self.addr}:{self.port}")
         self._server.start(self._dispatch)
