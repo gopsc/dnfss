@@ -76,8 +76,7 @@ form.addEventListener('submit', async function(e) {
 		try { result = JSON.parse(responseText); } catch { throw new Error('服务器响应格式异常'); }
 		if (!res.ok) throw new Error(result.message || '登录失败');
 		if (result.success) {
-			localStorage.setItem('q4_token', result.data.token);
-			sessionStorage.setItem('q4_token', result.data.token);
+			// Token 已由网关通过 HttpOnly Cookie 下发，JS 不再经手
 			alert('登录成功');
 			location.href = '/dnfs.html';
 		} else {

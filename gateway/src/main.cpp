@@ -26,7 +26,7 @@ using namespace qing;
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-constexpr const char *_VER = "0.4.0";
+constexpr const char *_VER = "0.4.1";
 
 //////////////////////////////////
 #include <sstream>
@@ -291,6 +291,13 @@ http::response<http::string_body> handleCaptcha(
 		const http::request<http::string_body>& req,
 		const std::unordered_map<std::string, std::string>& params);
 
+http::response<http::string_body> handleLogout(
+		const http::request<http::string_body>& req,
+		const std::unordered_map<std::string, std::string>& params);
+
+/* 从 Cookie 头中解析指定名称的值（找不到返回空串） */
+std::string get_cookie_value(const std::string& cookie_header, const std::string& name);
+
 
 /*  headers can't processed */
 bool is_special_header(const std::string &header);
@@ -530,6 +537,11 @@ void registerRoutes(HttpServer &server) {
 	server.post("/register", [](const auto& req, const auto& params) -> http::response<http::string_body> {
 		return wrapperHttp(req, params,
 			[](const auto& req, const auto& params) { return handleRegister(req, params); });
+	});
+
+	server.post("/logout", [](const auto& req, const auto& params) -> http::response<http::string_body> {
+		return wrapperHttp(req, params,
+			[](const auto& req, const auto& params) { return handleLogout(req, params); });
 	});
 
 	server.get("*", [](const auto& req, const auto& params) -> http::response<http::string_body> {
@@ -776,8 +788,34 @@ http::response<http::string_body> handleLogin(
 		}
 	};
 	res.set("Connection", "close");
+
+	/* 签发 HttpOnly Cookie（防 XSS 窃取 Token；JS 不再经手 Token） */
+	{
+		std::string ck = "q4_token=" + token +
+			"; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=" +
+			std::to_string(_TOKEN_KEEP_TIME);
+		res.set("Set-Cookie", ck);
+	}
+
 	res.result(http::status::ok);
 	res.body() = json::serialize(jv_rr);
+	res.prepare_payload();
+	return res;
+}
+
+/* 退出登录 /logout：清除 q4_token Cookie */
+http::response<http::string_body> handleLogout(
+	const http::request<http::string_body>& req,
+	const std::unordered_map<std::string, std::string>& params)
+{
+	http::response<http::string_body> res;
+	res.version(req.version());
+
+	res.set("Set-Cookie",
+		"q4_token=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0");
+	res.set("Connection", "close");
+	res.result(http::status::ok);
+	res.body() = R"({"success": true, "message": "logged out"})";
 	res.prepare_payload();
 	return res;
 }
@@ -878,6 +916,7 @@ http::response<http::string_body> handleProxy(
 	std::string t_url = "";
 	std::string url = "";
 	std::string auth = "";
+	std::string cookie_token = "";	/* 从 Cookie 提取的 Token（用于向下游注入 Authorization） */
 	json::value jv_t;
 	{
 		auto flag = false;
@@ -912,10 +951,21 @@ http::response<http::string_body> handleProxy(
 		url += "/";
 		url += target_path;
 
+		std::string raw = "";
 		it = req.base().find("Authorization");
-		if (it == req.base().end() && !flag)
+		if (it != req.base().end()) {
+			raw = std::string(it->value());
+		} else {
+			/* 回退：从 HttpOnly Cookie 读取 q4_token（浏览器同源请求自动携带） */
+			auto cit = req.base().find("Cookie");
+			if (cit != req.base().end()) {
+				cookie_token = get_cookie_value(std::string(cit->value()), "q4_token");
+				if (!cookie_token.empty())
+					raw = "Bearer " + cookie_token;
+			}
+		}
+		if (raw.empty() && !flag)
 			THROW_EX_CUSTOM(HttpException, 2301, "Unauthorization", 401, "*");
-		std::string raw = req["Authorization"];
 		if (raw.substr(0, 7) == "Bearer ") {
 			raw = raw.substr(7, raw.size() - 7);
 			size_t idx  = raw.find("_");
@@ -996,6 +1046,11 @@ http::response<http::string_body> handleProxy(
 		client.set_header("X-Forwarded-For: unknown");
 	}
 
+	/* Token 来自 Cookie 时，向下游补齐 Authorization 头（dnfs 等下游仍按 Bearer 解析，无需改动） */
+	if (!cookie_token.empty()) {
+		client.set_header("Authorization: Bearer " + cookie_token);
+	}
+
 	/* 转发请求 */
 	if (method == "get")
 		client.get_stream_sync(url, callback);
@@ -1029,6 +1084,27 @@ bool is_special_header(const std::string &header) {
 		|| header == "X-Forwarded-For"
 		|| header == "X-Real-IP"
 		|| header == "Forwarded";
+}
+
+std::string get_cookie_value(const std::string& cookie_header, const std::string& name) {
+	// Cookie 头格式："k1=v1; k2=v2; q4_token=xxx"
+	size_t pos = 0;
+	while (pos <= cookie_header.size()) {
+		size_t end = cookie_header.find(';', pos);
+		if (end == std::string::npos) end = cookie_header.size();
+		std::string pair = cookie_header.substr(pos, end - pos);
+		size_t eq = pair.find('=');
+		if (eq != std::string::npos) {
+			std::string k = pair.substr(0, eq);
+			size_t b = k.find_first_not_of(" \t");
+			size_t e = k.find_last_not_of(" \t");
+			if (b != std::string::npos) k = k.substr(b, e - b + 1);
+			if (k == name) return pair.substr(eq + 1);
+		}
+		if (end == cookie_header.size()) break;
+		pos = end + 1;
+	}
+	return "";
 }
 
 bool is_safe_target(const std::string& target) {

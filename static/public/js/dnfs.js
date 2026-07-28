@@ -1,11 +1,10 @@
-// Session restore from localStorage
-if(!sessionStorage.getItem('q4_token')){var t=localStorage.getItem('q4_token');if(t)sessionStorage.setItem('q4_token',t);}
+// 认证改为 HttpOnly Cookie（gateway 下发 q4_token），浏览器同源请求自动携带，JS 不再经手 Token
 
 /* by qing.
  *
  * 用于获取一个节点下的所有子节点信息，0为根节点。
  */
-async function getNode(token, id) {
+async function getNode(id) {
 	try {
 		obj = { "pid": id }
 		jsonBody = JSON.stringify(obj)
@@ -14,7 +13,6 @@ async function getNode(token, id) {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',	// 告诉服务器内容为json
-				'Authorization': `Bearer ${token}`,
 				'Target-Url': 'http://127.0.0.1:8006'
 			},
 			body: jsonBody
@@ -54,7 +52,7 @@ async function getNode(token, id) {
  *
  * 用于向dnfs添加节点
  */
-async function addNode(token, pid, title, content) {
+async function addNode(pid, title, content) {
 	try {
 		obj = {
 			"pid": pid,
@@ -67,7 +65,6 @@ async function addNode(token, pid, title, content) {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',	// 告诉服务器内容为json
-				'Authorization': `Bearer ${token}`,
 				'Target-Url': 'http://127.0.0.1:8006'
 			},
 			body: jsonBody
@@ -89,8 +86,8 @@ async function addNode(token, pid, title, content) {
 
 		input_note_title.value = "";
 		input_note_content.value = "";
-		getNode(token, stack[stack.length - 1]).then(load_notes);
-		getNode(token, stack[stack.length - 1]).then(loadMap)
+		getNode(stack[stack.length - 1]).then(load_notes);
+		getNode(stack[stack.length - 1]).then(loadMap)
 
 		//if (result.success) {
 		alert(`添加节点成功`, result);
@@ -108,7 +105,7 @@ async function addNode(token, pid, title, content) {
 	}
 }
 
-async function deleteNode(token, id) {
+async function deleteNode(id) {
 	if (confirm("确认删除此节点？") == false) {
 		return;
 	}
@@ -121,7 +118,6 @@ async function deleteNode(token, id) {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',
-				'Authorization': `Bearer ${token}`,
 				'Target-Url': 'http://127.0.0.1:8006'
 			},
 			body: jsonBody
@@ -142,8 +138,8 @@ async function deleteNode(token, id) {
 		}
 
 		stack.pop();
-		getNode(token, stack[stack.length - 1]).then(load_notes);
-		getNode(token, stack[stack.length - 1]).then(loadMap)
+		getNode(stack[stack.length - 1]).then(load_notes);
+		getNode(stack[stack.length - 1]).then(loadMap)
 
 		console.log(`删除节点成功`);
 		return result
@@ -182,7 +178,7 @@ input_note_submit.addEventListener('click', function(event) {
 	var pid = (stack.length == 0) ? 0 : stack[stack.length - 1];
 	//alert(stack.length)
 	//alert(pid)
-	addNode(token, pid, title, content).then(result => {
+	addNode(pid, title, content).then(result => {
 		//alert(result.message);
 	})
 })
@@ -199,7 +195,7 @@ delete_note.addEventListener('click', (event) => {
 		console.log("节点未删除");
 	}
 	else {
-		deleteNode(token, id);
+		deleteNode(id);
 	}
 })
 
@@ -232,8 +228,8 @@ function load_notes(main_node) {
 		card.addEventListener('click', function(event) {
 			var id = Number(item.id)
 			stack.push(id)
-			getNode(token, id).then(load_notes)
-			getNode(token, id).then(loadMap)
+			getNode(id).then(load_notes)
+			getNode(id).then(loadMap)
 		});
 		let ttl = document.createElement('center');
 		let ttl1 =document.createElement('h3');
@@ -274,10 +270,10 @@ function loadMap(children_json) {
 	fold_div.addEventListener("click", () => {
 		if (is_expand == true) {
 			is_expand = false;
-			getNode(token, stack.length == 0 ? 0 : stack[stack.length - 1]).then(loadMap);
+			getNode(stack.length == 0 ? 0 : stack[stack.length - 1]).then(loadMap);
 		} else {
 			is_expand = true;
-			getNode(token, stack.length == 0 ? 0 : stack[stack.length - 1]).then(loadMap);
+			getNode(stack.length == 0 ? 0 : stack[stack.length - 1]).then(loadMap);
 		}
 	});
 	if (need_return == true) {
@@ -290,8 +286,8 @@ function loadMap(children_json) {
         back.addEventListener("click", () => {
             stack.pop();
             var id = (stack.length >= 0) ? stack[stack.length - 1] : 0;
-            getNode(token, id).then(load_notes);
-            getNode(token, id).then(loadMap);
+            getNode(id).then(load_notes);
+            getNode(id).then(loadMap);
         });
         minimap.appendChild(back);
     }
@@ -309,6 +305,5 @@ function loadMap(children_json) {
     }
 }
 
-var token = sessionStorage.getItem('q4_token')
-getNode(token, 0).then(load_notes);
-getNode(token, 0).then(loadMap)
+getNode(0).then(load_notes);
+getNode(0).then(loadMap)

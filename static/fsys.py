@@ -411,6 +411,7 @@ def proxy_get_notes():
         data = request.get_json(force=True)
         h = {"Content-Type": "application/json"}
         if "Authorization" in request.headers: h["Authorization"] = request.headers["Authorization"]
+        elif request.cookies.get("q4_token"): h["Authorization"] = f"Bearer {request.cookies['q4_token']}"  # HttpOnly Cookie 模式：Cookie 转 Bearer
         req = _urlreq.Request(f"{DNFS_URL}/get_notes", data=_json.dumps(data).encode(), headers=h, method="POST")
         with _urlreq.urlopen(req, timeout=15) as r:
             return _cors(make_response(r.read().decode(), 200, {"Content-Type": "application/json"}))
@@ -426,6 +427,7 @@ def proxy_add_note():
         data = request.get_json(force=True)
         h = {"Content-Type": "application/json"}
         if "Authorization" in request.headers: h["Authorization"] = request.headers["Authorization"]
+        elif request.cookies.get("q4_token"): h["Authorization"] = f"Bearer {request.cookies['q4_token']}"  # HttpOnly Cookie 模式：Cookie 转 Bearer
         req = _urlreq.Request(f"{DNFS_URL}/add_note", data=_json.dumps(data).encode(), headers=h, method="POST")
         with _urlreq.urlopen(req, timeout=15) as r:
             return _cors(make_response(r.read().decode(), 200, {"Content-Type": "application/json"}))
@@ -440,6 +442,7 @@ def proxy_delete_note():
         data = request.get_json(force=True)
         h = {"Content-Type": "application/json"}
         if "Authorization" in request.headers: h["Authorization"] = request.headers["Authorization"]
+        elif request.cookies.get("q4_token"): h["Authorization"] = f"Bearer {request.cookies['q4_token']}"  # HttpOnly Cookie 模式：Cookie 转 Bearer
         req = _urlreq.Request(f"{DNFS_URL}/delete_note", data=_json.dumps(data).encode(), headers=h, method="POST")
         with _urlreq.urlopen(req, timeout=15) as r:
             return _cors(make_response(r.read().decode(), 200, {"Content-Type": "application/json"}))
@@ -454,6 +457,7 @@ def proxy_update_note():
         data = request.get_json(force=True)
         h = {"Content-Type": "application/json"}
         if "Authorization" in request.headers: h["Authorization"] = request.headers["Authorization"]
+        elif request.cookies.get("q4_token"): h["Authorization"] = f"Bearer {request.cookies['q4_token']}"  # HttpOnly Cookie 模式：Cookie 转 Bearer
         req = _urlreq.Request(f"{DNFS_URL}/update_note", data=_json.dumps(data).encode(), headers=h, method="POST")
         with _urlreq.urlopen(req, timeout=15) as r:
             return _cors(make_response(r.read().decode(), 200, {"Content-Type": "application/json"}))
