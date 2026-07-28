@@ -6,10 +6,11 @@ UniServe Framework 的应用层网关，C++20 实现。
 
 ## 职责
 
-- **账号鉴权**：`/register` 注册、`/login` 登录，签发 RSA 签名的 Token。
+- **账号鉴权**：`/register` 注册（需邮箱验证码，经 pymsg 调 smtp:8008 校验）、`/login` 登录，签发 RSA 签名的 Token。
 - **反向代理**：携带 Token 的请求校验后转发到 `Proxy.opened` 中放开的内部服务。
 - **CAPTCHA 接口**：`/captcha` 生成验证码 token + 文本（内存存储，5 分钟过期，一次性使用）。
-- **速率限制**：登录 5 次/5 分钟、注册 3 次/10 分钟，按 `X-Forwarded-For` 客户端 IP 计数（由 WAF 注入）。
+- **邮箱验证码**：`/register/send_code` 发送 6 位验证码邮件（60 秒有效）；注册时校验，一次性消费。
+- **速率限制**：登录 5 次/5 分钟、注册 3 次/10 分钟、发验证码 5 次/10 分钟，按 `X-Forwarded-For` 客户端 IP 计数（由 WAF 注入）。
 - **OPTIONS 预检**：通配 `*` 返回 CORS 头，允许跨域。
 
 ## 安全特性
@@ -71,9 +72,25 @@ UniServe Framework 的应用层网关，C++20 实现。
 
 ### `POST /register`
 
-请求体与 `/login` 相同。先做密码强度校验、邮箱格式校验、CAPTCHA 校验，再写入 `Users` 表。
+请求体在 `/login` 基础上增加 `email_code`（必填，6 位数字邮箱验证码）：
 
-错误码：`400`（密码/邮箱/CAPTCHA 不合规）、`429`（速率超限）、`500`（数据库异常）。
+```json
+{ "username": "user@example.com", "password": "...", "email_code": "123456" }
+```
+
+校验顺序：密码强度 → 邮箱格式 → CAPTCHA（可选）→ **邮箱验证码**（经 pymsg 调 smtp:8008 `verify_email`，一次性消费，fail-closed），全部通过后写入 `Users` 表。
+
+错误码：`400`（密码/邮箱/CAPTCHA/邮箱验证码不合规）、`403`（速率超限）、`500`（数据库异常）。
+
+### `POST /register/send_code`
+
+向目标邮箱发送注册验证码（经 pymsg 调 smtp:8008 `send_email`，60 秒有效）。
+
+```json
+{ "email": "user@example.com" }
+```
+
+限流 5 次/10 分钟/IP。错误码：`400`（邮箱格式错误）、`403`（速率超限）、`502`（smtp 服务不可用）、`500`（发送失败）。
 
 ### `GET/POST *`（反向代理）
 

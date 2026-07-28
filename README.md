@@ -31,7 +31,7 @@
 
 1. 客户端所有请求先打到 `waf:443`（HTTPS），WAF 终止 TLS、运行 coraza 规则匹配，命中则直接返回 403。
 2. 未命中规则的请求由 WAF 以明文 HTTP 转发到 `gateway:8443`，并设置 `X-Forwarded-For` / `X-Forwarded-Proto` 头。
-3. `gateway` 对 `/login`、`/register` 做账号鉴权（PBKDF2 密码哈希 + RSA 签名 Token + 可选 CAPTCHA + 速率限制），用户数据通过 pymsg/TCP 调用 `db:8005` 存取。
+3. `gateway` 对 `/login`、`/register` 做账号鉴权（PBKDF2 密码哈希 + RSA 签名 Token + 可选 CAPTCHA + 速率限制；注册需邮箱验证码，经 pymsg/TCP 调 `smtp:8008` 发送与校验），用户数据通过 pymsg/TCP 调用 `db:8005` 存取。
 4. 其余请求携带 Token，经 `gateway` 校验后反向代理到 `Proxy.opened` 中放开的内部服务（`static:9200` / `dnfs:8006`）。
 5. `db:8005` 与 `ai_review:8007` 在 `Proxy.closed` 中，仅允许内部服务间调用，不对外暴露。
 6. `dnfs` 处理节点增删改查时，通过 pymsg/TCP 调用 `db` 服务完成数据持久化，新增节点前调用 `ai_review` 进行内容审核。

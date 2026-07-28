@@ -26,7 +26,7 @@ using namespace qing;
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-constexpr const char *_VER = "0.4.4";
+constexpr const char *_VER = "0.5.0";
 
 //////////////////////////////////
 #include <sstream>
@@ -287,6 +287,11 @@ http::response<http::string_body> handleRegister(
 		const http::request<http::string_body>& req,
 		const std::unordered_map<std::string, std::string>& params);
 
+/* 发送注册邮箱验证码：pymsg 调 smtp 服务 send_email 路由 */
+http::response<http::string_body> handleSendEmailCode(
+		const http::request<http::string_body>& req,
+		const std::unordered_map<std::string, std::string>& params);
+
 http::response<http::string_body> handleCaptcha(
 		const http::request<http::string_body>& req,
 		const std::unordered_map<std::string, std::string>& params);
@@ -326,6 +331,7 @@ static std::unique_ptr<MyRSA::Generator>	_KEYGEN;
 //static std::unique_ptr<Sqlite3>			_SQLDB;
 static RateLimiter				_LOGIN_RATE;
 static RateLimiter				_REGISTER_RATE;
+static RateLimiter				_EMAIL_CODE_RATE;	// 发送邮箱验证码限流
 
 /* CAPTCHA store: token -> answer (in-memory, with expiry) */
 #include <unordered_map>
@@ -378,6 +384,26 @@ bool verify_captcha_remote(const std::string& token, const std::string& answer) 
 			{"_route", "verify"},
 			{"token", token},
 			{"answer", answer}
+		};
+		std::string resp = client.call(json::serialize(jv_req), 5.0);
+		auto jv = json::parse(resp);
+		auto& obj = jv.as_object();
+		if (!obj.at("success").as_bool()) return false;
+		return obj.at("data").as_object().at("valid").as_bool();
+	} catch (const std::exception&) {
+		return false;
+	}
+}
+
+/* 调用 smtp 服务（pymsg/TCP :8008）校验邮箱验证码。
+ * 验证码一次性消费；服务不可用或响应异常一律视为校验失败（fail-closed）。 */
+bool verify_email_code_remote(const std::string& email, const std::string& code) {
+	try {
+		pmc::net::MsgClient client("127.0.0.1", 8008, "gateway");
+		json::value jv_req = {
+			{"_route", "verify_email"},
+			{"email", email},
+			{"code", code}
 		};
 		std::string resp = client.call(json::serialize(jv_req), 5.0);
 		auto jv = json::parse(resp);
@@ -563,6 +589,12 @@ void registerRoutes(HttpServer &server) {
 	server.post("/register", [](const auto& req, const auto& params) -> http::response<http::string_body> {
 		return wrapperHttp(req, params,
 			[](const auto& req, const auto& params) { return handleRegister(req, params); });
+	});
+
+	/* 发送注册邮箱验证码（须在 post("*") 通配符之前注册） */
+	server.post("/register/send_code", [](const auto& req, const auto& params) -> http::response<http::string_body> {
+		return wrapperHttp(req, params,
+			[](const auto& req, const auto& params) { return handleSendEmailCode(req, params); });
 	});
 
 	server.post("/logout", [](const auto& req, const auto& params) -> http::response<http::string_body> {
@@ -951,6 +983,14 @@ http::response<http::string_body> handleRegister(
 			THROW_EX_CUSTOM(HttpException, 2201, "Invalid CAPTCHA", 400, "/register");
 	}
 
+	// 邮箱验证码校验（smtp 服务，一次性消费；须放在所有本地校验通过之后、写库之前）
+	auto ecode_it = obj.find("email_code");
+	if (ecode_it == obj.end())
+		THROW_EX_CUSTOM(HttpException, 3005, "Email verification code required", 400, "/register");
+	std::string email_code = std::string(ecode_it->value().as_string());
+	if (!verify_email_code_remote(username, email_code))
+		THROW_EX_CUSTOM(HttpException, 3006, "Invalid or expired email verification code", 400, "/register");
+
 	// generate the hash of password
 	auto password_hash = PBKDF2Hasher::hash_password(password);
 
@@ -978,6 +1018,75 @@ http::response<http::string_body> handleRegister(
 	auto jv_r = json::value{{"success", success}};
 
 	res.result(http::status::ok);
+	res.body() = json::serialize(jv_r);
+	res.prepare_payload();
+	return res;
+}
+
+/* 处理发送注册邮箱验证码 /register/send_code
+ *
+ * 经 pymsg 调 smtp 服务 send_email 路由，向目标邮箱发送 6 位验证码。
+ * 限流 5 次/10 分钟/IP；smtp 不可用返回 502（fail-closed）。 */
+http::response<http::string_body> handleSendEmailCode(
+	const http::request<http::string_body>& req,
+	const std::unordered_map<std::string, std::string>& params)
+{
+	http::response<http::string_body> res;
+	res.version(req.version());
+
+	// IP rate limit check
+	std::string client_ip = "direct";
+	auto it_host = req.base().find("X-Forwarded-For");
+	if (it_host != req.base().end())
+		client_ip = std::string(it_host->value());
+	if (!_EMAIL_CODE_RATE.check_and_record(client_ip, 5, 600))
+		THROW_EX_CUSTOM(HttpException, 3101, "Too many code requests. Please try again later.",
+			403, "/register/send_code");
+
+	// parse the req body
+	json::value jv;
+	try { jv = json::parse(req.body()); }
+	catch (const std::exception&) {
+		THROW_EX_CUSTOM(HttpException, 3002, "Invalid Argument", 401, "/register/send_code");
+	}
+
+	if (!jv.is_object())
+		THROW_EX_CUSTOM(HttpException, 3002, "Invalid Argument", 401, "/register/send_code");
+
+	auto& obj = jv.as_object();
+	auto email_it = obj.find("email");
+	if (email_it == obj.end())
+		THROW_EX_CUSTOM(HttpException, 3002, "Invalid Argument", 401, "/register/send_code");
+	auto email = std::string(email_it->value().as_string());
+
+	// Email format check
+	std::regex email_regex(R"(^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$)");
+	if (!std::regex_match(email, email_regex))
+		THROW_EX_CUSTOM(HttpException, 3004, "Invalid email format", 400, "/register/send_code");
+
+	// 调 smtp 服务（pymsg/TCP :8008）发送验证码
+	bool sent = false;
+	try {
+		pmc::net::MsgClient client("127.0.0.1", 8008, "gateway");
+		json::value jv_req = {
+			{"_route", "send_email"},
+			{"email", email}
+		};
+		std::string resp = client.call(json::serialize(jv_req), 20.0);
+		auto jv_r = json::parse(resp);
+		auto& obj_r = jv_r.as_object();
+		if (obj_r.at("success").as_bool())
+			sent = obj_r.at("data").as_object().at("sent").as_bool();
+	} catch (const std::exception&) {
+		THROW_EX_CUSTOM(HttpException, 3102, "Mail service unavailable", 502, "/register/send_code");
+	}
+
+	if (!sent)
+		THROW_EX_CUSTOM(HttpException, 3103, "Failed to send verification code", 500, "/register/send_code");
+
+	auto jv_r = json::value{{"success", true}};
+	res.result(http::status::ok);
+	res.set(http::field::content_type, "application/json");
 	res.body() = json::serialize(jv_r);
 	res.prepare_payload();
 	return res;
