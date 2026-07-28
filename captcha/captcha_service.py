@@ -56,12 +56,12 @@ def generate_text():
 
 def generate_image(text):
     width, height = 160, 50
-    bg = (random.randint(1,256), random.randint(1,256), random.randint(1,256))
+    bg = (random.randint(0,256), random.randint(0,256), random.randint(0,256))
     img = Image.new('RGB', (width, height), bg)
     draw = ImageDraw.Draw(img)
 
     for i, ch in enumerate(text):
-        color = (random.randint(1,256), random.randint(1,256), random.randint(1,256))
+        color = (random.randint(0,256), random.randint(0,256), random.randint(0,256))
         y = random.randint(2, 12)
         x = 15 + i * 32 + random.randint(-3, 3)   # 4 位字符在 160px 宽度内均匀分布
         try:
@@ -80,10 +80,10 @@ def generate_image(text):
     for _ in range(4):
         draw.line([(random.randint(0, width), random.randint(0, height)),
                    (random.randint(0, width), random.randint(0, height))],
-                  fill=(random.randint(1,256), random.randint(1,256), random.randint(1,256)))
+                  fill=(random.randint(0,256), random.randint(0,256), random.randint(0,256)))
     for _ in range(50):
         draw.point((random.randint(0, width - 1), random.randint(0, height - 1)),
-                   fill=(random.randint(1,256), random.randint(1,256), random.randint(1,256)))
+                   fill=(random.randint(0,256), random.randint(0,256), random.randint(0,256)))
 
     buf = io.BytesIO()
     img.save(buf, format='PNG')
