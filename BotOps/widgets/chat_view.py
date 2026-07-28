@@ -16,7 +16,12 @@ def _delta(prev: str, new: str) -> str:
 
 
 class ChatView(VerticalScroll):
-    """可滚动聊天区。AI 回复用单个 Markdown 部件增量 append，实现流式渲染。"""
+    """可滚动聊天区。AI 回复用单个 Markdown 部件增量 append，实现流式渲染。
+
+    滚动策略：每条新消息挂载后调用 anchor() 锚定底部——之后内容增长
+    （流式 append）容器会自动保持吸底；用户上翻时 Textual 自动脱锚，
+    下一条新消息再重新锚定。
+    """
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -27,11 +32,17 @@ class ChatView(VerticalScroll):
     def ai_text(self) -> str:
         return self._ai_prev
 
+    def _anchor_bottom(self):
+        """锚定吸底（需在布局刷新后执行，否则滚到的是旧位置）。"""
+        self.call_after_refresh(self.anchor)
+
     async def add_user(self, text: str):
         await self.mount(Static(f"👤 你: {text}", classes="msg-user", markup=False))
+        self._anchor_bottom()
 
     async def add_system(self, text: str, css_class: str = "msg-system"):
         await self.mount(Static(text, classes=css_class, markup=False))
+        self._anchor_bottom()
 
     async def start_ai(self):
         """预建一条 AI 消息（发送用户消息后即可调用，给出即时反馈）。"""
@@ -40,7 +51,7 @@ class ChatView(VerticalScroll):
         self._ai_prev = ""
         self._ai_widget = Markdown("", classes="msg-ai")
         await self.mount(self._ai_widget)
-        self.scroll_end(animate=False)
+        self._anchor_bottom()
 
     async def append_ai(self, full_text: str):
         """以累计全文增量渲染（服务端 chunk 为累计文本）。"""
@@ -50,7 +61,8 @@ class ChatView(VerticalScroll):
         if d:
             self._ai_widget.append(d)
             self._ai_prev = full_text
-            self.scroll_end(animate=False)
+            # anchor 状态下容器会自动吸底；保险起见刷新后再滚一次
+            self.call_after_refresh(self.scroll_end, animate=False)
 
     async def finish_ai(self, full_text: str = ""):
         """收尾：用最终全文对齐一次（防中途丢帧），随后关闭本条 AI 消息。"""
@@ -60,7 +72,7 @@ class ChatView(VerticalScroll):
             await self.append_ai(full_text)
         self._ai_widget = None
         self._ai_prev = ""
-        self.scroll_end(animate=False)
+        self.call_after_refresh(self.scroll_end, animate=False)
 
     async def reset(self):
         """清空聊天区（/clear）。"""
