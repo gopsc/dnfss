@@ -73,6 +73,7 @@ SMTP_PASSWORD = os.environ.get("__PASSWORD") or os.environ.get("SMTP_PASSWORD", 
 CODE_LEN = 6
 CODE_TTL = 600           # 验证码有效期（秒）
 SEND_INTERVAL = 60       # 同一邮箱两次成功发送的最小间隔（秒）
+MAX_VERIFY_ATTEMPTS = 5  # 同一验证码最大校验失败次数，达到即作废（防枚举 6 位数字码）
 # 多数邮箱服务商（163/QQ 等）强制 From 头与登录账号一致，故默认跟随 SMTP_USER；
 # 仅当服务商允许自定义发件身份时才在 .env 里显式配 MAIL_FROM 覆盖
 MAIL_FROM = os.environ.get("MAIL_FROM") or SMTP_USER
@@ -80,7 +81,7 @@ DEFAULT_SUBJECT = "DNFS 邮箱验证"
 # 有效期文案由 CODE_TTL 派生，改 TTL 不用同步改这里（{{code}} 是 f-string 转义）
 DEFAULT_CONTENT = f"DNFS: 您的邮箱验证码为 {{code}}，{CODE_TTL // 60} 分钟内有效。"
 
-code_store = {}          # email -> {'code': str, 'expires_at': float}
+code_store = {}          # email -> {'code': str, 'expires_at': float, 'attempts': int}
 send_history = {}        # email -> 上次成功发送的时间戳（发送冷却用）
 STORE_LOCK = threading.Lock()
 
@@ -187,7 +188,9 @@ class SmtpServer:
         content = str(req.get("content") or DEFAULT_CONTENT).replace("{code}", code)
 
         with STORE_LOCK:
-            code_store[email] = {'code': code, 'expires_at': time.time() + CODE_TTL}
+            code_store[email] = {'code': code,
+                                 'expires_at': time.time() + CODE_TTL,
+                                 'attempts': 0}
             # 惰性清理过期项
             now = time.time()
             expired = [k for k, v in code_store.items() if v['expires_at'] < now]
@@ -223,13 +226,18 @@ class SmtpServer:
         return {"sent": True, "ttl": CODE_TTL}
 
     def _handle_verify_email(self, req):
-        """校验验证码，验证通过即一次性消费；不存在的 email 安全返回 invalid。"""
+        """校验验证码，验证通过即一次性消费；不存在的 email 安全返回 invalid。
+
+        同一验证码连续校验失败达 MAX_VERIFY_ATTEMPTS 次即作废删除（响应带
+        invalidated 标记），防止对 6 位数字码的在线枚举。
+        """
         email = str(req.get("email", "")).strip()
         # 兼容旧字段 input_captcha
         code = str(req.get("code") or req.get("input_captcha") or "").strip()
         if not email or not code:
             return {"valid": False, "error": "email and code required"}
 
+        invalidated = False
         with STORE_LOCK:
             entry = code_store.get(email)
             if entry and entry['expires_at'] < time.time():
@@ -241,10 +249,20 @@ class SmtpServer:
                 valid = True
             else:
                 valid = False
+                if entry:
+                    # 仅对已发出且未过期的验证码计失败次数；达到上限即作废
+                    entry['attempts'] = entry.get('attempts', 0) + 1
+                    if entry['attempts'] >= MAX_VERIFY_ATTEMPTS:
+                        del code_store[email]
+                        invalidated = True
 
         if valid:
             logs.info("smtp", f"{email}: 验证通过")
             return {"valid": True}
+        if invalidated:
+            logs.info("smtp", f"{email}: 连续校验失败 {MAX_VERIFY_ATTEMPTS} 次，验证码已作废")
+            return {"valid": False, "invalidated": True,
+                    "error": f"验证码连续错误 {MAX_VERIFY_ATTEMPTS} 次，已失效，请重新获取"}
         logs.info("smtp", f"{email}: 验证失败")
         return {"valid": False, "error": "invalid or expired code"}
 

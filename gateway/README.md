@@ -78,7 +78,7 @@ UniServe Framework 的应用层网关，C++20 实现。
 { "username": "user@example.com", "password": "...", "email_code": "123456" }
 ```
 
-校验顺序：密码强度 → 邮箱格式 → CAPTCHA（可选）→ **邮箱验证码**（经 pymsg 调 smtp:8008 `verify_email`，一次性消费，fail-closed），全部通过后写入 `Users` 表。
+校验顺序：密码强度 → 邮箱格式 → CAPTCHA（可选）→ **邮箱验证码**（经 pymsg 调 smtp:8008 `verify_email`，一次性消费，连续失败 5 次自动作废，fail-closed），全部通过后写入 `Users` 表。
 
 错误码：`400`（密码/邮箱/CAPTCHA/邮箱验证码不合规）、`429`（速率超限）、`500`（数据库异常）。
 
