@@ -253,6 +253,7 @@ function load_notes(main_node) {
 	recommend_list.replaceChildren();
 	for (let i in main_node) {
 		let item = main_node[i]
+		console.log(item)
 		let card = document.createElement('div');
 		card.className = "card";
 		card.addEventListener('click', function(event) {
@@ -267,12 +268,15 @@ function load_notes(main_node) {
 		card.id = item.title;
 		ttl.appendChild(ttl1);
 		card.appendChild(ttl);
+		let wrt_div = document.createElement('p');
 		let vit_div = document.createElement('p');
 		let lke_div = document.createElement('p');
 		let srd_div = document.createElement('p');
+		wrt_div.textContent = "用户：" + item.owner;
 		vit_div.textContent = "观看数：" + item.visit_count;
 		lke_div.textContent = "点赞数：" + item.like_count;
 		srd_div.textContent = "分享数：" + item.share_count;
+		ttl.appendChild(wrt_div);
 		ttl.appendChild(vit_div);
 		ttl.appendChild(lke_div);
 		ttl.appendChild(srd_div);
