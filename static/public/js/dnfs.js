@@ -363,7 +363,8 @@ function renderMoveBar() {
 	movebar.appendChild(cancel_btn);
 }
 
-/* by qing — 执行移动：把待移动节点挂到当前层（stack 顶，根为 0） */
+/* by qing — 执行移动：把待移动节点挂到当前层（stack 顶，根为 0）。
+ * 后端 update_note 会走 AI 内容审核，耗时较长，期间禁用移动条与表单按钮防止重复提交 */
 async function confirmMove() {
 	if (moving_node == null) {
 		return;
@@ -377,10 +378,22 @@ async function confirmMove() {
 		alert('该节点已在当前层');
 		return;
 	}
-	var result = await moveNode(moving_node.id, target_pid, moving_node.title, moving_node.content);
-	if (result != null) {
-		moving_node = null;
-		renderMoveBar();
+	// 防重复点击：请求进行中禁用按钮（成功/失败都在 finally 恢复）
+	movebar.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
+	input_note_submit.disabled = true;
+	input_note_clear.disabled = true;
+	delete_note.disabled = true;
+	try {
+		var result = await moveNode(moving_node.id, target_pid, moving_node.title, moving_node.content);
+		if (result != null) {
+			moving_node = null;
+			renderMoveBar();
+		}
+	} finally {
+		movebar.querySelectorAll('button').forEach(function(b) { b.disabled = false; });
+		input_note_submit.disabled = false;
+		input_note_clear.disabled = false;
+		delete_note.disabled = false;
 	}
 }
 
