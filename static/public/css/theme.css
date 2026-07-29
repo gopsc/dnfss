@@ -327,6 +327,43 @@ input[type="button"]:disabled {
 .act-btn:hover { border-color: var(--accent); }
 .act-del { background: var(--error-bg); color: var(--error); }
 .act-del:hover { border-color: var(--error); }
+.act-move { background: transparent; color: var(--fg-secondary); border-color: var(--border); }
+.act-move:hover { border-color: var(--accent); color: var(--accent-dark); }
+
+/* ===== Move Bar (dnfs 节点移动条) ===== */
+.movebar {
+    position: fixed;
+    left: 50%;
+    bottom: 1.25rem;
+    transform: translateX(-50%);
+    z-index: 110;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.5rem 0.8rem;
+    border-radius: var(--radius-md);
+    background: rgba(253, 246, 238, 0.85);
+    border: 1px solid var(--accent);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    box-shadow: var(--shadow-md);
+    font-size: 0.82rem;
+    max-width: 92vw;
+}
+@media (prefers-color-scheme: dark) {
+    .movebar { background: rgba(30, 23, 18, 0.85); }
+}
+.movebar:empty { display: none; }
+.move-title {
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--fg-secondary);
+    font-weight: 600;
+}
 
 /* ===== Minimap (dnfs) ===== */
 .minimap {

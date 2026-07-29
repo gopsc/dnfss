@@ -280,6 +280,110 @@ async function updateNode(id, pid, title, content) {
 	}
 }
 
+/* by qing — 节点移动：本质是 pid 变更的 update_note，title/content 原样携带 */
+async function moveNode(id, pid, title, content) {
+	try {
+		obj = {
+			"id": Number(id),
+			"pid": pid,
+			"title": title,
+			"content": content
+		}
+		jsonBody = JSON.stringify(obj)
+		const res = await fetch('/update_note', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Target-Url': 'http://127.0.0.1:8006'
+			},
+			body: jsonBody
+		});
+
+		const responseText = await res.text();
+		let result;
+
+		try {
+			result = JSON.parse(responseText);
+		} catch {
+			console.error(`更新笔记接口返回非 JSON 内容（HTTP ${res.status}）：`, responseText);
+			throw new Error('服务器响应格式异常，请稍后重试');
+		}
+
+		if (res.status === 401) {
+			// 凭证失效（过期或网关重启），跳转重新登录
+			location.href = '/login.html';
+			return;
+		}
+
+		if (!res.ok) {
+			throw new Error(result.error === "It's not your note" ? '只能移动自己的节点' : (result.error || `移动节点失败（HTTP ${res.status}）`));
+		}
+
+		var cur = (stack.length == 0) ? 0 : stack[stack.length - 1];
+		getNode(cur).then(load_notes);
+		getNode(cur).then(loadMap);
+
+		alert('移动成功');
+		return result;
+
+	} catch (err) {
+		alert(err.message || '接口请求失败，请检查后端服务是否启动');
+		console.error('移动节点请求异常：', err);
+	}
+}
+
+/* by qing — 点击卡片"移动"：暂存节点信息，底部弹出移动条 */
+function startMove(item) {
+	moving_node = { id: Number(item.id), pid: item.pid, title: item.title, content: item.content };
+	renderMoveBar();
+}
+
+/* by qing — 渲染底部移动条：显示待移动节点，提供"移动到当前层"和"取消" */
+function renderMoveBar() {
+	movebar.replaceChildren();
+	if (moving_node == null) {
+		return;
+	}
+	let tip = document.createElement('span');
+	tip.className = "move-title";
+	tip.textContent = "移动中：" + moving_node.title;
+	let ok_btn = document.createElement('button');
+	ok_btn.className = "act-btn act-edit";
+	ok_btn.textContent = "移动到当前层";
+	ok_btn.addEventListener('click', confirmMove);
+	let cancel_btn = document.createElement('button');
+	cancel_btn.className = "act-btn act-del";
+	cancel_btn.textContent = "取消";
+	cancel_btn.addEventListener('click', function() {
+		moving_node = null;
+		renderMoveBar();
+	});
+	movebar.appendChild(tip);
+	movebar.appendChild(ok_btn);
+	movebar.appendChild(cancel_btn);
+}
+
+/* by qing — 执行移动：把待移动节点挂到当前层（stack 顶，根为 0） */
+async function confirmMove() {
+	if (moving_node == null) {
+		return;
+	}
+	var target_pid = (stack.length == 0) ? 0 : stack[stack.length - 1];
+	if (target_pid == moving_node.id) {
+		alert('不能移动到节点自身内部');
+		return;
+	}
+	if (target_pid == moving_node.pid) {
+		alert('该节点已在当前层');
+		return;
+	}
+	var result = await moveNode(moving_node.id, target_pid, moving_node.title, moving_node.content);
+	if (result != null) {
+		moving_node = null;
+		renderMoveBar();
+	}
+}
+
 /* by shufeng2012 */
 function renderMarkdown(element, content) {
 	/*
@@ -295,6 +399,7 @@ const ICON_HEART = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" s
 const ICON_SHARE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>';
 const ICON_EDIT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>';
 const ICON_TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+const ICON_MOVE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>';
 
 /* by qing — 生成一个统计项：图标 + 数字，count 缺省显示 0 */
 function makeStatItem(iconSvg, count) {
@@ -319,8 +424,10 @@ var input_note_clear = document.getElementById('input-note-clear');
 var recommend_list = document.getElementById('recommend-list');
 var delete_note = document.getElementById('delete-note');
 var minimap = document.getElementById("minimap");
+var movebar = document.getElementById("movebar");
 var is_expand = true;
 var editing_id = null;	/* 编辑模式：正在编辑的节点 id，null 表示当前是新增模式 */
+var moving_node = null;	/* 移动模式：待移动的节点 {id, pid, title, content}，null 表示未在移动 */
 
 input_note_submit.addEventListener('click', function(event) {
 	if (input_note_submit.disabled) return;	// 防重复点击
@@ -449,6 +556,13 @@ function load_notes(main_node) {
 			event.stopPropagation();
 			startEdit(item);
 		});
+		let move_btn = document.createElement('button');
+		move_btn.className = "act-btn act-move";
+		move_btn.innerHTML = ICON_MOVE + "移动";
+		move_btn.addEventListener('click', function(event) {
+			event.stopPropagation();
+			startMove(item);
+		});
 		let del_btn = document.createElement('button');
 		del_btn.className = "act-btn act-del";
 		del_btn.innerHTML = ICON_TRASH + "删除";
@@ -457,6 +571,7 @@ function load_notes(main_node) {
 			deleteChild(item.id);
 		});
 		act_div.appendChild(edit_btn);
+		act_div.appendChild(move_btn);
 		act_div.appendChild(del_btn);
 		ttl.appendChild(wrt_div);
 		ttl.appendChild(sts_div);
