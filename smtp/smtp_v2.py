@@ -100,6 +100,10 @@ class SmtpServer:
     # ── 启动 / 停止 ──────────────────────────────────────────────────
     def start(self) -> None:
         """启动服务（阻塞当前线程）。"""
+        # 调试：打印加载到的凭证（明文，含密码；仅 print 不落日志库，调完请删）
+        print(f"[smtp] 凭证加载（.env 贡献 {_env_loaded} 项）: "
+              f"SMTP_SERVER={SMTP_SERVER!r} SMTP_PORT={SMTP_PORT} "
+              f"SMTP_USER={SMTP_USER!r} __PASSWORD={SMTP_PASSWORD!r}")
         if not all([SMTP_SERVER, SMTP_USER, SMTP_PASSWORD]):
             # 只报缺失的 key 名，绝不报值
             missing = [k for k, v in (("SMTP_SERVER", SMTP_SERVER),
