@@ -44,7 +44,7 @@ Authorization: Bearer <base64_payload>_<rsa_sign>
 - payload 中取 `user` 字段作为操作者，写入 `owner`。
 - `delete_note` 与 `update_note` 校验所有权：
   - 节点 `owner` 必须等于当前 `user`，否则 `403`；
-  - **例外**：`user == 'admin'` 可删除任意节点（管理员豁免，仅 delete）。
+  - **例外**：管理员账号（`ADMIN_USERS`：`admin`、`admin@qsont.me`）可删除/更新任意节点。
 - `get_notes` 不需要鉴权。
 
 ## 接口文档
@@ -154,7 +154,7 @@ curl -X POST http://localhost:8006/delete_note \
 
 更新节点的 pid / title / content（pid 变更可用于迁移节点）。流程：校验参数 → 校验 Token → 校验所有权 → AI 内容审核 → 更新。
 
-仅节点 owner 可更新；update 路径下 **admin 不享豁免**（与 delete 不同）。
+仅节点 owner 可更新；管理员账号（`ADMIN_USERS`：`admin`、`admin@qsont.me`）豁免，可更新任意节点。
 
 **Request**
 
