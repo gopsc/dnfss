@@ -38,7 +38,7 @@ _DBV2_ADDR = '127.0.0.1'
 _DBV2_PORT = 8005
 
 # 管理员账号：删除/更新节点时豁免所有权校验（保留旧的 'admin' 以兼容历史数据）
-ADMIN_USERS = ('admin', 'admin@qsont.me')
+ADMIN_USERS = ('admin@qsont.me', 'qing@qsont.me')
 
 def _call_dbv2(payload: dict, timeout: int = 10) -> dict:
     """通过 pymsg 短连接调用 dbv2 数据库服务。
