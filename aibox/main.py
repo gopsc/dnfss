@@ -4268,6 +4268,36 @@ class ReloadSkillsTool(Tool):
         output_queue.put(("complete", result))
 
 
+# ==================== 询问工具 ========================
+class AskUserTool(Tool):
+    """智能体遇到了麻烦，主动向用户问一个问题"""
+
+    def get_name(self) -> str:
+        return "ask_user"
+
+    def get_description(self) -> str:
+        return  "你遇到了一个问题，想向用户询问一个问题的工具。"
+
+    def get_parameters(self) -> Dict:
+        ''' TODO: 调用子代理生成提示词 '''
+        return {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "你现在遇到一个问题，你想询问用户，现在提供你的问题。"
+                    )
+                }
+            },
+            "required": []
+        }
+
+    def execute(self, question: str, **kwargs) -> str:
+        return (
+                "你遇到了想搞清楚的事情: " + question + "\n你现在可以询问用户。"
+        )
+
 # ==================== 安装技能工具 ====================
 
 class InstallSkillTool(Tool):
@@ -6547,6 +6577,9 @@ class DeepSeekChat:
         # 增强版保存记忆并结束对话工具
         if exit_callback and self.memory_db:
             builtin_tools.append(SaveMemoryAndEndConversationTool(exit_callback, self.memory_db, self.prompt_manager, self.logger))
+
+        # 添加询问用户的工具
+        builtin_tools.append(AskUserTool(self.logger))
         
         # 添加技能热重载工具 & 技能安装指引工具 & 创建技能工具
         builtin_tools.append(ReloadSkillsTool(self.tool_registry, self.logger))
