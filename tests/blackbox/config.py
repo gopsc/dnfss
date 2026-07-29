@@ -31,6 +31,7 @@ SERVICES = {
         "name": "db",
         "host": "127.0.0.1",
         "port": 8005,
+        "protocol": "pymsg",
         "description": "通用数据库服务 (CRUD+集中日志)",
         "test_file": "test_db.py",
     },

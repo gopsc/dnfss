@@ -284,6 +284,21 @@ class PymsgClient:
 # 服务可用性检查
 # ---------------------------------------------------------------------------
 
+def check_tcp_service(host: str, port: int, timeout: float = 5.0) -> tuple:
+    """检查纯 TCP 服务（如 pymsg 协议服务 db/captcha/smtp）是否可达。
+    返回 (reachable: bool, detail: str)。
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True, "TCP 连接成功"
+    except ConnectionRefusedError:
+        return False, "连接被拒绝 (服务未启动或端口未监听)"
+    except socket.timeout:
+        return False, f"TCP 连接超时 ({timeout}s)"
+    except OSError as e:
+        return False, f"网络错误: {e}"
+
+
 def check_service(url: str, timeout: float = 8.0) -> tuple:
     """检查服务是否可达（HTTP 请求检测，与测试实际行为一致）。
     返回 (reachable: bool, detail: str)。

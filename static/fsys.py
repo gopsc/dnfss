@@ -582,6 +582,9 @@ if __name__ == '__main__':
     print("\n")
 
     if SSL_ENABLED and os.path.exists(SSL_CERT_FILE) and os.path.exists(SSL_KEY_FILE):
+        # Waitress 不支持 TLS，SSL 场景回退到 Flask 内置服务器
+        logger.warning("SSL enabled: falling back to Flask built-in server (Waitress has no TLS support)")
         app.run(host=host, port=port, ssl_context=(SSL_CERT_FILE, SSL_KEY_FILE), debug=False)
     else:
-        app.run(host=host, port=port, debug=False)
+        from waitress import serve
+        serve(app, host=host, port=port, threads=8)

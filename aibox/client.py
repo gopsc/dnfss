@@ -9,10 +9,19 @@ import sys
 import os
 import threading
 import hashlib
+from collections import OrderedDict
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 import websockets
 from colorama import init, Fore, Style as ColoramaStyle
+
+# rich 为可选依赖：有则 AI 回复渲染为 Markdown，无则回退纯文本流式输出
+try:
+    from rich.console import Console
+    from rich.markdown import Markdown
+    _RICH = True
+except ImportError:
+    _RICH = False
 
 init(autoreset=True)
 
@@ -75,10 +84,15 @@ class WebSocketClient:
                 except json.JSONDecodeError:
                     self.callback("chunk", message)
         except websockets.exceptions.ConnectionClosed:
-            self.connected = False
-            self.callback("system", "❌ 连接已断开")
+            pass
         except Exception as e:
             self.callback("error", f"接收消息错误: {e}")
+        finally:
+            # 统一在此通知断线；手动 disconnect() 已把 connected 置 False，不会误触发自动重连
+            was_connected = self.connected
+            self.connected = False
+            if was_connected:
+                self.callback("disconnected", "❌ 连接已断开")
     
     async def _handle_message(self, data: dict):
         msg_type = data.get('type', '')
@@ -134,12 +148,25 @@ class SimpleCLI:
         self.ai_full = ""
         self.ai_prefix_shown = False
         
-        # 已显示消息的去重
-        self.displayed_messages: set = set()
-        
+        # 已显示消息的去重（LRU 上限，防长对话内存无限增长）
+        self.DISPLAYED_MAX = 500
+        self.displayed_messages: OrderedDict = OrderedDict()
+
         # 锁和状态
         self.lock = threading.Lock()
         self.current_input = ""
+
+        # 标准输入：单守护线程阻塞读 + asyncio.Queue 中转（避免 Ctrl+C 泄漏线程）
+        self._input_queue: asyncio.Queue = asyncio.Queue()
+        self._stdin_thread: Optional[threading.Thread] = None
+
+        # 自动重连状态
+        self._manual_disconnect = False   # 用户主动 /disconnect、/quit、/connect 后置 True，抑制自动重连
+        self._reconnect_task: Optional[asyncio.Task] = None
+
+        # Markdown 渲染（rich 可用时启用）
+        self._console = Console() if _RICH else None
+        self._md_generating_shown = False   # "生成中…"状态行是否已显示
         
         # 流式输出状态
         self.streaming_line = False  # 是否正在流式输出行
@@ -232,16 +259,23 @@ class SimpleCLI:
         """流式显示增量内容"""
         if not content:
             return
-        
+
         # 清理内容
         clean = self._clean_content(content)
         if not clean:
             return
-        
+
         key = clean[:200]
         if key in self.displayed_messages:
             return
-        
+
+        # rich 可用：流式期间只显示状态行并累计全文，complete 时一次性渲染
+        if _RICH:
+            self._md_show_generating()
+            self.ai_previous = clean
+            self.ai_full = clean
+            return
+
         # 检测增量
         if self.ai_previous and clean.startswith(self.ai_previous):
             new_part = clean[len(self.ai_previous):]
@@ -275,6 +309,39 @@ class SimpleCLI:
         self.ai_previous = clean
         self.ai_full = clean
     
+    # ── Markdown 渲染（rich）─────────────────────────────────────────────
+    def _md_show_generating(self):
+        """流式期间显示一次性状态行（不实时渲染，避免 Live 闪烁/被卷走）。"""
+        if not _RICH:
+            return
+        with self.lock:
+            if not self._md_generating_shown:
+                sys.stdout.write('\n')
+                sys.stdout.write(f"{Colors.AI}🤖 AI助手: 生成中…{Colors.RESET}")
+                sys.stdout.flush()
+                self._md_generating_shown = True
+                self.streaming_line = True
+                self.prompt_shown = False
+
+    def _md_render_final(self, text: str):
+        """complete 时一次性静态渲染最终 Markdown（先擦掉"生成中…"行）。"""
+        if not _RICH:
+            return
+        with self.lock:
+            if self._md_generating_shown:
+                sys.stdout.write('\r' + ' ' * 40 + '\r')
+                self._md_generating_shown = False
+                self.streaming_line = False
+        if text:
+            self._console.print(Markdown(text))
+
+    def _remember_displayed(self, key: str):
+        """记录已显示消息（LRU：超 DISPLAYED_MAX 淘汰最旧，防长对话内存膨胀）。"""
+        self.displayed_messages[key] = None
+        self.displayed_messages.move_to_end(key)
+        if len(self.displayed_messages) > self.DISPLAYED_MAX:
+            self.displayed_messages.popitem(last=False)
+
     def display(self, msg_type: str, content: str, extra: Any = None):
         """显示消息"""
         if msg_type == 'chunk':
@@ -302,6 +369,11 @@ class SimpleCLI:
         elif msg_type == 'system':
             self._finish_stream()
             self._print_line(f"{Colors.SYSTEM}{content}{Colors.RESET}")
+        elif msg_type == 'disconnected':
+            self.connected = False
+            self._finish_stream()
+            self._print_line(f"{Colors.SYSTEM}{content}{Colors.RESET}")
+            self._schedule_reconnect()
         elif msg_type == 'info':
             self._finish_stream()
             self._print_line(f"{Colors.INFO}ℹ️  {content}{Colors.RESET}")
@@ -323,7 +395,7 @@ class SimpleCLI:
                 sys.stdout.write(f"{Colors.TASK}{content}{Colors.RESET}\n")
                 sys.stdout.flush()
             return
-        
+
         # 检查是否是工具结果
         if content.startswith(('✅ 对话记忆已保存', '💾 保存记忆', '❌', '⚠️')):
             with self.lock:
@@ -350,6 +422,25 @@ class SimpleCLI:
     
     def _handle_complete(self, content: str):
         """处理完成事件 - 只负责结束流式输出，不重复显示内容"""
+        # rich 渲染路径：擦掉"生成中…"，一次性渲染最终 Markdown，恢复提示符
+        if _RICH:
+            clean = self._clean_content(content) if content else ""
+            self._md_render_final(clean)
+            if clean:
+                self._remember_displayed(clean[:200])
+            with self.lock:
+                self.in_tool_phase = False
+                self.waiting_for_response = False
+                self.streaming_line = False
+                self.prompt_shown = True
+                current = self.current_input
+                sys.stdout.write(self._get_prompt() + current)
+                sys.stdout.flush()
+            self.ai_previous = ""
+            self.ai_full = ""
+            self.ai_prefix_shown = False
+            return
+
         # 如果之前在工具阶段，现在退出
         if self.in_tool_phase:
             with self.lock:
@@ -406,7 +497,7 @@ class SimpleCLI:
                     return
                 
                 # 只有当内容没有被流式显示时才显示完整消息
-                self.displayed_messages.add(key)
+                self._remember_displayed(key)
                 # 如果之前没有流式输出，现在显示完整消息
                 self._print_line(f"{Colors.AI}🤖 AI助手: {clean}")
         
@@ -466,7 +557,7 @@ class SimpleCLI:
                 clean = content.strip()
                 key = clean[:200]
                 if key not in self.displayed_messages:
-                    self.displayed_messages.add(key)
+                    self._remember_displayed(key)
                     self._print_line(f"{Colors.TASK}⚡ 任务 - {task_title}: {clean}")
             del self._task_buffers[task_title]
         self.streaming_line = False
@@ -519,10 +610,15 @@ class SimpleCLI:
                 self.display("error", "用法: /connect ws://host:port")
                 return
             uri = parts[1]
+            # 切换服务器：抑制旧连接的自动重连
+            self._manual_disconnect = True
+            if self._reconnect_task and not self._reconnect_task.done():
+                self._reconnect_task.cancel()
             if self.client and self.client.connected:
                 await self.client.disconnect()
             self.client = WebSocketClient(uri, self.display)
             if await self.client.connect():
+                self._manual_disconnect = False
                 self.connected = True
                 self.display("system", f"✅ 已连接到 {uri}")
                 asyncio.create_task(self.client.receive_messages())
@@ -530,6 +626,9 @@ class SimpleCLI:
                 self.client = None
                 self.connected = False
         elif cmd == '/disconnect':
+            self._manual_disconnect = True   # 主动断开，不自动重连
+            if self._reconnect_task and not self._reconnect_task.done():
+                self._reconnect_task.cancel()
             if self.client:
                 await self.client.disconnect()
                 self.client = None
@@ -556,6 +655,9 @@ class SimpleCLI:
         elif cmd == '/quit':
             self.display("system", "👋 再见！")
             self.running = False
+            self._manual_disconnect = True
+            if self._reconnect_task and not self._reconnect_task.done():
+                self._reconnect_task.cancel()
             if self.client:
                 await self.client.disconnect()
             return
@@ -569,6 +671,35 @@ class SimpleCLI:
             self.display("error", f"未知命令: {cmd}")
         self._print_prompt(clear_input=True)
     
+    def _schedule_reconnect(self):
+        """启动自动重连（若未手动断开且当前无进行中的重连任务）。"""
+        if self._manual_disconnect or not self.running or not self.client:
+            return
+        if self._reconnect_task and not self._reconnect_task.done():
+            return
+        try:
+            self._reconnect_task = asyncio.create_task(self._auto_reconnect_loop(self.client))
+        except RuntimeError:
+            pass  # 事件循环正在关闭（程序退出中），放弃重连
+
+    async def _auto_reconnect_loop(self, client: WebSocketClient):
+        """断线自动重连：指数退避 2s→30s 封顶，直到成功、/disconnect 或退出。"""
+        delay = 2
+        while self.running and not self._manual_disconnect and self.client is client:
+            self.display("info", f"🔄 {delay}s 后自动重连 {client.uri} …（/disconnect 取消）")
+            try:
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                return
+            if not self.running or self._manual_disconnect or self.client is not client:
+                return
+            if await client.connect():
+                self.connected = True
+                self.display("system", f"✅ 已自动重连到 {client.uri}")
+                asyncio.create_task(client.receive_messages())
+                return
+            delay = min(delay * 2, 30)
+
     async def _send_interrupt(self):
         if self.client and self.client.connected:
             interrupt_msg = {"type": "interrupt", "content": "用户按下了 Ctrl+C 中断当前操作"}
@@ -581,7 +712,7 @@ class SimpleCLI:
         if not self.client or not self.client.connected:
             self.display("error", "未连接到服务器")
             return
-        
+
         # 重置流式状态
         with self.lock:
             if self.streaming_line:
@@ -601,30 +732,57 @@ class SimpleCLI:
         await self.client.send_message(message)
         # 不在这里显示提示符，等待AI响应结束后再显示
     
+    def _stdin_reader(self, loop: asyncio.AbstractEventLoop):
+        """独立守护线程：阻塞读 stdin，经 call_soon_threadsafe 投入队列。
+
+        进程生命周期只启动一次——替代原 run_in_executor 每行一个线程的方案，
+        避免 Ctrl+C 取消 await 后旧线程仍阻塞在 readline 上无限泄漏。
+        """
+        def _put(item):
+            try:
+                loop.call_soon_threadsafe(self._input_queue.put_nowait, item)
+            except RuntimeError:
+                pass  # 事件循环已关闭（程序退出中）
+
+        while self.running:
+            try:
+                line = sys.stdin.readline()
+            except Exception:
+                break
+            if not line:  # EOF (Ctrl+D)
+                _put(None)
+                break
+            _put(line)
+
     async def run(self):
         self.print_banner()
         self._task_buffers = {}
-        
+
+        loop = asyncio.get_running_loop()
+        if self._stdin_thread is None:
+            self._stdin_thread = threading.Thread(
+                target=self._stdin_reader, args=(loop,),
+                daemon=True, name="stdin-reader")
+            self._stdin_thread.start()
+
         while self.running:
             try:
-                line = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: sys.stdin.readline()
-                )
-                if not line:
+                line = await self._input_queue.get()
+                if line is None:  # EOF (Ctrl+D)
                     break
-                
+
                 self.current_input = line.rstrip('\n')
                 line = line.strip()
-                
+
                 if not line:
                     self._print_prompt(clear_input=True)
                     continue
-                
+
                 if line.startswith('/'):
                     await self.handle_command(line)
                 else:
                     await self.send_user_message(line)
-                
+
             except KeyboardInterrupt:
                 if self.client and self.client.connected:
                     await self._send_interrupt()

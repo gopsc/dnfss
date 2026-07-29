@@ -18,18 +18,26 @@ dbv2 — 基于 pymsg 协议（MsgServer）的数据库服务。
 支持的路由::
 
     execute  → 通用 CRUD（select / insert / update / delete）
+
+日期/时间列::
+
+    values 与 where 中的 DATETIME / DATE / TIME 列接受 ISO 8601 字符串
+    （如 "2026-07-28T22:30:00"，可带时区偏移，统一转 UTC 存储），
+    或哨兵值 "$now"（服务端当前 UTC 时间）。
+    响应中的日期时间一律序列化为 ISO 8601（T 分隔）。
 """
 
 import json
 import os
 import time
 import traceback
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, date, time as dt_time, timezone, timedelta
 
 from sqlalchemy import (
     create_engine, MetaData, Table,
     select, insert, update, delete, func, and_,
 )
+from sqlalchemy import types as sa_types
 from sqlalchemy.exc import SQLAlchemyError
 
 # pymsg 导入
@@ -49,6 +57,16 @@ MAX_EXTRA_LEN = 4096     # extra 上限 4KB
 DEFAULT_RETENTION_DAYS = 30
 DEFAULT_MAX_RECORDS = 1_000_000
 DEFAULT_CLEANUP_INTERVAL = 3600  # 秒
+
+#: where/values 中的哨兵值：服务端当前 UTC 时间
+NOW_SENTINEL = "$now"
+
+
+def _json_default(o):
+    """json.dumps 兜底序列化：日期时间一律 ISO 8601（T 分隔），其余 str()。"""
+    if isinstance(o, (datetime, date, dt_time)):
+        return o.isoformat()
+    return str(o)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -113,13 +131,62 @@ class DBServer:
             resp["data"] = data
         if error is not None:
             resp["error"] = error
-        self._server.reply(sock, json.dumps(resp, ensure_ascii=False, default=str))
+        self._server.reply(sock, json.dumps(resp, ensure_ascii=False,
+                                            default=_json_default))
 
     # ── 表反射 ---------------------------------------------------------
     def _get_table(self, table_name):
         if table_name not in self.metadata.tables:
             Table(table_name, self.metadata, autoload_with=self.engine)
         return self.metadata.tables[table_name]
+
+    # ── 日期/时间类型适配 ------------------------------------------------
+    def _coerce_value(self, column, value):
+        """按反射列类型把 JSON 值适配为 SQLAlchemy 需要的 Python 对象。
+
+        JSON 没有日期类型，客户端只能传字符串；而 SQLite 的 DATETIME/DATE
+        类型只接受 Python datetime/date 对象，字符串会被直接拒绝
+        （TypeError: SQLite DateTime type only accepts Python datetime ...）。
+        这里统一把 ISO 8601 字符串转为对应对象；带时区偏移的一律转 UTC
+        并去掉 tzinfo，与 SQLite 朴素存储保持一致。
+        """
+        if not isinstance(value, str):
+            return value
+
+        col_type = column.type
+        if isinstance(col_type, sa_types.DateTime):
+            if value == NOW_SENTINEL:
+                return datetime.now(timezone.utc).replace(tzinfo=None)
+            text = value[:-1] + "+00:00" if value.endswith("Z") else value
+            try:
+                dt = datetime.fromisoformat(text)
+            except ValueError:
+                raise ValueError(
+                    f"列 {column.name} 的日期时间值无法解析"
+                    f"（需 ISO 8601 或 \"{NOW_SENTINEL}\"）: {value!r}"
+                )
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+            return dt
+        if isinstance(col_type, sa_types.Date):
+            if value == NOW_SENTINEL:
+                return datetime.now(timezone.utc).date()
+            try:
+                return date.fromisoformat(value)
+            except ValueError:
+                raise ValueError(
+                    f"列 {column.name} 的日期值无法解析"
+                    f"（需 ISO 8601 或 \"{NOW_SENTINEL}\"）: {value!r}"
+                )
+        if isinstance(col_type, sa_types.Time):
+            try:
+                return dt_time.fromisoformat(value)
+            except ValueError:
+                raise ValueError(
+                    f"列 {column.name} 的时间值无法解析"
+                    f"（需 ISO 8601）: {value!r}"
+                )
+        return value
 
     def _build_where(self, table, conditions):
         if not conditions:
@@ -129,23 +196,26 @@ class DBServer:
             column = table.columns[col]
             if isinstance(val, dict):
                 if "eq" in val:
-                    clauses.append(column == val["eq"])
+                    clauses.append(column == self._coerce_value(column, val["eq"]))
                 if "ne" in val:
-                    clauses.append(column != val["ne"])
+                    clauses.append(column != self._coerce_value(column, val["ne"]))
                 if "gt" in val:
-                    clauses.append(column > val["gt"])
+                    clauses.append(column > self._coerce_value(column, val["gt"]))
                 if "lt" in val:
-                    clauses.append(column < val["lt"])
+                    clauses.append(column < self._coerce_value(column, val["lt"]))
                 if "ge" in val:
-                    clauses.append(column >= val["ge"])
+                    clauses.append(column >= self._coerce_value(column, val["ge"]))
                 if "le" in val:
-                    clauses.append(column <= val["le"])
+                    clauses.append(column <= self._coerce_value(column, val["le"]))
                 if "like" in val:
+                    # like 是字符串模式匹配，不做日期转换
                     clauses.append(column.like(val["like"]))
                 if "in" in val:
-                    clauses.append(column.in_(val["in"]))
+                    clauses.append(column.in_(
+                        [self._coerce_value(column, v) for v in val["in"]]
+                    ))
             else:
-                clauses.append(column == val)
+                clauses.append(column == self._coerce_value(column, val))
         return and_(*clauses)
 
     # ═══════════════════════════════════════════════════════════════════
@@ -205,6 +275,10 @@ class DBServer:
 
     def _do_insert(self, conn, table, data):
         values = data.get("values", {})
+        values = {
+            k: self._coerce_value(table.columns[k], v)
+            for k, v in values.items()
+        }
         stmt = insert(table).values(**values)
         res = conn.execute(stmt)
         conn.commit()
@@ -212,6 +286,10 @@ class DBServer:
 
     def _do_update(self, conn, table, data):
         values = data.get("values", {})
+        values = {
+            k: self._coerce_value(table.columns[k], v)
+            for k, v in values.items()
+        }
         where_cond = self._build_where(table, data.get("where"))
         stmt = update(table).values(**values)
         if where_cond is not None:

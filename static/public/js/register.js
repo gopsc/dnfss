@@ -9,12 +9,10 @@ const pwdTip = document.getElementById('pwdTip');
 const codeTip = document.getElementById('codeTip');
 const submitButton = document.getElementById('formsub');
 
-let sendCode = '';
-let codeTarget = '';
+let codeTarget = '';	// 已发送验证码的目标邮箱（验证码本体由服务端校验，前端不经手）
 
 form.addEventListener('reset', function () {
 	clearTipStyle();
-	sendCode = '';
 	codeTarget = '';
 });
 
@@ -64,7 +62,7 @@ function checkCode() {
 	codeTip.innerHTML = '';
 	codeTip.classList.remove('tip-red', 'tip-yellow', 'tip-green');
 
-	if (!sendCode) {
+	if (!codeTarget) {
 		codeTip.textContent = '请先获取验证码！';
 		codeTip.classList.add('tip-red');
 		return false;
@@ -79,14 +77,7 @@ function checkCode() {
 		codeTip.classList.add('tip-yellow');
 		return false;
 	}
-	if (sendCode === 'email_sent') { /* Server-verified, skip client check */ } else if (code !== sendCode) {
-		codeTip.textContent = '验证码错误，请核对！';
-		codeTip.classList.add('tip-red');
-		return false;
-	}
-
-	codeTip.textContent = '验证码正确';
-	codeTip.classList.add('tip-green');
+	// 验证码正确性由服务端在注册提交时校验（一次性消费）
 	return code;
 }
 
@@ -102,7 +93,7 @@ repeatPasswordInput.addEventListener('blur', checkPassword);
 emailInput.addEventListener('focus', checkEmail);
 emailInput.addEventListener('input', function () {
 	checkEmail();
-	if (sendCode) {
+	if (codeTarget) {
 		checkCode();
 	}
 });
@@ -112,19 +103,40 @@ codeInput.addEventListener('focus', checkCode);
 codeInput.addEventListener('input', checkCode);
 codeInput.addEventListener('blur', checkCode);
 
-getCodeButton.addEventListener('click', function () {
+getCodeButton.addEventListener('click', async function () {
+	if (getCodeButton.disabled) return;	// 防重复点击
 	const email = checkEmail();
 	if (!email) {
 		return;
 	}
 
-	sendCode = Math.floor(100000 + Math.random() * 900000).toString();
-	codeTarget = email;
-	codeInput.value = '';
-	codeTip.textContent = '验证码已发送，请填写验证码';
+	getCodeButton.disabled = true;
+	codeTip.textContent = '验证码发送中…';
 	codeTip.classList.remove('tip-red', 'tip-yellow', 'tip-green');
-	codeTip.classList.add('tip-green');
-	alert(`验证码已发送至${email}，您的验证码：${sendCode}`);
+	codeTip.classList.add('tip-yellow');
+	try {
+		const res = await fetch('/register/send_code', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ email })
+		});
+		const responseText = await res.text();
+		let result;
+		try { result = JSON.parse(responseText); } catch { throw new Error('服务器响应格式异常'); }
+		if (!res.ok || !result.success) throw new Error(result.message || '验证码发送失败');
+
+		codeTarget = email;
+		codeInput.value = '';
+		codeTip.textContent = '验证码已发送至邮箱，请查收（60 秒内有效）';
+		codeTip.classList.remove('tip-red', 'tip-yellow', 'tip-green');
+		codeTip.classList.add('tip-green');
+	} catch (err) {
+		codeTip.textContent = err.message || '验证码发送失败，请稍后重试';
+		codeTip.classList.remove('tip-red', 'tip-yellow', 'tip-green');
+		codeTip.classList.add('tip-red');
+	} finally {
+		getCodeButton.disabled = false;
+	}
 });
 
 form.addEventListener('submit', async function (e) {
@@ -139,7 +151,8 @@ form.addEventListener('submit', async function (e) {
 	}
 	const jsonBody = JSON.stringify({
 		username: email,
-		password
+		password,
+		email_code: code
 	});
 
 	try {
@@ -169,7 +182,6 @@ form.addEventListener('submit', async function (e) {
 		if (result.success) {
 			alert('注册成功');
 			form.reset();
-			sendCode = '';
 			codeTarget = '';
 			location.href = 'login.html';
 			return;

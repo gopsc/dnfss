@@ -1,5 +1,3 @@
 nuitka
-flask
 SQLAlchemy
-waitress
 ../pymsg

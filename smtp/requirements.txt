@@ -1,8 +1,2 @@
 ../pymsg
 nuitka
-flask
-flask-cors
-flask_sqlalchemy
-#gunicorn
-waitress
-python-dotenv

@@ -31,7 +31,7 @@
 
 1. 客户端所有请求先打到 `waf:443`（HTTPS），WAF 终止 TLS、运行 coraza 规则匹配，命中则直接返回 403。
 2. 未命中规则的请求由 WAF 以明文 HTTP 转发到 `gateway:8443`，并设置 `X-Forwarded-For` / `X-Forwarded-Proto` 头。
-3. `gateway` 对 `/login`、`/register` 做账号鉴权（PBKDF2 密码哈希 + RSA 签名 Token + 可选 CAPTCHA + 速率限制），用户数据通过 pymsg/TCP 调用 `db:8005` 存取。
+3. `gateway` 对 `/login`、`/register` 做账号鉴权（PBKDF2 密码哈希 + RSA 签名 Token + 可选 CAPTCHA + 速率限制；注册需邮箱验证码，经 pymsg/TCP 调 `smtp:8008` 发送与校验），用户数据通过 pymsg/TCP 调用 `db:8005` 存取。
 4. 其余请求携带 Token，经 `gateway` 校验后反向代理到 `Proxy.opened` 中放开的内部服务（`static:9200` / `dnfs:8006`）。
 5. `db:8005` 与 `ai_review:8007` 在 `Proxy.closed` 中，仅允许内部服务间调用，不对外暴露。
 6. `dnfs` 处理节点增删改查时，通过 pymsg/TCP 调用 `db` 服务完成数据持久化，新增节点前调用 `ai_review` 进行内容审核。
@@ -49,7 +49,7 @@
 | [db](db/) | Python(pymsg) | 8005 | 通用数据库服务，基于 pymsg 协议（TCP 长度前缀帧 + JSON）的 SQL-over-TCP，SQLAlchemy Core 参数化查询防注入；内置集中式日志收集（Logs 表 + 自动清理） |
 | [ai_review](ai_review/) | Python(Flask) | 8007 | AI 内容审核服务，DeepSeek LLM + ChromaDB RAG，支持人工反馈纠偏 |
 | [captcha](captcha/) | Python(pymsg) | 8009 | 验证码服务（pymsg/TCP），生成图形验证码（5 分钟过期、一次性），经 gateway 的 `GET /captcha/image` 代理给浏览器 |
-| [smtp](smtp/) | Python(Flask) | 8008 | 邮件服务，发送/校验邮箱验证码（/send_email、/verify_email），注册流程的邮件验证码后端，SMTP 账号配置在 .env |
+| [smtp](smtp/) | Python(pymsg) | 8008 | 邮件服务，发送/校验邮箱验证码（pymsg 路由 send_email/verify_email/health），注册流程的邮件验证码后端，SMTP 账号配置在 .env |
 | [aibox](aibox/) | Python | 8765 | 独立 AI 智能体系统（DeepSeek + WebSocket），自带技能系统/记忆/任务调度，由 core 拉起但与主干微服务无调用关系 |
 
 ### core（核心模块 · 进程托管服务）
@@ -68,18 +68,18 @@
 - 极客操作：`kill -HUP <pid>` 热加载规则；`waf -list` 列规则；`waf -test <file>` 校验语法；`waf -check "<input>"` 测试单条输入。
 - 配置见 [waf/config.yaml](waf/config.yaml)，详见 [waf/README.md](waf/README.md)。
 
-### gateway（应用层网关 · v0.4.3）
+### gateway（应用层网关 · v0.5.2）
 
 - 内部 HTTP 服务，默认监听 127.0.0.1:8443，不再承载 TLS（TLS 已由 WAF 终止）。
 - 通过 `Server.tls = on/off` 配置切换 HTTPS/HTTP 模式（[example.ini](gateway/example.ini)），独立部署时仍可启用 TLS。
 - **密码安全**：PBKDF2-HMAC-SHA256（10 万轮 + 16 字节随机盐），密码强度校验（8+ 字符、4 类中至少 3 类），常数时间比较防 timing attack。
-- **用户存储**：用户数据通过 pymsg/TCP 调用 `db:8005`（`DbC::call_msg`）存取，不再直连本地 SQLite。
+- **用户存储**：用户数据通过 pymsg/TCP 调用 `db:8005`（`DbC::call_msg`）存取，不再直连本地 SQLite；登录成功即更新 `Users.last_login`（`"$now"` 哨兵）。
 - **Token 机制**：`Base64(payload) + "_" + RSA-Sign(payload)`，默认 1 小时过期，验签通过才放行；RSA 密钥对启动时内存生成，重启后旧 Token 全部失效。
 - **Cookie 认证**：登录成功同时签发 `HttpOnly + Secure + SameSite=Lax` 的 `q4_token` Cookie；代理时无 `Authorization` 头则回退读 Cookie 验签，并向下游注入 `Authorization: Bearer`（下游零改动）；`POST /logout` 清除 Cookie。公开目标（`Proxy.default`）不做凭证校验，避免旧 Cookie 影响公开页面。
 - **CAPTCHA**：`/captcha` 接口生成验证码（5 分钟过期、一次性使用），登录与注册均可选启用；`GET /captcha/image` 为 captcha 服务（pymsg/TCP :8009）的图形验证码代理路由。
 - **速率限制**：登录 5 次/5 分钟、注册 3 次/10 分钟，按 `X-Forwarded-For`（WAF 注入）客户端 IP 计数。
 - **反向代理**：`Target-Url` 必须在 `Proxy.opened` 白名单中（`closed` 仅记录用途，实际隔离靠"不在 opened 中即拒绝"），缺省走 `Proxy.default`（不需 Token，服务前端静态资源）。
-- **自动建表**：启动时若 `Users` 表不存在则自动创建，首位注册者即为管理员。
+- **用户表**：`Users` 表由 [db/create_sqlite3.sql](db/create_sqlite3.sql) 建立（gateway 不再自动建表），无默认管理员账号，首位注册者即为管理员。
 - 详见 [gateway/README.md](gateway/README.md)。
 
 ### static（前端托管服务）
@@ -107,12 +107,12 @@
 - 基于 SQLAlchemy Core 表反射，参数化查询，零 SQL 注入风险。
 - 仅监听 127.0.0.1，自动提交/回滚，不暴露 DDL 操作。
 - 默认使用 SQLite（`database.db`），可通过 `DATABASE_URL` 环境变量切换至 PostgreSQL / MySQL。
+- **日期/时间列适配**：values 与 where 中的 DATETIME/DATE/TIME 列接受 ISO 8601 字符串（带时区偏移自动转 UTC）或哨兵值 `"$now"`（服务端当前 UTC）；响应中的日期时间一律序列化为 ISO 8601（T 分隔）。
 - **内置日志子模块**：
   - 启动时自动建 `Logs` 表（service / level / message / trace_id / extra + 4 个索引）。
   - 外部服务通过 `log_client.py` 以 pymsg 调 execute 路由逐条 INSERT 写入日志。
   - `_log_internal()` — db 进程内部直接写 Logs 表，无网络往返，防递归设计。
   - 后台守护线程每小时自动清理：保留 30 天 / 上限 100 万条。
-  - 注：`db/log_module.py`（Flask `/log/*` Blueprint）为旧版 HTTP 接口的遗留文件，当前 dbv2 未挂载。
 - **统一日志客户端 SDK**（各服务目录下的 `log_client.py`，如 [dnfs/log_client.py](dnfs/log_client.py)）：各服务复制即用，纯标准库实现，异步非阻塞（内存队列 + 后台线程，50 条/2 秒批量 flush），fail-safe 设计（db 不可用时静默丢弃，不影响业务）。
 
 ### ai_review（AI 内容审核服务）
@@ -135,9 +135,9 @@
 
 ### smtp（邮件服务）
 
-- 注册流程的邮箱验证码后端，基于 Flask + waitress，监听 127.0.0.1:8008。
-- 接口：`POST /send_email`（生成 6 位验证码并经 SMTP_SSL 发送至收件人，60 秒有效）、`POST /verify_email`（校验）。
-- 验证码存于进程内存，SMTP 账号通过 `.env` 配置（`SMTP_SERVER` / `SMTP_PORT` / `SMTP_USER` / `__PASSWORD`）。
+- 注册流程的邮箱验证码后端，基于 pymsg（MsgServer，TCP 长度前缀帧 + JSON），监听 127.0.0.1:8008。
+- pymsg 路由：`send_email`（生成 6 位验证码并经 SMTP_SSL 发送，60 秒有效，发送失败自动作废）、`verify_email`（校验，通过即一次性消费防重放，兼容旧字段 `input_captcha`）、`health`。
+- 验证码存于进程内存（锁保护 + 惰性过期清理），SMTP 账号通过 `.env` 配置（`SMTP_SERVER` / `SMTP_PORT` / `SMTP_USER` / `__PASSWORD`，`__PASSWORD` 兼容别名 `SMTP_PASSWORD`）。
 
 ### aibox（独立 AI 智能体系统）
 

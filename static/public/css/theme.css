@@ -212,7 +212,27 @@ input[type="button"]:disabled {
 #article-content { font-size: 0.95rem; line-height: 1.7; margin-bottom: 1.25rem; }
 
 /* ===== Recommend List (dnfs) ===== */
-.recommend-list .card { margin-bottom: 0.75rem; width: 100%; max-width: none; }
+/* 卡片尺寸随内容自适应：宽度包裹内容（fit-content），上限为容器宽度；高度天然随内容伸缩 */
+.recommend-list {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.75rem;
+    width: 100%;
+}
+.recommend-list br { display: none; }	/* JS 追加的 <br> 分隔符，改由 flex gap 统一控制间距 */
+.recommend-list .card {
+    width: fit-content;
+    min-width: min(240px, 100%);
+    max-width: 100%;
+    margin-bottom: 0;
+}
+/* 防止内容中的大图撑破自适应宽度 */
+.recommend-list .card img {
+    max-width: 100%;
+    height: auto;
+    border-radius: var(--radius-sm);
+}
 .recommend-list center {
     cursor: pointer;
     padding: 0.4rem;
@@ -223,6 +243,127 @@ input[type="button"]:disabled {
 .recommend-list center:hover h3 { color: var(--accent); }
 .recommend-list .card h3 { transition: color 0.15s; }
 .recommend-list .card p { font-size: 0.9rem; line-height: 1.6; color: var(--fg-secondary); }
+
+/* ===== Owner Chip (dnfs 发帖用户) ===== */
+.card-owner {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.2rem;
+}
+.owner-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--accent-soft);
+    color: var(--accent-dark);
+    border: 1px solid var(--accent);
+    font-size: 0.7rem;
+    font-weight: 700;
+    flex-shrink: 0;
+    user-select: none;
+}
+.owner-name {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--fg-secondary);
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ===== Card Stats (dnfs 互动统计：观看/点赞/分享) ===== */
+.card-stats {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1.1rem;
+    margin-top: 0.45rem;
+}
+.stat-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.78rem;
+    color: var(--muted);
+}
+.stat-item svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+}
+.stat-num {
+    font-weight: 600;
+    color: var(--fg-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ===== Card Actions (dnfs 编辑/删除按钮) ===== */
+.card-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 0.6rem;
+}
+.act-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.25rem 0.7rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    border-radius: var(--radius-sm);
+    border: 1px solid transparent;
+    background: var(--accent-soft);
+    color: var(--accent-dark);
+    cursor: pointer;
+    transition: border-color 0.15s, opacity 0.15s, transform 0.1s;
+}
+.act-btn svg { width: 12px; height: 12px; flex-shrink: 0; }
+.act-btn:hover { border-color: var(--accent); }
+.act-del { background: var(--error-bg); color: var(--error); }
+.act-del:hover { border-color: var(--error); }
+.act-move { background: transparent; color: var(--fg-secondary); border-color: var(--border); }
+.act-move:hover { border-color: var(--accent); color: var(--accent-dark); }
+
+/* ===== Move Bar (dnfs 节点移动条) ===== */
+.movebar {
+    position: fixed;
+    left: 50%;
+    bottom: 1.25rem;
+    transform: translateX(-50%);
+    z-index: 110;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.5rem 0.8rem;
+    border-radius: var(--radius-md);
+    background: rgba(253, 246, 238, 0.85);
+    border: 1px solid var(--accent);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    box-shadow: var(--shadow-md);
+    font-size: 0.82rem;
+    max-width: 92vw;
+}
+@media (prefers-color-scheme: dark) {
+    .movebar { background: rgba(30, 23, 18, 0.85); }
+}
+.movebar:empty { display: none; }
+.move-title {
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--fg-secondary);
+    font-weight: 600;
+}
 
 /* ===== Minimap (dnfs) ===== */
 .minimap {

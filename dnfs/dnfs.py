@@ -37,6 +37,9 @@ from pymsg import MsgClient  # noqa: E402
 _DBV2_ADDR = '127.0.0.1'
 _DBV2_PORT = 8005
 
+# 管理员账号：删除/更新节点时豁免所有权校验（保留旧的 'admin' 以兼容历史数据）
+ADMIN_USERS = ('admin@qsont.me', 'qing@qsont.me')
+
 def _call_dbv2(payload: dict, timeout: int = 10) -> dict:
     """通过 pymsg 短连接调用 dbv2 数据库服务。
     自动注入 ``_route: "execute"``。
@@ -325,7 +328,7 @@ def delete_note():
 
     data = _call_dbv2(select_payload)
     notes = data['data']
-    if not info['user'] == 'admin':
+    if info['user'] not in ADMIN_USERS:
         if not len(notes) == 1 or not notes[0]['owner'] == info['user']:
             logs.warning('dnfs', f'delete_note 所有权拒绝 id={note_id}', extra={'user': info['user']})
             return jsonify({"error": 'It\'s not your note'}), 403
@@ -400,9 +403,10 @@ def update_note():
 
     data = _call_dbv2(select_payload)
     notes = data['data']
-    if not len(notes) == 1 or not notes[0]['owner'] == info['user']:
-        logs.warning('dnfs', f'update_note 所有权拒绝 id={id}', extra={'user': info['user']})
-        return jsonify({"error": 'It\'s not your note'}), 403
+    if info['user'] not in ADMIN_USERS:
+        if not len(notes) == 1 or not notes[0]['owner'] == info['user']:
+            logs.warning('dnfs', f'update_note 所有权拒绝 id={id}', extra={'user': info['user']})
+            return jsonify({"error": 'It\'s not your note'}), 403
 
     # 内容审查
     review = review_content(title + '\n' + content, 10)

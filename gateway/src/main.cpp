@@ -20,13 +20,14 @@
 #include "LocalTime.hpp"
 #include "Conf.hpp"
 #include "DbC.hpp"
+#include "LogC.hpp"
 
 using namespace pmc::net;
 using namespace qing;
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-constexpr const char *_VER = "0.4.4";
+constexpr const char *_VER = "0.5.2";
 
 //////////////////////////////////
 #include <sstream>
@@ -287,6 +288,11 @@ http::response<http::string_body> handleRegister(
 		const http::request<http::string_body>& req,
 		const std::unordered_map<std::string, std::string>& params);
 
+/* 发送注册邮箱验证码：pymsg 调 smtp 服务 send_email 路由 */
+http::response<http::string_body> handleSendEmailCode(
+		const http::request<http::string_body>& req,
+		const std::unordered_map<std::string, std::string>& params);
+
 http::response<http::string_body> handleCaptcha(
 		const http::request<http::string_body>& req,
 		const std::unordered_map<std::string, std::string>& params);
@@ -326,6 +332,15 @@ static std::unique_ptr<MyRSA::Generator>	_KEYGEN;
 //static std::unique_ptr<Sqlite3>			_SQLDB;
 static RateLimiter				_LOGIN_RATE;
 static RateLimiter				_REGISTER_RATE;
+static RateLimiter				_EMAIL_CODE_RATE;	// 发送邮箱验证码限流
+
+/* pymsg 下游调用超时（秒）：
+ * captcha / smtp verify_email 均为本机内存操作，5s 足够；
+ * smtp send_email 需完成一次完整外部 SMTP 会话（握手 + TLS + 投递），放宽到 20s。
+ * db 调用的默认超时见 DbC.hpp 的 DbC::DEFAULT_TIMEOUT。 */
+static constexpr double			_TIMEOUT_CAPTCHA = 5.0;
+static constexpr double			_TIMEOUT_SMTP_VERIFY = 5.0;
+static constexpr double			_TIMEOUT_SMTP_SEND = 20.0;
 
 /* CAPTCHA store: token -> answer (in-memory, with expiry) */
 #include <unordered_map>
@@ -336,6 +351,9 @@ struct CaptchaEntry {
 };
 static std::unordered_map<std::string, CaptchaEntry> _CAPTCHA_STORE;
 static std::mutex _CAPTCHA_MTX;
+
+/* 集中式日志客户端：推送 gateway 运行日志到 db 模块 Logs 表（异步批量，fail-safe） */
+static inline LogC& logs() { return LogC::instance(); }
 
 std::string generate_captcha_text() {
     static const char chars[] = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
@@ -379,7 +397,27 @@ bool verify_captcha_remote(const std::string& token, const std::string& answer) 
 			{"token", token},
 			{"answer", answer}
 		};
-		std::string resp = client.call(json::serialize(jv_req), 5.0);
+		std::string resp = client.call(json::serialize(jv_req), _TIMEOUT_CAPTCHA);
+		auto jv = json::parse(resp);
+		auto& obj = jv.as_object();
+		if (!obj.at("success").as_bool()) return false;
+		return obj.at("data").as_object().at("valid").as_bool();
+	} catch (const std::exception&) {
+		return false;
+	}
+}
+
+/* 调用 smtp 服务（pymsg/TCP :8008）校验邮箱验证码。
+ * 验证码一次性消费；服务不可用或响应异常一律视为校验失败（fail-closed）。 */
+bool verify_email_code_remote(const std::string& email, const std::string& code) {
+	try {
+		pmc::net::MsgClient client("127.0.0.1", 8008, "gateway");
+		json::value jv_req = {
+			{"_route", "verify_email"},
+			{"email", email},
+			{"code", code}
+		};
+		std::string resp = client.call(json::serialize(jv_req), _TIMEOUT_SMTP_VERIFY);
 		auto jv = json::parse(resp);
 		auto& obj = jv.as_object();
 		if (!obj.at("success").as_bool()) return false;
@@ -501,10 +539,14 @@ int main(int argc, char **argv) {
 
 
 	std::cout << "Gateway " << _VER << " started" << std::endl;
+	logs().info("gateway", std::string("Gateway ") + _VER + " started");
 
 	/* 开始监听 */
 	_SERVE->run();
 
+	/* 收到停止信号后的收尾：记录并 flush 剩余日志 */
+	logs().info("gateway", "Gateway shutdown");
+	logs().shutdown();
 }
 
 //void db_init() {
@@ -565,6 +607,12 @@ void registerRoutes(HttpServer &server) {
 			[](const auto& req, const auto& params) { return handleRegister(req, params); });
 	});
 
+	/* 发送注册邮箱验证码（须在 post("*") 通配符之前注册） */
+	server.post("/register/send_code", [](const auto& req, const auto& params) -> http::response<http::string_body> {
+		return wrapperHttp(req, params,
+			[](const auto& req, const auto& params) { return handleSendEmailCode(req, params); });
+	});
+
 	server.post("/logout", [](const auto& req, const auto& params) -> http::response<http::string_body> {
 		return wrapperHttp(req, params,
 			[](const auto& req, const auto& params) { return handleLogout(req, params); });
@@ -603,7 +651,14 @@ catch (const HttpException& e) {
 	http::response<http::string_body> res;
 	res.version(req.version());
 	// 详细错误信息（e.what() 含源码路径/行号/C++ 模板类型）暂时以注释方式保留（同 handleLogin）
-	std::cerr << "[handleRegister HttpException] " << e.what() << std::endl;
+	std::cerr << "[wrapperHttp HttpException] " << e.what() << std::endl;
+	// 推送集中式日志：5xx 服务端错误记 ERROR，其余（400/401/403/429 等业务错误）记 WARNING
+	if (e.status() >= 500)
+		logs().error("gateway", e.what(), std::nullopt,
+			json::serialize(json::value{{"url", e.url()}, {"status", e.status()}}));
+	else
+		logs().warning("gateway", e.what(), std::nullopt,
+			json::serialize(json::value{{"url", e.url()}, {"status", e.status()}}));
 	json::value jv_r = {
 		{"success", false},
 		{"message", e.what()}
@@ -627,6 +682,7 @@ catch (const std::exception& e) {
 	//       透传到客户端会泄露 C++ 类型信息与内部路径（P0-3 遗漏点，已补全）
 	// 排障：完整信息仍输出到服务端 stderr
 	std::cerr << "[wrapperHttp std::exception] <" << ti.name() << "> " << e.what() << std::endl;
+	logs().error("gateway", std::string("<") + ti.name() + "> " + e.what());
 	json::value jv_r = {
 		{"success", false},
 		/* {"message", std::string("<") + ti.name() + "> " + e.what()}, */ // 泄露源码信息，已禁用
@@ -696,7 +752,7 @@ http::response<http::string_body> handleLogin(
 		client_ip = "direct";
 
 	if (!_LOGIN_RATE.check_and_record(client_ip, 5, 300))
-		THROW_EX_CUSTOM(HttpException, 2001, "Too many login attampts. Please try again later.", 400, "/login");
+		THROW_EX_CUSTOM(HttpException, 2001, "Too many login attempts. Please try again later.", 429, "/login");
 
 	// parse json req body
 	json::value jv;
@@ -742,10 +798,14 @@ http::response<http::string_body> handleLogin(
 		auto jv_db_r = DbC::call_msg(jv_select);
 		auto obj_r = jv_db_r.as_object();
 		auto success = obj_r["success"].as_bool();
-		if (!success) THROW_EX_CUSTOM(HttpException, 2102, "Login (Update Step) Failed", 500, "/login");
+		if (!success) THROW_EX_CUSTOM(HttpException, 2102, "Login (Query Step) Failed", 500, "/login");
 		auto obj_rd = obj_r.at("data").as_array();
-		auto obj_ru = obj_rd.at(0).as_object();
-		stored_hash = obj_ru.at("password_hash").as_string();
+		/* 用户不存在时 data 为空数组：直接 at(0) 会抛异常被 wrapper 兜底成 500，
+		 * 此处保持 stored_hash 为空，统一走下面的 401 分支 */
+		if (!obj_rd.empty()) {
+			auto obj_ru = obj_rd.at(0).as_object();
+			stored_hash = obj_ru.at("password_hash").as_string();
+		}
 	}
 
 
@@ -770,6 +830,14 @@ http::response<http::string_body> handleLogin(
 			//	std::cout << "Migrated password hash for " << username << " to PBKDF2" << std::endl;
 		//}
 	}
+	else {
+		/* 用户不存在：执行一次等价的 dummy PBKDF2 校验拉平响应时序，
+		 * 防止通过响应时间差异枚举有效用户名（用户不存在/密码错误一律 401） */
+		static const std::string dummy_hash =
+			"pbkdf2:100000:00000000000000000000000000000000:"
+			"0000000000000000000000000000000000000000000000000000000000000000";
+		PBKDF2Hasher::verify_password(password, dummy_hash);
+	}
 
 	if (!auth_ok) THROW_EX_CUSTOM(HttpException, 2101, "Invalid Username or Password", 401, "/login");
 
@@ -779,21 +847,21 @@ http::response<http::string_body> handleLogin(
 	//stmt_upd.bind_text(1, username);
 	//stmt_upd.step();
 	//
-	// 新版调用db模块 无法通过DB上传时间戳目前
-	//json::value jv_upd = {
-	//	{"action", "update"},
-	//	{"table", "Users"},
-	//	{"values", json::object{
-	//		{"last_login", LocalTime::getCurrent()},
-	//	}},
-	//	{"where", json::object{
-	//		{"username", username},
-	//	}}
-	//};
-	//auto jv_db_r = DbC::call_http(jv_upd);
-	//auto obj_r = jv_db_r.as_object();
-	//auto success = obj_r["success"].as_bool();
-	//if (!success) THROW_EX_CUSTOM(HttpException, 2102, json::serialize(jv_db_r)+"Login (Update Step) Failed", 500, "/login");
+	// 新版调用db模块：values 中的 "$now" 哨兵由 db 日期适配层替换为服务端当前 UTC 时间
+	//（此前因 db 无法处理日期列而注释，dbv2 增加 _coerce_value 后可用）。
+	json::value jv_upd = {
+		{"action", "update"},
+		{"table", "Users"},
+		{"values", json::object{
+			{"last_login", "$now"},
+		}},
+		{"where", json::object{
+			{"username", username},
+		}}
+	};
+	auto jv_upd_r = DbC::call_msg(jv_upd);
+	if (!jv_upd_r.as_object()["success"].as_bool())
+		THROW_EX_CUSTOM(HttpException, 2102, "Login (Update Step) Failed", 500, "/login");
 
 
 	/* 生成令牌 */
@@ -826,6 +894,9 @@ http::response<http::string_body> handleLogin(
 			std::to_string(_TOKEN_KEEP_TIME);
 		res.set("Set-Cookie", ck);
 	}
+
+	logs().info("gateway", "登录成功: " + username, std::nullopt,
+		json::serialize(json::value{{"ip", client_ip}}));
 
 	res.result(http::status::ok);
 	res.body() = json::serialize(jv_rr);
@@ -867,7 +938,7 @@ http::response<http::string_body> handleCaptchaImage(
 	pmc::net::MsgClient client("127.0.0.1", 8009, "gateway");
 	std::string resp;
 	try {
-		resp = client.call(R"({"_route":"image"})", 5.0);
+		resp = client.call(R"({"_route":"image"})", _TIMEOUT_CAPTCHA);
 	} catch (const std::exception& e) {
 		THROW_EX_CUSTOM(HttpException, 2400, "Captcha service unavailable", 502, "/captcha/image");
 	}
@@ -915,7 +986,7 @@ http::response<http::string_body> handleRegister(
 		client_ip = std::string(it_host->value());
 	if (!_REGISTER_RATE.check_and_record(client_ip, 3, 600))
 		THROW_EX_CUSTOM(HttpException, 3001, "Too many registration attempts. Please try again later.",
-			403, "/register");
+			429, "/register");
 
 	// parse the req body
 	json::value jv;
@@ -951,6 +1022,14 @@ http::response<http::string_body> handleRegister(
 			THROW_EX_CUSTOM(HttpException, 2201, "Invalid CAPTCHA", 400, "/register");
 	}
 
+	// 邮箱验证码校验（smtp 服务，一次性消费；须放在所有本地校验通过之后、写库之前）
+	auto ecode_it = obj.find("email_code");
+	if (ecode_it == obj.end())
+		THROW_EX_CUSTOM(HttpException, 3005, "Email verification code required", 400, "/register");
+	std::string email_code = std::string(ecode_it->value().as_string());
+	if (!verify_email_code_remote(username, email_code))
+		THROW_EX_CUSTOM(HttpException, 3006, "Invalid or expired email verification code", 400, "/register");
+
 	// generate the hash of password
 	auto password_hash = PBKDF2Hasher::hash_password(password);
 
@@ -977,7 +1056,82 @@ http::response<http::string_body> handleRegister(
 	if (!success) THROW_EX_CUSTOM(HttpException, 2202, "Registe Failed", 400, "/register");
 	auto jv_r = json::value{{"success", success}};
 
+	logs().info("gateway", "注册成功: " + username, std::nullopt,
+		json::serialize(json::value{{"ip", client_ip}}));
+
 	res.result(http::status::ok);
+	res.body() = json::serialize(jv_r);
+	res.prepare_payload();
+	return res;
+}
+
+/* 处理发送注册邮箱验证码 /register/send_code
+ *
+ * 经 pymsg 调 smtp 服务 send_email 路由，向目标邮箱发送 6 位验证码。
+ * 限流 5 次/10 分钟/IP；smtp 不可用返回 502（fail-closed）。 */
+http::response<http::string_body> handleSendEmailCode(
+	const http::request<http::string_body>& req,
+	const std::unordered_map<std::string, std::string>& params)
+{
+	http::response<http::string_body> res;
+	res.version(req.version());
+
+	// IP rate limit check
+	std::string client_ip = "direct";
+	auto it_host = req.base().find("X-Forwarded-For");
+	if (it_host != req.base().end())
+		client_ip = std::string(it_host->value());
+	if (!_EMAIL_CODE_RATE.check_and_record(client_ip, 5, 600))
+		THROW_EX_CUSTOM(HttpException, 3101, "Too many code requests. Please try again later.",
+			429, "/register/send_code");
+
+	// parse the req body
+	json::value jv;
+	try { jv = json::parse(req.body()); }
+	catch (const std::exception&) {
+		THROW_EX_CUSTOM(HttpException, 3002, "Invalid Argument", 401, "/register/send_code");
+	}
+
+	if (!jv.is_object())
+		THROW_EX_CUSTOM(HttpException, 3002, "Invalid Argument", 401, "/register/send_code");
+
+	auto& obj = jv.as_object();
+	auto email_it = obj.find("email");
+	if (email_it == obj.end())
+		THROW_EX_CUSTOM(HttpException, 3002, "Invalid Argument", 401, "/register/send_code");
+	auto email = std::string(email_it->value().as_string());
+
+	// Email format check
+	std::regex email_regex(R"(^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$)");
+	if (!std::regex_match(email, email_regex))
+		THROW_EX_CUSTOM(HttpException, 3004, "Invalid email format", 400, "/register/send_code");
+
+	// 调 smtp 服务（pymsg/TCP :8008）发送验证码
+	bool sent = false;
+	try {
+		pmc::net::MsgClient client("127.0.0.1", 8008, "gateway");
+		json::value jv_req = {
+			{"_route", "send_email"},
+			{"email", email}
+		};
+		std::string resp = client.call(json::serialize(jv_req), _TIMEOUT_SMTP_SEND);
+		auto jv_r = json::parse(resp);
+		auto& obj_r = jv_r.as_object();
+		if (obj_r.at("success").as_bool())
+			sent = obj_r.at("data").as_object().at("sent").as_bool();
+	} catch (const std::exception&) {
+		THROW_EX_CUSTOM(HttpException, 3102, "Mail service unavailable", 502, "/register/send_code");
+	}
+
+	if (!sent)
+		THROW_EX_CUSTOM(HttpException, 3103, "Failed to send verification code", 500, "/register/send_code");
+
+	logs().info("gateway", "验证码邮件发送成功: " + email, std::nullopt,
+		json::serialize(json::value{{"ip", client_ip}}));
+
+	auto jv_r = json::value{{"success", true}};
+	res.result(http::status::ok);
+	res.set(http::field::content_type, "application/json");
 	res.body() = json::serialize(jv_r);
 	res.prepare_payload();
 	return res;
@@ -1097,6 +1251,7 @@ http::response<http::string_body> handleProxy(
 			}
 		}
 		if (!flag) {
+			logs().warning("gateway", "代理目标不在白名单: " + t_url);
 			throw std::runtime_error("403");
 		}
 	}
