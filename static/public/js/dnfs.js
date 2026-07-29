@@ -269,17 +269,27 @@ function load_notes(main_node) {
 		ttl.appendChild(ttl1);
 		card.appendChild(ttl);
 		let wrt_div = document.createElement('p');
-		let vit_div = document.createElement('p');
-		let lke_div = document.createElement('p');
-		let srd_div = document.createElement('p');
-		wrt_div.textContent = "用户：" + item.owner;
-		vit_div.textContent = "观看数：" + item.visit_count;
-		lke_div.textContent = "点赞数：" + item.like_count;
-		srd_div.textContent = "分享数：" + item.share_count;
+		//let vit_div = document.createElement('p');
+		//let lke_div = document.createElement('p');
+		//let srd_div = document.createElement('p');
+		// 发帖用户：头像圆点（取昵称首字符）+ 昵称，样式见 theme.css 的 Owner Chip 段
+		wrt_div.className = "card-owner";
+		let owner_text = (item.owner == null || item.owner === "") ? "匿名" : String(item.owner);
+		let owner_avatar = document.createElement('span');
+		owner_avatar.className = "owner-avatar";
+		owner_avatar.textContent = owner_text.trim().charAt(0).toUpperCase() || "?";
+		let owner_name = document.createElement('span');
+		owner_name.className = "owner-name";
+		owner_name.textContent = owner_text;
+		wrt_div.appendChild(owner_avatar);
+		wrt_div.appendChild(owner_name);
+		//vit_div.textContent = "观看数：" + item.visit_count;
+		//lke_div.textContent = "点赞数：" + item.like_count;
+		//srd_div.textContent = "分享数：" + item.share_count;
 		ttl.appendChild(wrt_div);
-		ttl.appendChild(vit_div);
-		ttl.appendChild(lke_div);
-		ttl.appendChild(srd_div);
+		//ttl.appendChild(vit_div);
+		//ttl.appendChild(lke_div);
+		//ttl.appendChild(srd_div);
 		let ctt = document.createElement('p');
 		renderMarkdown(ctt, item.content);
 		card.appendChild(ctt)
