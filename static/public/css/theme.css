@@ -256,6 +256,32 @@ input[type="button"]:disabled {
     white-space: nowrap;
 }
 
+/* ===== Card Stats (dnfs 互动统计：观看/点赞/分享) ===== */
+.card-stats {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1.1rem;
+    margin-top: 0.45rem;
+}
+.stat-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.78rem;
+    color: var(--muted);
+}
+.stat-item svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+}
+.stat-num {
+    font-weight: 600;
+    color: var(--fg-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
 /* ===== Minimap (dnfs) ===== */
 .minimap {
     position: fixed;

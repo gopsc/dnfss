@@ -177,6 +177,23 @@ function renderMarkdown(element, content) {
 	element.innerHTML = md.render(content, {html: false});
 }
 
+/* by qing — 互动统计图标：inline SVG，stroke=currentColor 自动跟随主题色 */
+const ICON_EYE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+const ICON_HEART = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>';
+const ICON_SHARE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>';
+
+/* by qing — 生成一个统计项：图标 + 数字，count 缺省显示 0 */
+function makeStatItem(iconSvg, count) {
+	let span = document.createElement('span');
+	span.className = "stat-item";
+	span.innerHTML = iconSvg;	// 上方固定常量字符串，不含用户输入
+	let num = document.createElement('span');
+	num.className = "stat-num";
+	num.textContent = (count == null) ? "0" : String(count);
+	span.appendChild(num);
+	return span;
+}
+
 /* ---- by qing ---- */
 const stack = [];	/* 用于存储当前节点的路径，也就是经过的每一个节点的id， 否则就回不去上一层*/
 var article_title = document.getElementById('article-title');
@@ -269,9 +286,6 @@ function load_notes(main_node) {
 		ttl.appendChild(ttl1);
 		card.appendChild(ttl);
 		let wrt_div = document.createElement('p');
-		//let vit_div = document.createElement('p');
-		//let lke_div = document.createElement('p');
-		//let srd_div = document.createElement('p');
 		// 发帖用户：头像圆点（取昵称首字符）+ 昵称，样式见 theme.css 的 Owner Chip 段
 		wrt_div.className = "card-owner";
 		let owner_text = (item.owner == null || item.owner === "") ? "匿名" : String(item.owner);
@@ -283,13 +297,14 @@ function load_notes(main_node) {
 		owner_name.textContent = owner_text;
 		wrt_div.appendChild(owner_avatar);
 		wrt_div.appendChild(owner_name);
-		//vit_div.textContent = "观看数：" + item.visit_count;
-		//lke_div.textContent = "点赞数：" + item.like_count;
-		//srd_div.textContent = "分享数：" + item.share_count;
+		// 互动统计：眼睛=观看、爱心=点赞、转发=分享（后端 Notes 表暂无计数字段，缺省显示 0）
+		let sts_div = document.createElement('div');
+		sts_div.className = "card-stats";
+		sts_div.appendChild(makeStatItem(ICON_EYE, item.visit_count));
+		sts_div.appendChild(makeStatItem(ICON_HEART, item.like_count));
+		sts_div.appendChild(makeStatItem(ICON_SHARE, item.share_count));
 		ttl.appendChild(wrt_div);
-		//ttl.appendChild(vit_div);
-		//ttl.appendChild(lke_div);
-		//ttl.appendChild(srd_div);
+		ttl.appendChild(sts_div);
 		let ctt = document.createElement('p');
 		renderMarkdown(ctt, item.content);
 		card.appendChild(ctt)
