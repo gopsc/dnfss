@@ -68,7 +68,7 @@
 - 极客操作：`kill -HUP <pid>` 热加载规则；`waf -list` 列规则；`waf -test <file>` 校验语法；`waf -check "<input>"` 测试单条输入。
 - 配置见 [waf/config.yaml](waf/config.yaml)，详见 [waf/README.md](waf/README.md)。
 
-### gateway（应用层网关 · v0.5.2）
+### gateway（应用层网关 · v0.5.3）
 
 - 内部 HTTP 服务，默认监听 127.0.0.1:8443，不再承载 TLS（TLS 已由 WAF 终止）。
 - 通过 `Server.tls = on/off` 配置切换 HTTPS/HTTP 模式（[example.ini](gateway/example.ini)），独立部署时仍可启用 TLS。
@@ -136,7 +136,7 @@
 ### smtp（邮件服务）
 
 - 注册流程的邮箱验证码后端，基于 pymsg（MsgServer，TCP 长度前缀帧 + JSON），监听 127.0.0.1:8008。
-- pymsg 路由：`send_email`（生成 6 位验证码并经 SMTP_SSL 发送，10 分钟有效，发送失败自动作废）、`verify_email`（校验，通过即一次性消费防重放，兼容旧字段 `input_captcha`）、`health`。
+- pymsg 路由：`send_email`（生成 6 位验证码并经 SMTP_SSL 发送，10 分钟有效，发送失败自动作废；同一邮箱 60 秒发送冷却，冷却期拒绝并返回 `retry_after`，不覆盖已发出的有效验证码，发送失败不计入冷却）、`verify_email`（校验，通过即一次性消费防重放，兼容旧字段 `input_captcha`）、`health`。
 - 验证码存于进程内存（锁保护 + 惰性过期清理），SMTP 账号通过 `.env` 配置（`SMTP_SERVER` / `SMTP_PORT` / `SMTP_USER` / `__PASSWORD`，`__PASSWORD` 兼容别名 `SMTP_PASSWORD`）。
 
 ### aibox（独立 AI 智能体系统）

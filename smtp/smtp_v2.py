@@ -72,6 +72,7 @@ SMTP_PASSWORD = os.environ.get("__PASSWORD") or os.environ.get("SMTP_PASSWORD", 
 
 CODE_LEN = 6
 CODE_TTL = 600           # 验证码有效期（秒）
+SEND_INTERVAL = 60       # 同一邮箱两次成功发送的最小间隔（秒）
 # 多数邮箱服务商（163/QQ 等）强制 From 头与登录账号一致，故默认跟随 SMTP_USER；
 # 仅当服务商允许自定义发件身份时才在 .env 里显式配 MAIL_FROM 覆盖
 MAIL_FROM = os.environ.get("MAIL_FROM") or SMTP_USER
@@ -80,6 +81,7 @@ DEFAULT_SUBJECT = "DNFS 邮箱验证"
 DEFAULT_CONTENT = f"DNFS: 您的邮箱验证码为 {{code}}，{CODE_TTL // 60} 分钟内有效。"
 
 code_store = {}          # email -> {'code': str, 'expires_at': float}
+send_history = {}        # email -> 上次成功发送的时间戳（发送冷却用）
 STORE_LOCK = threading.Lock()
 
 
@@ -156,10 +158,11 @@ class SmtpServer:
     # ═══════════════════════════════════════════════════════════════════
 
     def _handle_send_email(self, req):
-        """生成 6 位数字验证码，存入内存（60s），经 SMTP_SSL 发送邮件。
+        """生成 6 位数字验证码，存入内存（TTL 600s），经 SMTP_SSL 发送邮件。
 
         可选字段 subject / content 覆盖默认标题与正文，content 中 {code}
-        会被替换为验证码。
+        会被替换为验证码。同一邮箱 SEND_INTERVAL 秒内仅允许成功发送一次，
+        冷却期内的请求直接拒绝且不覆盖已发出的有效验证码。
         """
         email = str(req.get("email", "")).strip()
         if not email or "@" not in email:
@@ -168,6 +171,16 @@ class SmtpServer:
         if not all([SMTP_SERVER, SMTP_USER, SMTP_PASSWORD]):
             logs.error("smtp", f"{email}: SMTP 配置缺失，无法发送")
             return {"sent": False, "error": "SMTP 服务未配置"}
+
+        # 发送冷却：同一邮箱 SEND_INTERVAL 秒内仅放行一次；发送失败不计入，
+        # 用户可立即重试
+        with STORE_LOCK:
+            remain = SEND_INTERVAL - (time.time() - send_history.get(email, 0.0))
+            if remain > 0:
+                wait = int(remain) + 1
+                logs.info("smtp", f"{email}: 发送冷却中，剩余 {wait}s，已拒绝")
+                return {"sent": False, "retry_after": wait,
+                        "error": f"发送过于频繁，请 {wait} 秒后重试"}
 
         code = "".join(str(random.randint(0, 9)) for _ in range(CODE_LEN))
         subject = str(req.get("subject") or DEFAULT_SUBJECT)
@@ -197,6 +210,14 @@ class SmtpServer:
                 code_store.pop(email, None)
             logs.error("smtp", f"{email}: 验证码发送失败({err})")
             return {"sent": False, "error": f"验证码发送失败：{err}"}
+
+        # 发送成功：记录冷却起点，并惰性清理已失效的冷却记录
+        with STORE_LOCK:
+            send_history[email] = time.time()
+            stale = [k for k, v in send_history.items()
+                     if time.time() - v > SEND_INTERVAL]
+            for k in stale:
+                del send_history[k]
 
         logs.info("smtp", f"{email}: 验证码发送成功({code})")
         return {"sent": True, "ttl": CODE_TTL}

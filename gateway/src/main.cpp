@@ -27,7 +27,7 @@ using namespace qing;
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-constexpr const char *_VER = "0.5.2";
+constexpr const char *_VER = "0.5.3";
 
 //////////////////////////////////
 #include <sstream>
@@ -1108,6 +1108,8 @@ http::response<http::string_body> handleSendEmailCode(
 
 	// 调 smtp 服务（pymsg/TCP :8008）发送验证码
 	bool sent = false;
+	int retry_after = 0;   // smtp 同邮箱发送冷却的剩余秒数，0 表示非冷却拒绝
+	std::string smtp_err;  // 冷却拒绝时 smtp 返回的提示文案（仅冷却场景透传客户端）
 	try {
 		pmc::net::MsgClient client("127.0.0.1", 8008, "gateway");
 		json::value jv_req = {
@@ -1117,14 +1119,31 @@ http::response<http::string_body> handleSendEmailCode(
 		std::string resp = client.call(json::serialize(jv_req), _TIMEOUT_SMTP_SEND);
 		auto jv_r = json::parse(resp);
 		auto& obj_r = jv_r.as_object();
-		if (obj_r.at("success").as_bool())
-			sent = obj_r.at("data").as_object().at("sent").as_bool();
+		if (obj_r.at("success").as_bool()) {
+			auto& data = obj_r.at("data").as_object();
+			sent = data.at("sent").as_bool();
+			if (!sent) {
+				auto it_ra = data.find("retry_after");
+				if (it_ra != data.end() && it_ra->value().is_int64())
+					retry_after = static_cast<int>(it_ra->value().as_int64());
+				auto it_err = data.find("error");
+				if (it_err != data.end() && it_err->value().is_string())
+					smtp_err = std::string(it_err->value().as_string());
+			}
+		}
 	} catch (const std::exception&) {
 		THROW_EX_CUSTOM(HttpException, 3102, "Mail service unavailable", 502, "/register/send_code");
 	}
 
-	if (!sent)
+	if (!sent) {
+		// 同邮箱发送冷却：按限流语义返回 429 并透传 smtp 提示文案；
+		// 其余发送失败（含 SMTP 内部错误细节）仍用通用文案，不向外暴露
+		if (retry_after > 0)
+			THROW_EX_CUSTOM(HttpException, 3103,
+				smtp_err.empty() ? "Too many code requests. Please try again later." : smtp_err,
+				429, "/register/send_code");
 		THROW_EX_CUSTOM(HttpException, 3103, "Failed to send verification code", 500, "/register/send_code");
+	}
 
 	logs().info("gateway", "验证码邮件发送成功: " + email, std::nullopt,
 		json::serialize(json::value{{"ip", client_ip}}));

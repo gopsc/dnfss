@@ -10,6 +10,26 @@ const codeTip = document.getElementById('codeTip');
 const submitButton = document.getElementById('formsub');
 
 let codeTarget = '';	// 已发送验证码的目标邮箱（验证码本体由服务端校验，前端不经手）
+let cooldownTimer = null;	// 重发倒计时（与服务端同邮箱 60s 发送冷却对齐）
+
+// 发送成功后进入倒计时，避免用户触发服务端同邮箱 60s 发送冷却
+function startResendCooldown(seconds) {
+	clearInterval(cooldownTimer);
+	let remain = seconds;
+	getCodeButton.disabled = true;
+	getCodeButton.value = `${remain}s 后重发`;
+	cooldownTimer = setInterval(function () {
+		remain -= 1;
+		if (remain <= 0) {
+			clearInterval(cooldownTimer);
+			cooldownTimer = null;
+			getCodeButton.disabled = false;
+			getCodeButton.value = '获取验证码';
+		} else {
+			getCodeButton.value = `${remain}s 后重发`;
+		}
+	}, 1000);
+}
 
 form.addEventListener('reset', function () {
 	clearTipStyle();
@@ -114,12 +134,14 @@ getCodeButton.addEventListener('click', async function () {
 	codeTip.textContent = '验证码发送中…';
 	codeTip.classList.remove('tip-red', 'tip-yellow', 'tip-green');
 	codeTip.classList.add('tip-yellow');
+	let httpStatus = 0;
 	try {
 		const res = await fetch('/register/send_code', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ email })
 		});
+		httpStatus = res.status;
 		const responseText = await res.text();
 		let result;
 		try { result = JSON.parse(responseText); } catch { throw new Error('服务器响应格式异常'); }
@@ -130,12 +152,14 @@ getCodeButton.addEventListener('click', async function () {
 		codeTip.textContent = '验证码已发送至邮箱，请查收（10 分钟内有效）';
 		codeTip.classList.remove('tip-red', 'tip-yellow', 'tip-green');
 		codeTip.classList.add('tip-green');
+		startResendCooldown(60);
 	} catch (err) {
 		codeTip.textContent = err.message || '验证码发送失败，请稍后重试';
 		codeTip.classList.remove('tip-red', 'tip-yellow', 'tip-green');
 		codeTip.classList.add('tip-red');
+		if (httpStatus === 429) startResendCooldown(60);	// 命中冷却/限流，倒计时对齐
 	} finally {
-		getCodeButton.disabled = false;
+		if (!cooldownTimer) getCodeButton.disabled = false;
 	}
 });
 
