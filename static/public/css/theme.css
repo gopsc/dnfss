@@ -212,7 +212,27 @@ input[type="button"]:disabled {
 #article-content { font-size: 0.95rem; line-height: 1.7; margin-bottom: 1.25rem; }
 
 /* ===== Recommend List (dnfs) ===== */
-.recommend-list .card { margin-bottom: 0.75rem; width: 100%; max-width: none; }
+/* 卡片尺寸随内容自适应：宽度包裹内容（fit-content），上限为容器宽度；高度天然随内容伸缩 */
+.recommend-list {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.75rem;
+    width: 100%;
+}
+.recommend-list br { display: none; }	/* JS 追加的 <br> 分隔符，改由 flex gap 统一控制间距 */
+.recommend-list .card {
+    width: fit-content;
+    min-width: min(240px, 100%);
+    max-width: 100%;
+    margin-bottom: 0;
+}
+/* 防止内容中的大图撑破自适应宽度 */
+.recommend-list .card img {
+    max-width: 100%;
+    height: auto;
+    border-radius: var(--radius-sm);
+}
 .recommend-list center {
     cursor: pointer;
     padding: 0.4rem;
