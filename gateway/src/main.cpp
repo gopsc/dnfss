@@ -20,6 +20,7 @@
 #include "LocalTime.hpp"
 #include "Conf.hpp"
 #include "DbC.hpp"
+#include "LogC.hpp"
 
 using namespace pmc::net;
 using namespace qing;
@@ -351,6 +352,9 @@ struct CaptchaEntry {
 static std::unordered_map<std::string, CaptchaEntry> _CAPTCHA_STORE;
 static std::mutex _CAPTCHA_MTX;
 
+/* 集中式日志客户端：推送 gateway 运行日志到 db 模块 Logs 表（异步批量，fail-safe） */
+static inline LogC& logs() { return LogC::instance(); }
+
 std::string generate_captcha_text() {
     static const char chars[] = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
     // thread_local：每个线程独立 rng 实例，避免多线程并发调用 dist(rng) 时的数据竞争
@@ -535,10 +539,14 @@ int main(int argc, char **argv) {
 
 
 	std::cout << "Gateway " << _VER << " started" << std::endl;
+	logs().info("gateway", std::string("Gateway ") + _VER + " started");
 
 	/* 开始监听 */
 	_SERVE->run();
 
+	/* 收到停止信号后的收尾：记录并 flush 剩余日志 */
+	logs().info("gateway", "Gateway shutdown");
+	logs().shutdown();
 }
 
 //void db_init() {
@@ -643,7 +651,14 @@ catch (const HttpException& e) {
 	http::response<http::string_body> res;
 	res.version(req.version());
 	// 详细错误信息（e.what() 含源码路径/行号/C++ 模板类型）暂时以注释方式保留（同 handleLogin）
-	std::cerr << "[handleRegister HttpException] " << e.what() << std::endl;
+	std::cerr << "[wrapperHttp HttpException] " << e.what() << std::endl;
+	// 推送集中式日志：5xx 服务端错误记 ERROR，其余（400/401/403/429 等业务错误）记 WARNING
+	if (e.status() >= 500)
+		logs().error("gateway", e.what(), std::nullopt,
+			json::serialize(json::value{{"url", e.url()}, {"status", e.status()}}));
+	else
+		logs().warning("gateway", e.what(), std::nullopt,
+			json::serialize(json::value{{"url", e.url()}, {"status", e.status()}}));
 	json::value jv_r = {
 		{"success", false},
 		{"message", e.what()}
@@ -667,6 +682,7 @@ catch (const std::exception& e) {
 	//       透传到客户端会泄露 C++ 类型信息与内部路径（P0-3 遗漏点，已补全）
 	// 排障：完整信息仍输出到服务端 stderr
 	std::cerr << "[wrapperHttp std::exception] <" << ti.name() << "> " << e.what() << std::endl;
+	logs().error("gateway", std::string("<") + ti.name() + "> " + e.what());
 	json::value jv_r = {
 		{"success", false},
 		/* {"message", std::string("<") + ti.name() + "> " + e.what()}, */ // 泄露源码信息，已禁用
@@ -879,6 +895,9 @@ http::response<http::string_body> handleLogin(
 		res.set("Set-Cookie", ck);
 	}
 
+	logs().info("gateway", "登录成功: " + username, std::nullopt,
+		json::serialize(json::value{{"ip", client_ip}}));
+
 	res.result(http::status::ok);
 	res.body() = json::serialize(jv_rr);
 	res.prepare_payload();
@@ -1037,6 +1056,9 @@ http::response<http::string_body> handleRegister(
 	if (!success) THROW_EX_CUSTOM(HttpException, 2202, "Registe Failed", 400, "/register");
 	auto jv_r = json::value{{"success", success}};
 
+	logs().info("gateway", "注册成功: " + username, std::nullopt,
+		json::serialize(json::value{{"ip", client_ip}}));
+
 	res.result(http::status::ok);
 	res.body() = json::serialize(jv_r);
 	res.prepare_payload();
@@ -1103,6 +1125,9 @@ http::response<http::string_body> handleSendEmailCode(
 
 	if (!sent)
 		THROW_EX_CUSTOM(HttpException, 3103, "Failed to send verification code", 500, "/register/send_code");
+
+	logs().info("gateway", "验证码邮件发送成功: " + email, std::nullopt,
+		json::serialize(json::value{{"ip", client_ip}}));
 
 	auto jv_r = json::value{{"success", true}};
 	res.result(http::status::ok);
@@ -1226,6 +1251,7 @@ http::response<http::string_body> handleProxy(
 			}
 		}
 		if (!flag) {
+			logs().warning("gateway", "代理目标不在白名单: " + t_url);
 			throw std::runtime_error("403");
 		}
 	}
