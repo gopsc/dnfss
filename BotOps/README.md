@@ -43,4 +43,4 @@ BotOps/
 
 与 aibox 服务端协议完全兼容（详见 aibox/client.py 注释）：
 - 发送：`{"type":"message","content":...}` / `{"type":"command","command":"/..."}` / `{"type":"interrupt",...}`
-- 接收：`chunk`（**累计全文**，增量由前端计算）/ `complete` / `dialogue_ended` / `task_process` / `task_status` / `task_error` / `interrupt_ack` / `error` / `info` / `command_result` / `connection_ack` / `notification`
+- 接收：`chunk`（**增量片段**，服务端 `chunk_buffer` 发送后即清零，前端直接拼接）/ `complete`（**完整全文**，用于对齐已显示内容）/ `line`（过程行：🔧 工具调用提示、工具输出、💬 助手前缀，路由到任务侧栏）/ `reasoning`（思考流，仅服务端 debug_level≥3 发送）/ `dialogue_ended` / `dialogue_reset` / `task_added` / `task_process` / `task_status` / `task_error` / `interrupt_ack` / `error` / `info` / `command_result` / `connection_ack` / `notification` / `pong`

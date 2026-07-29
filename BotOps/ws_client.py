@@ -4,10 +4,12 @@
   发送：{"type": "message", "content": ...}
         {"type": "command", "command": "/..."}
         {"type": "interrupt", "content": ...}
-  接收：chunk / complete / dialogue_ended / task_process / task_status / task_error /
-        interrupt_ack / error / info / command_result / connection_ack / notification
+  接收：chunk / line / reasoning / complete / dialogue_ended / dialogue_reset /
+        task_process / task_status / task_error / task_added / interrupt_ack /
+        error / info / command_result / connection_ack / notification / pong
 
-说明：服务端 chunk 为**累计全文**（与 aibox/client.py 前缀匹配逻辑一致）。
+说明：服务端 chunk 为**增量片段**（output_callback 发送 chunk_buffer 后即清零），
+      complete 为完整全文（可用于对齐）；line 为过程行（工具提示/输出/前缀）。
 """
 import asyncio
 import json

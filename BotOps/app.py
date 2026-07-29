@@ -141,7 +141,9 @@ class BotOpsApp(App):
             return
         await self.chat.add_user(text)
         await self.chat.start_ai()          # 预建 AI 消息框，即时反馈
-        await self.ws.send_message(text)
+        if not await self.ws.send_message(text):
+            await self.chat.finish_ai("")   # 发送失败：移除预建的空消息框
+            await self.notify_system("❌ 发送失败：连接已断开，请 /connect 重连", level="error")
 
     # ── 快捷键 ────────────────────────────────────────────────────────────
     async def action_interrupt(self):
@@ -159,18 +161,37 @@ class BotOpsApp(App):
         content = data.get("content", "")
 
         if t == "chunk":
-            if content.startswith("🔧 调用工具"):
-                await self.notify_system(content, level="task")
-            elif content.startswith(("✅ 对话记忆已保存", "💾 保存记忆", "❌", "⚠️")):
-                await self.notify_system(content, level="task")
+            # 服务端 chunk 为增量片段（发送后即清零），直接拼接
+            await self.chat.append_ai(content)
+        elif t == "line":
+            # 过程行（服务端 output_callback 原样透传）：工具调用提示 / 工具输出 / 前缀
+            stripped = content.strip()
+            if not stripped:
+                pass
+            elif stripped.startswith(("💬 助手", "💬 Assistant", "🤔 思考中", "🤔 Thinking")):
+                pass  # 助手前缀 / 思考提示：聊天区已有 AI 消息框，无需展示
             else:
-                await self.chat.append_ai(content)
+                # 🔧 调用工具 / 工具输出 / 🤔 分析工具结果 等 → 任务侧栏
+                self.tasks.write(stripped)
+        elif t == "reasoning":
+            # 思考流（服务端 debug_level>=3 才发送），记入任务侧栏
+            stripped = content.strip()
+            if stripped:
+                self.tasks.write(f"💭 {stripped[-200:]}")
         elif t == "complete":
-            await self.chat.finish_ai(content or self.chat.ai_text)
+            # complete 携带完整全文，用于对齐已显示内容
+            await self.chat.finish_ai(content)
         elif t == "dialogue_ended":
             await self.chat.finish_ai(self.chat.ai_text)
             if content:
                 await self.notify_system(f"✅ {content}")
+        elif t == "task_added":
+            await self.notify_system(f"➕ {content}")
+        elif t == "dialogue_reset":
+            if content:
+                await self.notify_system(f"🔄 {content}")
+        elif t == "pong":
+            pass
         elif t == "task_process":
             sub = data.get("msg_type", "")
             title = data.get("task_title", "未知任务")
@@ -213,7 +234,8 @@ class BotOpsApp(App):
             await self.notify_system(f"✅ 已连接到 {self.ws.uri}")
         elif state == "disconnected":
             self._refresh_status("")
-            await self.notify_system(f"❌ {detail}")
+            await self.notify_system(
+                f"❌ {detail}（中断期间的服务端输出已丢失，如回复不完整请重发）")
         elif state == "reconnecting":
             self._refresh_status(detail)
         elif state == "error":
