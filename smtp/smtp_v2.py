@@ -27,7 +27,7 @@ import threading
 import time
 from email.mime.text import MIMEText
 
-# 手动加载 .env（支持 KEY=VALUE / KEY VALUE / export KEY=... 格式，容忍空行/注释/引号）
+# 手动加载 .env（支持 KEY=VALUE / KEY: VALUE / KEY VALUE / export KEY=... 格式，容忍空行/注释/引号）
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 _env_loaded = 0
 if os.path.isfile(_env_path):
@@ -38,9 +38,11 @@ if os.path.isfile(_env_path):
                 continue
             if _line.startswith("export "):
                 _line = _line[len("export "):].strip()
-            # 支持 KEY=VALUE 与 KEY VALUE 两种写法
+            # 支持 KEY=VALUE / KEY: VALUE / KEY VALUE 三种写法
             if "=" in _line:
                 _key, _, _val = _line.partition("=")
+            elif ":" in _line:
+                _key, _, _val = _line.partition(":")
             else:
                 _parts = _line.split(None, 1)
                 _key = _parts[0]
@@ -70,7 +72,9 @@ SMTP_PASSWORD = os.environ.get("__PASSWORD") or os.environ.get("SMTP_PASSWORD", 
 
 CODE_LEN = 6
 CODE_TTL = 60            # 验证码有效期（秒）
-MAIL_FROM = "dnfs@qsont.me"
+# 多数邮箱服务商（163/QQ 等）强制 From 头与登录账号一致，故默认跟随 SMTP_USER；
+# 仅当服务商允许自定义发件身份时才在 .env 里显式配 MAIL_FROM 覆盖
+MAIL_FROM = os.environ.get("MAIL_FROM") or SMTP_USER
 DEFAULT_SUBJECT = "DNFS 邮箱验证"
 DEFAULT_CONTENT = "DNFS: 您的邮箱验证码为 {code}，一分钟内有效。"
 
