@@ -127,7 +127,7 @@ getCodeButton.addEventListener('click', async function () {
 
 		codeTarget = email;
 		codeInput.value = '';
-		codeTip.textContent = '验证码已发送至邮箱，请查收（60 秒内有效）';
+		codeTip.textContent = '验证码已发送至邮箱，请查收（10 分钟内有效）';
 		codeTip.classList.remove('tip-red', 'tip-yellow', 'tip-green');
 		codeTip.classList.add('tip-green');
 	} catch (err) {

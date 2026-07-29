@@ -9,7 +9,7 @@ UniServe Framework 的应用层网关，C++20 实现。
 - **账号鉴权**：`/register` 注册（需邮箱验证码，经 pymsg 调 smtp:8008 校验）、`/login` 登录，签发 RSA 签名的 Token。
 - **反向代理**：携带 Token 的请求校验后转发到 `Proxy.opened` 中放开的内部服务。
 - **CAPTCHA 接口**：`/captcha` 生成验证码 token + 文本（内存存储，5 分钟过期，一次性使用）。
-- **邮箱验证码**：`/register/send_code` 发送 6 位验证码邮件（60 秒有效）；注册时校验，一次性消费。
+- **邮箱验证码**：`/register/send_code` 发送 6 位验证码邮件（10 分钟有效）；注册时校验，一次性消费。
 - **速率限制**：登录 5 次/5 分钟、注册 3 次/10 分钟、发验证码 5 次/10 分钟，按 `X-Forwarded-For` 客户端 IP 计数（由 WAF 注入），超限一律返回 429。
 - **OPTIONS 预检**：通配 `*` 返回 CORS 头，允许跨域。
 
@@ -84,7 +84,7 @@ UniServe Framework 的应用层网关，C++20 实现。
 
 ### `POST /register/send_code`
 
-向目标邮箱发送注册验证码（经 pymsg 调 smtp:8008 `send_email`，60 秒有效）。
+向目标邮箱发送注册验证码（经 pymsg 调 smtp:8008 `send_email`，10 分钟有效）。
 
 ```json
 { "email": "user@example.com" }

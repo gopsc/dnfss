@@ -71,12 +71,13 @@ SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASSWORD = os.environ.get("__PASSWORD") or os.environ.get("SMTP_PASSWORD", "")
 
 CODE_LEN = 6
-CODE_TTL = 60            # 验证码有效期（秒）
+CODE_TTL = 600           # 验证码有效期（秒）
 # 多数邮箱服务商（163/QQ 等）强制 From 头与登录账号一致，故默认跟随 SMTP_USER；
 # 仅当服务商允许自定义发件身份时才在 .env 里显式配 MAIL_FROM 覆盖
 MAIL_FROM = os.environ.get("MAIL_FROM") or SMTP_USER
 DEFAULT_SUBJECT = "DNFS 邮箱验证"
-DEFAULT_CONTENT = "DNFS: 您的邮箱验证码为 {code}，一分钟内有效。"
+# 有效期文案由 CODE_TTL 派生，改 TTL 不用同步改这里（{{code}} 是 f-string 转义）
+DEFAULT_CONTENT = f"DNFS: 您的邮箱验证码为 {{code}}，{CODE_TTL // 60} 分钟内有效。"
 
 code_store = {}          # email -> {'code': str, 'expires_at': float}
 STORE_LOCK = threading.Lock()
@@ -104,10 +105,6 @@ class SmtpServer:
     # ── 启动 / 停止 ──────────────────────────────────────────────────
     def start(self) -> None:
         """启动服务（阻塞当前线程）。"""
-        # 调试：打印加载到的凭证（明文，含密码；仅 print 不落日志库，调完请删）
-        print(f"[smtp] 凭证加载（.env 贡献 {_env_loaded} 项）: "
-              f"SMTP_SERVER={SMTP_SERVER!r} SMTP_PORT={SMTP_PORT} "
-              f"SMTP_USER={SMTP_USER!r} __PASSWORD={SMTP_PASSWORD!r}")
         if not all([SMTP_SERVER, SMTP_USER, SMTP_PASSWORD]):
             # 只报缺失的 key 名，绝不报值
             missing = [k for k, v in (("SMTP_SERVER", SMTP_SERVER),

@@ -136,7 +136,7 @@
 ### smtp（邮件服务）
 
 - 注册流程的邮箱验证码后端，基于 pymsg（MsgServer，TCP 长度前缀帧 + JSON），监听 127.0.0.1:8008。
-- pymsg 路由：`send_email`（生成 6 位验证码并经 SMTP_SSL 发送，60 秒有效，发送失败自动作废）、`verify_email`（校验，通过即一次性消费防重放，兼容旧字段 `input_captcha`）、`health`。
+- pymsg 路由：`send_email`（生成 6 位验证码并经 SMTP_SSL 发送，10 分钟有效，发送失败自动作废）、`verify_email`（校验，通过即一次性消费防重放，兼容旧字段 `input_captcha`）、`health`。
 - 验证码存于进程内存（锁保护 + 惰性过期清理），SMTP 账号通过 `.env` 配置（`SMTP_SERVER` / `SMTP_PORT` / `SMTP_USER` / `__PASSWORD`，`__PASSWORD` 兼容别名 `SMTP_PASSWORD`）。
 
 ### aibox（独立 AI 智能体系统）
