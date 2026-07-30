@@ -115,6 +115,7 @@ AI 智能体可以调用以下工具来完成任务（由 `Tool` 基类派生，
 | `reload_skills` | 热重载扩展技能 |
 | `create_skill` | 创建新技能（AI 自主编写 Python 脚本） |
 | `install_skill` | 技能安装指引 |
+| `ask_user` | 向用户提问（AI 主动交互） |
 | `update_identity` | 更新用户身份信息（`00_IDENTITY.md`） |
 | `update_soul` | 更新 AI 自我定义（`99_SOUL.md`，智能体进化） |
 | `save_memory_and_end_conversation` | 保存记忆并结束对话 |
@@ -374,36 +375,88 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
 {
   "system": {
     "save_dir": "~/.aibox",
+    "datetime_format": "%Y-%m-%d %H:%M:%S",
+    "date_format": "%Y%m%d_%H%M%S",
+    "debug_level": 1,
+    "load_history_by_default": true,
+    "log_file": "~/.aibox/ai.log",
+    "log_max_size": 10485760,
+    "log_backup_count": 5,
     "websocket_host": "localhost",
     "websocket_port": 8765,
-    "debug_level": 1,
-    "log_file": "~/.aibox/ai.log",
     "skills_dir": "~/.aibox/skills",
     "prompts_dir": "~/.aibox/prompts"
   },
+  "scheduler": {
+    "enabled": true,
+    "check_interval": 1.0,
+    "max_tasks_per_run": 10,
+    "broadcast_enabled": true
+  },
+  "api": {
+    "deepseek_api_url": "https://api.deepseek.com/chat/completions",
+    "deepseek_model": "deepseek-v4-flash",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "timeout": 30,
+    "temperature": 0.7
+  },
   "context": {
     "max_history_messages": 500,
+    "max_context_messages": 120,
+    "max_tokens": 8192,
+    "max_history_conversations": 5,
+    "preserve_system_prompts": true,
     "compress_enabled": true,
     "compress_message_threshold": 200,
     "compress_token_threshold": 120000,
     "compress_ratio": 0.2,
     "compress_keep_recent": 8
   },
-  "scheduler": {
-    "enabled": true,
-    "check_interval": 1.0,
-    "max_tasks_per_run": 10
+  "memo": {
+    "default_reminder_minutes": 60,
+    "max_memos_per_check": 10,
+    "allow_user_tasks": true
   },
-  "api": {
-    "deepseek_api_url": "https://api.deepseek.com/chat/completions",
-    "deepseek_model": "deepseek-v4-flash",
-    "api_key_env": "DEEPSEEK_API_KEY"
+  "files": {
+    "max_file_size": 10485710
+  },
+  "commands": {
+    "enabled": true
+  },
+  "web": {
+    "timeout": 10,
+    "delay": 0,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "respect_robots": false,
+    "max_download_size": 104857600
   },
   "memory": {
-    "max_search_results": 100
+    "db_name": "memories.db",
+    "max_search_results": 100,
+    "default_importance": 2
+  },
+  "conversation": {
+    "current_file": "current_conversation.json",
+    "history_file": "conversation_history.json",
+    "archive_dir": "archive"
   },
   "tools": {
-    "max_result_length": 10000
+    "max_result_length": 10000,
+    "save_result_to_file": false,
+    "tool_results_dir": "tool_results"
+  },
+  "compressor": {
+    "min_messages_to_compress": 5,
+    "weight_decay_factor": 0.01,
+    "max_input_chars": 6000,
+    "llm_max_tokens": 800
+  },
+  "proxy": {
+    "type": "",
+    "host": "",
+    "port": 0,
+    "username": "",
+    "password": ""
   }
 }
 ```
