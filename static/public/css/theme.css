@@ -483,6 +483,16 @@ input[type="button"]:disabled {
 /* ===== Node Form (dnfs) ===== */
 .node-form { margin-top: 1rem; }
 .node-form .form-actions { margin-top: 0.75rem; }
+.node-form #input-note-title {
+	padding: 0.8rem 1rem;
+	font-size: 1rem;
+}
+.node-form #input-note-content {
+	padding: 0.9rem 1rem;
+	font-size: 0.95rem;
+	min-height: 120px;
+	line-height: 1.7;
+}
 
 /* ===== Markdown Content ===== */
 code {
