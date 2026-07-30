@@ -143,6 +143,7 @@ getCodeButton.addEventListener('click', async function () {
 		});
 		httpStatus = res.status;
 		const responseText = await res.text();
+		if (window.WafTip && WafTip.isBlocked(res, responseText)) throw new Error(WafTip.MESSAGE);
 		let result;
 		try { result = JSON.parse(responseText); } catch { throw new Error('服务器响应格式异常'); }
 		if (!res.ok || !result.success) throw new Error(result.message || '验证码发送失败');
@@ -190,6 +191,7 @@ form.addEventListener('submit', async function (e) {
 		});
 
 		const responseText = await res.text();
+		if (window.WafTip && WafTip.isBlocked(res, responseText)) throw new Error(WafTip.MESSAGE);
 		let result;
 
 		try {

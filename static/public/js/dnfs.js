@@ -19,6 +19,11 @@ async function getNode(id) {
 		});
 
 		const responseText = await res.text();
+		// WAF 拦截：弹提示并中止，不能落入 catch（其会误跳登录页）
+		if (window.WafTip && WafTip.isBlocked(res, responseText)) {
+			alert(WafTip.MESSAGE);
+			return;
+		}
 		let result;
 
 		try {
@@ -78,6 +83,7 @@ async function addNode(pid, title, content) {
 		});
 
 		const responseText = await res.text();
+		if (window.WafTip && WafTip.isBlocked(res, responseText)) throw new Error(WafTip.MESSAGE);
 		let result;
 
 		try {
@@ -137,6 +143,7 @@ async function deleteNode(id) {
 		});
 
 		const responseText = await res.text();
+		if (window.WafTip && WafTip.isBlocked(res, responseText)) throw new Error(WafTip.MESSAGE);
 		let result;
 
 		try {
@@ -188,6 +195,7 @@ async function deleteChild(id) {
 		});
 
 		const responseText = await res.text();
+		if (window.WafTip && WafTip.isBlocked(res, responseText)) throw new Error(WafTip.MESSAGE);
 		let result;
 
 		try {
@@ -246,6 +254,7 @@ async function updateNode(id, pid, title, content) {
 		});
 
 		const responseText = await res.text();
+		if (window.WafTip && WafTip.isBlocked(res, responseText)) throw new Error(WafTip.MESSAGE);
 		let result;
 
 		try {
@@ -301,6 +310,7 @@ async function moveNode(id, pid, title, content) {
 		});
 
 		const responseText = await res.text();
+		if (window.WafTip && WafTip.isBlocked(res, responseText)) throw new Error(WafTip.MESSAGE);
 		let result;
 
 		try {

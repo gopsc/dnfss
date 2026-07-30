@@ -22,6 +22,11 @@ async function refreshCaptcha() {
 	captchaToken = '';
 	try {
 		const res = await fetch('/captcha/image', { cache: 'no-store' });
+		if (res.status === 403) {	// WAF 拦截：body 非图片，提示后待用户点击重试
+			captchaImg.removeAttribute('src');
+			captchaImg.alt = '验证码加载被安全规则拦截，点击重试';
+			return;
+		}
 		if (!res.ok) throw new Error('captcha load failed');
 		captchaToken = res.headers.get('X-Captcha-Token') || '';
 		const blob = await res.blob();
@@ -126,6 +131,7 @@ form.addEventListener('submit', async function(e) {
 			body: jsonBody
 		});
 		const responseText = await res.text();
+		if (window.WafTip && WafTip.isBlocked(res, responseText)) throw new Error(WafTip.MESSAGE);
 		let result;
 		try { result = JSON.parse(responseText); } catch { throw new Error('服务器响应格式异常'); }
 		if (!res.ok) throw new Error(result.message || '登录失败');
