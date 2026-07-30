@@ -302,6 +302,10 @@ http::response<http::string_body> handleLogout(
 		const http::request<http::string_body>& req,
 		const std::unordered_map<std::string, std::string>& params);
 
+http::response<http::string_body> handleRefreshToken(
+		const http::request<http::string_body>& req,
+		const std::unordered_map<std::string, std::string>& params);
+
 /* 代理 captcha 图形验证码：pymsg 调 captcha 服务，返回 PNG 图片 */
 http::response<http::string_body> handleCaptchaImage(
 		const http::request<http::string_body>& req,
@@ -325,6 +329,8 @@ static std::string		_DEFT_URL;
 static std::vector<std::string>	_OPEN_URL;
 static std::string		_DB_PATH;
 static int			_TOKEN_KEEP_TIME = 3600;	// Token 有效期（秒），可由 [Token] keep_time 配置
+static int			_TOKEN_REFRESH_GRACE_MULTIPLIER = 2;	// Token 刷新宽限期倍数，过期后 iat + keep_time*倍数 窗口内仍可刷新
+static int			_TOKEN_MAX_REFRESH = 10;	// Token 生命周期内最大刷新次数，可由 [Token] max_refresh 配置
 static std::vector<std::string>	_CORS_ORIGINS;			// CORS 允许的 Origin 白名单，可由 [CORS] allowed_origins 配置
 static std::vector<std::string>	_ADMIN_USERS;			// 管理员账号白名单，可由 [Admin] users 配置（分号分隔），登录时写入 Token payload 的 is_admin
 
@@ -335,6 +341,7 @@ static std::unique_ptr<MyRSA::Generator>	_KEYGEN;
 static RateLimiter				_LOGIN_RATE;
 static RateLimiter				_REGISTER_RATE;
 static RateLimiter				_EMAIL_CODE_RATE;	// 发送邮箱验证码限流
+static RateLimiter				_REFRESH_TOKEN_RATE;	// Token 刷新限流
 
 /* pymsg 下游调用超时（秒）：
  * captcha / smtp verify_email 均为本机内存操作，5s 足够；
@@ -499,6 +506,8 @@ int main(int argc, char **argv) {
 		_OPEN_URL = split(cf.get<std::string>("Proxy.opened", ""), ';');
 		_DB_PATH = cf.get<std::string>("Database.path", "");
 		_TOKEN_KEEP_TIME = cf.get<int>("Token.keep_time", 3600);
+		_TOKEN_REFRESH_GRACE_MULTIPLIER = cf.get<int>("Token.refresh_grace_multiplier", 2);
+		_TOKEN_MAX_REFRESH = cf.get<int>("Token.max_refresh", 10);
 		_CORS_ORIGINS = split(cf.get<std::string>("CORS.allowed_origins", ""), ';');
 		_ADMIN_USERS = split(cf.get<std::string>("Admin.users", ""), ';');
 		}
@@ -619,6 +628,11 @@ void registerRoutes(HttpServer &server) {
 	server.post("/logout", [](const auto& req, const auto& params) -> http::response<http::string_body> {
 		return wrapperHttp(req, params,
 			[](const auto& req, const auto& params) { return handleLogout(req, params); });
+	});
+
+	server.post("/refresh_token", [](const auto& req, const auto& params) -> http::response<http::string_body> {
+		return wrapperHttp(req, params,
+			[](const auto& req, const auto& params) { return handleRefreshToken(req, params); });
 	});
 
 	/* 代理 captcha 图形验证码（须在 get("*") 通配符之前注册） */
@@ -876,9 +890,12 @@ http::response<http::string_body> handleLogin(
 
 	json::value jv_t = {
 		{"user", username},
+		{"iat", LocalTime::getCurrent()},
 		{"created_at", LocalTime::getCurrent()},
 		{"keep_time", _TOKEN_KEEP_TIME},
-		{"is_admin", is_admin}
+		{"is_admin", is_admin},
+		{"refresh_count", 0},
+		{"max_refresh", _TOKEN_MAX_REFRESH}
 	};
 	std::string data = json::serialize(jv_t);
 	std::string auth = Base64::base64_encode(data);
@@ -925,6 +942,159 @@ http::response<http::string_body> handleLogout(
 	res.set("Connection", "close");
 	res.result(http::status::ok);
 	res.body() = R"({"success": true, "message": "logged out"})";
+	res.prepare_payload();
+	return res;
+}
+
+/* 刷新 Token：POST /refresh_token
+ *
+ * 接受当前有效 Token（即使已过期但在宽限期内），签发新 Token。
+ * 仅更新 created_at 与 refresh_count；iat 保持不变以限制整条链的总生命周期。
+ *
+ * 宽限期：iat + keep_time * refresh_grace_multiplier
+ *   例：keep_time=3600, multiplier=2 → 首次签发后 2 小时内可刷新
+ * 刷新上限：refresh_count < max_refresh
+ * 限流：5 次 / 5 分钟 / IP
+ * Token 来源：Authorization: Bearer 优先，回退 Cookie q4_token
+ *
+ * 响应：{ success, data:{ token, refresh_count, refreshes_remaining } }
+ */
+http::response<http::string_body> handleRefreshToken(
+	const http::request<http::string_body>& req,
+	const std::unordered_map<std::string, std::string>& params)
+{
+	http::response<http::string_body> res;
+	res.version(req.version());
+
+	/* IP 速率限制：5 次 / 300 秒 */
+	std::string client_ip = "direct";
+	auto it_host = req.base().find("X-Forwarded-For");
+	if (it_host != req.base().end())
+		client_ip = std::string(it_host->value());
+	if (!_REFRESH_TOKEN_RATE.check_and_record(client_ip, 5, 300))
+		THROW_EX_CUSTOM(HttpException, 4001, "Too many refresh attempts. Please try again later.",
+			429, "/refresh_token");
+
+	auto _PUBL = MyRSA::Public_Key::from_pem(_KEYGEN->get_public_key_pem());
+
+	/* 获取 Token：Authorization 头优先，回退 Cookie */
+	std::string raw;
+	auto it_auth = req.base().find("Authorization");
+	if (it_auth != req.base().end()) {
+		raw = std::string(it_auth->value());
+	} else {
+		auto cit = req.base().find("Cookie");
+		if (cit != req.base().end()) {
+			std::string cookie_token = get_cookie_value(std::string(cit->value()), "q4_token");
+			if (!cookie_token.empty())
+				raw = "Bearer " + cookie_token;
+		}
+	}
+
+	if (raw.empty())
+		THROW_EX_CUSTOM(HttpException, 4002, "No token provided", 400, "/refresh_token");
+
+	/* 解析 Bearer <base64>_<signature> */
+	if (raw.substr(0, 7) != "Bearer ")
+		THROW_EX_CUSTOM(HttpException, 4002, "Invalid token format", 400, "/refresh_token");
+	raw = raw.substr(7);
+
+	size_t idx = raw.find("_");
+	if (idx == std::string::npos)
+		THROW_EX_CUSTOM(HttpException, 4002, "Invalid token format", 400, "/refresh_token");
+
+	std::string data = raw.substr(0, idx);
+	std::string sign = raw.substr(idx + 1);
+	std::string auth = Base64::base64_decode_to_string(data);
+
+	/* RSA 验签 */
+	if (!_PUBL.Verify(auth, sign))
+		THROW_EX_CUSTOM(HttpException, 4003, "Invalid token signature", 401, "/refresh_token");
+
+	/* 解析 Token payload */
+	json::value jv_t;
+	try { jv_t = json::parse(auth); }
+	catch (const std::exception&) {
+		THROW_EX_CUSTOM(HttpException, 4004, "Bad token payload", 400, "/refresh_token");
+	}
+	if (!jv_t.is_object())
+		THROW_EX_CUSTOM(HttpException, 4004, "Bad token payload", 400, "/refresh_token");
+
+	json::object& obj = jv_t.as_object();
+
+	/* 提取关键字段 */
+	std::string username  = json::value_to<std::string>(obj.at("user"));
+	std::string iat_str   = json::value_to<std::string>(obj.at("iat"));
+	int         keep_time = json::value_to<int>(obj.at("keep_time"));
+	int         refresh_count = json::value_to<int>(obj.at("refresh_count"));
+	int         max_refresh   = json::value_to<int>(obj.at("max_refresh"));
+
+	/* 刷新次数检查 */
+	if (refresh_count >= max_refresh)
+		THROW_EX_CUSTOM(HttpException, 4005, "Refresh limit exceeded. Please re-login.",
+			400, "/refresh_token");
+
+	/* 宽限期检查：iat + keep_time * grace_multiplier > now */
+	auto iat_tp = LocalTime::parse(iat_str);
+	if (!iat_tp)
+		THROW_EX_CUSTOM(HttpException, 4004, "Bad token iat", 400, "/refresh_token");
+
+	auto now = std::chrono::system_clock::now();
+	auto grace_expire = *iat_tp + std::chrono::seconds(keep_time * _TOKEN_REFRESH_GRACE_MULTIPLIER);
+	if (now > grace_expire)
+		THROW_EX_CUSTOM(HttpException, 4006, "Token expired beyond refresh window. Please re-login.",
+			401, "/refresh_token");
+
+	/* 保留 is_admin（旧 Token 未携带时默认为 false） */
+	bool is_admin = false;
+	auto it_admin = obj.find("is_admin");
+	if (it_admin != obj.end() && it_admin->value().is_bool())
+		is_admin = it_admin->value().as_bool();
+
+	/* 签发新 Token：iat 不变，created_at 更新，refresh_count++ */
+	auto _PRIV = MyRSA::Private_Key::from_pem(_KEYGEN->get_private_key_pem());
+	json::value jv_new = {
+		{"user", username},
+		{"iat", iat_str},
+		{"created_at", LocalTime::getCurrent()},
+		{"keep_time", keep_time},
+		{"is_admin", is_admin},
+		{"refresh_count", refresh_count + 1},
+		{"max_refresh", max_refresh}
+	};
+	std::string new_data = json::serialize(jv_new);
+	std::string new_auth = Base64::base64_encode(new_data);
+	std::string new_sign = _PRIV.Sign(new_data);
+	std::string new_token = new_auth + "_" + new_sign;
+
+	/* Set-Cookie */
+	{
+		std::string ck = "q4_token=" + new_token +
+			"; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=" +
+			std::to_string(keep_time);
+		res.set("Set-Cookie", ck);
+	}
+
+	logs().info("gateway", "Token refreshed", std::nullopt,
+		json::serialize(json::value{
+			{"user", username},
+			{"ip", client_ip},
+			{"refresh_count", refresh_count + 1},
+			{"refreshes_remaining", max_refresh - (refresh_count + 1)}
+		}));
+
+	json::value jv_rr = {
+		{"success", true},
+		{"data", json::object{
+			{"token", new_token},
+			{"refresh_count", refresh_count + 1},
+			{"refreshes_remaining", max_refresh - (refresh_count + 1)}
+		}}
+	};
+	res.set("Connection", "close");
+	res.result(http::status::ok);
+	res.set(http::field::content_type, "application/json");
+	res.body() = json::serialize(jv_rr);
 	res.prepare_payload();
 	return res;
 }
