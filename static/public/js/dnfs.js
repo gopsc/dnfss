@@ -105,6 +105,7 @@ async function addNode(pid, title, content) {
 
 		input_note_title.value = "";
 		input_note_content.value = "";
+		cancelEdit();	/* 退出编辑模式并重置高度 */
 		getNode(stack[stack.length - 1]).then(load_notes);
 		getNode(stack[stack.length - 1]).then(loadMap)
 
@@ -455,6 +456,21 @@ var is_expand = window.innerWidth >= PANEL_EXPAND_MIN_WIDTH;
 var editing_id = null;	/* 编辑模式：正在编辑的节点 id，null 表示当前是新增模式 */
 var moving_node = null;	/* 移动模式：待移动的节点 {id, pid, title, content}，null 表示未在移动 */
 
+/* ===== 输入框自动高度调整 ===== */
+function autoResizeTextarea(el) {
+	el.style.height = 'auto';
+	el.style.height = Math.min(el.scrollHeight, 400) + 'px';
+	el.style.overflowY = el.scrollHeight > 400 ? 'auto' : 'hidden';
+}
+input_note_content.addEventListener('input', function() {
+	autoResizeTextarea(input_note_content);
+});
+function resetTextareaHeight() {
+	input_note_content.style.height = '120px';
+	input_note_content.style.overflowY = 'hidden';
+}
+autoResizeTextarea(input_note_content);	/* 初始化高度 */
+
 input_note_submit.addEventListener('click', function(event) {
 	if (input_note_submit.disabled) return;	// 防重复点击
 	var title = input_note_title.value
@@ -503,6 +519,7 @@ function startEdit(item) {
 	input_note_title.value = item.title;
 	input_note_content.value = item.content;
 	input_note_submit.textContent = "保存修改";
+	autoResizeTextarea(input_note_content);	/* 根据载入内容调整高度 */
 	input_note_title.scrollIntoView({ behavior: 'smooth', block: 'center' });
 	input_note_title.focus();
 }
@@ -511,6 +528,7 @@ function startEdit(item) {
 function cancelEdit() {
 	editing_id = null;
 	input_note_submit.textContent = "提交";
+	resetTextareaHeight();	/* 恢复初始高度 */
 }
 
 function load_notes(main_node) {
