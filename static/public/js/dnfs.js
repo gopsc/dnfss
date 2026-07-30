@@ -654,5 +654,64 @@ function loadMap(children_json) {
     }
 }
 
+/* by qing — 用户信息面板：左上角，默认折叠；展示用户名 / 角色 / 退出登录。
+ * 身份来自 dnfs /whoami（HttpOnly Cookie 模式下 JS 无法读 Token，由后端解 payload 返回） */
+var userpanel = document.getElementById("userpanel");
+var userpanel_expand = false;
+var current_user = null;
+
+async function loadUserPanel() {
+	try {
+		const res = await fetch('/whoami', {
+			method: 'POST',
+			headers: {'Content-Type': 'application/json'},
+			body: '{}'
+		});
+		if (!res.ok) return;
+		current_user = await res.json();
+		renderUserPanel();
+	} catch (e) {
+		console.error('获取用户信息失败：', e);
+	}
+}
+
+function renderUserPanel() {
+	if (current_user == null) return;
+	userpanel.replaceChildren();
+	let fold = document.createElement("div");
+	fold.className = "tag fold-btn";
+	if (userpanel_expand) {
+		fold.textContent = "v 折叠";
+	} else {
+		fold.textContent = "> " + (current_user.login ? current_user.user : "未登录");
+	}
+	fold.addEventListener("click", () => {
+		userpanel_expand = !userpanel_expand;
+		renderUserPanel();
+	});
+	userpanel.appendChild(fold);
+	if (!userpanel_expand || !current_user.login) return;
+
+	let name_tag = document.createElement("div");
+	name_tag.className = "tag";
+	name_tag.textContent = current_user.user;
+	userpanel.appendChild(name_tag);
+
+	let role_tag = document.createElement("div");
+	role_tag.className = "tag";
+	role_tag.textContent = current_user.is_admin ? "管理员" : "普通用户";
+	userpanel.appendChild(role_tag);
+
+	let logout_tag = document.createElement("div");
+	logout_tag.className = "tag back";
+	logout_tag.textContent = "退出登录";
+	logout_tag.addEventListener("click", async () => {
+		try { await fetch('/logout', {method: 'POST'}); } catch (e) {}
+		location.href = '/login.html';
+	});
+	userpanel.appendChild(logout_tag);
+}
+
 getNode(0).then(load_notes);
 getNode(0).then(loadMap)
+loadUserPanel();

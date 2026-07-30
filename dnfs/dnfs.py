@@ -273,6 +273,28 @@ def get_notes():
     return jsonify(result), 200
 
 
+# 当前用户身份查询：配合前端用户面板，返回 user / is_admin。
+# 与 get_notes 同款可选解析：无 Token 或畸形 Token 按未登录处理（不 500）。
+@app.route('/whoami', methods=["POST"])
+def whoami():
+    info = None
+    auth: str = request.headers.get('Authorization', '')
+    if auth.startswith('Bearer '):
+        try:
+            info = decode_token(auth[7:])
+        except Exception:
+            info = None
+
+    if info is None:
+        return jsonify({'login': False}), 200
+
+    return jsonify({
+        'login': True,
+        'user': info.get('user'),
+        'is_admin': bool(info.get('is_admin'))
+    }), 200
+
+
 # eg: {"id": 1}
 @app.route('/delete_note', methods=['POST'])
 
