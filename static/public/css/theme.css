@@ -365,12 +365,11 @@ input[type="button"]:disabled {
     font-weight: 600;
 }
 
-/* ===== User Panel (dnfs 左边中间用户信息，镜像 minimap 样式) ===== */
+/* ===== User Panel (dnfs 左上角用户信息，镜像 minimap 样式) ===== */
 .userpanel {
     position: fixed;
     left: 1rem;
-    top: 50%;
-    transform: translateY(-50%);
+    top: 1rem;
     z-index: 100;
     display: flex;
     flex-direction: column;

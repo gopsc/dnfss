@@ -656,7 +656,7 @@ function loadMap(children_json) {
     }
 }
 
-/* by qing — 用户信息面板：左边中间，默认折叠；展示用户名 / 角色 / 退出登录。
+/* by qing — 用户信息面板：左上角，默认折叠；展示用户名 / 角色 / 退出登录。
  * 身份来自 dnfs /whoami（HttpOnly Cookie 模式下 JS 无法读 Token，由后端解 payload 返回） */
 var userpanel = document.getElementById("userpanel");
 var userpanel_expand = window.innerWidth >= PANEL_EXPAND_MIN_WIDTH;	// 与 minimap 同策略：窄屏默认折叠
