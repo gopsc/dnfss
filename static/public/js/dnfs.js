@@ -48,8 +48,9 @@ async function getNode(id) {
 		//}
 
 	} catch (err) {
-		alert(err.message || '接口请求失败，请检查后端服务是否启动');
+		// 获取节点失败（非 JSON 响应 / HTTP 错误 / 网络异常），统一跳转登录页
 		console.error('获取节点请求异常：', err);
+		location.href = '/login.html';
 	} finally {
 	}
 }
