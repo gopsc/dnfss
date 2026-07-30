@@ -561,11 +561,17 @@ function load_notes(main_node) {
 		sts_div.appendChild(makeStatItem(ICON_HEART, item.like_count));
 		sts_div.appendChild(makeStatItem(ICON_SHARE, item.share_count));
 		// 卡片操作按钮：编辑 / 移动 / 删除（stopPropagation 防止触发卡片自身的点入跳转）
-		// 编辑与删除按 can_operate 显隐：操作权由后端 get_notes 按 owner / is_admin 判定，
-		// 与 delete_note / update_note 鉴权口径一致；未登录或无权时隐藏
-		let act_div = document.createElement('div');
-		act_div.className = "card-actions";
+		// 按钮组整体按 can_operate 显隐：操作权由后端 get_notes 按 owner / is_admin 判定，
+		// 与 delete_note / update_note 鉴权口径一致（移动本质也是 update_note）；
+		// 未登录或无权时不渲染整个按钮组
+		ttl.appendChild(wrt_div);
+		ttl.appendChild(sts_div);
+		let ctt = document.createElement('p');
+		renderMarkdown(ctt, item.content);
+		card.appendChild(ctt)
 		if (item.can_operate === true) {
+			let act_div = document.createElement('div');
+			act_div.className = "card-actions";
 			let edit_btn = document.createElement('button');
 			edit_btn.className = "act-btn act-edit";
 			edit_btn.innerHTML = ICON_EDIT + "编辑";
@@ -573,17 +579,13 @@ function load_notes(main_node) {
 				event.stopPropagation();
 				startEdit(item);
 			});
-			act_div.appendChild(edit_btn);
-		}
-		let move_btn = document.createElement('button');
-		move_btn.className = "act-btn act-move";
-		move_btn.innerHTML = ICON_MOVE + "移动";
-		move_btn.addEventListener('click', function(event) {
-			event.stopPropagation();
-			startMove(item);
-		});
-		act_div.appendChild(move_btn);
-		if (item.can_operate === true) {
+			let move_btn = document.createElement('button');
+			move_btn.className = "act-btn act-move";
+			move_btn.innerHTML = ICON_MOVE + "移动";
+			move_btn.addEventListener('click', function(event) {
+				event.stopPropagation();
+				startMove(item);
+			});
 			let del_btn = document.createElement('button');
 			del_btn.className = "act-btn act-del";
 			del_btn.innerHTML = ICON_TRASH + "删除";
@@ -591,14 +593,11 @@ function load_notes(main_node) {
 				event.stopPropagation();
 				deleteChild(item.id);
 			});
+			act_div.appendChild(edit_btn);
+			act_div.appendChild(move_btn);
 			act_div.appendChild(del_btn);
+			card.appendChild(act_div);
 		}
-		ttl.appendChild(wrt_div);
-		ttl.appendChild(sts_div);
-		let ctt = document.createElement('p');
-		renderMarkdown(ctt, item.content);
-		card.appendChild(ctt)
-		card.appendChild(act_div);
 		recommend_list.appendChild(card)
 		recommend_list.appendChild(document.createElement('br'))
 	}
