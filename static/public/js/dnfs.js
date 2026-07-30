@@ -693,12 +693,12 @@ function renderUserPanel() {
 	if (!userpanel_expand || !current_user.login) return;
 
 	let name_tag = document.createElement("div");
-	name_tag.className = "tag";
+	name_tag.className = "tag no-hover";
 	name_tag.textContent = current_user.user;
 	userpanel.appendChild(name_tag);
 
 	let role_tag = document.createElement("div");
-	role_tag.className = "tag";
+	role_tag.className = "tag no-hover";
 	role_tag.textContent = current_user.is_admin ? "管理员" : "普通用户";
 	userpanel.appendChild(role_tag);
 

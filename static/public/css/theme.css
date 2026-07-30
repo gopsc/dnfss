@@ -420,6 +420,15 @@ input[type="button"]:disabled {
     }
 }
 .minimap:empty, .userpanel:empty { display: none; }
+/* userpanel 纯展示项（用户名/角色）：不可点击，无手型光标与 hover 变色 */
+.userpanel .tag.no-hover {
+    cursor: default;
+}
+.userpanel .tag.no-hover:hover {
+    color: var(--fg-secondary);
+    background: rgba(232, 133, 58, 0.08);
+    border-color: transparent;
+}
 .minimap .tag, .userpanel .tag {
     display: inline-block;
     max-width: 140px;
