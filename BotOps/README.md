@@ -16,10 +16,20 @@
 
 ```bash
 cd BotOps
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-python app.py                      # 默认 ws://localhost:8765
-python app.py ws://your-host:8765  # 指定 aibox 地址
+
+# 一键初始化（创建 venv + 安装依赖）
+bash _set.sh
+
+# 启动
+bash _run.sh                        # 默认 ws://localhost:8765
+bash _run.sh ws://your-host:8765    # 指定 aibox 地址
+```
+
+### Nuitka 编译为独立二进制
+
+```bash
+bash _inst.sh        # 产出 ./botops.bin（单文件，无需 Python 环境）
+./botops.bin [ws://host:port]
 ```
 
 ## 命令
@@ -34,7 +44,12 @@ BotOps/
 ├── app.py            # Textual App：布局 + 消息路由 + 快捷键
 ├── ws_client.py      # WebSocket 协议层（自动重连）
 ├── commands.py       # 斜杠命令注册表
+├── _run.sh           # 启动脚本
+├── _set.sh           # 初始化脚本（venv + 依赖安装）
+├── _inst.sh          # Nuitka 编译脚本（产出 botops.bin）
+├── requirements.txt  # Python 依赖
 └── widgets/
+    ├── __init__.py
     ├── chat_view.py  # 聊天区：AI 回复 Markdown 增量流式渲染
     └── status_bar.py # 底部状态栏（连接状态）
 ```

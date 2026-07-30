@@ -37,8 +37,9 @@ from pymsg import MsgClient  # noqa: E402
 _DBV2_ADDR = '127.0.0.1'
 _DBV2_PORT = 8005
 
-# 管理员账号：删除/更新节点时豁免所有权校验（保留旧的 'admin' 以兼容历史数据）
-ADMIN_USERS = ('admin@qsont.me', 'qing@qsont.me')
+# 管理员判定已上移至 gateway：登录时命中 [Admin] users 白名单即在 Token payload
+# 写入 is_admin=true，本服务通过 info.get('is_admin') 读取，不再本地维护名单。
+# 旧 Token 无此字段，按非管理员处理（安全方向）。
 
 def _call_dbv2(payload: dict, timeout: int = 10) -> dict:
     """通过 pymsg 短连接调用 dbv2 数据库服务。
@@ -85,11 +86,9 @@ def review_content(content: str, timeout: int = 10) -> Dict[str, Any]:
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             resp_data = resp.read().decode("utf-8")
-            data =  json.loads(resp_data)
-            invalid: bool = data['invalid']
-            return invalid == False
-            #invalid = data
-            #return invalid
+            data = json.loads(resp_data)
+            # 兼容布尔/字符串两种返回类型：仅明确判定安全才放行，其余一律拦截（fail-closed）
+            return data.get('invalid') in (False, 'false')
 
     except urllib.error.HTTPError as e:
         # 服务端返回 4xx/5xx 错误时，尝试解析错误正文
@@ -253,8 +252,55 @@ def get_notes():
 
     result = notes['data']
 
+    # 解析当前用户（可选）：为每个节点附带操作权标记 can_operate，
+    # 前端据此显隐编辑/删除按钮。口径与 delete_note / update_note 一致：
+    # 管理员（is_admin）或节点 owner 有权。
+    # get_notes 保持公开：未携带 Token 或 Token 解析失败时，所有节点一律无权。
+    info = None
+    auth: str = request.headers.get('Authorization', '')
+    if auth.startswith('Bearer '):
+        try:
+            info = decode_token(auth[7:])
+        except Exception:
+            info = None
+
+    for note in result:
+        note['can_operate'] = bool(
+            info and (info.get('is_admin') or note.get('owner') == info.get('user'))
+        )
+
     logs.info('dnfs', f'get_notes 查询 pid={pid} 返回{len(result)}条', extra={'ip': request.remote_addr})
     return jsonify(result), 200
+
+
+# 当前用户身份查询：配合前端用户面板，返回 user / is_admin。
+# 与 get_notes 同款可选解析：无 Token 或畸形 Token 按未登录处理（不 500）。
+@app.route('/whoami', methods=["POST"])
+def whoami():
+    info = None
+    auth: str = request.headers.get('Authorization', '')
+    if auth.startswith('Bearer '):
+        try:
+            info = decode_token(auth[7:])
+        except Exception:
+            info = None
+
+    if info is None:
+        return jsonify({'login': False}), 200
+
+    resp = {
+        'login': True,
+        'user': info.get('user'),
+        'is_admin': bool(info.get('is_admin'))
+    }
+    # 附加 Token 生命周期信息，供前端 Token 管理器估算过期时间
+    if info.get('iat'):
+        resp['iat'] = info['iat']
+    if info.get('created_at'):
+        resp['created_at'] = info['created_at']
+    if info.get('keep_time'):
+        resp['keep_time'] = info['keep_time']
+    return jsonify(resp), 200
 
 
 # eg: {"id": 1}
@@ -328,7 +374,7 @@ def delete_note():
 
     data = _call_dbv2(select_payload)
     notes = data['data']
-    if info['user'] not in ADMIN_USERS:
+    if not info.get('is_admin'):
         if not len(notes) == 1 or not notes[0]['owner'] == info['user']:
             logs.warning('dnfs', f'delete_note 所有权拒绝 id={note_id}', extra={'user': info['user']})
             return jsonify({"error": 'It\'s not your note'}), 403
@@ -403,7 +449,7 @@ def update_note():
 
     data = _call_dbv2(select_payload)
     notes = data['data']
-    if info['user'] not in ADMIN_USERS:
+    if not info.get('is_admin'):
         if not len(notes) == 1 or not notes[0]['owner'] == info['user']:
             logs.warning('dnfs', f'update_note 所有权拒绝 id={id}', extra={'user': info['user']})
             return jsonify({"error": 'It\'s not your note'}), 403

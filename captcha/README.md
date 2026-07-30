@@ -23,6 +23,10 @@
 ## 安装
 
 ```bash
+# 自动创建 venv 并安装依赖（推荐）
+bash _set.sh
+
+# 或手动安装
 pip install Pillow
 ```
 
@@ -138,7 +142,9 @@ png_b64 = resp["data"]["image"]
 ```
 captcha/
 ├── captcha_service.py   # 服务主程序（pymsg 服务 + 验证码生成与校验）
+├── _set.sh              # 初始化脚本（创建 venv + 安装依赖）
 ├── _run.sh              # 启动脚本（cd 后 exec python3 captcha_service.py）
+├── requirements.txt     # Python 依赖（pymsg、Pillow）
 └── README.md
 ```
 

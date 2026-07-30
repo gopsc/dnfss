@@ -28,7 +28,7 @@ public:
     inline void WakeCv() /* 唤醒线程 */
     {
         {
-            std::lock_guard<std::mutex> lcok(mtx);
+            std::lock_guard<std::mutex> lock(mtx);
             flag = true;
         }
         cv.notify_all();

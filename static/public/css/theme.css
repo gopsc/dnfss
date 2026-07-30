@@ -365,6 +365,33 @@ input[type="button"]:disabled {
     font-weight: 600;
 }
 
+/* ===== User Panel (dnfs 左上角用户信息，镜像 minimap 样式) ===== */
+.userpanel {
+    position: fixed;
+    left: 1rem;
+    top: 1rem;
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    max-height: 80vh;
+    overflow-y: auto;
+    padding: 0.6rem 0.75rem;
+    border-radius: var(--radius-md);
+    background: rgba(253, 246, 238, 0.72);
+    border: 1px solid var(--border-light);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    box-shadow: var(--shadow-md);
+    transition: background 0.2s, border-color 0.2s;
+}
+@media (prefers-color-scheme: dark) {
+    .userpanel {
+        background: rgba(30, 23, 18, 0.72);
+        border-color: var(--border);
+    }
+}
+
 /* ===== Minimap (dnfs) ===== */
 .minimap {
     position: fixed;
@@ -392,8 +419,17 @@ input[type="button"]:disabled {
         border-color: var(--border);
     }
 }
-.minimap:empty { display: none; }
-.minimap .tag {
+.minimap:empty, .userpanel:empty { display: none; }
+/* userpanel 纯展示项（用户名/角色）：不可点击，无手型光标与 hover 变色 */
+.userpanel .tag.no-hover {
+    cursor: default;
+}
+.userpanel .tag.no-hover:hover {
+    color: var(--fg-secondary);
+    background: rgba(232, 133, 58, 0.08);
+    border-color: transparent;
+}
+.minimap .tag, .userpanel .tag {
     display: inline-block;
     max-width: 140px;
     overflow: hidden;
@@ -416,18 +452,18 @@ input[type="button"]:disabled {
     border-radius: 4px;
 }
 .minimap::-webkit-scrollbar-thumb:hover { background: var(--muted); }
-.minimap .tag:hover {
+.minimap .tag:hover, .userpanel .tag:hover {
     color: var(--accent-dark);
     background: var(--accent-soft);
     border-color: var(--accent);
 }
-.minimap .tag.back {
+.minimap .tag.back, .userpanel .tag.back {
     color: var(--accent);
     background: var(--accent-soft);
     border-color: var(--accent);
     margin-bottom: 0.25rem;
 }
-.minimap .tag.fold-btn {
+.minimap .tag.fold-btn, .userpanel .tag.fold-btn {
     color: var(--fg-secondary);
     background: transparent;
     border: 1px solid var(--border);
@@ -438,7 +474,7 @@ input[type="button"]:disabled {
     cursor: pointer;
     transition: color 0.15s, background 0.15s, border-color 0.15s;
 }
-.minimap .tag.fold-btn:hover {
+.minimap .tag.fold-btn:hover, .userpanel .tag.fold-btn:hover {
     color: var(--accent-dark);
     background: var(--accent-soft);
     border-color: var(--accent);
@@ -447,6 +483,16 @@ input[type="button"]:disabled {
 /* ===== Node Form (dnfs) ===== */
 .node-form { margin-top: 1rem; }
 .node-form .form-actions { margin-top: 0.75rem; }
+.node-form #input-note-title {
+	padding: 0.8rem 1rem;
+	font-size: 1rem;
+}
+.node-form #input-note-content {
+	padding: 0.9rem 1rem;
+	font-size: 0.95rem;
+	min-height: 120px;
+	line-height: 1.7;
+}
 
 /* ===== Markdown Content ===== */
 code {

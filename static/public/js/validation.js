@@ -68,3 +68,15 @@
 
 	window.FormValidators = { username, password, email };
 }());
+
+/* WAF 拦截识别：waf 命中规则时返回 403 + 纯文本 "blocked by WAF"
+ * （见 waf/internal/proxy/proxy.go block()）；gateway 的 403（Target-Url
+ * 白名单拒绝）body 为 JSON 错误消息，不含此特征，不会误判。 */
+window.WafTip = {
+	MESSAGE: '请求被 WAF 安全规则拦截，请检查输入内容',
+	isBlocked(res, responseText) {
+		return res.status === 403
+			&& typeof responseText === 'string'
+			&& responseText.indexOf('blocked by WAF') !== -1;
+	}
+};

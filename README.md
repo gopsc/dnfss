@@ -1,7 +1,7 @@
 # micro_servers
 
-一套 DIY 的轻量级微服务架构（UniServe Framework），由 C++、Python 与 Go 混合实现。
-`core` 作为进程托管服务负责拉起并守护各业务子进程，`waf` 作为前置 WAF 网关终止 TLS 并做规则匹配，`gateway` 作为应用层网关统一鉴权与反向代理，`db` 提供通用数据库访问与集中式日志收集，`ai_review` 提供 AI 内容审核，`static` 与 `dnfs` 作为业务服务对外提供能力。
+一套 DIY 的轻量级微服务架构（UniServe Framework），由 C++、Python、Go 与仓颉(Cangjie) 混合实现。
+`core` 作为进程托管服务负责拉起并守护各业务子进程，`waf` 作为前置 WAF 网关终止 TLS 并做规则匹配，`gateway` 作为应用层网关统一鉴权与反向代理，`db` 提供通用数据库访问与集中式日志收集，`ai_review` 提供 AI 内容审核，`static` 与 `dnfs` 作为业务服务对外提供能力。此外包含独立的机器人硬件控制模块 `bot4cj` 和嵌入式脚本引擎 `libtry`。
 
 ## 架构总览
 
@@ -51,6 +51,7 @@
 | [captcha](captcha/) | Python(pymsg) | 8009 | 验证码服务（pymsg/TCP），生成图形验证码（5 分钟过期、一次性），经 gateway 的 `GET /captcha/image` 代理给浏览器 |
 | [smtp](smtp/) | Python(pymsg) | 8008 | 邮件服务，发送/校验邮箱验证码（pymsg 路由 send_email/verify_email/health），注册流程的邮件验证码后端，SMTP 账号配置在 .env |
 | [aibox](aibox/) | Python | 8765 | 独立 AI 智能体系统（DeepSeek + WebSocket），自带技能系统/记忆/任务调度，由 core 拉起但与主干微服务无调用关系 |
+| [bot4cj](bot4cj/) | 仓颉(Cangjie) | — | 机器人硬件脚本解析器，解析 .mt 矩阵脚本通过 I2C 驱动 PCA9685 舵机 / MPU6050 陀螺仪，面向树莓派 Dashun 蜘蛛机器人平台（独立硬件项目） |
 
 ### core（核心模块 · 进程托管服务）
 
@@ -68,7 +69,7 @@
 - 极客操作：`kill -HUP <pid>` 热加载规则；`waf -list` 列规则；`waf -test <file>` 校验语法；`waf -check "<input>"` 测试单条输入。
 - 配置见 [waf/config.yaml](waf/config.yaml)，详见 [waf/README.md](waf/README.md)。
 
-### gateway（应用层网关 · v0.5.2）
+### gateway（应用层网关 · v0.5.3）
 
 - 内部 HTTP 服务，默认监听 127.0.0.1:8443，不再承载 TLS（TLS 已由 WAF 终止）。
 - 通过 `Server.tls = on/off` 配置切换 HTTPS/HTTP 模式（[example.ini](gateway/example.ini)），独立部署时仍可启用 TLS。
@@ -136,7 +137,7 @@
 ### smtp（邮件服务）
 
 - 注册流程的邮箱验证码后端，基于 pymsg（MsgServer，TCP 长度前缀帧 + JSON），监听 127.0.0.1:8008。
-- pymsg 路由：`send_email`（生成 6 位验证码并经 SMTP_SSL 发送，60 秒有效，发送失败自动作废）、`verify_email`（校验，通过即一次性消费防重放，兼容旧字段 `input_captcha`）、`health`。
+- pymsg 路由：`send_email`（生成 6 位验证码并经 SMTP_SSL 发送，10 分钟有效，发送失败自动作废；同一邮箱 60 秒发送冷却，冷却期拒绝并返回 `retry_after`，不覆盖已发出的有效验证码，发送失败不计入冷却）、`verify_email`（校验，通过即一次性消费防重放，连续失败 5 次自动作废并返回 `invalidated`，兼容旧字段 `input_captcha`）、`health`。
 - 验证码存于进程内存（锁保护 + 惰性过期清理），SMTP 账号通过 `.env` 配置（`SMTP_SERVER` / `SMTP_PORT` / `SMTP_USER` / `__PASSWORD`，`__PASSWORD` 兼容别名 `SMTP_PASSWORD`）。
 
 ### aibox（独立 AI 智能体系统）
@@ -144,6 +145,14 @@
 - 一套相对独立的单智能体产品，基于 DeepSeek + WebSocket（:8765），由 `core` 拉起但与 waf / gateway / dnfs 等主干微服务无调用关系。
 - 自带技能系统（`skills/`）、任务调度器、记忆管理、前端页面与语音客户端（`voice_client.py`）。
 - 默认模型 `deepseek-v4-flash`，配置在 `config.json`；详见 [aibox/README.md](aibox/README.md)。
+
+### bot4cj（机器人硬件脚本解析器）
+
+- 基于仓颉(Cangjie)编程语言和 Linux I2C 接口的机器人动作脚本解析器，面向树莓派 Dashun 蜘蛛机器人平台（10 舵机 + 2 云台）。
+- 解析 `.mt` 矩阵脚本（行列式表格语法，支持 `@Servo` / `@Action` 等块），编译为舵机角度序列执行。
+- 硬件层通过 I2C 驱动 PCA9685（PWM 舵机控制，50Hz，脉宽 0.5–2.5ms）、MPU6050（陀螺仪/加速度计，10ms 采样 + 卡尔曼滤波）、Speaker（正弦波发声）。
+- 附带数学库（矩阵运算、NN/CNN、Adam 优化器）、CUDA GPU 加速 kernel 和 Lua 硬件模块（ADS1115 / ADS1256 / SPI）。
+- 与主干微服务完全独立，需部署在树莓派上独立运行。
 
 ## 共享基础库
 
@@ -153,6 +162,7 @@
 | [libhttp](libhttp/) | HTTP/WebSocket 库：`HttpServer`、`HttpClient`、`WebSocketServer/Client`（基于 Boost.Beast） |
 | [libcrypt](libcrypt/) | 加密库：`AES_CBC`、`MyRSA`、`SHA256`、`Base64`、`Crypto_Basic` |
 | [libsqlite3](libsqlite3/) | SQLite3 C++ 封装（Header-only） |
+| [libtry](libtry/) | 嵌入式脚本解释器（~741 行 C），手写递归下降词法/语法/执行引擎，支持变量/数组/函数/控制流，宽字符（中文标识符），用于嵌入式操作界面 shell |
 
 ### Python 共享组件
 
@@ -176,6 +186,21 @@
 | 8009 | captcha | 127.0.0.1 | 验证码服务（pymsg/TCP，经 gateway 代理） |
 | 8008 | smtp | 127.0.0.1 | 邮件服务（仅内部调用，注册验证码邮件后端） |
 | 8765 | aibox | 127.0.0.1 | AI 智能体（WebSocket，独立产品） |
+| — | bot4cj | — (树莓派 I2C) | 机器人硬件脚本解析器（独立硬件项目，不联网） |
+
+## 测试
+
+[tests/](tests/) 包含一套黑盒测试套件，基于子进程调用与 HTTP 请求验证各微服务功能正确性：
+
+| 测试文件 | 被测模块 | 说明 |
+|----------|----------|------|
+| `test_db_*.py` | db | SQL-over-TCP 的 select/insert/update/delete、日期哨兵、边界条件 |
+| `test_gateway_*.py` | gateway | 用户注册/登录/Token 校验、速率限制、CAPTCHA 集成 |
+| `test_waf_*.py` | waf | coraza 规则匹配与拦截、白名单放行 |
+| `test_dnfs_*.py` | dnfs | 节点树 CRUD、AI 审核集成 |
+
+- 默认使用 `config.py` 中的生产地址（127.0.0.1），每个测试函数前后自动备份/恢复 db 数据，保证不污染线上数据。
+- 测试依赖 `pymsg`、`Flask`、`flask-cors`、`requests`、`Pillow`，详见 [tests/requirements-test.txt](tests/requirements-test.txt)。
 
 ## 依赖
 
@@ -193,7 +218,7 @@ bash _setup.deb.sh        # Debian/Ubuntu
 # 或
 bash _setup.rhel.sh       # RHEL/CentOS/Rocky/Fedora
 
-# 2. 依次安装各模块（libth -> libhttp -> libcrypt -> libsqlite3 -> gateway -> waf -> static -> dnfs -> db -> core）
+# 2. 依次安装各模块（libth -> libhttp -> libcrypt -> libsqlite3 -> gateway -> waf -> static -> dnfs -> db -> smtp -> core）
 bash _inst.sh
 ```
 
@@ -206,7 +231,7 @@ bash _run.sh   # 运行
 
 部署路径约定为 `/opt/micro_servers/`，`core` 的 `init.txt` 即从该路径拉起其余服务。
 
-> **注意**：`ai_review` 未包含在 `_inst.sh` 中，需单独进入 `ai_review/` 目录执行 `_set.sh` 安装，并配置 `.env` 文件（DeepSeek API 密钥等）。
+> **注意**：`ai_review` 与 `captcha` 未包含在 `_inst.sh` 中，需分别进入 `ai_review/`、`captcha/` 目录执行 `_set.sh` 安装。其中 `ai_review` 需额外配置 `.env` 文件（DeepSeek API 密钥等）。
 
 > **注意**：waf 首次编译需联网下载 Go 依赖，[waf/_set.sh](waf/_set.sh) 会自动调用 [waf/_goproxy.sh](waf/_goproxy.sh) 设置 GOPROXY 国内镜像。如需手动设置：`go env -w GOPROXY=https://goproxy.cn,direct`。
 
@@ -254,7 +279,7 @@ gateway 改为内部 HTTP 模式（[example.ini](gateway/example.ini) 中 `tls =
 - **服务按业务能力拆分**：WAF 网关、应用网关、前端托管、节点树、数据库、内容审核各自独立、独立端口、独立数据存储。
 - **API 网关模式**：`waf` 作为边缘网关统一入口，`gateway` 承担鉴权与反向代理，内部服务通过 `closed` 列表隔离。
 - **进程编排/守护**：`core` 作为服务管理器拉起并守护子进程，类似简易版 supervisor。
-- **多语言异构**：C++（core / gateway）、Python（static / dnfs / db / ai_review）、Go（waf）混合，对外 HTTP、内部数据访问走 pymsg/TCP。
+- **多语言异构**：C++（core / gateway）、Python（static / dnfs / db / ai_review）、Go（waf）、仓颉/Cangjie（bot4cj）混合，对外 HTTP、内部数据访问走 pymsg/TCP。
 - **数据访问层解耦**：`db` 服务将数据库操作收敛为统一的 pymsg/TCP 接口，业务服务无需直连数据库。
 - **AI 能力集成**：`ai_review` 以 RAG 增强的 LLM 审核为业务层提供内容安全能力，支持人工反馈闭环。
 - **集中式可观测性**：`db` 内置日志表与自动清理，各服务通过 `log_client.py` SDK 异步推送日志（pymsg），实现全链路汇聚，无需引入额外中间件。

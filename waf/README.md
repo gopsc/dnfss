@@ -22,7 +22,7 @@
 | 列出所有规则 | `./waf.bin -list` |
 | 测试输入 | `./waf.bin -check "/?id=1' OR '1'='1"` |
 | 热加载（不重启） | `kill -HUP $(pgrep waf)` |
-| 临时禁用某文件 | `mv rules/local/x.conf x.conf.bak && kill -HUP $(pgrep waf)` |
+| 临时禁用某文件 | `mv rules/local/x.conf x.conf.bak && kill -HUP $(pgrep waf)` (引擎仅加载 `.conf` 后缀) |
 
 ### 规则文件组织
 
@@ -32,7 +32,7 @@ rules/
 ├── local/                # 本地自定义规则（ID 段 100000-199999）
 │   ├── custom.conf       # 示例：SQL注入/XSS/路径遍历/命令注入/扫描器UA
 │   └── exceptions.conf   # 误报白名单（SecRuleRemoveById / ctl:ruleRemoveById）
-└── crs/                  # OWASP CRS（不入库，由 _fetch_crs.sh 拉取）
+└── crs/                  # OWASP CRS（不入库，由 _fetch_crs.sh 拉取，可选）
     ├── coraza.conf       # CRS 入口（请求体处理器初始化 + tx.crs_setup_version）
     ├── LICENSE           # Apache-2.0
     └── rules/*.conf      # CRS 规则文件
@@ -54,8 +54,8 @@ rules/
 | ID 段 | 用途 |
 |-------|------|
 | 100000-199999 | 本地自定义规则 |
-| 200000-200006 | CRS 请求体处理器初始化（XML/JSON，由 `crs/coraza.conf` 定义） |
-| 900000-999999 | OWASP CRS 规则（由 `crs/rules/` 提供，不手改） |
+| 200000-200006 | CRS 请求体处理器初始化（XML/JSON，由 `crs/coraza.conf` 定义，仅当启用 CRS 时存在） |
+| 900000-999999 | OWASP CRS 规则（由 `crs/rules/` 提供，不手改，仅当启用 CRS 时存在） |
 
 ### 规则语法（SecLang）
 
@@ -99,7 +99,7 @@ rules_dir: "./rules"
 |------|--------|------|
 | `listen` | `:443` | 监听地址 |
 | `tls_cert` / `tls_key` | — | TLS 证书与私钥路径 |
-| `upstream` | — | gateway 地址，**必填** |
+| `upstream` | — | gateway 地址，**必填**（启动时硬性校验，缺失将导致进程退出） |
 | `rules_dir` | `./rules` | 规则根目录 |
 
 ## 目录结构
@@ -112,8 +112,10 @@ waf/
 ├── internal/
 │   ├── engine/
 │   │   └── engine.go        # coraza 封装：加载/热加载/列举/单测/输入检测
+│   ├── logclient/
+│   │   └── logclient.go     # Go 版 pymsg 日志客户端（异步批量推送）
 │   └── proxy/
-│       └── proxy.go         # ReverseProxy + WAF 事务接入
+│       └── proxy.go         # ReverseProxy + WAF 事务接入 + 安全响应头注入
 ├── rules/
 │   ├── waf.conf
 │   └── local/
@@ -156,25 +158,61 @@ bash /opt/micro_servers/waf/_run.sh
 
 并把 `gateway` 改为内部 HTTP 端口（不再监听 443）。
 
-## 命中日志
+## 安全响应头
 
-命中规则时输出 JSON 一行，便于 `jq` 分析（见 [proxy.go:120-137](internal/proxy/proxy.go#L120)）：
+WAF 在边缘层统一注入安全响应头（[proxy.go:54-77](internal/proxy/proxy.go#L54-L77) `setSecurityHeaders`），覆盖所有出站响应（包括正常转发、命中拦截、上游 502）。下游服务（static/dnfs 等）的同名头会被 WAF 覆盖，避免 CSP 绕过。
 
-```json
-{"ts":"2026-07-25T10:00:00Z","action":"block","rule_id":100001,"ip":"1.2.3.4","method":"GET","path":"/","query":"id=1'+OR+'1'='1","ua":"curl/8.0","cost_ms":0}
-```
+| Header | 值 | 说明 |
+|--------|----|------|
+| X-Frame-Options | SAMEORIGIN | 允许本站 iframe 嵌套（登录页条例弹窗），防跨站点击劫持 |
+| X-Content-Type-Options | nosniff | — |
+| X-XSS-Protection | 1; mode=block | 现代浏览器已废弃，仅兼容旧浏览器 |
+| Referrer-Policy | strict-origin-when-cross-origin | — |
+| Permissions-Policy | camera=(), microphone=(), geolocation=() | — |
+| Strict-Transport-Security | max-age=15552000 | HSTS 半年期，**不含子域** |
+| Content-Security-Policy | default-src 'self'; script-src 'self' 'unsafe-inline'; ... | 暂保留 `'unsafe-inline'` 以兼容 forgot.html 与 games/*.html 的内联脚本 |
 
-放行请求时输出一行 pass 日志（见 [proxy.go:115](internal/proxy/proxy.go#L115)）：
+## 拦截日志
 
-```
-[proxy] pass ip=1.2.3.4:54321 method=GET path=/ status=200 rule=- cost=1.2ms
+命中规则时 `block()` 经 logclient（Go 版 pymsg 客户端，见 [internal/logclient/](internal/logclient/)）异步批量推送到 db:8005 的 `Logs` 表（与其他服务的集中日志同链路；标准日志已静默，stdout/journalctl 中看不到拦截记录）：
+
+- **规则命中拦截**（block 触发）：`service=waf`、`level=WARNING`
+- **规则加载/解析错误**（`LogError` 回调触发，引擎初始化/热加载时的语义错误）：`service=waf`、`level=ERROR`
+
+`block()` 推送的日志 `extra` 字段（JSON 字符串）：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `rule_id` | int | 命中规则 ID |
+| `ip` | string | `RemoteAddr` 原始值，含端口号（如 `1.2.3.4:54321`） |
+| `method` | string | 请求方法 |
+| `path` | string | 请求路径 |
+| `query` | string | 查询字符串 |
+| `ua` | string | User-Agent |
+| `cost_ms` | int64 | 处理耗时（毫秒） |
+
+fail-safe：db 不可用时日志静默丢弃，不影响拦截动作本身。
+
+查询最近的拦截记录：
+
+```bash
+sqlite3 /opt/micro_servers/db/database.db \
+  "SELECT ts, message, extra FROM Logs WHERE service='waf' AND level='WARNING' ORDER BY id DESC LIMIT 20;"
 ```
 
 聚合统计命中规则：
 
 ```bash
-journalctl -u Nidus -o cat | grep '"action":"block"' | \
-  jq -r '.rule_id' | sort | uniq -c | sort -rn
+sqlite3 /opt/micro_servers/db/database.db \
+  "SELECT json_extract(extra,'\$.rule_id') AS rule, COUNT(*) FROM Logs \
+   WHERE service='waf' AND level='WARNING' GROUP BY rule ORDER BY 2 DESC;"
+```
+
+查看规则加载/解析错误：
+
+```bash
+sqlite3 /opt/micro_servers/db/database.db \
+  "SELECT ts, message, extra FROM Logs WHERE service='waf' AND level='ERROR' ORDER BY id DESC LIMIT 20;"
 ```
 
 ## 启用 OWASP CRS（可选）
@@ -210,26 +248,29 @@ kill -HUP $(pgrep waf)
 
 ## 请求处理流程
 
-[proxy.go:57-117](internal/proxy/proxy.go#L57) `ServeHTTP`：
+[proxy.go:81-138](internal/proxy/proxy.go#L81) `ServeHTTP`：
 
 1. `ProcessConnection` + `ProcessURI` + 添加请求头（含 Host）
 2. `ProcessRequestHeaders` → 命中即 `block` 返回 403
 3. 读全量请求体 → `ReadRequestBodyFrom` → `ProcessRequestBody` → 命中即 block
 4. `httputil.ReverseProxy.ServeHTTP` 转发到 gateway
 5. 捕获响应头 → `ProcessResponseHeaders`
+6. `ModifyResponse` 统一注入安全响应头（覆盖下游同名头）
 
 Director 改写（[proxy.go:36-46](internal/proxy/proxy.go#L36)）：剥离 `RemoteAddr` 端口，设置 `X-Forwarded-For` 与 `X-Forwarded-Proto: https`，供 gateway 的 RateLimiter 取真实客户端 IP。
 
-ErrorHandler（[proxy.go:48-51](internal/proxy/proxy.go#L48)）：upstream 不可达时返回 502，不暴露内部堆栈，仅服务端 log。
+ErrorHandler（[proxy.go:48-53](internal/proxy/proxy.go#L48)）：upstream 不可达时返回 502，同时注入安全响应头，不暴露内部堆栈，仅服务端 log。
 
 ## 已知限制
 
 - 请求体全量读入内存检测，10MB 上限（`SecRequestBodyLimit`）。大文件上传场景需调大或加白名单。
-- **响应体检测未启用**：仅 `ProcessResponseHeaders`，未 `ProcessResponseBody`（缓冲整个响应延迟成本高）。SQL 报错回显等响应体泄漏检测缺失。
+- **响应头检测已启用**（`ProcessResponseHeaders`），**响应体检测未启用**（未 `ProcessResponseBody`，缓冲整个响应延迟成本高）。SQL 报错回显等响应体泄漏检测缺失。
 - 限流/黑白名单未实现，可后续作为 coraza 规则或独立中间件加。
 - `http.Server` 未设 `ReadTimeout` / `WriteTimeout` / `IdleTimeout`，存在慢连接攻击风险。
 - TLS 仅设 `MinVersion: TLS1.2`，未限定 cipher suites，允许弱加密套件。
 - `X-Forwarded-For` 直接覆盖原值，未按 RFC 7239 追加；当前 gateway 也只取第一个 IP，无实际影响，但语义不严格。
+- CSP 仍含 `'unsafe-inline'`（为兼容 forgot.html 与 games/*.html 的内联脚本），待前端清理后可收紧。
+- HSTS 已启用（半年期，不含子域），站点全量 HTTPS 覆盖后可按需收紧。
 
 ## 依赖
 

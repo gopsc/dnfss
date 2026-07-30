@@ -138,7 +138,9 @@ async function loadData() {
     try {
         const url = `/api/filelist?path=${encodeURIComponent(currentPath)}`;
         const res = await fetch(url);
-        const data = await res.json();
+        const responseText = await res.text();
+        if (window.WafTip && WafTip.isBlocked(res, responseText)) throw new Error(WafTip.MESSAGE);
+        const data = JSON.parse(responseText);
         if (data.success) {
             items = data.items || [];
             render();

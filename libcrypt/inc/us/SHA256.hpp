@@ -5,9 +5,7 @@
 #include <vector>
 #include <string>
 #include <stdexcept>
-#include <iomanip>
-#include <sstream>
-#include "us/Crypto_Basic.hpp"
+#include "Crypto_Basic.hpp"
 
 namespace qing {
 
@@ -98,16 +96,6 @@ namespace qing {
 			EVP_MD_CTX_free(ctx);
 
 			return digest;
-		}
-
-		/* 辅助函数：字节向量转十六进制字符串 */
-		static std::string bytes_to_hex(const std::vector<unsigned char>& bytes) {
-			std::stringstream ss;
-			ss << std::hex << std::setfill('0');
-			for (unsigned char byte : bytes) {
-				ss << std::setw(2) << static_cast<int>(byte);
-			}
-			return ss.str();
 		}
 	};
 }

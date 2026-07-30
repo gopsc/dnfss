@@ -9,7 +9,7 @@ UniServe Framework 的应用层网关，C++20 实现。
 - **账号鉴权**：`/register` 注册（需邮箱验证码，经 pymsg 调 smtp:8008 校验）、`/login` 登录，签发 RSA 签名的 Token。
 - **反向代理**：携带 Token 的请求校验后转发到 `Proxy.opened` 中放开的内部服务。
 - **CAPTCHA 接口**：`/captcha` 生成验证码 token + 文本（内存存储，5 分钟过期，一次性使用）。
-- **邮箱验证码**：`/register/send_code` 发送 6 位验证码邮件（60 秒有效）；注册时校验，一次性消费。
+- **邮箱验证码**：`/register/send_code` 发送 6 位验证码邮件（10 分钟有效）；注册时校验，一次性消费。
 - **速率限制**：登录 5 次/5 分钟、注册 3 次/10 分钟、发验证码 5 次/10 分钟，按 `X-Forwarded-For` 客户端 IP 计数（由 WAF 注入），超限一律返回 429。
 - **OPTIONS 预检**：通配 `*` 返回 CORS 头，允许跨域。
 
@@ -78,19 +78,19 @@ UniServe Framework 的应用层网关，C++20 实现。
 { "username": "user@example.com", "password": "...", "email_code": "123456" }
 ```
 
-校验顺序：密码强度 → 邮箱格式 → CAPTCHA（可选）→ **邮箱验证码**（经 pymsg 调 smtp:8008 `verify_email`，一次性消费，fail-closed），全部通过后写入 `Users` 表。
+校验顺序：密码强度 → 邮箱格式 → CAPTCHA（可选）→ **邮箱验证码**（经 pymsg 调 smtp:8008 `verify_email`，一次性消费，连续失败 5 次自动作废，fail-closed），全部通过后写入 `Users` 表。
 
 错误码：`400`（密码/邮箱/CAPTCHA/邮箱验证码不合规）、`429`（速率超限）、`500`（数据库异常）。
 
 ### `POST /register/send_code`
 
-向目标邮箱发送注册验证码（经 pymsg 调 smtp:8008 `send_email`，60 秒有效）。
+向目标邮箱发送注册验证码（经 pymsg 调 smtp:8008 `send_email`，10 分钟有效）。
 
 ```json
 { "email": "user@example.com" }
 ```
 
-限流 5 次/10 分钟/IP。错误码：`400`（邮箱格式错误）、`429`（速率超限）、`502`（smtp 服务不可用）、`500`（发送失败）。
+限流 5 次/10 分钟/IP；同一邮箱 60 秒发送冷却（由 smtp 服务执行，冷却期拒绝时返回 `retry_after` 剩余秒数与提示文案，gateway 按 429 透传；已发出且在有效期内的验证码不受影响，发送失败不计入冷却）。错误码：`400`（邮箱格式错误）、`429`（IP 速率超限或同邮箱发送冷却）、`502`（smtp 服务不可用）、`500`（发送失败）。
 
 ### `GET/POST *`（反向代理）
 
@@ -226,14 +226,15 @@ gateway/
 
 ## 版本
 
-`0.5.2`（见 [src/main.cpp:29](src/main.cpp#L29)）。启动时打印：
+`0.5.3`（见 [src/main.cpp:30](src/main.cpp#L30)）。启动时打印：
 
 ```
-Gateway 0.5.2 started
+Gateway 0.5.3 started
 ```
 
 近期变更：
 
+- `0.5.3`：配合 smtp 同邮箱 60 秒发送冷却——`/register/send_code` 在 smtp 返回 `retry_after` 时按 429 透传其提示文案（其余发送失败仍用通用 500 文案，SMTP 内部错误细节不向外暴露）。
 - `0.5.2`：限流错误码统一为 429（登录原 400、注册/发码原 403，并修正 "attampts" 拼写）；登录时用户不存在不再兜底 500——空结果统一走 401，并执行 dummy PBKDF2 校验拉平时序防用户名枚举；db 查询失败消息由误名的 "Login (Update Step) Failed" 改为 "Login (Query Step) Failed"；pymsg 下游调用超时常量化（`DbC::DEFAULT_TIMEOUT`、`_TIMEOUT_CAPTCHA/_SMTP_VERIFY/_SMTP_SEND`）。
 - `0.5.1`：登录成功后通过 db 更新 `Users.last_login`（`"$now"` 哨兵，db 日期适配层转为服务端当前 UTC 时间；更新失败经 THROW_EX_CUSTOM 抛 500，与其他步骤一致）。
 

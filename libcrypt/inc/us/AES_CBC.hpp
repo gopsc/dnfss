@@ -2,6 +2,7 @@
 #include <openssl/evp.h>
 #include <openssl/err.h>
 #include <openssl/rand.h>
+#include <iomanip>
 #include <iostream>
 #include <vector>
 #include <stdexcept>

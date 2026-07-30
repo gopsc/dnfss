@@ -871,7 +871,8 @@ update_soul content="我是...（新的自我定义）"
             },
             {
                 'filename': '9_language_instruction.md',
-                'content': """# 语言说明
+                'content': """
+# 语言说明
 
 ## 语言选择
 - 根据用户的输入语言来选择回复语言
@@ -885,11 +886,23 @@ update_soul content="我是...（新的自我定义）"
 - 重要信息可以加粗或标记
 
 记住：用用户习惯的语言交流！
+
+---
+
+## 提问行为（正常对话时）
+当你在处理用户问题过程中遇到以下情况时，**应主动使用 `ask_user` 工具向用户提问**：
+- 信息不足，无法准确回答
+- 任务有多种可行方案，需要用户选择
+- 用户需求模糊，需要进一步澄清
+- 执行操作前需要用户确认或提供额外参数
+
+**注意**：此提问行为仅适用于**用户主动发起的对话**，不适用于定时任务触发的自动对话（定时任务中禁止提问）。
 """
             },
             {
                 'filename': '10_task_handling.md',
-                'content': """# 任务处理规则
+                'content': """
+# 任务处理规则
 
 ## 定时任务
 当收到定时任务触发时：
@@ -897,6 +910,7 @@ update_soul content="我是...（新的自我定义）"
 2. 不要偏离主题
 3. 使用相应工具执行操作
 4. 完成后使用 `save_memory_and_end_conversation` 结束对话
+5. **不要在任务执行过程中创建新的定时任务（除非任务明确要求），也不要向用户提问（因为此对话是自动触发的）**
 
 ## 即时任务
 当任务需要立即执行时：
@@ -909,6 +923,7 @@ update_soul content="我是...（新的自我定义）"
 - 每次触发时专注当前执行
 - 不要重复之前已完成的工作
 - 系统会自动更新下一次执行时间
+
 """
             }
         ]
@@ -2894,9 +2909,12 @@ class TaskScheduler:
     2. 根据任务内容进行适当的操作和回答
     3. 任务处理完成后，如果不需要继续对话，可以结束对话
     4. 系统已经自动更新了任务状态（更新了执行时间和次数），你不需要手动处理任务完成逻辑
+    5. 不要在任务执行过程中创建新的定时任务（除非任务明确要求），也不要向用户提问（因为此对话是自动触发的）
 
     请现在开始处理这个任务。
     """
+
+
         user_input = focus_prompt + "\n\n" + user_input
         
         result = "任务已触发AI对话"
@@ -4267,6 +4285,36 @@ class ReloadSkillsTool(Tool):
         output_queue.put(("line", result + "\n"))
         output_queue.put(("complete", result))
 
+
+# ==================== 询问工具 ========================
+class AskUserTool(Tool):
+    """智能体遇到了麻烦，主动向用户问一个问题"""
+
+    def get_name(self) -> str:
+        return "ask_user"
+
+    def get_description(self) -> str:
+        return  "你遇到了一个问题，想向用户询问一个问题的工具。"
+
+    def get_parameters(self) -> Dict:
+        ''' TODO: 调用子代理生成提示词 '''
+        return {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "你现在遇到一个问题，你想询问用户，现在提供你的问题。"
+                    )
+                }
+            },
+            "required": []
+        }
+
+    def execute(self, question: str, **kwargs) -> str:
+        return (
+                "你遇到了想搞清楚的事情: " + question + "\n你现在可以询问用户。"
+        )
 
 # ==================== 安装技能工具 ====================
 
@@ -6547,6 +6595,9 @@ class DeepSeekChat:
         # 增强版保存记忆并结束对话工具
         if exit_callback and self.memory_db:
             builtin_tools.append(SaveMemoryAndEndConversationTool(exit_callback, self.memory_db, self.prompt_manager, self.logger))
+
+        # 添加询问用户的工具
+        builtin_tools.append(AskUserTool(self.logger))
         
         # 添加技能热重载工具 & 技能安装指引工具 & 创建技能工具
         builtin_tools.append(ReloadSkillsTool(self.tool_registry, self.logger))
@@ -6819,7 +6870,11 @@ class DeepSeekChat:
         ## 第二步：搜索相关记忆
         在每次回答用户问题前，**必须**使用 `memory search` 工具搜索记忆库中与当前话题相关的记忆，确保回答的连贯性和准确性。
 
-        ## 第三步：执行任务或回答问题
+        ## 第三步：积极向用户提问
+        如果你有任何无法确定的事情，那么你需要用户提供额外信息，
+        请务必使用 `ask_user` 工具向用户提问，以便获得更准确的指引。
+
+        ## 第四步：执行任务或回答问题
         根据搜索结果，选择合适的工具或直接回答。
 
         【重要提醒】
