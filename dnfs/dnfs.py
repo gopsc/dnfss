@@ -85,11 +85,9 @@ def review_content(content: str, timeout: int = 10) -> Dict[str, Any]:
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             resp_data = resp.read().decode("utf-8")
-            data =  json.loads(resp_data)
-            invalid: bool = data['invalid']
-            return invalid == False
-            #invalid = data
-            #return invalid
+            data = json.loads(resp_data)
+            # 兼容布尔/字符串两种返回类型：仅明确判定安全才放行，其余一律拦截（fail-closed）
+            return data.get('invalid') in (False, 'false')
 
     except urllib.error.HTTPError as e:
         # 服务端返回 4xx/5xx 错误时，尝试解析错误正文
