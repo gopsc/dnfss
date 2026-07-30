@@ -439,7 +439,9 @@ var recommend_list = document.getElementById('recommend-list');
 var delete_note = document.getElementById('delete-note');
 var minimap = document.getElementById("minimap");
 var movebar = document.getElementById("movebar");
-var is_expand = true;
+/* 面板默认展开的最小视口宽度（px）：窄屏下面板展开会遮挡内容，默认折叠；宽屏默认展开 */
+var PANEL_EXPAND_MIN_WIDTH = 768;
+var is_expand = window.innerWidth >= PANEL_EXPAND_MIN_WIDTH;
 var editing_id = null;	/* 编辑模式：正在编辑的节点 id，null 表示当前是新增模式 */
 var moving_node = null;	/* 移动模式：待移动的节点 {id, pid, title, content}，null 表示未在移动 */
 
@@ -657,7 +659,7 @@ function loadMap(children_json) {
 /* by qing — 用户信息面板：左上角，默认折叠；展示用户名 / 角色 / 退出登录。
  * 身份来自 dnfs /whoami（HttpOnly Cookie 模式下 JS 无法读 Token，由后端解 payload 返回） */
 var userpanel = document.getElementById("userpanel");
-var userpanel_expand = false;
+var userpanel_expand = window.innerWidth >= PANEL_EXPAND_MIN_WIDTH;	// 与 minimap 同策略：窄屏默认折叠
 var current_user = null;
 
 async function loadUserPanel() {
