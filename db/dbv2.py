@@ -29,6 +29,7 @@ dbv2 — 基于 pymsg 协议（MsgServer）的数据库服务。
 
 import json
 import os
+import threading
 import time
 import traceback
 from datetime import datetime, date, time as dt_time, timezone, timedelta
@@ -76,15 +77,26 @@ def _json_default(o):
 class DBServer:
     """基于 pymsg 的数据库服务，通过 TCP 长连接收发 JSON。"""
 
-    def __init__(self, addr="127.0.0.1", port=8005):
+    def __init__(self, addr="127.0.0.1", port=8005, workers=4):
         self.addr = addr
         self.port = port
         self.engine = create_engine(DATABASE_URL)
         self.metadata = MetaData()
-        self._server = MsgServer(addr, port)
+        self._server = MsgServer(addr, port, workers=workers)
 
         # 日志表缓存（避免重复反射）
         self._logs_table_cache = {}
+
+        # 业务表缓存：仅缓存"已完整反射"的表。
+        # 注意不能用 metadata.tables 作完成标记 —— Table(autoload_with=...)
+        # 会先注册进 metadata.tables（此时无列）再填充列，锁外快路径可能
+        # 读到反射半途的空列表。
+        self._tables_cache = {}
+
+        # 表反射锁：workers>0 时多个 worker 线程可能对同一新表并发做
+        # check-then-act 反射（Table(..., autoload_with=...) 对已定义表名会
+        # 抛 InvalidRequestError），反射操作需串行化
+        self._reflect_lock = threading.Lock()
 
         # 路由表
         self._routes = {
@@ -136,9 +148,20 @@ class DBServer:
 
     # ── 表反射 ---------------------------------------------------------
     def _get_table(self, table_name):
-        if table_name not in self.metadata.tables:
-            Table(table_name, self.metadata, autoload_with=self.engine)
-        return self.metadata.tables[table_name]
+        # double-check：_tables_cache 只在反射完整完成后写入（dict 读写 GIL
+        # 下安全），锁外快路径读到的要么是完整表要么是 None
+        table = self._tables_cache.get(table_name)
+        if table is None:
+            with self._reflect_lock:
+                table = self._tables_cache.get(table_name)
+                if table is None:
+                    # 持锁期间无其他反射在进行，metadata 中的表必然完整
+                    table = self.metadata.tables.get(table_name)
+                    if table is None:
+                        table = Table(table_name, self.metadata,
+                                      autoload_with=self.engine)
+                    self._tables_cache[table_name] = table
+        return table
 
     # ── 日期/时间类型适配 ------------------------------------------------
     def _coerce_value(self, column, value):
@@ -316,35 +339,43 @@ class DBServer:
         if "Logs" in self._logs_table_cache:
             return self._logs_table_cache["Logs"]
 
-        with self.engine.connect() as conn:
-            conn.exec_driver_sql("""
-                CREATE TABLE IF NOT EXISTS Logs (
-                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ts        TEXT    NOT NULL,
-                    service   TEXT    NOT NULL,
-                    level     TEXT    NOT NULL,
-                    message   TEXT    NOT NULL,
-                    trace_id  TEXT,
-                    extra     TEXT
-                )
-            """)
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS idx_logs_service_ts ON Logs(service, ts)"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS idx_logs_level_ts  ON Logs(level, ts)"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS idx_logs_ts         ON Logs(ts)"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS idx_logs_trace      ON Logs(trace_id)"
-            )
-            conn.commit()
+        # 与 _get_table 共用反射锁，double-check 保证并发下只建/反射一次；
+        # Logs 可能已被 _get_table("Logs") 反射进 metadata，需幂等处理
+        with self._reflect_lock:
+            if "Logs" in self._logs_table_cache:
+                return self._logs_table_cache["Logs"]
 
-        table = Table("Logs", self.metadata, autoload_with=self.engine)
-        self._logs_table_cache["Logs"] = table
-        return table
+            table = self.metadata.tables.get("Logs")
+            if table is None:
+                with self.engine.connect() as conn:
+                    conn.exec_driver_sql("""
+                        CREATE TABLE IF NOT EXISTS Logs (
+                            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                            ts        TEXT    NOT NULL,
+                            service   TEXT    NOT NULL,
+                            level     TEXT    NOT NULL,
+                            message   TEXT    NOT NULL,
+                            trace_id  TEXT,
+                            extra     TEXT
+                        )
+                    """)
+                    conn.exec_driver_sql(
+                        "CREATE INDEX IF NOT EXISTS idx_logs_service_ts ON Logs(service, ts)"
+                    )
+                    conn.exec_driver_sql(
+                        "CREATE INDEX IF NOT EXISTS idx_logs_level_ts  ON Logs(level, ts)"
+                    )
+                    conn.exec_driver_sql(
+                        "CREATE INDEX IF NOT EXISTS idx_logs_ts         ON Logs(ts)"
+                    )
+                    conn.exec_driver_sql(
+                        "CREATE INDEX IF NOT EXISTS idx_logs_trace      ON Logs(trace_id)"
+                    )
+                    conn.commit()
+                table = Table("Logs", self.metadata, autoload_with=self.engine)
+
+            self._logs_table_cache["Logs"] = table
+            return table
 
     # ── 内部日志（直接写库，无 HTTP）──────────────────────────────────
     def _log_internal(self, service, level, message,
@@ -432,9 +463,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="dbv2 — pymsg 数据库服务")
     parser.add_argument("--addr", default="127.0.0.1", help="监听地址")
     parser.add_argument("--port", type=int, default=8005, help="监听端口")
+    parser.add_argument("--workers", type=int, default=4,
+                        help="回调并发线程数（0=同步串行模式）")
     args = parser.parse_args()
 
-    server = DBServer(args.addr, args.port)
+    server = DBServer(args.addr, args.port, workers=args.workers)
     try:
         server.start()
     except KeyboardInterrupt:

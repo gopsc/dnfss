@@ -141,6 +141,7 @@ server.start(on_message)   # 阻塞当前线程
 |------|------|
 | `addr` | 监听地址 |
 | `port` | 监听端口 |
+| `workers` | 工作线程数（关键字参数，默认 `0`）；`>0` 时回调在线程池中并发执行 |
 
 回调签名为 `on_message(sock, addr, text)`：
 - `sock` — 客户端 socket，可用 `reply()` 回复
@@ -159,10 +160,22 @@ server.start(on_message)   # 阻塞当前线程
 
 服务端内部管理客户端列表，透明处理断连和管道破裂，使用 `select` 实现非阻塞 I/O，轮询间隔 100ms。
 
+**并发模式（v0.2.0）**：
+
+```python
+server = MsgServer("0.0.0.0", 8005, workers=4)
+```
+
+默认 `workers=0` 为同步模式：回调在 select 事件循环线程内串行执行，慢回调会阻塞所有连接。`workers>0` 时回调提交到 `ThreadPoolExecutor` 并发执行，I/O 密集回调（如 SQL 查询）可获得真实并行度。保证：
+
+- **同一连接消息严格串行**：回调完成前该连接暂停 select 监听（恢复粒度 ≤100ms，对短连接 RPC 无影响）；
+- **发送不交错**：`reply()` / `broadcast()` 经每连接锁串行化；
+- **故障隔离**：回调抛异常仅移除该连接并打印 traceback，服务整体存活（同步模式下异常会直接使 `start()` 崩溃，两种模式语义不同，请注意）。
+
 ## 线程安全
 
 - `MsgServer.stop()` 可从任意线程安全调用：设置原子标志并关闭监听 socket，`select` 循环会干净退出。
-- `MsgServer.broadcast()` 和 `reply()` 在 `on_message` 回调内（同一线程）调用是安全的。服务端运行期间从其他线程并发调用不支持。
+- `MsgServer.broadcast()` 和 `reply()` 在 `on_message` 回调内调用是安全的（线程池模式下经每连接发送锁串行化）。`broadcast()` 会遍历客户端列表，仅限回调线程调用，不要从无关的第三方线程并发调用。
 - `MsgClient.stop()` 可从另一线程调用以中断 `listen()`。
 - `send()` 和 `recv()` 内部不做同步 —— 如果多线程共享同一 socket，调用方需自行串行化。
 

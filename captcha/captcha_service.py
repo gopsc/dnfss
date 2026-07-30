@@ -97,10 +97,10 @@ def generate_image(text):
 class CaptchaServer:
     """基于 pymsg 的验证码服务，通过 TCP 长连接收发 JSON。"""
 
-    def __init__(self, addr="127.0.0.1", port=8009):
+    def __init__(self, addr="127.0.0.1", port=8009, workers=4):
         self.addr = addr
         self.port = port
-        self._server = MsgServer(addr, port)
+        self._server = MsgServer(addr, port, workers=workers)
 
         # 路由表
         self._routes = {
@@ -209,9 +209,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="captcha — pymsg 验证码服务")
     parser.add_argument("--addr", default="127.0.0.1", help="监听地址")
     parser.add_argument("--port", type=int, default=8009, help="监听端口")
+    parser.add_argument("--workers", type=int, default=4,
+                        help="回调并发线程数（0=同步串行模式）")
     args = parser.parse_args()
 
-    server = CaptchaServer(args.addr, args.port)
+    server = CaptchaServer(args.addr, args.port, workers=args.workers)
     try:
         server.start()
     except KeyboardInterrupt:

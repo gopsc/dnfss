@@ -93,10 +93,10 @@ STORE_LOCK = threading.Lock()
 class SmtpServer:
     """基于 pymsg 的邮箱验证码服务，通过 TCP 长连接收发 JSON。"""
 
-    def __init__(self, addr="127.0.0.1", port=8008):
+    def __init__(self, addr="127.0.0.1", port=8008, workers=4):
         self.addr = addr
         self.port = port
-        self._server = MsgServer(addr, port)
+        self._server = MsgServer(addr, port, workers=workers)
 
         # 路由表
         self._routes = {
@@ -182,6 +182,9 @@ class SmtpServer:
                 logs.info("smtp", f"{email}: 发送冷却中，剩余 {wait}s，已拒绝")
                 return {"sent": False, "retry_after": wait,
                         "error": f"发送过于频繁，请 {wait} 秒后重试"}
+            # 立即占位：防止并发请求同时通过冷却检查导致同邮箱重复发送；
+            # 发送失败时在下方回滚，"失败不计入冷却"语义不变
+            send_history[email] = time.time()
 
         code = "".join(str(random.randint(0, 9)) for _ in range(CODE_LEN))
         subject = str(req.get("subject") or DEFAULT_SUBJECT)
@@ -211,10 +214,11 @@ class SmtpServer:
             # 发送失败：作废刚写入的验证码，避免"码已存但邮件没到"的不可用状态
             with STORE_LOCK:
                 code_store.pop(email, None)
+                send_history.pop(email, None)   # 回滚冷却占位，允许立即重试
             logs.error("smtp", f"{email}: 验证码发送失败({err})")
             return {"sent": False, "error": f"验证码发送失败：{err}"}
 
-        # 发送成功：记录冷却起点，并惰性清理已失效的冷却记录
+        # 发送成功：刷新冷却起点（检查阶段已占位），并惰性清理已失效的冷却记录
         with STORE_LOCK:
             send_history[email] = time.time()
             stale = [k for k, v in send_history.items()
@@ -280,9 +284,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="smtp — pymsg 邮箱验证码服务")
     parser.add_argument("--addr", default="127.0.0.1", help="监听地址")
     parser.add_argument("--port", type=int, default=8008, help="监听端口")
+    parser.add_argument("--workers", type=int, default=4,
+                        help="回调并发线程数（0=同步串行模式）")
     args = parser.parse_args()
 
-    server = SmtpServer(args.addr, args.port)
+    server = SmtpServer(args.addr, args.port, workers=args.workers)
     try:
         server.start()
     except KeyboardInterrupt:
