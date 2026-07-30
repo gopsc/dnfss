@@ -19,7 +19,6 @@ SMTP 账号经 .env 配置：SMTP_SERVER / SMTP_PORT / SMTP_USER / __PASSWORD
 （__PASSWORD 兼容别名 SMTP_PASSWORD）。
 """
 
-import json
 import os
 import random
 import smtplib
@@ -60,7 +59,7 @@ from log_client import logs
 # pymsg 导入
 import sys as _sys
 _sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from pymsg import MsgServer  # noqa: E402
+from pymsg import RpcServer  # noqa: E402
 
 # ── 配置 ────────────────────────────────────────────────────────────────
 
@@ -96,14 +95,14 @@ class SmtpServer:
     def __init__(self, addr="127.0.0.1", port=8008, workers=4):
         self.addr = addr
         self.port = port
-        self._server = MsgServer(addr, port, workers=workers)
-
-        # 路由表
-        self._routes = {
-            "send_email": self._handle_send_email,
-            "verify_email": self._handle_verify_email,
-            "health": self._handle_health,
-        }
+        self._server = RpcServer(
+            addr, port, workers=workers,
+            on_error=lambda route, e: logs.error(
+                "smtp", f"路由 {route} 处理异常: {e}"),
+        )
+        self._server.add_route("send_email", self._handle_send_email)
+        self._server.add_route("verify_email", self._handle_verify_email)
+        self._server.add_route("health", self._handle_health)
 
     # ── 启动 / 停止 ──────────────────────────────────────────────────
     def start(self) -> None:
@@ -118,41 +117,11 @@ class SmtpServer:
             print(f"[smtp] 警告: SMTP 配置缺失: {','.join(missing)}（.env 加载 {_env_loaded} 项）")
         print(f"[smtp] 监听 tcp://{self.addr}:{self.port}")
         logs.info("smtp", f"开始监听 tcp://{self.addr}:{self.port}")
-        self._server.start(self._dispatch)
+        self._server.start()
 
     def stop(self) -> None:
         """从另一线程停止服务。"""
         self._server.stop()
-
-    # ── 消息调度 -------------------------------------------------------
-    def _dispatch(self, sock, addr, text):
-        """解析 JSON 中的 _route，分发给对应的 handler，并回复结果。"""
-        try:
-            req = json.loads(text)
-        except json.JSONDecodeError as e:
-            self._reply(sock, False, error=f"JSON 解析失败: {e}")
-            return
-
-        route = req.pop("_route", "")
-        handler = self._routes.get(route)
-        if handler is None:
-            self._reply(sock, False, error=f"未知路由: {route}")
-            return
-
-        try:
-            result = handler(req)
-            self._reply(sock, True, data=result)
-        except Exception as e:
-            logs.error("smtp", f"路由 {route} 处理异常: {e}")
-            self._reply(sock, False, error=str(e))
-
-    def _reply(self, sock, success, data=None, error=None):
-        resp = {"success": success}
-        if data is not None:
-            resp["data"] = data
-        if error is not None:
-            resp["error"] = error
-        self._server.reply(sock, json.dumps(resp, ensure_ascii=False))
 
     # ═══════════════════════════════════════════════════════════════════
     # 路由处理

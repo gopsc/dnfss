@@ -179,61 +179,85 @@ server = MsgServer("0.0.0.0", 8005, workers=4)
 - `MsgClient.stop()` 可从另一线程调用以中断 `listen()`。
 - `send()` 和 `recv()` 内部不做同步 —— 如果多线程共享同一 socket，调用方需自行串行化。
 
+## JSON RPC 约定层（v0.3.0）
+
+项目内所有 pymsg 通信都遵循同一 JSON RPC 约定（与 C++/Go 客户端字节级兼容）：
+
+```
+请求:  {"_route": "<路由名>", ...业务字段}
+响应:  {"success": true, "data": ...} | {"success": false, "error": "..."}
+```
+
+`RpcServer` / `RpcClient` 把这套约定的编解码、路由分发、错误包装收敛为开箱即用的类（`pymsg/rpc.py`），各服务无需再手写 `_dispatch` / `_reply`。
+
+### `RpcServer` — JSON RPC 服务端
+
+```python
+from pymsg import RpcServer
+
+rpc = RpcServer("127.0.0.1", 8005, workers=4)
+
+@rpc.route("execute")
+def _execute(req):            # handler(req: dict) -> data
+    return {"rows": []}       # 返回值自动包成 {"success": true, "data": ...}
+                              # 抛异常自动包成 {"success": false, "error": str(e)}
+rpc.start()   # 阻塞当前线程
+```
+
+| 构造参数 | 含义 |
+|----------|------|
+| `addr` / `port` | 监听地址与端口 |
+| `workers` | 回调并发线程数（透传 `MsgServer`，默认 0） |
+| `json_default` | 响应 JSON 序列化兜底函数（如日期转 ISO 8601） |
+| `on_error` | 可选钩子 `on_error(route, exc)`，handler 异常时调用（记日志用） |
+
+### `RpcClient` — JSON RPC 客户端
+
+```python
+from pymsg import RpcClient, RpcError
+
+rpc = RpcClient("127.0.0.1", 8005, "dnfs", timeout=10.0)
+try:
+    data = rpc.call("execute", {"action": "select", "table": "Users"})
+except RpcError as e:
+    ...  # 服务端业务错误（success=false）
+```
+
+`call(route, payload=None, *, timeout=None)`：自动注入 `_route`、JSON 编解码、检查 `success`，返回 `data` 字段；业务错误抛 `RpcError`，网络故障仍抛 `ConnectionRefusedError` / `TimeoutError`（来自 `MsgClient`）。
+
 ## 实际用例
 
 ### 服务端 — 数据库服务（dbv2）
 
-db 服务通过 pymsg 暴露通用 CRUD 接口。每条请求是带 `_route` 字段的 JSON 对象，服务端按路由分发到对应处理函数，通过同一 socket 回复结果。
+db 服务基于 `RpcServer` 暴露通用 CRUD 接口（路由 `execute`）：
 
 ```python
-import json
-from pymsg import MsgServer
+from pymsg import RpcServer
 
 class DBServer:
-    def __init__(self):
-        self._server = MsgServer("127.0.0.1", 8005)
-        self._routes = {"execute": self._handle_execute}
+    def __init__(self, addr="127.0.0.1", port=8005, workers=4):
+        self._server = RpcServer(addr, port, workers=workers,
+                                 json_default=_json_default)
+        self._server.add_route("execute", self._handle_execute)
 
     def start(self):
-        self._server.start(self._dispatch)
-
-    def _dispatch(self, sock, addr, text):
-        req = json.loads(text)
-        route = req.pop("_route", "")
-        handler = self._routes.get(route)
-        if handler is None:
-            self._server.reply(sock,
-                json.dumps({"success": False, "error": "未知路由"}))
-            return
-        try:
-            result = handler(req)
-            self._server.reply(sock,
-                json.dumps({"success": True, "data": result}))
-        except Exception as e:
-            self._server.reply(sock,
-                json.dumps({"success": False, "error": str(e)}))
+        self._server.start()
 
     def _handle_execute(self, data):
-        # ... 通过 SQLAlchemy 执行 SQL，返回 dict 列表
+        # ... 通过 SQLAlchemy 执行 SQL，返回 dict 列表；异常自动包装为错误响应
         pass
 ```
 
 ### 客户端 — RPC 调用（dnfs → db）
 
-dnfs 笔记服务自身没有数据库，所有 CRUD 操作均通过 pymsg 调用 db。
+dnfs 笔记服务自身没有数据库，所有 CRUD 操作均通过 `RpcClient` 调用 db：
 
 ```python
-import json
-from pymsg import MsgClient
+from pymsg import RpcClient
 
-def _call_dbv2(payload):
-    client = MsgClient("127.0.0.1", 8005, "dnfs")
-    resp = client.call(json.dumps(payload), timeout=10.0)
-    return json.loads(resp)
+_rpc = RpcClient("127.0.0.1", 8005, "dnfs")
 
-# 创建笔记
-result = _call_dbv2({
-    "_route": "execute",
+data = _rpc.call("execute", {
     "action": "insert",
     "table": "Notes",
     "values": {"title": "会议记录", "content": "..."}
@@ -242,24 +266,19 @@ result = _call_dbv2({
 
 ### 客户端 — 异步日志推送（log_client）
 
-各服务通过 pymsg 将日志异步推送到 db。使用 `MsgClient.call()` 逐批插入。
+各服务通过统一 `log_client.py` 将日志异步推送到 db，底层为 `RpcClient`：
 
 ```python
-import json
-from pymsg import MsgClient
+from pymsg import RpcClient
 
-def _send(batch):
-    client = MsgClient("127.0.0.1", 8005, "gateway-log")
-    for entry in batch:
-        client.call(json.dumps({
-            "_route": "execute",
-            "action": "insert",
-            "table": "Logs",
-            "values": {
-                "ts": now, "service": entry["service"],
-                "level": entry["level"], "message": entry["message"],
-            }
-        }), timeout=5)
+client = RpcClient("127.0.0.1", 8005, "log-client")
+for entry in batch:
+    client.call("execute", {
+        "action": "insert",
+        "table": "Logs",
+        "values": {"ts": now, "service": entry["service"],
+                   "level": entry["level"], "message": entry["message"]},
+    }, timeout=5)
 ```
 
 ## 跨语言互操作
@@ -289,6 +308,7 @@ pymsg 的线格式有意设计得极其简单，使其他语言的服务也能�
 | `ConnectionError`（内置） | 完整消息接收前 socket 断开 |
 | `ConnectionRefusedError`（内置） | `MsgClient.call()` 或 `send()` 无法连接目标 |
 | `RuntimeError` | `MsgClient.listen()` 在 `connect()` 之前调用 |
+| `pymsg.RpcError` | `RpcClient.call()` 收到 `success=false` 业务错误或非法 RPC 响应 |
 
 `MsgServer` 内部会吞掉客户端断连错误（移除该客户端，继续服务）。`broadcast()` 静默跳过已断开的 socket。
 

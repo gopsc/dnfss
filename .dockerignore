@@ -1,0 +1,61 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.env
+.env/
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Build artifacts
+*.bin
+*.o
+*.a
+*.out
+
+# Documentation (exclude READMEs)
+*.md
+!README.md
+docs/
+
+# Logs
+*.log
+logs/
+
+# Data files (handled via volumes)
+*.db
+*.sqlite
+*.sqlite3
+data/
+chroma/
+
+# Other modules not needed for build
+bot4cj/
+core/
+gateway/
+lib*/
+waf/
+captcha/
+smtp/
+static/
+tests/
+3d/
+BotOps/
+pymsg/tests/

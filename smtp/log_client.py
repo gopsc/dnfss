@@ -1,8 +1,7 @@
-"""
-统一日志客户端 — 通过 pymsg TCP 调用 dbv2 execute 路由，逐条 INSERT 到 Logs 表。
+"""统一日志客户端 — 各服务共用（dnfs / smtp / static 三份副本内容一致，改动请同步）。
 
 设计要点：
-  - 通过 pymsg TCP 调用 dbv2 execute 路由，逐条 INSERT 到 Logs 表
+  - 通过 pymsg RPC 调用 dbv2 execute 路由，逐条 INSERT 到 Logs 表
   - 异步非阻塞：内存队列 + 后台线程批量推送，不拖慢业务
   - fail-safe：db 服务不可用时静默丢弃，绝不影响业务
   - 缓冲批量：队列满 50 条或超时 2 秒时自动 flush
@@ -10,9 +9,9 @@
 用法：
     from log_client import logs
 
-    logs.info("smtp", "验证码发送成功")
-    logs.error("smtp", "验证码发送失败", extra={"errno": 2002})
-    logs.push("smtp", "WARNING", "登录失败次数超限",
+    logs.info("dnfs", "节点新增成功 id=42")
+    logs.error("dnfs", "数据库连接失败", extra={"errno": 2002})
+    logs.push("gateway", "WARNING", "登录失败次数超限",
               trace_id="req-abc", extra={"ip": "1.2.3.4"})
 """
 
@@ -26,12 +25,12 @@ import atexit
 from datetime import datetime, timezone
 
 _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
-from pymsg import MsgClient  # noqa: E402
+from pymsg import RpcClient, RpcError  # noqa: E402
 
 # ── 配置 ──────────────────────────────────────────────────────────────
 
-_DBV2_ADDR = '127.0.0.1'
-_DBV2_PORT = 8005
+_DBV2_ADDR = _os.environ.get('DB_HOST', '127.0.0.1')
+_DBV2_PORT = int(_os.environ.get('DB_PORT', '8005'))
 
 _BATCH_SIZE = 50         # 队列满 50 条时 flush
 _FLUSH_INTERVAL = 2.0    # 超时 2 秒强制 flush
@@ -39,12 +38,9 @@ _TIMEOUT = 5             # socket 超时（秒）
 
 
 class LogClient:
-    """异步批量日志推送客户端。
+    """异步批量日志推送客户端。"""
 
-    通过 MsgClient（pymsg TCP 协议）逐条 INSERT 到 dbv2 的 Logs 表。
-    """
-
-    def __init__(self, service_name="smtp",
+    def __init__(self, service_name="log",
                  batch_size=_BATCH_SIZE,
                  flush_interval=_FLUSH_INTERVAL):
         self._service_name = service_name
@@ -88,9 +84,7 @@ class LogClient:
     def flush(self):
         """手动 flush 队列中剩余的日志（含后台线程持有的局部 batch）。"""
         self._flush_signal.set()  # 通知后台线程立即 flush 其局部 batch
-        # 等待后台线程响应（queue.get 超时最长 0.5s）
-        time.sleep(0.6)
-        # 排空主队列中尚未被线程取走的条目
+        time.sleep(0.6)  # 等待后台线程响应
         batch = []
         while True:
             try:
@@ -113,7 +107,6 @@ class LogClient:
 
         while not self._stop.is_set():
             timeout = self._flush_interval - (time.monotonic() - last_flush)
-            # 限制最长阻塞时间，以便及时响应 flush() 信号
             chk_timeout = max(0.1, min(timeout, 0.5))
             try:
                 item = self._queue.get(timeout=chk_timeout)
@@ -141,35 +134,33 @@ class LogClient:
             self._send(batch)
 
     def _send(self, batch):
-        """通过 pymsg 使用 execute 路由逐条 INSERT 到 dbv2 Logs 表。"""
+        """通过 pymsg RPC（execute 路由）逐条 INSERT 到 dbv2 Logs 表。"""
         now = datetime.now(timezone.utc).isoformat()
-        try:
-            client = MsgClient(_DBV2_ADDR, _DBV2_PORT, self._service_name + "-log")
-            for entry in batch:
-                extra_val = entry.get("extra")
-                payload = {
-                    "_route": "execute",
-                    "action": "insert",
-                    "table": "Logs",
-                    "values": {
-                        "ts": now,
-                        "service": entry.get("service"),
-                        "level": entry.get("level"),
-                        "message": entry.get("message"),
-                        "trace_id": entry.get("trace_id"),
-                        "extra": json.dumps(extra_val, ensure_ascii=False)
-                        if extra_val is not None else None,
-                    },
-                }
-                resp = client.call(json.dumps(payload), timeout=_TIMEOUT)
-                resp_obj = json.loads(resp)
-                if not resp_obj.get("success"):
-                    import sys
-                    print(f"[log_client] INSERT 失败: {resp_obj.get('error')}",
-                          file=sys.stderr)
-        except Exception as e:
-            import sys
-            print(f"[log_client] 发送失败: {e}", file=sys.stderr)
+        client = RpcClient(_DBV2_ADDR, _DBV2_PORT, self._service_name + "-log")
+        for entry in batch:
+            extra_val = entry.get("extra")
+            payload = {
+                "action": "insert",
+                "table": "Logs",
+                "values": {
+                    "ts": now,
+                    "service": entry.get("service"),
+                    "level": entry.get("level"),
+                    "message": entry.get("message"),
+                    "trace_id": entry.get("trace_id"),
+                    "extra": json.dumps(extra_val, ensure_ascii=False)
+                    if extra_val is not None else None,
+                },
+            }
+            try:
+                client.call("execute", payload, timeout=_TIMEOUT)
+            except RpcError as e:
+                # 业务错误（如表结构不符）：打印后继续下一条
+                print(f"[log_client] INSERT 失败: {e}", file=_sys.stderr)
+            except Exception as e:
+                # 网络错误：db 不可用，放弃本批剩余（fail-safe）
+                print(f"[log_client] 发送失败: {e}", file=_sys.stderr)
+                break
 
     def _shutdown(self):
         """进程退出时 flush 剩余日志。"""
@@ -179,4 +170,4 @@ class LogClient:
 
 # ── 全局单例 ──────────────────────────────────────────────────────────
 
-logs = LogClient(service_name="smtp")
+logs = LogClient()

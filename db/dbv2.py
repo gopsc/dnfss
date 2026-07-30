@@ -37,6 +37,7 @@ from datetime import datetime, date, time as dt_time, timezone, timedelta
 from sqlalchemy import (
     create_engine, MetaData, Table,
     select, insert, update, delete, func, and_,
+    event,
 )
 from sqlalchemy import types as sa_types
 from sqlalchemy.exc import SQLAlchemyError
@@ -44,11 +45,31 @@ from sqlalchemy.exc import SQLAlchemyError
 # pymsg 导入
 import sys as _sys
 _sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from pymsg import MsgServer  # noqa: E402
+from pymsg import RpcServer  # noqa: E402
 
 # ── 数据库配置 ──────────────────────────────────────────────────────────
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///database.db")
+
+# ── SQLite 连接配置（针对 Docker/多线程环境优化）──────────────────────
+
+def _configure_sqlite(dbapi_connection, connection_record):
+    """为每个 SQLite 连接设置 PRAGMA，优化并发与持久化性能。
+
+    - WAL 模式：读写不互斥，并发性能大幅提升，Docker 卷挂载下更稳定
+    - NORMAL 同步级别：在断电时可能丢失最近提交的事务（但不会损坏数据库）
+      配合 WAL checkpoint 足够安全，性能显著提升
+    - foreign_keys=ON：启用外键约束
+    - busy_timeout：锁等待超时 5 秒，避免 SQLITE_BUSY 错误
+    - mmap_size：使用内存映射 I/O 提升读取性能
+    """
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.execute("PRAGMA mmap_size=268435456")  # 256MB
+    cursor.close()
 
 # ── 日志模块常量 ────────────────────────────────────────────────────────
 
@@ -80,9 +101,20 @@ class DBServer:
     def __init__(self, addr="127.0.0.1", port=8005, workers=4):
         self.addr = addr
         self.port = port
-        self.engine = create_engine(DATABASE_URL)
+        self.engine = create_engine(
+            DATABASE_URL,
+            connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
+        )
+        # 为 SQLite 连接应用 PRAGMA 优化
+        if DATABASE_URL.startswith("sqlite"):
+            event.listen(self.engine, "connect", _configure_sqlite)
         self.metadata = MetaData()
-        self._server = MsgServer(addr, port, workers=workers)
+        self._server = RpcServer(
+            addr, port, workers=workers,
+            json_default=_json_default,
+            on_error=lambda route, e: traceback.print_exc(),
+        )
+        self._server.add_route("execute", self._handle_execute)
 
         # 日志表缓存（避免重复反射）
         self._logs_table_cache = {}
@@ -98,53 +130,17 @@ class DBServer:
         # 抛 InvalidRequestError），反射操作需串行化
         self._reflect_lock = threading.Lock()
 
-        # 路由表
-        self._routes = {
-            "execute": self._handle_execute,
-        }
-
     # ── 启动 / 停止 ──────────────────────────────────────────────────
     def start(self) -> None:
         """启动服务（阻塞当前线程）。"""
         print(f"[dbv2] 监听 tcp://{self.addr}:{self.port}")
-        self._ensure_logs_table()   # 确保 Logs 表已建好（外部 MsgClient 写日志前）
+        self._ensure_logs_table()   # 确保 Logs 表已建好（外部写日志前）
         self._start_cleanup_thread()
-        self._server.start(self._dispatch)
+        self._server.start()
 
     def stop(self) -> None:
         """从另一线程停止服务。"""
         self._server.stop()
-
-    # ── 消息调度 -------------------------------------------------------
-    def _dispatch(self, sock, addr, text):
-        """解析 JSON 中的 _route，分发给对应的 handler，并回复结果。"""
-        try:
-            req = json.loads(text)
-        except json.JSONDecodeError as e:
-            self._reply(sock, False, error=f"JSON 解析失败: {e}")
-            return
-
-        route = req.pop("_route", "")
-        handler = self._routes.get(route)
-        if handler is None:
-            self._reply(sock, False, error=f"未知路由: {route}")
-            return
-
-        try:
-            result = handler(req, sock=sock)
-            self._reply(sock, True, data=result)
-        except Exception as e:
-            traceback.print_exc()
-            self._reply(sock, False, error=str(e))
-
-    def _reply(self, sock, success, data=None, error=None):
-        resp = {"success": success}
-        if data is not None:
-            resp["data"] = data
-        if error is not None:
-            resp["error"] = error
-        self._server.reply(sock, json.dumps(resp, ensure_ascii=False,
-                                            default=_json_default))
 
     # ── 表反射 ---------------------------------------------------------
     def _get_table(self, table_name):
@@ -245,7 +241,7 @@ class DBServer:
     # 路由处理 — execute
     # ═══════════════════════════════════════════════════════════════════
 
-    def _handle_execute(self, data, **kw):
+    def _handle_execute(self, data):
         action = data.get("action", "select")
         table_name = data.get("table")
         if not table_name:
@@ -460,9 +456,12 @@ class DBServer:
 if __name__ == "__main__":
     import argparse
 
+    default_addr = os.environ.get("LISTEN_ADDR", "0.0.0.0")
+    default_port = int(os.environ.get("LISTEN_PORT", "8005"))
+
     parser = argparse.ArgumentParser(description="dbv2 — pymsg 数据库服务")
-    parser.add_argument("--addr", default="127.0.0.1", help="监听地址")
-    parser.add_argument("--port", type=int, default=8005, help="监听端口")
+    parser.add_argument("--addr", default=default_addr, help="监听地址")
+    parser.add_argument("--port", type=int, default=default_port, help="监听端口")
     parser.add_argument("--workers", type=int, default=4,
                         help="回调并发线程数（0=同步串行模式）")
     args = parser.parse_args()

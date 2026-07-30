@@ -32,30 +32,36 @@ from log_client import logs
 # pymsg 导入
 import sys as _sys
 _sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from pymsg import MsgClient  # noqa: E402
+from pymsg import RpcClient, RpcError  # noqa: E402
 
-_DBV2_ADDR = '127.0.0.1'
-_DBV2_PORT = 8005
+_DBV2_ADDR = os.environ.get('DB_HOST', '127.0.0.1')
+_DBV2_PORT = int(os.environ.get('DB_PORT', '8005'))
 
 # 管理员判定已上移至 gateway：登录时命中 [Admin] users 白名单即在 Token payload
 # 写入 is_admin=true，本服务通过 info.get('is_admin') 读取，不再本地维护名单。
 # 旧 Token 无此字段，按非管理员处理（安全方向）。
 
+_rpc = RpcClient(_DBV2_ADDR, _DBV2_PORT, "dnfs")
+
+
 def _call_dbv2(payload: dict, timeout: int = 10) -> dict:
-    """通过 pymsg 短连接调用 dbv2 数据库服务。
-    自动注入 ``_route: "execute"``。
+    """通过 pymsg RPC 调用 dbv2 数据库服务（自动注入 ``_route: "execute"``）。
+
+    返回完整响应 dict（``{"success": ..., "data"/"error": ...}``），
+    与历史行为一致，调用方无需改动。服务端业务错误返回 success=False；
+    网络层故障抛 ConnectionError。
     """
-    payload = {**payload, "_route": "execute"}
     try:
-        client = MsgClient(_DBV2_ADDR, _DBV2_PORT, "dnfs")
-        resp_text = client.call(json.dumps(payload), timeout=timeout)
-        return json.loads(resp_text)
+        data = _rpc.call("execute", payload, timeout=timeout)
+        return {"success": True, "data": data}
+    except RpcError as e:
+        return {"success": False, "error": str(e)}
     except Exception as e:
         raise ConnectionError(
             f"dbv2 调用失败 ({_DBV2_ADDR}:{_DBV2_PORT}): {e}"
         ) from None
 
-REVIEW_SERVER_URL = 'http://127.0.0.1:8007/review'
+REVIEW_SERVER_URL = os.environ.get('REVIEW_URL', 'http://127.0.0.1:8007/review')
 def review_content(content: str, timeout: int = 10) -> Dict[str, Any]:
     """
     调用 AI 内容审核服务的 /review 接口，对给定文本进行审核。
@@ -545,10 +551,9 @@ def get_note():
 #    """返回应用主页"""
 #    return render_template('index.html')
 
-ADDR='127.0.0.1'
-PORT=8006
+ADDR = os.environ.get('LISTEN_ADDR', '0.0.0.0')
+PORT = int(os.environ.get('LISTEN_PORT', '8006'))
 if __name__ == "__main__":
     logs.info('dnfs', f'服务启动，监听 http://{ADDR}:{PORT}')
     print(f'Listen at http://{ADDR}:{PORT}')
-    #app.run(host="127.0.0.1", port=8006)
-    serve(app, host='127.0.0.1', port=8006)
+    serve(app, host=ADDR, port=PORT)

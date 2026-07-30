@@ -1,0 +1,109 @@
+version: '3.8'
+
+# ── 持久化说明 ──────────────────────────────────────────────────────
+# 默认使用 Docker named volume（适合生产，性能好）。
+# 开发调试或需要直接访问数据库文件时，可改为 bind mount：
+#   volumes:
+#     - ./data/db:/app/data        # SQLite 数据库文件
+#     - ./backups:/app/backups     # 备份输出目录
+#
+# 注意：bind mount 在 macOS/Windows 上文件系统性能比 named volume 差，
+# 但方便直接复制/查看数据库文件。
+
+services:
+  # ── 数据库服务 (pymsg TCP协议) ──────────────────────────────────
+  db:
+    build:
+      context: .
+      dockerfile: db/Dockerfile
+    container_name: micro-db
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8005:8005"
+    volumes:
+      # 方式1: Docker named volume（推荐生产）
+      - db_data:/app/data
+      # 方式2: Bind mount（开发/需要直接访问文件时取消注释）
+      # - ./data/db:/app/data
+      # 备份输出目录（bind mount 方便取备份文件）
+      - ./backups:/app/backups
+    environment:
+      - LISTEN_ADDR=0.0.0.0
+      - LISTEN_PORT=8005
+      - DATABASE_URL=sqlite:////app/data/database.db
+      - WORKERS=4
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('localhost', 8005)); s.close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - micro_net
+
+  # ── AI内容审核服务 ──────────────────────────────────────────────
+  ai_review:
+    build:
+      context: ./ai_review
+      dockerfile: Dockerfile
+    container_name: micro-ai-review
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8007:8007"
+    volumes:
+      - chroma_data:/app/chroma
+      # - ./data/chroma:/app/chroma  # bind mount 选项
+    environment:
+      - AI_REVIEW_HOST=0.0.0.0
+      - AI_REVIEW_PORT=8007
+      - CHROMA_PERSIST_DIR=/app/chroma
+    env_file:
+      - ./ai_review/.env
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8007/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - micro_net
+
+  # ── DNFS 树状文件系统服务 ──────────────────────────────────────
+  dnfs:
+    build:
+      context: .
+      dockerfile: dnfs/Dockerfile
+    container_name: micro-dnfs
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8006:8006"
+    environment:
+      - LISTEN_ADDR=0.0.0.0
+      - LISTEN_PORT=8006
+      - DB_HOST=db
+      - DB_PORT=8005
+      - REVIEW_URL=http://ai_review:8007/review
+    depends_on:
+      db:
+        condition: service_healthy
+      ai_review:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/get_notes', data=b'{\"pid\":0}', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - micro_net
+
+networks:
+  micro_net:
+    driver: bridge
+    name: micro-network
+
+volumes:
+  db_data:
+    name: micro-db-data
+  chroma_data:
+    name: micro-chroma-data

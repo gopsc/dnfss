@@ -456,3 +456,9 @@ class MsgServer:
                 pass
         self._clients.clear()
         self._send_locks.clear()
+
+
+# ── JSON RPC 约定层（依赖上面的 MsgClient / MsgServer，故放在末尾导入）──
+from .rpc import RpcClient, RpcError, RpcServer  # noqa: E402
+
+__all__ += ["RpcClient", "RpcServer", "RpcError"]

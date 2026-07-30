@@ -1,7 +1,7 @@
 # pymsg 模块技术手册
 
 > 文档版本：2026-07-30
-> 代码版本：0.2.0
+> 代码版本：0.3.0
 > 语言：Python 3.9+（核心）、C++（gateway 集成）、Go（waf 集成）
 > 定位：跨语言 TCP 消息帧协议库
 
@@ -144,9 +144,11 @@ log_client.push(entry)
 ```
 pymsg/
 ├── pymsg/
-│   └── __init__.py     # 核心实现（~460 行）
+│   ├── __init__.py     # 核心协议与 MsgClient/MsgServer（~470 行）
+│   └── rpc.py          # JSON RPC 约定层 RpcClient/RpcServer（~170 行，v0.3.0）
 ├── tests/
-│   └── test_threadpool.py  # 线程池/同步模式单元测试（纯 stdlib）
+│   ├── test_threadpool.py  # 线程池/同步模式单元测试（纯 stdlib）
+│   └── test_rpc.py         # RPC 约定层单元测试（纯 stdlib）
 ├── README.md            # 用户文档
 ├── pyproject.toml       # 项目配置
 └── .gitignore
@@ -188,6 +190,19 @@ pymsg/
 | `MsgServer.stop()` | L373 | 停止服务 |
 | `MsgServer._run_task(...)` | L413 | 工作线程：执行回调、失败打标记 |
 | `MsgServer._reap_failed(socketlist)` | L434 | 主循环统一移除失败连接 |
+
+#### RPC 约定层（rpc.py，v0.3.0）
+
+| 函数/类 | 行号 | 功能 |
+|---------|------|------|
+| `RpcError` | L28 | 业务错误异常（success=false / 非法响应） |
+| `RpcClient` | L32 | JSON RPC 客户端 |
+| `RpcClient.call(route, payload, *, timeout)` | L46 | 注入 _route、编解码、检查 success，返回 data |
+| `RpcServer` | L80 | JSON RPC 服务端（基于 MsgServer） |
+| `RpcServer.route(name)` / `add_route` | L119/L126 | 注册路由 handler（`fn(req) -> data`） |
+| `RpcServer.start()` / `stop()` | L131/L135 | 启动（阻塞）/ 停止 |
+| `RpcServer._dispatch` | L140 | 路由分发与异常包装 |
+| `RpcServer._reply` | L164 | 响应包装（支持 json_default） |
 
 #### C++ 实现（Msg.hpp）
 
@@ -736,6 +751,7 @@ python test_runner.py
 |------|------|---------|
 | 0.1.0 | — | 初始版本：核心协议、MsgClient、MsgServer、跨语言实现 |
 | 0.2.0 | 2026-07-30 | `MsgServer` 新增 `workers` 参数：回调可提交线程池并发执行；同连接串行（busy 标记）、每连接发送锁防帧交错、回调异常故障隔离；`tests/test_threadpool.py` 单元测试 |
+| 0.3.0 | 2026-07-30 | 新增 `rpc.py` JSON RPC 约定层：`RpcClient`（_route 注入 + 编解码 + success 检查 + `RpcError`）、`RpcServer`（路由分发 + 响应包装 + `json_default`/`on_error` 钩子）；db/smtp/captcha 服务端与 dnfs/log_client 客户端完成迁移；`tests/test_rpc.py` 单元测试 |
 
 ---
 
