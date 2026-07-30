@@ -35,4 +35,5 @@ inst_module "static"
 inst_module "dnfs"
 inst_module "db"
 inst_module "smtp"
+inst_module "captcha"
 inst_module "core"	# core last
