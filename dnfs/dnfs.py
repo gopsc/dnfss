@@ -288,11 +288,19 @@ def whoami():
     if info is None:
         return jsonify({'login': False}), 200
 
-    return jsonify({
+    resp = {
         'login': True,
         'user': info.get('user'),
         'is_admin': bool(info.get('is_admin'))
-    }), 200
+    }
+    # 附加 Token 生命周期信息，供前端 Token 管理器估算过期时间
+    if info.get('iat'):
+        resp['iat'] = info['iat']
+    if info.get('created_at'):
+        resp['created_at'] = info['created_at']
+    if info.get('keep_time'):
+        resp['keep_time'] = info['keep_time']
+    return jsonify(resp), 200
 
 
 # eg: {"id": 1}
