@@ -156,25 +156,29 @@ bash /opt/micro_servers/waf/_run.sh
 
 并把 `gateway` 改为内部 HTTP 端口（不再监听 443）。
 
-## 命中日志
+## 拦截日志
 
-命中规则时输出 JSON 一行，便于 `jq` 分析（见 [proxy.go:120-137](internal/proxy/proxy.go#L120)）：
+命中规则时 `block()` 经 logclient（Go 版 pymsg 客户端，见 [internal/logclient/](internal/logclient/)）异步批量推送到 db:8005 的 `Logs` 表（与其他服务的集中日志同链路；标准日志已静默，stdout/journalctl 中看不到拦截记录）：
 
-```json
-{"ts":"2026-07-25T10:00:00Z","action":"block","rule_id":100001,"ip":"1.2.3.4","method":"GET","path":"/","query":"id=1'+OR+'1'='1","ua":"curl/8.0","cost_ms":0}
-```
+- `service=waf`、`level=WARNING`
+- `message`：`block rule_id=100001 GET /path`
+- `extra`（JSON 字符串）：`rule_id` / `ip` / `method` / `path` / `query` / `ua` / `cost_ms`
 
-放行请求时输出一行 pass 日志（见 [proxy.go:115](internal/proxy/proxy.go#L115)）：
+fail-safe：db 不可用时日志静默丢弃，不影响拦截动作本身。
 
-```
-[proxy] pass ip=1.2.3.4:54321 method=GET path=/ status=200 rule=- cost=1.2ms
+查询最近的拦截记录：
+
+```bash
+sqlite3 /opt/micro_servers/db/database.db \
+  "SELECT ts, message, extra FROM Logs WHERE service='waf' AND level='WARNING' ORDER BY id DESC LIMIT 20;"
 ```
 
 聚合统计命中规则：
 
 ```bash
-journalctl -u Nidus -o cat | grep '"action":"block"' | \
-  jq -r '.rule_id' | sort | uniq -c | sort -rn
+sqlite3 /opt/micro_servers/db/database.db \
+  "SELECT json_extract(extra,'\$.rule_id') AS rule, COUNT(*) FROM Logs \
+   WHERE service='waf' AND level='WARNING' GROUP BY rule ORDER BY 2 DESC;"
 ```
 
 ## 启用 OWASP CRS（可选）
