@@ -252,6 +252,23 @@ def get_notes():
 
     result = notes['data']
 
+    # 解析当前用户（可选）：为每个节点附带操作权标记 can_operate，
+    # 前端据此显隐编辑/删除按钮。口径与 delete_note / update_note 一致：
+    # 管理员（is_admin）或节点 owner 有权。
+    # get_notes 保持公开：未携带 Token 或 Token 解析失败时，所有节点一律无权。
+    info = None
+    auth: str = request.headers.get('Authorization', '')
+    if auth.startswith('Bearer '):
+        try:
+            info = decode_token(auth[7:])
+        except Exception:
+            info = None
+
+    for note in result:
+        note['can_operate'] = bool(
+            info and (info.get('is_admin') or note.get('owner') == info.get('user'))
+        )
+
     logs.info('dnfs', f'get_notes 查询 pid={pid} 返回{len(result)}条', extra={'ip': request.remote_addr})
     return jsonify(result), 200
 
