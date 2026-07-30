@@ -474,22 +474,6 @@ def proxy_update_note():
         return _cors(make_response(_json.dumps({"error": str(e)}), 502, {"Content-Type": "application/json"}))
 
 
-@app.route('/whoami', methods=['POST', 'OPTIONS'])
-def proxy_whoami():
-    if request.method == "OPTIONS": return _cors(make_response("", 204))
-    try:
-        data = request.get_json(force=True, silent=True) or {}
-        h = {"Content-Type": "application/json"}
-        if "Authorization" in request.headers: h["Authorization"] = request.headers["Authorization"]
-        elif request.cookies.get("q4_token"): h["Authorization"] = f"Bearer {request.cookies['q4_token']}"  # HttpOnly Cookie 模式：Cookie 转 Bearer
-        req = _urlreq.Request(f"{DNFS_URL}/whoami", data=_json.dumps(data).encode(), headers=h, method="POST")
-        with _urlreq.urlopen(req, timeout=15) as r:
-            return _cors(make_response(r.read().decode(), 200, {"Content-Type": "application/json"}))
-    except Exception as e:
-        logs.warning("static", "dnfs whoami 代理失败", extra={"error": str(e)})
-        return _cors(make_response(_json.dumps({"error": str(e)}), 502, {"Content-Type": "application/json"}))
-
-
 @app.route('/api/proxy_send_code', methods=['POST'])
 def proxy_send_code():
     from flask import request, jsonify

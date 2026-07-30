@@ -306,6 +306,11 @@ http::response<http::string_body> handleRefreshToken(
 		const http::request<http::string_body>& req,
 		const std::unordered_map<std::string, std::string>& params);
 
+/* 当前用户身份查询：验签 Token 后返回 user / is_admin / Token 生命周期信息 */
+http::response<http::string_body> handleWhoami(
+		const http::request<http::string_body>& req,
+		const std::unordered_map<std::string, std::string>& params);
+
 /* 代理 captcha 图形验证码：pymsg 调 captcha 服务，返回 PNG 图片 */
 http::response<http::string_body> handleCaptchaImage(
 		const http::request<http::string_body>& req,
@@ -635,6 +640,11 @@ void registerRoutes(HttpServer &server) {
 			[](const auto& req, const auto& params) { return handleRefreshToken(req, params); });
 	});
 
+	server.post("/whoami", [](const auto& req, const auto& params) -> http::response<http::string_body> {
+		return wrapperHttp(req, params,
+			[](const auto& req, const auto& params) { return handleWhoami(req, params); });
+	});
+
 	/* 代理 captcha 图形验证码（须在 get("*") 通配符之前注册） */
 	server.get("/captcha/image", [](const auto& req, const auto& params) -> http::response<http::string_body> {
 		return wrapperHttp(req, params,
@@ -942,6 +952,132 @@ http::response<http::string_body> handleLogout(
 	res.set("Connection", "close");
 	res.result(http::status::ok);
 	res.body() = R"({"success": true, "message": "logged out"})";
+	res.prepare_payload();
+	return res;
+}
+
+/* 当前用户身份查询 /whoami
+ *
+ * 验签 Token 后返回 user / is_admin / Token 生命周期信息（iat / created_at / keep_time）。
+ * Token 来源：Authorization: Bearer 优先，回退 Cookie q4_token。
+ * 无 Token 或验签失败返回 {"login": false}，与 dnfs 旧接口契约一致。 */
+http::response<http::string_body> handleWhoami(
+	const http::request<http::string_body>& req,
+	const std::unordered_map<std::string, std::string>& params)
+{
+	http::response<http::string_body> res;
+	res.version(req.version());
+
+	auto _PUBL = MyRSA::Public_Key::from_pem(_KEYGEN->get_public_key_pem());
+
+	/* 获取 Token：Authorization 头优先，回退 Cookie */
+	std::string raw;
+	auto it_auth = req.base().find("Authorization");
+	if (it_auth != req.base().end()) {
+		raw = std::string(it_auth->value());
+	} else {
+		auto cit = req.base().find("Cookie");
+		if (cit != req.base().end()) {
+			std::string cookie_token = get_cookie_value(std::string(cit->value()), "q4_token");
+			if (!cookie_token.empty())
+				raw = "Bearer " + cookie_token;
+		}
+	}
+
+	/* 无 Token 或格式错误：返回未登录 */
+	if (raw.empty() || raw.substr(0, 7) != "Bearer ") {
+		res.set(http::field::content_type, "application/json");
+		res.set("Connection", "close");
+		res.result(http::status::ok);
+		res.body() = R"({"login": false})";
+		res.prepare_payload();
+		return res;
+	}
+
+	raw = raw.substr(7);
+	size_t idx = raw.find("_");
+	if (idx == std::string::npos) {
+		res.set(http::field::content_type, "application/json");
+		res.set("Connection", "close");
+		res.result(http::status::ok);
+		res.body() = R"({"login": false})";
+		res.prepare_payload();
+		return res;
+	}
+
+	std::string data = raw.substr(0, idx);
+	std::string sign = raw.substr(idx + 1);
+	std::string auth;
+	try { auth = Base64::base64_decode_to_string(data); }
+	catch (const std::exception&) {
+		res.set(http::field::content_type, "application/json");
+		res.set("Connection", "close");
+		res.result(http::status::ok);
+		res.body() = R"({"login": false})";
+		res.prepare_payload();
+		return res;
+	}
+
+	/* RSA 验签：失败按未登录处理 */
+	if (!_PUBL.Verify(auth, sign)) {
+		res.set(http::field::content_type, "application/json");
+		res.set("Connection", "close");
+		res.result(http::status::ok);
+		res.body() = R"({"login": false})";
+		res.prepare_payload();
+		return res;
+	}
+
+	/* 解析 Token payload */
+	json::value jv_t;
+	try { jv_t = json::parse(auth); }
+	catch (const std::exception&) {
+		res.set(http::field::content_type, "application/json");
+		res.set("Connection", "close");
+		res.result(http::status::ok);
+		res.body() = R"({"login": false})";
+		res.prepare_payload();
+		return res;
+	}
+	if (!jv_t.is_object()) {
+		res.set(http::field::content_type, "application/json");
+		res.set("Connection", "close");
+		res.result(http::status::ok);
+		res.body() = R"({"login": false})";
+		res.prepare_payload();
+		return res;
+	}
+
+	json::object& obj = jv_t.as_object();
+	std::string username = json::value_to<std::string>(obj.at("user"));
+
+	/* is_admin：旧 Token 未携带时默认为 false */
+	bool is_admin = false;
+	auto it_admin = obj.find("is_admin");
+	if (it_admin != obj.end() && it_admin->value().is_bool())
+		is_admin = it_admin->value().as_bool();
+
+	json::value jv_r = {
+		{"login", true},
+		{"user", username},
+		{"is_admin", is_admin}
+	};
+
+	/* 附加 Token 生命周期信息，供前端 Token 管理器估算过期时间 */
+	auto it_iat = obj.find("iat");
+	if (it_iat != obj.end() && it_iat->value().is_string())
+		jv_r.as_object()["iat"] = it_iat->value();
+	auto it_created = obj.find("created_at");
+	if (it_created != obj.end() && it_created->value().is_string())
+		jv_r.as_object()["created_at"] = it_created->value();
+	auto it_keep = obj.find("keep_time");
+	if (it_keep != obj.end() && it_keep->value().is_int64())
+		jv_r.as_object()["keep_time"] = it_keep->value();
+
+	res.set(http::field::content_type, "application/json");
+	res.set("Connection", "close");
+	res.result(http::status::ok);
+	res.body() = json::serialize(jv_r);
 	res.prepare_payload();
 	return res;
 }

@@ -68,9 +68,10 @@ static :9200 (Flask + CORS)
 | `POST /add_note` | 新增笔记（代理至 dnfs:8006） |
 | `POST /delete_note` | 删除笔记（代理至 dnfs:8006） |
 | `POST /update_note` | 更新笔记（代理至 dnfs:8006） |
-| `POST /whoami` | 当前用户身份查询（代理至 dnfs:8006） |
 
-以上 5 个 dnfs 代理路由均支持 HttpOnly Cookie 模式：当请求携带 `q4_token` Cookie 时，自动转为 `Authorization: Bearer` 头转发。
+以上 4 个 dnfs 代理路由均支持 HttpOnly Cookie 模式：当请求携带 `q4_token` Cookie 时，自动转为 `Authorization: Bearer` 头转发。
+
+> `/whoami` 已上移至 gateway，由 gateway 直接验签 Token 返回用户身份，不再经 static 代理到 dnfs。
 
 ## 功能
 
