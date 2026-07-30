@@ -37,8 +37,9 @@ from pymsg import MsgClient  # noqa: E402
 _DBV2_ADDR = '127.0.0.1'
 _DBV2_PORT = 8005
 
-# 管理员账号：删除/更新节点时豁免所有权校验（保留旧的 'admin' 以兼容历史数据）
-ADMIN_USERS = ('admin@qsont.me', 'qing@qsont.me')
+# 管理员判定已上移至 gateway：登录时命中 [Admin] users 白名单即在 Token payload
+# 写入 is_admin=true，本服务通过 info.get('is_admin') 读取，不再本地维护名单。
+# 旧 Token 无此字段，按非管理员处理（安全方向）。
 
 def _call_dbv2(payload: dict, timeout: int = 10) -> dict:
     """通过 pymsg 短连接调用 dbv2 数据库服务。
@@ -326,7 +327,7 @@ def delete_note():
 
     data = _call_dbv2(select_payload)
     notes = data['data']
-    if info['user'] not in ADMIN_USERS:
+    if not info.get('is_admin'):
         if not len(notes) == 1 or not notes[0]['owner'] == info['user']:
             logs.warning('dnfs', f'delete_note 所有权拒绝 id={note_id}', extra={'user': info['user']})
             return jsonify({"error": 'It\'s not your note'}), 403
@@ -401,7 +402,7 @@ def update_note():
 
     data = _call_dbv2(select_payload)
     notes = data['data']
-    if info['user'] not in ADMIN_USERS:
+    if not info.get('is_admin'):
         if not len(notes) == 1 or not notes[0]['owner'] == info['user']:
             logs.warning('dnfs', f'update_note 所有权拒绝 id={id}', extra={'user': info['user']})
             return jsonify({"error": 'It\'s not your note'}), 403

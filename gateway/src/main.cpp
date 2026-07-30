@@ -5,6 +5,7 @@
 #include <us/SHA256.hpp>
 #include <us/Sqlite3.hpp>
 #include <iostream>
+#include <algorithm>
 #include <cctype>
 #include <typeinfo>
 #include <memory>
@@ -325,6 +326,7 @@ static std::vector<std::string>	_OPEN_URL;
 static std::string		_DB_PATH;
 static int			_TOKEN_KEEP_TIME = 3600;	// Token 有效期（秒），可由 [Token] keep_time 配置
 static std::vector<std::string>	_CORS_ORIGINS;			// CORS 允许的 Origin 白名单，可由 [CORS] allowed_origins 配置
+static std::vector<std::string>	_ADMIN_USERS;			// 管理员账号白名单，可由 [Admin] users 配置（分号分隔），登录时写入 Token payload 的 is_admin
 
 /* instance items */
 static std::unique_ptr<HttpServer>		_SERVE;
@@ -498,6 +500,7 @@ int main(int argc, char **argv) {
 		_DB_PATH = cf.get<std::string>("Database.path", "");
 		_TOKEN_KEEP_TIME = cf.get<int>("Token.keep_time", 3600);
 		_CORS_ORIGINS = split(cf.get<std::string>("CORS.allowed_origins", ""), ';');
+		_ADMIN_USERS = split(cf.get<std::string>("Admin.users", ""), ';');
 		}
 
 
@@ -867,10 +870,15 @@ http::response<http::string_body> handleLogin(
 	/* 生成令牌 */
 	auto _PRIV = MyRSA::Private_Key::from_pem(_KEYGEN->get_private_key_pem());
 
+	/* 管理员判定：账号命中 [Admin] users 白名单即在 payload 中签发 is_admin，
+	 * 下游服务（dnfs 等）直接读取该字段豁免所有权校验，无需各自维护名单 */
+	bool is_admin = std::find(_ADMIN_USERS.begin(), _ADMIN_USERS.end(), username) != _ADMIN_USERS.end();
+
 	json::value jv_t = {
 		{"user", username},
 		{"created_at", LocalTime::getCurrent()},
-		{"keep_time", _TOKEN_KEEP_TIME}
+		{"keep_time", _TOKEN_KEEP_TIME},
+		{"is_admin", is_admin}
 	};
 	std::string data = json::serialize(jv_t);
 	std::string auth = Base64::base64_encode(data);
