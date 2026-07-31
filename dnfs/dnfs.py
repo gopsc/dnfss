@@ -18,7 +18,7 @@ Dendrachy Network File-System (dnfs)
 
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-#from flask_sqlalchemy import SQLAlchemy
+#from flask_sqlalchemy import SQLAlchemy    # 使用pymsg模块进行通信
 from waitress import serve
 import os
 import json
@@ -30,10 +30,14 @@ from security_middleware import apply_security_headers
 from log_client import logs
 
 # pymsg 导入
+# 我们有在依赖列表中加入pymsg
+# 这个可以省略也许
 import sys as _sys
 _sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from pymsg import RpcClient, RpcError  # noqa: E402
 
+# 从环境变量中获取参数
+# 随后我们专门做一个统一配置微服务
 _DBV2_ADDR = os.environ.get('DB_HOST', '127.0.0.1')
 _DBV2_PORT = int(os.environ.get('DB_PORT', '8005'))
 
@@ -61,6 +65,7 @@ def _call_dbv2(payload: dict, timeout: int = 10) -> dict:
             f"dbv2 调用失败 ({_DBV2_ADDR}:{_DBV2_PORT}): {e}"
         ) from None
 
+# AI审核服务地址，从环境变量获取
 REVIEW_SERVER_URL = os.environ.get('REVIEW_URL', 'http://127.0.0.1:8007/review')
 def review_content(content: str, timeout: int = 10) -> Dict[str, Any]:
     """
@@ -108,47 +113,35 @@ def review_content(content: str, timeout: int = 10) -> Dict[str, Any]:
     except Exception as e:
         raise e
 
+class DnfsExp(Exception):
+    '''dnfs异常类'''
+    def __init__(self, msg: str, code: int):
+        super().__init__(self, msg)
+        self.status = code
+    def get_status() -> int:
+        return self.status
 
+# 这个也许不用这么复杂 大不了每个异常点我们抛出DnfsExp类
+#class InvalidRequest(DnfsExp):
+#    '''非法参数异常'''
+#    def __init__(self, msg: str):
+#        super().__init__(msg)
 
-#basedir = os.path.abspath(os.path.dirname(__file__))
+def _handle_exp(func):
+    '''处理视图函数中抛出的异常，并在日志模块中进行记录'''
+    def wrapper():
+        try: return func()
+        except DnfsExp as e:
+            return jsonify({'error': str(e)}), e.get_status()
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+        finally:
+            logs.warning('dnfs', str(e), extra={})
 
 app = Flask(__name__)
 apply_security_headers(app)
 CORS(app)
 
-#app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'notes.db')
-
-#app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-#db = SQLAlchemy(app)
-
-#class Note(db.Model):
-
-#    id = db.Column(db.Integer, primary_key=True)
-
-#    pid = db.Column(db.Integer, nullable=False)
-
-#    title = db.Column(db.String(128), nullable=False)
-
-#    content = db.Column(db.Text, nullable=False)
-
-
-
-#    def __repr__(self):
-
-#        return f"<Node {self.title}>"
-
-#with app.app_context():
-
-#    db.create_all()
-
-
-
-# eg: {
-#    "pid": 0,
-#    "title": "test",
-#    "content": "hello"
-#}
 
 def decode_token(token:  str):
     idx = token.find('_')
@@ -160,33 +153,27 @@ def decode_token(token:  str):
         return json.loads(jj)
        
 
+@_handle_exp
 @app.route('/add_note', methods=['POST'])
-
 def add_note():
-
+    # 获取请求数据
     data = request.get_json()
-
     pid: int = data.get('pid')
-
     title: str = data.get('title')
-
     content: str = data.get('content')
-
     if pid is None or not title or not content:
-
-        logs.warning('dnfs', 'add_note 参数缺失', extra={'ip': request.remote_addr})
-        return jsonify({"error": "Pid, title and content are required"}), 400
+        raise DnfsExp("非法参数", 400)
 
     info = None
     auth: str = request.headers.get('Authorization', '')
     if auth.startswith('Bearer '):
         token: str = auth[7:]
         info  = decode_token(token)
-
     if info is None:
-        logs.warning('dnfs', 'add_note 未授权访问', extra={'ip': request.remote_addr})
-        return jsonify({"error": "Warning: no Authorization"}), 401
+        raise DnfsExp("未授权访问，从"+request.remote_addr, 401)
 
+
+    # 父节点是否存在
     if pid != 0:
 
         select_payload = {
@@ -199,19 +186,15 @@ def add_note():
 
         notes = _call_dbv2(select_payload)
 
-        # 不存在的父节点
         if len( notes['data']) == 0:
-            logs.warning('dnfs', f'add_note 父节点不存在 pid={pid}', extra={'user': info['user']})
-            return jsonify({'error': 'the new node need a parent'}), 400
+            raise DnfsExp('父节点不存在', 400)
 
 
     # 内容审查
     review = review_content(title + '\n' + content, 10)
-    if True != review:
-        #return jsonify({'error': 'review failed', 'data': review}), 400
-        logs.warning('dnfs', f'add_note 内容审核未通过 title={title}', extra={'user': info['user']})
-        return jsonify({'error': 'review failed'}), 400
+    if True != review: raise DnfsExp('内容审核不通过，用户'+info.get('user')+'，从'+request.remote_addr, 400)
 
+    # 执行插入
     insert_payload = {
         'action': 'insert',
         'table': 'Notes',
@@ -224,20 +207,17 @@ def add_note():
     }
 
     result = _call_dbv2(insert_payload)
-
     success = result['success']
-
     if success is True:
         logs.info('dnfs', f'add_note 成功 title={title} pid={pid}', extra={'user': info['user']})
         return jsonify({'success': success}), 200
     else:
-        logs.error('dnfs', f'add_note 写入失败 title={title}', extra={'user': info['user']})
-        return jsonify({'success': success}), 400
+        raise DnfsExp('插入节点失败，用户'+info.get('user')+'，从'+request.remote_addr, 400)
 
 
 # {“pid”: 0} 
+@_handle_exp
 @app.route('/get_notes', methods=["POST"])
-
 def get_notes():
 
     data = request.get_json()
