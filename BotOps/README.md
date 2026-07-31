@@ -58,4 +58,9 @@ BotOps/
 
 与 aibox 服务端协议完全兼容（详见 aibox/client.py 注释）：
 - 发送：`{"type":"message","content":...}` / `{"type":"command","command":"/..."}` / `{"type":"interrupt",...}`
-- 接收：`chunk`（**增量片段**，服务端 `chunk_buffer` 发送后即清零，前端直接拼接）/ `complete`（**完整全文**，用于对齐已显示内容）/ `line`（过程行：🔧 工具调用提示、工具输出、💬 助手前缀，路由到任务侧栏）/ `reasoning`（思考流，仅服务端 debug_level≥3 发送）/ `dialogue_ended` / `dialogue_reset` / `task_added` / `task_process` / `task_status` / `task_error` / `interrupt_ack` / `error` / `info` / `command_result` / `connection_ack` / `notification` / `pong`
+- 接收：
+  - `chunk`（**增量片段**）：服务端 `chunk_buffer` 发送后即清零，前端直接 `append_ai` 拼接，为内容权威来源
+  - `complete`（**收尾信号**）：chunk 流式已完整渲染，complete 仅用于收尾；仅在完全丢帧（未收到任何 chunk）时用 full_text 补建消息，**不再做全文替换对齐**（避免服务端递归调用工具后 complete 只含最后一轮内容导致重复渲染）
+  - `line`（过程行）：🔧 工具调用提示、工具输出、💬 助手前缀，路由到任务侧栏；助手前缀/思考提示在聊天区已由 AI 消息框承载，不重复展示
+  - `reasoning`（思考流）：仅服务端 debug_level≥3 发送，记入任务侧栏
+  - `dialogue_ended` / `dialogue_reset` / `task_added` / `task_process` / `task_status` / `task_error` / `interrupt_ack` / `error` / `info` / `command_result` / `connection_ack` / `notification` / `pong`

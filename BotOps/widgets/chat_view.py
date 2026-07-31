@@ -1,8 +1,9 @@
 """聊天视图：用户/AI/系统消息 + AI 回复流式 Markdown 渲染。
 
-服务端协议（aibox/main.py output_callback 原样透传 msg_type）：
-  - chunk    增量片段（服务端 chunk_buffer 发送后即清零），直接 append
-  - complete 完整全文，用于对齐：与已显示文本不一致时整体替换（防丢帧/乱序）
+服务端协议（aibox/aibox.py output_callback 原样透传 msg_type）：
+  - chunk     增量片段（服务端 chunk_buffer 发送后即清零），直接 append
+  - complete  收尾信号：chunk 流式是内容权威来源，complete 仅用于收尾；
+              仅当流式完全丢帧（未建 widget 且无内容）时，用 full_text 补建
 """
 from textual.containers import VerticalScroll
 from textual.widgets import Markdown, Static
@@ -20,6 +21,7 @@ class ChatView(VerticalScroll):
         super().__init__(**kwargs)
         self._ai_widget: Markdown | None = None
         self._ai_text = ""
+        self._ai_finalized = True  # 初始无活跃 AI 消息
 
     @property
     def ai_text(self) -> str:
@@ -42,6 +44,7 @@ class ChatView(VerticalScroll):
         if self._ai_widget is not None:
             return
         self._ai_text = ""
+        self._ai_finalized = False
         self._ai_widget = Markdown("", classes="msg-ai")
         await self.mount(self._ai_widget)
         self._anchor_bottom()
@@ -49,6 +52,9 @@ class ChatView(VerticalScroll):
     async def append_ai(self, delta: str):
         """追加增量片段（服务端 chunk 为增量语义，直接拼接）。"""
         if not delta:
+            return
+        if self._ai_finalized:
+            # 收尾后收到的延迟 chunk，丢弃以避免在上一条回复后追加脏数据
             return
         if self._ai_widget is None:
             await self.start_ai()
@@ -60,31 +66,43 @@ class ChatView(VerticalScroll):
     async def finish_ai(self, full_text: str = ""):
         """收尾一条 AI 消息。
 
-        - full_text 为 complete 携带的完整全文：与已显示不一致时整体替换对齐；
-        - full_text 为空且未收到任何内容（如发送失败）：移除预建的空消息框。
+        chunk 流式追加是内容权威来源，complete 只做收尾：
+        - 已收尾则直接返回（防止 dialogue_ended + complete 双发导致重复挂载）
+        - widget 存在且有流式内容：保持已渲染内容不变，仅清空引用
+        - widget 存在但无内容（预建空框）且有 full_text：用 full_text 填充
+        - widget 存在但无内容也无 full_text：移除空框
+        - widget 不存在（流式丢帧/start_ai 未调用）且有 full_text：补建
         """
+        if self._ai_finalized:
+            return
         w = self._ai_widget
         self._ai_widget = None
-        if w is None:
-            # 流式期间丢帧，只在 complete 收到全文：补建完整消息
+
+        if w is not None:
+            if self._ai_text:
+                # 有流式内容，chunk 已完整渲染，直接保留，不做替换
+                pass
+            elif full_text:
+                # 预建了空 widget 但没收到任何 chunk：用 full_text 填充
+                w.update(full_text)
+                self._ai_text = full_text
+            else:
+                # 预建后没有任何输出：移除空框
+                await w.remove()
+        else:
+            # widget 不存在（start_ai 未调用），有 full_text 则补建
             if full_text:
                 self._ai_text = full_text
                 await self.mount(Markdown(full_text, classes="msg-ai"))
                 self._anchor_bottom()
-            return
-        if full_text and full_text != self._ai_text:
-            # 已显示内容与全文不一致（丢字/乱序/丢帧），整体替换对齐
-            await w.remove()
-            self._ai_text = full_text
-            await self.mount(Markdown(full_text, classes="msg-ai"))
-        elif not full_text and not self._ai_text:
-            # 预建后没有任何输出：移除空框
-            await w.remove()
+
         self._ai_text = ""
+        self._ai_finalized = True
         self.call_after_refresh(self.scroll_end, animate=False)
 
     async def reset(self):
         """清空聊天区（/clear）。"""
         self._ai_widget = None
         self._ai_text = ""
+        self._ai_finalized = True
         await self.remove_children()
