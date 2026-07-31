@@ -1515,7 +1515,7 @@ class Constants:
     
     @property
     def TOOL_MAX_RESULT_LENGTH(cls):
-        return cls._get_config().get("tools.max_result_length", 10000)
+        return cls._get_config().get("tools.max_result_length", 1048576)  # 1MB 字符限制
     
     @property
     def COMPRESSOR_MIN_MESSAGES(cls):
@@ -3509,10 +3509,58 @@ class CommandExecutor(ABC):
 
 
 class SubprocessCommandExecutor(CommandExecutor):
-    """基于subprocess的命令执行器 - 支持超时和工作目录"""
+    """基于subprocess的命令执行器 - 支持超时、工作目录和输出大小限制"""
+    
+    # 命令输出最大字节数（1MB），超出截断
+    MAX_OUTPUT_BYTES = 1 * 1024 * 1024
+    
+    def _read_with_limit(self, process, timeout: int, start_time: float, output_queue=None) -> Tuple[str, bool, bool]:
+        """从进程读取输出，限制总大小和超时。
+        返回 (output_str, timeout_occurred, truncated)
+        """
+        output_chunks = []
+        total_bytes = 0
+        timeout_occurred = False
+        truncated = False
+        
+        while True:
+            # 检查超时
+            if timeout > 0 and time.time() - start_time > timeout:
+                process.terminate()
+                timeout_occurred = True
+                break
+            
+            # 检查输出大小
+            if total_bytes >= self.MAX_OUTPUT_BYTES:
+                truncated = True
+                process.terminate()
+                break
+            
+            # 读取一行
+            line = process.stdout.readline()
+            if not line and process.poll() is not None:
+                break
+            if line:
+                line_bytes = len(line.encode('utf-8', errors='replace'))
+                if total_bytes + line_bytes > self.MAX_OUTPUT_BYTES and not truncated:
+                    allowed = self.MAX_OUTPUT_BYTES - total_bytes
+                    if allowed > 0:
+                        output_chunks.append(line.encode('utf-8', errors='replace')[:allowed].decode('utf-8', errors='replace'))
+                        total_bytes = self.MAX_OUTPUT_BYTES
+                    truncated = True
+                    process.terminate()
+                    break
+                
+                output_chunks.append(line)
+                total_bytes += line_bytes
+                
+                if output_queue:
+                    output_queue.put(("line", line.rstrip('\n') + "\n"))
+        
+        return ''.join(output_chunks), timeout_occurred, truncated
     
     def execute(self, command: str, timeout: int = 30, work_dir: str = ".", env: Dict = None, **kwargs) -> str:
-        """执行命令并返回完整结果"""
+        """执行命令并返回完整结果（带输出大小限制）"""
         if not self.is_enabled():
             return "❌ 命令执行功能已禁用"
         
@@ -3523,63 +3571,9 @@ class SubprocessCommandExecutor(CommandExecutor):
         if env:
             exec_env.update(env)
         
+        process = None
         try:
-            result = subprocess.run(
-                command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env=exec_env,
-                cwd=os.path.expanduser(work_dir)
-            )
-            
-            data = {}
-            
-            if result.stdout:
-                data["输出"] = result.stdout.strip()
-            if result.stderr:
-                data["错误"] = result.stderr.strip()
-            
-            data["返回码"] = result.returncode
-            
-            if not result.stdout and not result.stderr:
-                return self.format_result(True, "命令执行成功，无输出", data)
-            
-            return self.format_result(result.returncode == 0, "命令执行完成", data)
-            
-        except subprocess.TimeoutExpired:
-            return f"❌ 命令执行超时（{timeout}秒）"
-        except FileNotFoundError as e:
-            return f"❌ 命令执行错误: 命令未找到 - {str(e)}"
-        except PermissionError as e:
-            return f"❌ 命令执行错误: 权限不足 - {str(e)}"
-        except Exception as e:
-            return f"❌ 执行错误: {str(e)}"
-    
-    def execute_streaming(self, command: str, output_queue: queue.Queue, timeout: int = 30, 
-                          work_dir: str = ".", env: Dict = None, **kwargs):
-        """流式执行命令，支持超时控制和工作目录"""
-        if not self.is_enabled():
-            output_queue.put(("line", "❌ 命令执行功能已禁用\n"))
-            output_queue.put(("complete", "❌ 命令执行功能已禁用"))
-            return
-        
-        self.logger.info(f"流式执行命令: {command}")
-        output_queue.put(("line", f"\n🔧 执行命令: {command}\n"))
-        output_queue.put(("line", f"⏱️ 超时设置: {timeout} 秒\n"))
-        if work_dir != ".":
-            output_queue.put(("line", f"📁 工作目录: {work_dir}\n"))
-        output_queue.put(("line", "-" * 50 + "\n"))
-        
-        # 准备环境变量
-        exec_env = os.environ.copy()
-        if env:
-            exec_env.update(env)
-        
-        try:
-            # 使用管道来实时获取输出
-            self.process = subprocess.Popen(
+            process = subprocess.Popen(
                 command,
                 shell=True,
                 stdout=subprocess.PIPE,
@@ -3593,56 +3587,161 @@ class SubprocessCommandExecutor(CommandExecutor):
             )
             
             start_time = time.time()
+            output_str, timeout_occurred, truncated = self._read_with_limit(process, timeout, start_time)
+            
+            # 确保进程终止
+            if process.poll() is None:
+                if timeout_occurred or truncated:
+                    process.kill()
+                else:
+                    process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except:
+                    process.kill()
+            
+            return_code = process.returncode if process.returncode is not None else -1
+            
+            data = {
+                "输出": output_str.strip() if output_str.strip() else "(无输出)",
+                "返回码": return_code
+            }
+            
+            if timeout_occurred:
+                return self.format_result(False, f"命令执行超时（{timeout}秒）", data)
+            
+            if truncated:
+                data["警告"] = f"输出超过 {self.MAX_OUTPUT_BYTES/1024/1024:.0f}MB 限制，结果已截断"
+                return self.format_result(False, "命令执行完成（输出已截断）", data)
+            
+            return self.format_result(return_code == 0, "命令执行完成", data)
+            
+        except subprocess.TimeoutExpired:
+            return f"❌ 命令执行超时（{timeout}秒）"
+        except FileNotFoundError as e:
+            return f"❌ 命令执行错误: 命令未找到 - {str(e)}"
+        except PermissionError as e:
+            return f"❌ 命令执行错误: 权限不足 - {str(e)}"
+        except Exception as e:
+            return f"❌ 执行错误: {str(e)}"
+        finally:
+            if process and process.poll() is None:
+                process.kill()
+    
+    def execute_streaming(self, command: str, output_queue: queue.Queue, timeout: int = 30, 
+                          work_dir: str = ".", env: Dict = None, **kwargs):
+        """流式执行命令，支持超时控制、工作目录和输出大小限制"""
+        if not self.is_enabled():
+            output_queue.put(("line", "❌ 命令执行功能已禁用\n"))
+            output_queue.put(("complete", "❌ 命令执行功能已禁用"))
+            return
+        
+        self.logger.info(f"流式执行命令: {command}")
+        output_queue.put(("line", f"\n🔧 执行命令: {command}\n"))
+        output_queue.put(("line", f"⏱️ 超时设置: {timeout} 秒\n"))
+        output_queue.put(("line", f"📦 输出限制: {self.MAX_OUTPUT_BYTES/1024/1024:.0f}MB\n"))
+        if work_dir != ".":
+            output_queue.put(("line", f"📁 工作目录: {work_dir}\n"))
+        output_queue.put(("line", "-" * 50 + "\n"))
+        
+        # 准备环境变量
+        exec_env = os.environ.copy()
+        if env:
+            exec_env.update(env)
+        
+        process = None
+        try:
+            process = subprocess.Popen(
+                command,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                universal_newlines=True,
+                env=exec_env,
+                cwd=os.path.expanduser(work_dir)
+            )
+            self.process = process
+            
+            start_time = time.time()
             output_lines = []
+            total_bytes = 0
             timeout_occurred = False
+            truncated = False
             
             # 实时读取输出
             while True:
                 # 检查超时
                 if timeout > 0 and time.time() - start_time > timeout:
-                    self.process.terminate()
+                    process.terminate()
                     timeout_occurred = True
                     output_queue.put(("line", f"\n⏰ 命令执行超时（{timeout}秒）\n"))
                     break
                 
+                # 检查输出大小
+                if total_bytes >= self.MAX_OUTPUT_BYTES:
+                    truncated = True
+                    process.terminate()
+                    output_queue.put(("line", f"\n📦 输出超过 {self.MAX_OUTPUT_BYTES/1024/1024:.0f}MB 限制，结果已截断\n"))
+                    break
+                
                 # 读取一行输出
-                line = self.process.stdout.readline()
-                if not line and self.process.poll() is not None:
+                line = process.stdout.readline()
+                if not line and process.poll() is not None:
                     break
                 if line:
-                    line = line.rstrip('\n')
-                    output_queue.put(("line", line + "\n"))
+                    line_bytes = len(line.encode('utf-8', errors='replace'))
+                    
+                    if total_bytes + line_bytes > self.MAX_OUTPUT_BYTES and not truncated:
+                        allowed = self.MAX_OUTPUT_BYTES - total_bytes
+                        if allowed > 0:
+                            truncated_line = line.encode('utf-8', errors='replace')[:allowed].decode('utf-8', errors='replace')
+                            output_queue.put(("line", truncated_line))
+                            output_lines.append(truncated_line)
+                            total_bytes = self.MAX_OUTPUT_BYTES
+                        truncated = True
+                        process.terminate()
+                        output_queue.put(("line", f"\n📦 输出超过 {self.MAX_OUTPUT_BYTES/1024/1024:.0f}MB 限制，结果已截断\n"))
+                        break
+                    
+                    stripped = line.rstrip('\n')
+                    output_queue.put(("line", stripped + "\n"))
                     output_lines.append(line)
+                    total_bytes += line_bytes
             
-            # 如果超时，确保进程被终止
-            if timeout_occurred and self.process.poll() is None:
-                self.process.kill()
-                self.process.wait(timeout=2)
+            # 如果超时或截断，确保进程被终止
+            if (timeout_occurred or truncated) and process.poll() is None:
+                process.kill()
+                try:
+                    process.wait(timeout=2)
+                except:
+                    pass
             
-            # 获取剩余输出
-            remaining, _ = self.process.communicate(timeout=5)
-            if remaining:
-                output_queue.put(("line", remaining))
-                output_lines.append(remaining)
-            
-            return_code = self.process.returncode if self.process.returncode is not None else -1
+            return_code = process.returncode if process.returncode is not None else -1
             
             output_queue.put(("line", "-" * 50 + "\n"))
             
             if timeout_occurred:
                 output_queue.put(("line", f"⏰ 命令执行超时（{timeout}秒），返回码: {return_code}\n"))
+            elif truncated:
+                output_queue.put(("line", f"📦 输出已截断，返回码: {return_code}\n"))
             else:
                 output_queue.put(("line", f"✅ 命令执行完成，返回码: {return_code}\n"))
             
             # 准备完整结果
-            full_output = "\n".join(output_lines)
+            full_output = "".join(output_lines)
             data = {
-                "输出": full_output if full_output else "(无输出)",
+                "输出": full_output.strip() if full_output.strip() else "(无输出)",
                 "返回码": return_code
             }
             
             if timeout_occurred:
                 result = self.format_result(False, f"命令执行超时（{timeout}秒）", data)
+            elif truncated:
+                data["警告"] = f"输出超过 {self.MAX_OUTPUT_BYTES/1024/1024:.0f}MB 限制，结果已截断"
+                result = self.format_result(False, "命令执行完成（输出已截断）", data)
             else:
                 result = self.format_result(return_code == 0, "命令执行完成", data)
             
@@ -3652,12 +3751,13 @@ class SubprocessCommandExecutor(CommandExecutor):
             output_queue.put(("line", f"❌ 执行错误: {str(e)}\n"))
             output_queue.put(("complete", f"❌ 执行错误: {str(e)}"))
         finally:
-            if self.process and self.process.poll() is None:
-                self.process.terminate()
+            if process and process.poll() is None:
+                process.terminate()
                 try:
-                    self.process.wait(timeout=5)
+                    process.wait(timeout=2)
                 except:
-                    self.process.kill()
+                    process.kill()
+            self.process = None
 
 # ==================== 工具基类 ====================
 
@@ -5840,6 +5940,63 @@ class ReadFileTool(FileToolBase):
         
         return start, end, desc
     
+    @staticmethod
+    def _count_lines(filepath: str, encoding: str) -> int:
+        """高效统计文件行数，不存储内容"""
+        line_count = 0
+        with open(filepath, 'r', encoding=encoding) as f:
+            for _ in f:
+                line_count += 1
+        return line_count
+    
+    @staticmethod
+    def _read_lines_range(filepath: str, encoding: str, start: int, end: int) -> List[str]:
+        """读取指定行范围 [start, end)（0-indexed），只读取需要的行"""
+        lines = []
+        with open(filepath, 'r', encoding=encoding) as f:
+            for i, line in enumerate(f):
+                if i >= end:
+                    break
+                if i >= start:
+                    lines.append(line)
+        return lines
+    
+    @staticmethod
+    def _read_tail_lines(filepath: str, encoding: str, num_lines: int) -> Tuple[List[str], int]:
+        """高效读取文件末尾N行，无需遍历整个文件。返回 (lines, total_line_count)"""
+        # 对于小文件直接读全部
+        file_size = os.path.getsize(filepath)
+        if file_size < 1024 * 1024:  # < 1MB 直接读
+            with open(filepath, 'r', encoding=encoding) as f:
+                all_lines = f.readlines()
+            return all_lines[-num_lines:] if num_lines > 0 else [], len(all_lines)
+        
+        # 大文件：从后向前找换行符
+        with open(filepath, 'rb') as f:
+            block_size = 8192
+            blocks = []
+            lines_found = 0
+            position = file_size
+            
+            while position > 0 and lines_found <= num_lines:
+                read_size = min(block_size, position)
+                position -= read_size
+                f.seek(position)
+                block = f.read(read_size)
+                blocks.append(block)
+                lines_found += block.count(b'\n')
+            
+            # 拼接并解码
+            data = b''.join(reversed(blocks))
+            text = data.decode(encoding, errors='replace')
+            all_lines = text.splitlines()
+            
+            # 统计总行数
+            f.seek(0)
+            total_lines = sum(1 for _ in f)
+            
+            return all_lines[-num_lines:], total_lines
+    
     def execute(self, filepath: str, encoding: str = "utf-8", 
                 start_line: int = 1, end_line: int = 0, 
                 max_lines: int = 100, head: bool = False, 
@@ -5851,13 +6008,15 @@ class ReadFileTool(FileToolBase):
         if not is_safe:
             return error
         
+        # 限制max_lines上限，防止请求超大范围
+        max_lines = min(max_lines, 500)
+        
         try:
             file_size = os.path.getsize(abs_path)
             modified_time = datetime.fromtimestamp(os.path.getmtime(abs_path))
             
-            with open(abs_path, 'r', encoding=encoding) as f:
-                all_lines = f.readlines()
-                line_count = len(all_lines)
+            # 高效读取：先统计行数
+            line_count = self._count_lines(abs_path, encoding)
             
             start, end, range_desc = self._calculate_line_range(
                 line_count, start_line, end_line, max_lines, head, tail
@@ -5866,7 +6025,25 @@ class ReadFileTool(FileToolBase):
             if end <= start:
                 return f"❌ 无效的行范围"
             
-            display_lines = all_lines[start:end]
+            lines_to_read = end - start
+            
+            # 对于tail模式，用高效的尾部读取
+            if tail and line_count > 200:
+                display_lines_raw, _ = self._read_tail_lines(abs_path, encoding, lines_to_read)
+            else:
+                display_lines_raw = self._read_lines_range(abs_path, encoding, start, end)
+            
+            # 限制单行大小（防止单行超大导致内存问题）
+            MAX_LINE_LENGTH = 10000
+            content_lines = []
+            truncated_lines = 0
+            for i, line in enumerate(display_lines_raw):
+                line_num = start + i + 1
+                content = line.rstrip('\n\r')
+                if len(content) > MAX_LINE_LENGTH:
+                    content = content[:MAX_LINE_LENGTH] + f"... (行超长，已截断，原始长度 {len(content)})"
+                    truncated_lines += 1
+                content_lines.append(f"   {line_num:4d} | {content}")
             
             data = {
                 "路径": abs_path,
@@ -5876,17 +6053,13 @@ class ReadFileTool(FileToolBase):
                 "显示范围": f"{range_desc} (行 {start+1}-{end})"
             }
             
-            if display_lines:
-                content_lines = []
-                for i, line in enumerate(display_lines):
-                    line_num = start + i + 1
-                    content = line.rstrip('\n\r')
-                    content_lines.append(f"   {line_num:4d} | {content}")
-                
+            if content_lines:
                 data["内容"] = "\n" + "\n".join(content_lines)
                 
                 if end < line_count:
                     data["提示"] = f"还有 {line_count - end} 行未显示"
+                    if truncated_lines > 0:
+                        data["提示"] += f"，{truncated_lines} 行因超长被截断"
             
             return self.format_result(True, "文件读取成功", data)
             

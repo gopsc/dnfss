@@ -19,6 +19,8 @@
 - 🔐 **SOCKS5 代理**：通过 `set_proxy` / `get_proxy` 工具为网页访问与 API 调用配置代理，可持久化
 - 💾 **对话管理**：历史对话归档、开始新对话（重置 AI 记忆并重新加载提示词）
 - 📦 **对话压缩**：消息数或 Token 数达到阈值时自动压缩，保持上下文质量
+- 🛡️ **内存安全防护**：文件读取按需加载不全载、命令输出 1MB 限制、单行超长截断、工具结果多层防护防止 OOM
+- 🔒 **错误自动恢复**：API 请求失败自动回滚消息，工具结果安全清洗（控制字符过滤、非字符串转换）
 
 ## 🚀 快速开始
 
@@ -458,7 +460,7 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
     "archive_dir": "archive"
   },
   "tools": {
-    "max_result_length": 10000,
+    "max_result_length": 1048576,
     "save_result_to_file": false,
     "tool_results_dir": "tool_results"
   },
@@ -609,7 +611,10 @@ class MyTool(Tool):
         return f"执行结果: {param}"
 ```
 
-> **注意**：`execute()` 必须返回字符串。工具结果会经过 `_sanitize_tool_result()` 清洗（None/非字符串转为安全字符串，控制字符被过滤，超长结果截断），避免破坏 API 请求格式。
+> **注意**：`execute()` 必须返回字符串。工具结果会经过多层安全防护：
+> 1. **工具层源头限制**：`read_file` 按需读取不全载（最多500行，单行≤10KB），`run_command` 输出≤1MB（超出立即终止进程）
+> 2. **`_sanitize_tool_result()`**：None/非字符串转为安全字符串，过滤控制字符
+> 3. **最终兜底截断**：超过 `tools.max_result_length`（默认1MB字符）时截断并提示，避免破坏 API 请求格式
 
 ### 添加新命令
 
@@ -683,6 +688,13 @@ elif command == "/mycommand":
 3. 确认工具返回值为字符串且不含二进制/控制字符
 
 ## 📄 更新日志
+
+### v2.3
+- ✅ **修复工具输出OOM崩溃问题**：
+  - `read_file`：不再一次性 `readlines()` 加载整个文件，改为按行范围按需读取；大文件 `tail=true` 使用反向块读取（>1MB文件不全文遍历）；新增单行长度限制（10KB/行，超长截断）；`max_lines` 硬上限500行防止请求超大范围
+  - `run_command`：非流式执行从 `capture_output=True` 改为逐行读取并实时计数，输出达到1MB立即终止进程；流式执行同样增加1MB输出大小限制，超出终止并提示截断；统一stdout/stderr合并计数
+  - `tools.max_result_length` 默认值从10KB提高到1MB字符，作为最终兜底截断
+  - 形成"工具层源头限制→结果清洗→最终兜底"三层防护，彻底防止大文件/大输出导致内存溢出
 
 ### v2.2
 - ✅ 修复提示词系统排序 bug：`SKILL_PREFIX = "1_"` 只匹配 `1_` 开头文件，导致 `2_`~`10_` 技能提示词排序错乱（`10_task_handling.md` 排在 `1_memory_search.md` 前面）；改用正则按数字前缀排序
