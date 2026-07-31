@@ -1,0 +1,231 @@
+# libhttp - UniServe HTTP/WebSocket Library
+
+C++20 network library for the UniServe microservice framework, providing unified HTTP/HTTPS server and HTTP/WebSocket client capabilities built on Boost.Beast and libcurl.
+
+## Features
+
+### HttpServer
+- **HTTP/HTTPS Server**: Asynchronous HTTP 1.1 server with TLS support
+- **WebSocket Integration**: Single port can serve both HTTP(S) and WebSocket(S) endpoints
+- **Routing**: Exact path matching + wildcard (`*`) routing
+- **Middleware**: `use()` for middleware chains (CORS, auth, logging, etc.)
+- **Static Files**: `setStaticDirectory()` for serving static files
+- **Thread Pool**: Multi-threaded I/O with `asio::strand` for thread safety
+- **Client Management**: WebSocket client tracking, broadcast, and targeted send
+
+### HttpClient
+- **HTTP Client**: Synchronous HTTP requests via libcurl (GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS)
+- **WebSocket Client**: Synchronous WebSocket client via Boost.Beast
+- **Dual Protocol**: Same client instance handles both HTTP and WebSocket
+- **ws:// and wss://**: Supports both plain and TLS-encrypted WebSocket connections
+- **Binary Support**: Text and binary message sending
+- **Backward Compatible**: Original API preserved; `WebSocketClient`/`WebSocketClientBase` are aliases for `HttpClient`
+
+## Dependencies
+
+- C++20 compiler
+- Boost.Beast / Boost.Asio (header-only)
+- OpenSSL (for TLS)
+- libcurl (for HTTP client)
+- pthread
+
+## Build
+
+```bash
+make           # builds build/libus_http.so
+make install   # installs to /usr/lib and /usr/include/us (requires root)
+```
+
+Makefile links: `-lssl -lcrypto -lcurl -lpthread` with Homebrew paths for macOS.
+
+## Quick Start
+
+### HTTP + WebSocket Server
+
+```cpp
+#include <us/HttpServer.hpp>
+using namespace pmc::net;
+
+int main() {
+    // HTTP server on port 8080
+    HttpServer server("0.0.0.0", 8080, 4); // 4 threads
+
+    // HTTP GET route
+    server.get("/hello", [](const auto& req, const auto& params) {
+        http::response<http::string_body> res;
+        res.result(http::status::ok);
+        res.set(http::field::content_type, "text/plain");
+        res.body() = "Hello, World!";
+        res.prepare_payload();
+        return res;
+    });
+
+    // WebSocket route
+    server.ws("/ws", [](const std::string& clientId,
+                         const std::string& message,
+                         std::function<void(const std::string&)> send) {
+        send("Echo: " + message);
+    });
+
+    server.onWsConnect([](const std::string& id, const std::string& addr) {
+        std::cout << "Client " << id << " connected from " << addr << std::endl;
+    });
+
+    server.onWsDisconnect([](const std::string& id) {
+        std::cout << "Client " << id << " disconnected" << std::endl;
+    });
+
+    server.start();
+    // server.run(); // blocks with ioc.run()
+    return 0;
+}
+```
+
+### HTTP + WebSocket Client
+
+```cpp
+#include <us/HttpClient.hpp>
+using namespace pmc::net;
+
+// HTTP request
+HttpClient http;
+http.set_header("Content-Type: application/json");
+http.post_stream_sync("http://localhost:8080/api/data", "{}",
+    [](const std::string& resp) {
+        std::cout << "Response: " << resp << std::endl;
+    });
+
+// WebSocket connection
+HttpClient ws;
+if (ws.ws_connect("ws://localhost:8080/ws")) {
+    ws.ws_send("Hello WebSocket!");
+    std::string reply = ws.ws_recv();
+    std::cout << "Got: " << reply << std::endl;
+    ws.ws_close();
+}
+
+// WSS (TLS) connection
+HttpClient wss;
+wss.ws_connect("wss://example.com/socket");
+```
+
+### HTTPS Server
+
+```cpp
+HttpServer secure("0.0.0.0", 443, "/path/to/cert.pem", "/path/to/key.pem", 4);
+secure.get("/", handler);
+secure.start();
+```
+
+## API Reference
+
+### HttpServer
+
+**Constructors**
+```cpp
+HttpServer(const std::string& address, unsigned short port, unsigned int threads = 1);
+HttpServer(const std::string& address, unsigned short port,
+           const std::string& cert_file, const std::string& key_file,
+           unsigned int threads = 1);
+```
+
+**HTTP Routes**
+```cpp
+void get(const std::string& path, HttpRequestHandler handler);
+void post(const std::string& path, HttpRequestHandler handler);
+void put(const std::string& path, HttpRequestHandler handler);
+void del(const std::string& path, HttpRequestHandler handler);
+void options(const std::string& path, HttpRequestHandler handler);
+void use(MiddlewareHandler middleware);
+void setStaticDirectory(const std::string& path);
+```
+
+**WebSocket Routes**
+```cpp
+void ws(const std::string& path, WebSocketMessageHandler handler);
+void onWsConnect(WebSocketConnectHandler handler);
+void onWsDisconnect(WebSocketDisconnectHandler handler);
+bool sendToWsClient(const std::string& clientId, const std::string& message);
+size_t broadcastWs(const std::string& message);
+void disconnectWsClient(const std::string& clientId);
+size_t getWsClientCount() const;
+```
+
+**Lifecycle**
+```cpp
+void start();          // non-blocking, spawns worker threads
+void run();            // blocking (calls start() then ioc.run())
+void stop();
+bool isRunning() const;
+```
+
+### HttpClient
+
+**HTTP Methods**
+```cpp
+void set_header(const std::string& header);
+void clear_headers();
+const std::map<std::string, std::string>& get_response_headers() const;
+long get_response_code() const;
+
+void get_stream_sync(const std::string& url, ResponseCallback cb);
+void post_stream_sync(const std::string& url, const std::string& data, ResponseCallback cb);
+void put_stream_sync(const std::string& url, const std::string& data, ResponseCallback cb);
+void delete_stream_sync(const std::string& url, ResponseCallback cb);
+void request_stream_sync(HttpMethod method, const std::string& url,
+                          const std::string& data, ResponseCallback cb);
+```
+
+**WebSocket Methods**
+```cpp
+bool ws_connect(const std::string& url, int timeout_ms = 5000);
+bool ws_connect(const std::string& host, const std::string& port,
+                const std::string& path = "/", bool ssl = false, int timeout_ms = 5000);
+bool ws_send(const std::string& message);
+bool ws_send_binary(const void* data, size_t size);
+std::string ws_recv(int timeout_ms = 0);
+bool ws_is_connected() const;
+void ws_close();
+std::string ws_get_host() const;
+std::string ws_get_port() const;
+std::string ws_get_path() const;
+```
+
+### Type Definitions
+
+```cpp
+using HttpRequestHandler = std::function<http::response<http::string_body>(
+    const http::request<http::string_body>&,
+    const std::unordered_map<std::string, std::string>&)>;
+
+using MiddlewareHandler = std::function<bool(
+    const http::request<http::string_body>&,
+    http::response<http::string_body>&,
+    const std::unordered_map<std::string, std::string>&)>;
+
+using WebSocketMessageHandler = std::function<void(
+    const std::string& clientId,
+    const std::string& message,
+    std::function<void(const std::string&)> sendCallback)>;
+
+using WebSocketConnectHandler = std::function<void(
+    const std::string& clientId,
+    const std::string& remoteAddress)>;
+
+using WebSocketDisconnectHandler = std::function<void(
+    const std::string& clientId)>;
+```
+
+## Backward Compatibility
+
+The following type aliases are provided for existing code that used the standalone WebSocket client:
+
+```cpp
+using WebSocketClient = HttpClient;
+using WebSocketClientBase = HttpClient;
+```
+
+## Version History
+
+- **v3.0.0**: Merged WebSocketServer into HttpServer and WebSocketClient into HttpClient. Single-port HTTP+WebSocket support.
+- **v2.x**: Separate HttpServer, WebSocketServer, and HttpClient modules.
