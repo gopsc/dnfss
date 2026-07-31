@@ -16,6 +16,10 @@ import (
 	"github.com/micro_servers/waf/internal/logclient"
 )
 
+// maxRequestBodySize 请求体最大大小（10MB），与 rules/waf.conf 中 SecRequestBodyLimit 保持一致。
+// 超过此限制的请求直接返回 413 Request Entity Too Large，防止 OOM。
+const maxRequestBodySize = 10 * 1024 * 1024
+
 // Proxy 持有 ReverseProxy 与 WAF 引擎引用。
 type Proxy struct {
 	rp  *httputil.ReverseProxy
@@ -84,6 +88,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		tx.ProcessLogging()
 		_ = tx.Close()
+		// 确保 r.Body 被关闭并耗尽，保证 TCP 连接可复用
+		if r.Body != nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 1024))
+			_ = r.Body.Close()
+		}
 	}()
 
 	// 解析 RemoteAddr 中的 IP 与端口
@@ -111,14 +120,47 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 请求体：读全量喂给 coraza，再用 buffer 恢复 r.Body 给 proxy 转发
+	// 请求体：读取时限制大小（maxRequestBodySize + 1 字节用于判断超限），防止 OOM
 	if r.Body != nil && r.Body != http.NoBody {
-		bodyBytes, err := io.ReadAll(r.Body)
-		if err == nil {
-			_, _, _ = tx.ReadRequestBodyFrom(bytes.NewReader(bodyBytes))
-			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		// 限制读取大小：多读 1 字节，若能读到说明超限
+		limitReader := io.LimitReader(r.Body, maxRequestBodySize+1)
+		bodyBytes, err := io.ReadAll(limitReader)
+		if err != nil {
+			// 客户端中途断开或读取错误，直接返回无需继续处理
+			logclient.Info("waf", fmt.Sprintf("body_read_error path=%s err=%v", r.URL.Path, err),
+				map[string]any{"ip": r.RemoteAddr})
+			return
 		}
-		if it, _ := tx.ProcessRequestBody(); it != nil {
+		if len(bodyBytes) > maxRequestBodySize {
+			// 请求体超限，返回 413
+			logclient.Warning("waf", fmt.Sprintf("body_too_large %s %s size=%d", r.Method, r.URL.Path, len(bodyBytes)),
+				map[string]any{
+					"ip":      r.RemoteAddr,
+					"method":  r.Method,
+					"path":    r.URL.Path,
+					"size":    len(bodyBytes),
+					"limit":   maxRequestBodySize,
+					"cost_ms": time.Since(start).Milliseconds(),
+				})
+			setSecurityHeaders(w.Header())
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			_, _ = w.Write([]byte("request body too large\n"))
+			return
+		}
+		// 喂给 coraza 进行请求体检测
+		if _, _, err := tx.ReadRequestBodyFrom(bytes.NewReader(bodyBytes)); err != nil {
+			logclient.Warning("waf", fmt.Sprintf("body_parse_error path=%s err=%v", r.URL.Path, err),
+				map[string]any{"ip": r.RemoteAddr})
+		}
+		// 恢复 r.Body 供 ReverseProxy 转发
+		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+		it, err := tx.ProcessRequestBody()
+		if err != nil {
+			logclient.Warning("waf", fmt.Sprintf("body_process_error path=%s err=%v", r.URL.Path, err),
+				map[string]any{"ip": r.RemoteAddr})
+		}
+		if it != nil {
 			p.block(w, r, it.RuleID, start)
 			return
 		}

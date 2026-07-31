@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -108,8 +109,13 @@ func main() {
 	}()
 
 	server := &http.Server{
-		Addr:    cfg.Listen,
-		Handler: p,
+		Addr:              cfg.Listen,
+		Handler:           p,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1MB
 		TLSConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		},
