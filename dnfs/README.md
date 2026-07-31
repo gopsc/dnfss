@@ -196,15 +196,41 @@ curl -X POST http://localhost:8006/update_note \
 
 ## 配置
 
-服务地址与上游依赖硬编码在 [dnfs.py](dnfs.py)：
+dnfs 已接入 confs 统一配置服务，采用**三层 fail-safe** 加载模式（与 static 服务一致）：
 
-| 常量 | 值 | 说明 |
-|------|----|------|
-| `ADDR` / `PORT` | `127.0.0.1` / `8006` | 监听地址 |
-| `DB_SERVER_URL` | `http://127.0.0.1:8005/execute` | db 服务 |
-| `REVIEW_SERVER_URL` | `http://127.0.0.1:8007/review` | ai_review 服务 |
+**加载顺序**：内置默认值 → confs 统一配置服务（dnfs.ini，优先）→ 环境变量覆盖（最高优先级）
 
-调用超时均为 10 秒。
+### 配置文件
+
+集中托管在 [confs/configs/dnfs.ini](../confs/configs/dnfs.ini)，由 confs 服务分发：
+
+| Section | Key | 默认值 | 说明 |
+|---------|-----|--------|------|
+| `[server]` | `host` | `127.0.0.1` | 监听地址 |
+| `[server]` | `port` | `8006` | 监听端口 |
+| `[database]` | `host` | `127.0.0.1` | db 服务地址 |
+| `[database]` | `port` | `8005` | db 服务端口 |
+| `[database]` | `timeout` | `10` | RPC 调用超时（秒） |
+| `[ai_review]` | `url` | `http://127.0.0.1:8007/review` | AI 审核接口地址 |
+| `[ai_review]` | `timeout` | `10` | AI 审核请求超时（秒） |
+| `[confs]` | `host` | `127.0.0.1` | confs 服务地址 |
+| `[confs]` | `port` | `8010` | confs 服务端口 |
+
+### 环境变量（Docker 环境必需，优先级最高）
+
+环境变量覆盖配置文件值，容器化部署时通过 docker-compose.yml 传入服务名：
+
+| 变量 | 容器内值 | 说明 |
+|------|---------|------|
+| `LISTEN_ADDR` | `0.0.0.0` | 监听地址（容器内需绑定所有网卡） |
+| `LISTEN_PORT` | `8006` | 监听端口 |
+| `DB_HOST` | `db` | db 服务主机名（docker-compose 服务名） |
+| `DB_PORT` | `8005` | db 服务端口 |
+| `REVIEW_URL` | `http://ai_review:8007/review` | ai_review 服务地址 |
+| `CONFS_HOST` | - | 可选，confs 容器化后使用 |
+| `CONFS_PORT` | - | 可选，confs 容器化后使用 |
+
+配置来源会记录到日志（`logs.info/warning`），便于排查实际用了哪一层。本地裸机运行时 confs 不可用会自动回退到内置默认值 + 环境变量。
 
 ## 前端
 

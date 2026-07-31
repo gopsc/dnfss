@@ -236,6 +236,7 @@ except RpcError as e:
 | 服务 | 配置文件 | 接入方式 |
 |------|---------|---------|
 | [static](../static/) | [static.ini](configs/static.ini) | 三层 fail-safe：内置默认值 → confs（优先）→ 本地 `config.ini` 回退 |
+| [dnfs](../dnfs/) | [dnfs.ini](configs/dnfs.ini) | 三层 fail-safe：内置默认值 → confs（优先）→ 环境变量覆盖 |
 
 static 的接入实现见 [static/fsys.py](../static/fsys.py)：
 - `_fetch_from_confs()` 通过 `RpcClient` 调 `get` 路由取 `static.ini`，3 秒超时
@@ -243,7 +244,12 @@ static 的接入实现见 [static/fsys.py](../static/fsys.py)：
 - `_merge_ini()` 仅覆盖已知的 section/key（白名单合并，不引入未预期字段）
 - 配置来源会记录到日志（`logs.info/warning`），便于排查实际用了哪一层
 
-其他服务（gateway / waf / ai_review / smtp / dnfs / db）尚未接入，仍读各自本地配置。
+dnfs 的接入实现见 [dnfs/dnfs.py](../dnfs/dnfs.py)：
+- 三层加载顺序：内置默认值 → confs（dnfs.ini）→ 环境变量覆盖（优先级最高）
+- 支持的环境变量：`LISTEN_ADDR`/`LISTEN_PORT`/`DB_HOST`/`DB_PORT`/`REVIEW_URL`/`CONFS_HOST`/`CONFS_PORT`
+- Docker 环境通过环境变量传入服务名（db/ai_review），覆盖 confs 中的 127.0.0.1 默认值
+
+其他服务（gateway / waf / ai_review / smtp / db）尚未接入，仍读各自本地配置。
 
 ## 项目结构
 
@@ -253,7 +259,8 @@ confs/
 ├── log_client.py        # 统一日志客户端 SDK（与其他服务一致的副本）
 ├── configs/             # 配置文件存放目录（被分发对象）
 │   ├── example.ini      # 示例配置
-│   └── static.ini       # static 服务配置（已接入分发）
+│   ├── static.ini       # static 服务配置（已接入分发）
+│   └── dnfs.ini         # dnfs 服务配置（已接入分发）
 ├── docs/
 │   └── SECURITY_AUDIT_20260801.md  # 安全审计报告
 ├── _set.sh              # 初始化脚本（建 venv + 安装依赖）

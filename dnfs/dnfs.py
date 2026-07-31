@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
 
-
-
-
-
 '''
 
 Dendrachy Network File-System (dnfs)
@@ -21,8 +17,10 @@ from flask_cors import CORS
 #from flask_sqlalchemy import SQLAlchemy    # 使用pymsg模块进行通信
 from waitress import serve
 import os
+import sys
 import json
 import base64
+import configparser
 import urllib.request
 import urllib.error
 from typing import Dict, Any
@@ -32,14 +30,75 @@ from log_client import logs
 # pymsg 导入
 # 我们有在依赖列表中加入pymsg
 # 这个可以省略也许
-import sys as _sys
 _sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from pymsg import RpcClient, RpcError  # noqa: E402
 
-# 从环境变量中获取参数
-# 随后我们专门做一个统一配置微服务
-_DBV2_ADDR = os.environ.get('DB_HOST', '127.0.0.1')
-_DBV2_PORT = int(os.environ.get('DB_PORT', '8005'))
+# ==================== 配置加载（三层 fail-safe） ====================
+# 加载顺序：内置默认值 → confs 统一配置服务（dnfs.ini） → 环境变量覆盖
+# 环境变量优先级最高（Docker 环境使用服务名 db/ai_review 而非 127.0.0.1）
+
+_dnfs_config = {
+    'server': {'host': '127.0.0.1', 'port': '8006'},
+    'database': {'host': '127.0.0.1', 'port': '8005', 'timeout': '10'},
+    'ai_review': {'url': 'http://127.0.0.1:8007/review', 'timeout': '10'},
+    'confs': {'host': '127.0.0.1', 'port': '8010'},
+}
+
+
+def _merge_ini(text):
+    """把 ini 文本合并进 _dnfs_config（仅覆盖已知的 section/key，白名单合并）。"""
+    ini = configparser.ConfigParser(interpolation=None)
+    ini.read_string(text)
+    for section in _dnfs_config:
+        if ini.has_section(section):
+            for key, value in ini[section].items():
+                if key in _dnfs_config[section]:
+                    _dnfs_config[section][key] = value
+
+
+def _fetch_from_confs():
+    """从 confs 统一配置服务拉取 dnfs.ini 全文，失败返回 None（fail-safe）。"""
+    try:
+        host = os.environ.get('CONFS_HOST', _dnfs_config['confs']['host'])
+        port = int(os.environ.get('CONFS_PORT', _dnfs_config['confs']['port']))
+        data = RpcClient(host, port, 'dnfs', timeout=3).call(
+            'get', {'name': 'dnfs.ini'})
+        return data.get('content')
+    except Exception:
+        return None
+
+
+_confs_text = _fetch_from_confs()
+if _confs_text is not None:
+    _merge_ini(_confs_text)
+    logs.info("dnfs", "配置来源: confs 统一配置服务 (dnfs.ini)")
+else:
+    logs.warning("dnfs", "confs 不可用，使用内置默认值 + 环境变量")
+
+# 环境变量覆盖（优先级最高，Docker 环境需要）
+if os.environ.get('LISTEN_ADDR'):
+    _dnfs_config['server']['host'] = os.environ['LISTEN_ADDR']
+if os.environ.get('LISTEN_PORT'):
+    _dnfs_config['server']['port'] = os.environ['LISTEN_PORT']
+if os.environ.get('DB_HOST'):
+    _dnfs_config['database']['host'] = os.environ['DB_HOST']
+if os.environ.get('DB_PORT'):
+    _dnfs_config['database']['port'] = os.environ['DB_PORT']
+if os.environ.get('REVIEW_URL'):
+    _dnfs_config['ai_review']['url'] = os.environ['REVIEW_URL']
+if os.environ.get('CONFS_HOST'):
+    _dnfs_config['confs']['host'] = os.environ['CONFS_HOST']
+if os.environ.get('CONFS_PORT'):
+    _dnfs_config['confs']['port'] = os.environ['CONFS_PORT']
+
+# 提取配置常量
+_DBV2_ADDR = _dnfs_config['database']['host']
+_DBV2_PORT = int(_dnfs_config['database']['port'])
+_DB_TIMEOUT = int(_dnfs_config['database']['timeout'])
+_REVIEW_SERVER_URL = _dnfs_config['ai_review']['url']
+_REVIEW_TIMEOUT = int(_dnfs_config['ai_review']['timeout'])
+_ADDR = _dnfs_config['server']['host']
+_PORT = int(_dnfs_config['server']['port'])
 
 # 管理员判定已上移至 gateway：登录时命中 [Admin] users 白名单即在 Token payload
 # 写入 is_admin=true，本服务通过 info.get('is_admin') 读取，不再本地维护名单。
@@ -48,13 +107,15 @@ _DBV2_PORT = int(os.environ.get('DB_PORT', '8005'))
 _rpc = RpcClient(_DBV2_ADDR, _DBV2_PORT, "dnfs")
 
 
-def _call_dbv2(payload: dict, timeout: int = 10) -> dict:
+def _call_dbv2(payload: dict, timeout: int = None) -> dict:
     """通过 pymsg RPC 调用 dbv2 数据库服务（自动注入 ``_route: "execute"``）。
 
     返回完整响应 dict（``{"success": ..., "data"/"error": ...}``），
     与历史行为一致，调用方无需改动。服务端业务错误返回 success=False；
     网络层故障抛 ConnectionError。
     """
+    if timeout is None:
+        timeout = _DB_TIMEOUT
     try:
         data = _rpc.call("execute", payload, timeout=timeout)
         return {"success": True, "data": data}
@@ -65,15 +126,14 @@ def _call_dbv2(payload: dict, timeout: int = 10) -> dict:
             f"dbv2 调用失败 ({_DBV2_ADDR}:{_DBV2_PORT}): {e}"
         ) from None
 
-# AI审核服务地址，从环境变量获取
-REVIEW_SERVER_URL = os.environ.get('REVIEW_URL', 'http://127.0.0.1:8007/review')
-def review_content(content: str, timeout: int = 10) -> Dict[str, Any]:
+# AI审核服务地址
+def review_content(content: str, timeout: int = None) -> Dict[str, Any]:
     """
     调用 AI 内容审核服务的 /review 接口，对给定文本进行审核。
 
     Args:
         content: 待审核的文本内容，不可为空。
-        timeout: 请求超时时间（秒），默认 10 秒。
+        timeout: 请求超时时间（秒），默认使用配置值。
 
     Returns:
         字典，包含接口返回的字段，例如：
@@ -83,7 +143,9 @@ def review_content(content: str, timeout: int = 10) -> Dict[str, Any]:
         - 请求参数错误时：{"error": "content is required"} 等
         - 网络或异常时：{"error": "request_failed", "detail": "..."}
     """
-    url = REVIEW_SERVER_URL
+    if timeout is None:
+        timeout = _REVIEW_TIMEOUT
+    url = _REVIEW_SERVER_URL
     payload = {"content": content}
     json_data = json.dumps(payload).encode("utf-8")
 
@@ -192,7 +254,7 @@ def add_note():
 
 
     # 内容审查
-    review = review_content(title + '\n' + content, 10)
+    review = review_content(title + '\n' + content)
     if True != review: raise DnfsExp('内容审核不通过，用户'+info.get('user')+'，从'+request.remote_addr, 400)
 
     # 执行插入
@@ -412,7 +474,7 @@ def update_note():
             return jsonify({"error": 'It\'s not your note'}), 403
 
     # 内容审查
-    review = review_content(title + '\n' + content, 10)
+    review = review_content(title + '\n' + content)
     if True != review:
         #return jsonify({'error': 'review failed', 'data': review}), 400
         logs.warning('dnfs', f'update_note 内容审核未通过 id={id} title={title}', extra={'user': info['user']})
@@ -502,9 +564,7 @@ def get_note():
 #    """返回应用主页"""
 #    return render_template('index.html')
 
-ADDR = os.environ.get('LISTEN_ADDR', '0.0.0.0')
-PORT = int(os.environ.get('LISTEN_PORT', '8006'))
 if __name__ == "__main__":
-    logs.info('dnfs', f'服务启动，监听 http://{ADDR}:{PORT}')
-    print(f'Listen at http://{ADDR}:{PORT}')
-    serve(app, host=ADDR, port=PORT)
+    logs.info('dnfs', f'服务启动，监听 http://{_ADDR}:{_PORT}（db={_DBV2_ADDR}:{_DBV2_PORT}, ai_review={_REVIEW_SERVER_URL}）')
+    print(f'Listen at http://{_ADDR}:{_PORT}')
+    serve(app, host=_ADDR, port=_PORT)
