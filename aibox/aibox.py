@@ -706,6 +706,12 @@ save_memory_and_end_conversation(
                 'filename': '3_file_operations.md',
                 'content': """# 文件操作能力
 
+## 工作目录规范（重要）
+**所有你主动创建的临时文件、脚本、数据文件，必须写入 `~/.aibox/workspace/` 目录，不要在其他目录随便写文件。**
+- 该目录是你的专用工作区，用于存放代码片段、临时脚本、下载的数据、生成的文件等
+- 用户明确指定文件路径时，按照用户要求的路径操作
+- 读取系统文件、项目文件时使用实际路径，不限制
+
 ## 可用工具
 - **read_file**: 读取文件内容
 - **write_file**: 写入文件
@@ -783,6 +789,12 @@ web action="get" url="https://www.baidu.com/s?wd=人工智能"
                 'filename': '6_command_execution.md',
                 'content': """# 命令执行能力
 
+## 工作目录规范（重要）
+**执行命令时，默认 work_dir 设置为 `~/.aibox/workspace/`**，所有命令执行产生的文件都落在这个专用工作区，不会污染其他目录。
+- 只有当用户明确要求在特定目录执行命令时，才修改 work_dir
+- 技能调用（~/.aibox/skills/）不受此限制
+- 需要在用户项目目录操作时，按用户指定路径设置 work_dir
+
 ## 可用工具
 - **run_command**: 执行系统命令
 
@@ -790,17 +802,18 @@ web action="get" url="https://www.baidu.com/s?wd=人工智能"
 - command: 要执行的命令（必填）
 - timeout: 超时时间（秒），默认30秒
 - stream: 是否实时输出，默认true
-- work_dir: 工作目录，默认当前目录
+- work_dir: 工作目录，默认 `~/.aibox/workspace/`
 
 ## 安全提醒
 - 命令执行功能可能被禁用（根据配置）
 - 执行危险命令前请三思
 - 超时机制可以防止命令卡死
+- 命令输出有大小限制（1MB），超出会自动截断
 
 ## 示例
 ```
 run_command command="ls -la" timeout=10
-run_command command="python script.py" stream=true
+run_command command="python script.py" stream=true work_dir="~/.aibox/workspace"
 ```
 """
             },
@@ -1142,6 +1155,7 @@ class ConfigManager:
                 "log_backup_count": 5,
                 "skills_dir": "~/.aibox/skills",
                 "prompts_dir": "~/.aibox/prompts",
+                "workspace_dir": "~/.aibox/workspace",
                 "websocket_host": "localhost",
                 "websocket_port": 8765,
             },
@@ -1371,6 +1385,10 @@ class Constants:
     @property
     def SKILLS_DIR(cls):
         return os.path.expanduser(cls._get_config().get("system.skills_dir", "~/.aibox/skills"))
+    
+    @property
+    def WORKSPACE_DIR(cls):
+        return os.path.expanduser(cls._get_config().get("system.workspace_dir", "~/.aibox/workspace"))
     
     @property
     def PROMPTS_DIR(cls):
@@ -3559,12 +3577,16 @@ class SubprocessCommandExecutor(CommandExecutor):
         
         return ''.join(output_chunks), timeout_occurred, truncated
     
-    def execute(self, command: str, timeout: int = 30, work_dir: str = ".", env: Dict = None, **kwargs) -> str:
+    def execute(self, command: str, timeout: int = 30, work_dir: str = None, env: Dict = None, **kwargs) -> str:
         """执行命令并返回完整结果（带输出大小限制）"""
         if not self.is_enabled():
             return "❌ 命令执行功能已禁用"
         
-        self.logger.info(f"执行命令: {command}")
+        # 默认工作目录为workspace，避免在启动目录散落文件
+        if work_dir is None or work_dir == ".":
+            work_dir = constants.WORKSPACE_DIR
+        
+        self.logger.info(f"执行命令: {command} (work_dir={work_dir})")
         
         # 准备环境变量
         exec_env = os.environ.copy()
@@ -3629,19 +3651,22 @@ class SubprocessCommandExecutor(CommandExecutor):
                 process.kill()
     
     def execute_streaming(self, command: str, output_queue: queue.Queue, timeout: int = 30, 
-                          work_dir: str = ".", env: Dict = None, **kwargs):
+                          work_dir: str = None, env: Dict = None, **kwargs):
         """流式执行命令，支持超时控制、工作目录和输出大小限制"""
         if not self.is_enabled():
             output_queue.put(("line", "❌ 命令执行功能已禁用\n"))
             output_queue.put(("complete", "❌ 命令执行功能已禁用"))
             return
         
-        self.logger.info(f"流式执行命令: {command}")
+        # 默认工作目录为workspace，避免在启动目录散落文件
+        if work_dir is None or work_dir == ".":
+            work_dir = constants.WORKSPACE_DIR
+        
+        self.logger.info(f"流式执行命令: {command} (work_dir={work_dir})")
         output_queue.put(("line", f"\n🔧 执行命令: {command}\n"))
         output_queue.put(("line", f"⏱️ 超时设置: {timeout} 秒\n"))
         output_queue.put(("line", f"📦 输出限制: {self.MAX_OUTPUT_BYTES/1024/1024:.0f}MB\n"))
-        if work_dir != ".":
-            output_queue.put(("line", f"📁 工作目录: {work_dir}\n"))
+        output_queue.put(("line", f"📁 工作目录: {work_dir}\n"))
         output_queue.put(("line", "-" * 50 + "\n"))
         
         # 准备环境变量
@@ -8402,6 +8427,9 @@ def main():
     
     # 确保 prompts 目录存在
     os.makedirs(constants.PROMPTS_DIR, exist_ok=True)
+    
+    # 确保 workspace 工作目录存在（智能体专用文件区）
+    os.makedirs(constants.WORKSPACE_DIR, exist_ok=True)
     
     Logger.init_file_logging()
     

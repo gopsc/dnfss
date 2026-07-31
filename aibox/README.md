@@ -102,12 +102,23 @@ aibox/
 │   ├── 99_SOUL.md           # AI 灵魂定义（角色、性格、能力边界）
 │   └── 100_STATUS.md        # AI 状态记录（最后加载）
 ├── skills/                  # 扩展技能目录（运行时从仓库 skills/ 复制或用户自建）
+├── workspace/               # AI 专用工作目录（临时文件、脚本、数据文件默认存放位置）
 ├── memories.db              # 记忆和任务数据库（SQLite）
 ├── current_conversation.json # 当前对话
 ├── conversation_history.json # 对话索引
 ├── archive/                 # 历史对话归档
 └── tool_results/            # 工具结果缓存
 ```
+
+## 📂 工作目录规范
+
+为避免 AI 产生的临时文件污染系统其他目录，所有 AI 主动创建的临时文件、脚本、数据文件默认写入 `~/.aibox/workspace/` 目录：
+
+- **文件操作**：`write_file` 工具默认路径为 `~/.aibox/workspace/`（用户明确指定路径时除外）
+- **命令执行**：`run_command` 工具默认 `work_dir` 为 `~/.aibox/workspace/`，命令产生的文件落在该专用工作区
+- **用户指定路径优先**：当用户明确要求在特定路径操作时，按用户指定路径执行
+- **读取不受限**：读取系统文件、项目文件时使用实际路径，不受工作目录限制
+- **技能调用**：`~/.aibox/skills/` 下的技能执行不受此限制
 
 ## 🔧 可用工具
 
@@ -404,7 +415,8 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
     "websocket_host": "localhost",
     "websocket_port": 8765,
     "skills_dir": "~/.aibox/skills",
-    "prompts_dir": "~/.aibox/prompts"
+    "prompts_dir": "~/.aibox/prompts",
+    "workspace_dir": "~/.aibox/workspace"
   },
   "scheduler": {
     "enabled": true,
@@ -688,6 +700,15 @@ elif command == "/mycommand":
 3. 确认工具返回值为字符串且不含二进制/控制字符
 
 ## 📄 更新日志
+
+### v2.4
+- ✅ **新增专用工作目录规范**：
+  - AI 主动创建的临时文件、脚本、数据文件默认写入 `~/.aibox/workspace/`，避免污染系统其他目录
+  - `write_file` 工具默认路径设为工作目录（用户明确指定路径时除外）
+  - `run_command` 工具默认 `work_dir` 设为工作目录，命令产生的文件落在专用工作区
+  - 新增 `system.workspace_dir` 配置项（默认 `~/.aibox/workspace`），可自定义工作目录位置
+  - 在文件操作和命令执行提示词中明确工作目录规范
+- ✅ 命令执行提示词补充 1MB 输出大小限制说明
 
 ### v2.3
 - ✅ **修复工具输出OOM崩溃问题**：
