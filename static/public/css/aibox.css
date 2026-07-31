@@ -210,4 +210,7 @@ body {
 	#app { margin-right: 340px; max-width: none; }
 	#task-panel { transform: none; box-shadow: none; }
 	#task-toggle, #task-close, #backdrop { display: none; }
+
+	/* 桌面端所有对话一律左对齐（移动端保留用户右/AI 左的对话式布局） */
+	.msg-user, .msg-ai, .msg-reasoning { margin-left: 0; margin-right: 0; }
 }
