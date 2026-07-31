@@ -32,7 +32,7 @@
 
 ```bash
 # 克隆或下载代码后，安装依赖
-pip install websockets requests beautifulsoup4
+pip install -r requirements.txt
 ```
 
 ### 配置
@@ -46,18 +46,18 @@ export DEEPSEEK_API_KEY="your-api-key"
 
 3. **启动服务器**：
 ```bash
-python main.py
+python aibox.py
 ```
 
 启动后，WebSocket 服务器将运行在 `ws://localhost:8765`（地址与端口可在 `config.json` 的 `system.websocket_host` / `system.websocket_port` 中修改）。
 
-> 注意：本模块入口文件为 `main.py`（不是 `agent.py`）。`client.py` 为示例 WebSocket 客户端，`voice_client.py` 为语音客户端，`_run.sh` 为被 `core` 拉起的启动脚本。
+> 注意：本模块入口文件为 `aibox.py`（单文件约 8200 行，集成 WebSocket 服务器、AI 引擎、工具/技能系统、任务调度器于一体）。`client.py` 为示例 WebSocket 客户端，`voice_client.py` 为语音客户端，`_run.sh` 为被 `core` 拉起的启动脚本。
 
 ## 📁 目录结构
 
 ```
 aibox/
-├── main.py            # 服务主程序（WebSocket 服务器 + AI 引擎 + 工具/技能系统）
+├── aibox.py           # 服务主程序（WebSocket 服务器 + AI 引擎 + 工具/技能系统 + 任务调度器）
 ├── client.py          # 示例 WebSocket 客户端
 ├── voice_client.py    # 语音客户端
 ├── entry.html         # 前端入口页
@@ -192,15 +192,21 @@ const ws = new WebSocket('ws://localhost:8765');
 
 | 类型 | 说明 |
 |-----|------|
-| `chunk` | AI 响应的片段（流式输出） |
-| `complete` | AI 响应完成 |
-| `reasoning` | AI 思考过程（思考模式） |
-| `error` | 错误信息 |
+| `chunk` | AI 响应的**增量片段**（流式输出，chunk_buffer 发送后即清零，为内容权威来源） |
+| `complete` | AI 响应**收尾信号**（chunk 流式是内容权威来源，complete 仅用于收尾；完全丢帧时可用 full_text 补建） |
+| `line` | 过程行（🔧 工具调用提示、工具输出、💬 助手前缀、思考提示等，供任务侧栏/终端显示） |
+| `reasoning` | AI 思考过程（思考模式，仅 debug_level≥3 发送） |
+| `error` | 错误信息（API 请求失败、解析失败等；服务端自动回滚本轮消息防止对话历史被污染） |
 | `command_result` | 命令执行结果 |
 | `task_status` | 任务状态更新（executing/complete/failed） |
 | `task_process` | 任务执行过程中的 AI 输出 |
+| `task_error` | 任务执行错误 |
+| `task_added` | 任务添加成功 |
 | `dialogue_ended` | 对话结束通知 |
 | `dialogue_reset` | 对话重置完成 |
+| `notification` | 通知消息 |
+| `connection_ack` | 连接确认 |
+| `interrupt_ack` | 中断确认 |
 | `info` | 系统信息 |
 | `pong` | Ping 响应 |
 
@@ -466,7 +472,7 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
 ## 🛠️ 命令行参数
 
 ```bash
-python main.py [选项]
+python aibox.py [选项]
 
 选项:
   --verbose, -v         显示详细日志
@@ -487,19 +493,19 @@ python main.py [选项]
 
 ```bash
 # 启动服务器（详细日志）
-python main.py --verbose
+python aibox.py --verbose
 
 # 指定端口
-python main.py --port 9000
+python aibox.py --port 9000
 
 # 检查任务
-python main.py --check-memo
+python aibox.py --check-memo
 
 # 添加任务（命令行）
-python main.py --memo-add "提醒开会|下午3点会议室A|+1h"
+python aibox.py --memo-add "提醒开会|下午3点会议室A|+1h"
 
 # 查看所有任务
-python main.py --memo-list
+python aibox.py --memo-list
 ```
 
 ## 🔄 架构流程
@@ -539,9 +545,8 @@ python main.py --memo-list
 ### 普通对话流程
 ```
 Client -> Server: {type: "message", content: "帮我查天气"}
-Server -> Client: {type: "chunk", content: "正在查"}
-Server -> Client: {type: "chunk", content: "询天气..."}
-Server -> Client: {type: "tool_call", tool: "search_skills", args: {keyword: "天气"}}
+Server -> Client: {type: "line", content: "🔧 调用工具: search_skills\n"}
+Server -> Client: {type: "line", content: "🔧 调用工具: bing_search\n"}
 Server -> Client: {type: "chunk", content: "今日天气晴朗..."}
 Server -> Client: {type: "complete", content: "今日天气晴朗，温度25°C"}
 ```
@@ -569,10 +574,10 @@ Server -> Client: {type: "dialogue_reset", content: "✅ 对话状态已完全�
 
 ### 添加新工具
 
-1. 继承 `Tool` 基类（位于 `main.py`）
+1. 继承 `Tool` 基类（位于 `aibox.py`）
 2. 实现 `get_name()`、`get_description()`、`get_parameters()`、`execute()`
-3. 可选实现 `execute_streaming()` 支持流式输出
-4. 在 `DeepSeekChat` 的工具注册处注册
+3. 可选实现 `execute_streaming()` 支持流式输出（通过 `output_queue` 发送 `("line", content)` 和 `("complete", final_result)`）
+4. 在 `DeepSeekChat._register_tools()` 中注册
 
 ```python
 class MyTool(Tool):
@@ -593,6 +598,8 @@ class MyTool(Tool):
         return f"执行结果: {param}"
 ```
 
+> **注意**：`execute()` 必须返回字符串。工具结果会经过 `_sanitize_tool_result()` 清洗（None/非字符串转为安全字符串，控制字符被过滤，超长结果截断），避免破坏 API 请求格式。
+
 ### 添加新命令
 
 在 `WebSocketHandler` 的命令处理分支（`handle_command`）中添加：
@@ -602,6 +609,10 @@ elif command == "/mycommand":
     result = "命令执行结果"
     await self.send_message(websocket, {"type": "command_result", "content": result})
 ```
+
+### 错误恢复机制
+
+`think_and_respond()` 在每轮对话开始前记录消息列表长度 `msgs_before_turn`。若 API 请求失败（网络错误、HTTP 错误、JSON 解析错误或其他异常），会自动调用 `_rollback_messages(msgs_before_turn)` 回滚本轮添加的所有消息（包括 user 消息、可能的 assistant/tool_calls 消息、tool 响应消息），防止格式错误的消息污染对话历史导致后续请求持续失败。客户端收到 `error` 消息后可安全重试。
 
 ## ❓ 常见问题
 
@@ -648,15 +659,31 @@ elif command == "/mycommand":
 
 ### Q: WebSocket 连接断开？
 **A:**
-1. 检查服务器是否运行：`ps aux | grep main.py`
+1. 检查服务器是否运行：`ps aux | grep aibox.py`
 2. 确认端口未被占用：`netstat -tlnp | grep 8765`
 3. 检查防火墙设置
 4. 查看服务器日志：`tail -f ~/.aibox/ai.log`
 5. 考虑使用 `--host 0.0.0.0` 允许外部连接
 
+### Q: 工具调用后 API 报错无法继续？
+**A:** 此问题已在 v2.1 修复：工具结果会经过安全清洗（控制字符过滤、非字符串转换、超长截断），API 请求失败时自动回滚本轮消息。如果仍出现问题：
+1. 查看日志：`tail -f ~/.aibox/ai.log`
+2. 使用 `/new` 命令重置对话
+3. 确认工具返回值为字符串且不含二进制/控制字符
+
 ## 📄 更新日志
 
-### v2.0 (当前版本)
+### v2.1
+- ✅ 修复工具调用结果破坏对话导致 API 持续请求失败的问题
+  - 不再回传 `reasoning_content`（API 响应字段）到请求中
+  - `tool_call.id` 为空时自动生成 fallback id，防止 API 400
+  - 新增 `_sanitize_tool_result()`：None/非字符串安全转换、控制字符过滤、超长结果截断
+  - `execute_tool` 异常捕获，避免工具执行异常中断整个对话
+  - API 请求失败时自动回滚本轮消息（`_rollback_messages`），防止坏消息污染历史
+- ✅ 修复 `complete` 消息语义：chunk 流式为内容权威来源，complete 仅用于收尾
+- ✅ 修正文档：入口文件为 `aibox.py`（非 `main.py`），补充缺失的消息类型（`line`/`task_error`/`notification` 等）
+
+### v2.0
 - ✅ 新增 `update_soul` 工具（智能体自我进化）
 - ✅ 新增 `create_skill` 工具（AI 自主创建技能）
 - ✅ 新增 `install_skill` 工具（技能安装指引）
