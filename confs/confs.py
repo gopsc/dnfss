@@ -42,6 +42,8 @@ from log_client import logs  # noqa: E402
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs")
 # 允许分发的配置文件类型（白名单）
 ALLOWED_EXT = {".ini", ".conf", ".cfg", ".json", ".yaml", ".yml", ".toml", ".txt"}
+# 单配置文件大小上限（1 MiB），防止超大文件读入内存导致 OOM
+MAX_CONFIG_SIZE = 1 * 1024 * 1024
 
 
 # ── 异常 ────────────────────────────────────────────────────────────────
@@ -103,13 +105,19 @@ class ConfigStore:
         path = self._resolve(name)
         with self._lock:
             try:
-                mtime = os.path.getmtime(path)
+                st = os.stat(path)
+                mtime = st.st_mtime
+                size = st.st_size
             except OSError:
                 self._cache.pop(name, None)
                 raise ConfigNotFound(f"配置不存在或不可读: {name}") from None
             entry = self._cache.get(name)
             if entry is not None and entry["mtime"] == mtime:
                 return entry
+            if size > MAX_CONFIG_SIZE:
+                raise ConfigError(
+                    f"配置文件过大: {name}（{size} 字节，上限 {MAX_CONFIG_SIZE} 字节）"
+                )
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     content = f.read()
