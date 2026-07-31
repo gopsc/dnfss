@@ -118,7 +118,7 @@ class DnfsExp(Exception):
     def __init__(self, msg: str, code: int):
         super().__init__(self, msg)
         self.status = code
-    def get_status() -> int:
+    def get_status(self) -> int:
         return self.status
 
 # 这个也许不用这么复杂 大不了每个异常点我们抛出DnfsExp类
@@ -132,11 +132,12 @@ def _handle_exp(func):
     def wrapper():
         try: return func()
         except DnfsExp as e:
+            logs.warning('dnfs', str(e), extra={})
             return jsonify({'error': str(e)}), e.get_status()
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
-        finally:
             logs.warning('dnfs', str(e), extra={})
+            return jsonify({'error': str(e)}), 500
+    return wrapper
 
 app = Flask(__name__)
 apply_security_headers(app)
@@ -153,8 +154,8 @@ def decode_token(token:  str):
         return json.loads(jj)
        
 
-@_handle_exp
 @app.route('/add_note', methods=['POST'])
+@_handle_exp
 def add_note():
     # 获取请求数据
     data = request.get_json()
