@@ -27,17 +27,24 @@ C++20 network library for the UniServe microservice framework, providing unified
 - C++20 compiler
 - Boost.Beast / Boost.Asio (header-only)
 - OpenSSL (for TLS)
-- libcurl (for HTTP client)
+- libcurl (for HTTP client only — `libus_httpclient.so`)
 - pthread
 
 ## Build
 
 ```bash
-make           # builds build/libus_http.so
-make install   # installs to /usr/lib and /usr/include/us (requires root)
+make           # builds build/libus_http.so and build/libus_httpclient.so
+make install   # installs both .so to /lib and headers to /usr/include/us (requires root)
 ```
 
-Makefile links: `-lssl -lcrypto -lcurl -lpthread` with Homebrew paths for macOS.
+Two shared libraries are produced:
+
+| Library | SONAME | Contains | Links |
+|---|---|---|---|
+| Server | `libus_http.so` | `HttpServer` (HTTP + WebSocket server + WS proxy) | `-lssl -lcrypto -lpthread` |
+| Client | `libus_httpclient.so` | `HttpClient` (HTTP via curl + WebSocket via Beast) | `-lssl -lcrypto -lcurl -lpthread` |
+
+`libus_http.so` does **not** depend on libcurl. Link against `libus_httpclient.so` only when you need the client, and link both when you need both server and client (e.g. a proxy/gateway).
 
 ## Quick Start
 
@@ -253,6 +260,7 @@ using WebSocketClientBase = HttpClient;
 
 ## Version History
 
+- **v3.2.0**: Split into two shared libraries — `libus_http.so` (server only, no curl) and `libus_httpclient.so` (HttpClient, depends on curl). HttpClient implementation moved to `src/HttpClient.cpp`; `HttpClient.hpp` is declaration-only.
 - **v3.1.0**: Added WebSocket reverse proxy (`ws_proxy()`) with bidirectional async bridging, ws:// and wss:// backend support, handshake-time authorization callback.
 - **v3.0.0**: Merged WebSocketServer into HttpServer and WebSocketClient into HttpClient. Single-port HTTP+WebSocket support.
 - **v2.x**: Separate HttpServer, WebSocketServer, and HttpClient modules.
