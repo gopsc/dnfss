@@ -73,7 +73,7 @@ def send(
     header = _HEADER.pack(len(payload))
     with _timeout(sock, timeout):
         try:
-            sock.sendall(header + payload)
+            _send_all(sock, header, payload)
         except _socket.timeout:
             raise TimeoutError(
                 f"send timed out after {timeout}s"
@@ -115,17 +115,42 @@ def recv(
             ) from None
 
 
-def _recv_exact(sock: "_socket.socket", n: int) -> bytes:
-    """Read exactly n bytes from sock, raising on premature close."""
-    buf = bytearray()
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
-        if not chunk:
-            raise ConnectionError(
-                f"connection closed: expected {n} bytes, got {len(buf)}"
+def _send_all(sock: "_socket.socket", header: bytes, payload: bytes) -> None:
+    """通过 sendmsg 散射-聚集 I/O 发送 header + payload，避免拼接拷贝。
+
+    内核直接从两块独立内存读取数据，无需在用户态拼接 header + payload。
+    处理 partial send：sendmsg 可能只发出部分数据，需循环补发。
+    """
+    header_len = len(header)
+    total = header_len + len(payload)
+    sent = sock.sendmsg([memoryview(header), memoryview(payload)])
+    while sent < total:
+        if sent < header_len:
+            sent += sock.sendmsg(
+                [memoryview(header)[sent:], memoryview(payload)]
             )
-        buf.extend(chunk)
-    return bytes(buf)
+        else:
+            offset = sent - header_len
+            sent += sock.sendmsg([memoryview(payload)[offset:]])
+
+
+def _recv_exact(sock: "_socket.socket", n: int) -> bytearray:
+    """Read exactly n bytes from sock, raising on premature close.
+
+    使用 recv_into 直接写入预分配 buffer，避免 bytearray 逐步增长和
+    最终 bytes() 转换的额外拷贝。
+    """
+    buf = bytearray(n)
+    view = memoryview(buf)
+    got = 0
+    while got < n:
+        chunk = sock.recv_into(view[got:], n - got)
+        if chunk == 0:
+            raise ConnectionError(
+                f"connection closed: expected {n} bytes, got {got}"
+            )
+        got += chunk
+    return buf
 
 
 # ---------------------------------------------------------------------------
