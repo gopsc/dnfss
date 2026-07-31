@@ -5,9 +5,9 @@ INSTL_TDIR := /lib
 INCLU_TDIR := /usr/include
 INCLU_SDIR := inc
 CPP := g++
-INCS := -I inc
+INCS := -I inc -I/opt/homebrew/include
 CPPFLAGS := --std=c++20 -O3 -pipe -Wall -Werror
-LIBS :=
+LIBS := -L/opt/homebrew/lib -lssl -lcrypto -lpthread
 BUILD_TDIR := build
 $(shell mkdir -p $(BUILD_TDIR))
 

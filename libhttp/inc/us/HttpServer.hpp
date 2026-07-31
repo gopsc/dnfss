@@ -4,6 +4,7 @@
 #include <boost/asio.hpp>
 #include <boost/beast.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/beast/websocket.hpp>
 #include <boost/beast/version.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/ssl.hpp>
@@ -19,12 +20,14 @@
 #include <atomic>
 #include <mutex>
 #include <regex>
+#include <deque>
 
 namespace pmc {
 namespace net {
 
 namespace beast = boost::beast;
 namespace http  = beast::http;
+namespace websocket = beast::websocket;
 namespace asio  = boost::asio;
 using tcp = boost::asio::ip::tcp;
 
@@ -37,11 +40,29 @@ using MiddlewareHandler = std::function<bool(
     http::response<http::string_body>&,
     const std::unordered_map<std::string, std::string>&)>;
 
+// WebSocket 回调类型
+using WebSocketMessageHandler = std::function<void(
+    const std::string& clientId,
+    const std::string& message,
+    std::function<void(const std::string&)> sendCallback)>;
+
+using WebSocketConnectHandler = std::function<void(
+    const std::string& clientId,
+    const std::string& remoteAddress)>;
+
+using WebSocketDisconnectHandler = std::function<void(
+    const std::string& clientId)>;
+
 struct RouteEntry {
     std::string path;
     std::regex pattern;
     HttpRequestHandler handler;
     bool is_wildcard;
+};
+
+struct WsRouteEntry {
+    std::string path;
+    WebSocketMessageHandler handler;
 };
 
 class HttpServer {
@@ -60,9 +81,18 @@ public:
     void post(const std::string& path, HttpRequestHandler handler);
     void put(const std::string& path, HttpRequestHandler handler);
     void del(const std::string& path, HttpRequestHandler handler);
-    void options(const std::string& path, HttpRequestHandler handler);  // 新增 OPTIONS
+    void options(const std::string& path, HttpRequestHandler handler);
     void use(MiddlewareHandler middleware);
     void setStaticDirectory(const std::string& path);
+
+    // WebSocket 接口
+    void ws(const std::string& path, WebSocketMessageHandler handler);
+    void onWsConnect(WebSocketConnectHandler handler);
+    void onWsDisconnect(WebSocketDisconnectHandler handler);
+    bool sendToWsClient(const std::string& clientId, const std::string& message);
+    size_t broadcastWs(const std::string& message);
+    void disconnectWsClient(const std::string& clientId);
+    size_t getWsClientCount() const;
 
     bool isRunning() const;
     unsigned short getPort() const;
@@ -103,9 +133,17 @@ private:
     std::vector<RouteEntry> post_handlers_;
     std::vector<RouteEntry> put_handlers_;
     std::vector<RouteEntry> delete_handlers_;
-    std::vector<RouteEntry> options_handlers_;  // 新增 OPTIONS 路由
+    std::vector<RouteEntry> options_handlers_;
     std::vector<MiddlewareHandler> middlewares_;
     std::string static_directory_;
+
+    // WebSocket 路由和处理
+    std::vector<WsRouteEntry> ws_handlers_;
+    WebSocketConnectHandler ws_connect_handler_;
+    WebSocketDisconnectHandler ws_disconnect_handler_;
+    std::unordered_map<std::string, std::shared_ptr<Session>> ws_clients_;
+    mutable std::mutex ws_clients_mutex_;
+    std::atomic<uint64_t> ws_client_counter_{0};
 
     std::vector<std::weak_ptr<Session>> sessions_;
     std::mutex sessions_mutex_;
@@ -115,12 +153,21 @@ private:
     bool matchPath(const std::string& path, const std::regex& pattern);
     http::response<http::string_body> handleRequest(const http::request<http::string_body>& req);
     HttpRequestHandler findRoute(const std::string& method, const std::string& path);
-    bool routeExists(const std::string& method, const std::string& path);  // 新增辅助方法
+    bool routeExists(const std::string& method, const std::string& path);
+    WebSocketMessageHandler findWsRoute(const std::string& path);
+
+    // WebSocket 客户端管理
+    std::string generateWsClientId();
+    void addWsClient(const std::string& clientId, std::shared_ptr<Session> session);
+    void removeWsClient(const std::string& clientId);
+    std::shared_ptr<Session> getWsClient(const std::string& clientId);
 
     void addSession(const std::shared_ptr<Session>& session);
     void removeSession(const Session* session);
     void closeAllSessions();
     void initSSLContext();
+
+    friend class Session;
 };
 
 } // namespace net
