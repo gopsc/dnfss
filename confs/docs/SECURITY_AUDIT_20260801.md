@@ -30,12 +30,12 @@
 | 6 | log_client 日志时间戳在 `_send()` 时生成而非入队时，队列积压时时间不准确 | **P2** | `1b9c727` | ✅ 已修复 |
 | 7 | log_client `flush()` 固定 `sleep(0.6)` 不可靠 | **P2** | `1b9c727` | ✅ 已修复 |
 | 8 | log_client 队列无上限，线程异常时内存无限增长 | **P2** | `1b9c727` | ✅ 已修复 |
-| 9 | `_handle_reload` 空字符串/非字符串 name（falsy 值）意外清空全部缓存 | **P1** | `待填` | ✅ 已修复 |
-| 10 | `ConfigStore.get()` 返回缓存 dict 可变引用，调用方可污染缓存 | **P1** | `待填` | ✅ 已修复 |
-| 11 | `list()` 不对符号链接做 realpath 校验，可探测外部文件元信息 | **P1** | `待填` | ✅ 已修复 |
-| 12 | `_handle_get` 中 `key` 参数未做类型校验，非字符串值被 `str()` 转换后产生误导行为 | **P1** | `待填` | ✅ 已修复 |
-| 13 | `ConfigParser` 未禁用插值（`%(key)s`），含裸 `%` 的配置值触发 `InterpolationError` | **P2** | `待填` | ✅ 已修复 |
-| 14 | argparse 描述字符串未与顶部文档同步更新（`pymsg/TCP` → `pymsg RpcServer/TCP`） | **P2** | `待填` | ✅ 已修复 |
+| 9 | `_handle_reload` 空字符串/非字符串 name（falsy 值）意外清空全部缓存 | **P1** | `b53d499` | ✅ 已修复 |
+| 10 | `ConfigStore.get()` 返回缓存 dict 可变引用，调用方可污染缓存 | **P1** | `b53d499` | ✅ 已修复 |
+| 11 | `list()` 不对符号链接做 realpath 校验，可探测外部文件元信息 | **P1** | `b53d499` | ✅ 已修复 |
+| 12 | `_handle_get` 中 `key` 参数未做类型校验，非字符串值被 `str()` 转换后产生误导行为 | **P1** | `b53d499` | ✅ 已修复 |
+| 13 | `ConfigParser` 未禁用插值（`%(key)s`），含裸 `%` 的配置值触发 `InterpolationError` | **P2** | `b53d499` | ✅ 已修复 |
+| 14 | argparse 描述字符串未与顶部文档同步更新（`pymsg/TCP` → `pymsg RpcServer/TCP`） | **P2** | `b53d499` | ✅ 已修复 |
 
 ---
 
