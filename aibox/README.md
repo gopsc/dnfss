@@ -85,11 +85,20 @@ aibox/
 ```
 ~/.aibox/
 ├── config.json              # 配置文件
-├── prompts/                 # 系统提示词目录
-│   ├── 00_IDENTITY.md       # 用户身份信息
-│   ├── 1_*.md               # 基础技能提示词（文件操作、网页访问等）
+├── prompts/                 # 系统提示词目录（按文件名数字前缀排序加载）
+│   ├── 00_IDENTITY.md       # 用户身份信息（最先加载）
+│   ├── 1_memory_search.md   # 基础技能提示词（1-10，按数字升序加载）
+│   ├── 2_memory_save.md
+│   ├── 3_file_operations.md
+│   ├── 4_web_access.md
+│   ├── 5_memo_management.md
+│   ├── 6_command_execution.md
+│   ├── 7_extension_skills.md
+│   ├── 8_identity_management.md
+│   ├── 9_language_instruction.md
+│   ├── 10_task_handling.md
 │   ├── 99_SOUL.md           # AI 灵魂定义（角色、性格、能力边界）
-│   └── 100_STATUS.md        # AI 状态记录
+│   └── 100_STATUS.md        # AI 状态记录（最后加载）
 ├── skills/                  # 扩展技能目录（运行时从仓库 skills/ 复制或用户自建）
 ├── memories.db              # 记忆和任务数据库（SQLite）
 ├── current_conversation.json # 当前对话
@@ -364,14 +373,16 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
 
 ## 🧩 提示词系统
 
-提示词文件位于 `~/.aibox/prompts/`：
+提示词文件位于 `~/.aibox/prompts/`，按文件名**数字前缀升序**加载（identity → 技能 1~10 → soul → status）：
 
 | 文件 | 用途 | 更新方式 |
 |-----|------|---------|
 | `00_IDENTITY.md` | 用户身份信息 | AI 通过 `update_identity` 工具更新 |
-| `1_*.md` | 基础技能提示词 | 手动编辑，AI 通过 `reload_prompts` 重载 |
-| `99_SOUL.md` | AI 灵魂定义（角色、性格） | AI 通过 `update_soul` 工具更新 |
+| `N_*.md`（N=1~10） | 基础技能提示词（记忆搜索/保存、文件/网页/命令/任务操作、技能扩展、身份管理、语言、任务规则） | 手动编辑，AI 通过 `/reload_prompts` 重载 |
+| `99_SOUL.md` | AI 灵魂定义（角色、性格、能力边界、行为准则） | AI 通过 `update_soul` 工具更新 |
 | `100_STATUS.md` | AI 状态记录 | AI 通过 `save_memory_and_end_conversation` 更新 |
+
+> **加载顺序保证**：`00_IDENTITY.md` 最先加载（AI 先知道用户是谁），然后是 1~10 号技能提示词（按数字升序），接着是 `99_SOUL.md`（AI 的角色定位），最后是 `100_STATUS.md`（当前状态）。每轮用户输入前会附加一段简洁的工作流程提醒（不重复 system prompt 中的详细说明），工具调用后递归继续时不再重复注入。
 
 ## ⚙️ 配置说明
 
@@ -672,6 +683,14 @@ elif command == "/mycommand":
 3. 确认工具返回值为字符串且不含二进制/控制字符
 
 ## 📄 更新日志
+
+### v2.2
+- ✅ 修复提示词系统排序 bug：`SKILL_PREFIX = "1_"` 只匹配 `1_` 开头文件，导致 `2_`~`10_` 技能提示词排序错乱（`10_task_handling.md` 排在 `1_memory_search.md` 前面）；改用正则按数字前缀排序
+- ✅ 修复 `_init_system_prompts` 使用未排序列表的问题，确保 system prompt 按 identity → 技能 → soul → status 正确顺序加载
+- ✅ 精简每轮用户输入的 pre_prompt：原来约 30 行重复指令（与 system prompt 内容重复），每轮浪费 ~300 token；精简为 5 条简洁提醒
+- ✅ 修复工具调用后递归继续时重复注入工作流指令的问题：新增 `is_continuation` 参数，递归时跳过 pre_prompt
+- ✅ 优化默认大文件阈值：50KB/200行 → 500KB/2000行，增加 `tail=true` 和二进制文件处理指导
+- ✅ 优化记忆搜索习惯："每次都要做"→"根据话题相关性判断"，避免简单问候也触发无意义搜索
 
 ### v2.1
 - ✅ 修复工具调用结果破坏对话导致 API 持续请求失败的问题
