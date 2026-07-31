@@ -296,10 +296,14 @@ class MsgServer:
     经每连接发送锁串行化，不会发生帧交错。
     """
 
-    def __init__(self, addr: str, port: int, *, workers: int = 0) -> None:
+    _RECV_TIMEOUT = 10.0  # 服务端接收单条消息的超时（秒），防止 Slowloris 式半开连接卡死主线程
+
+    def __init__(self, addr: str, port: int, *, workers: int = 0,
+                 recv_timeout: float = _RECV_TIMEOUT) -> None:
         self.addr = addr
         self.port = port
         self._workers = workers
+        self._recv_timeout = recv_timeout
         self._running = False
         self._server_sock: "_socket.socket | None" = None
         self._clients: "dict" = {}          # socket -> (ip, port)
@@ -429,8 +433,9 @@ class MsgServer:
 
     def _handle_client(self, s, socketlist, on_message):
         try:
-            text = recv(s)
-        except (ConnectionError, ConnectionResetError, OSError):
+            text = recv(s, timeout=self._recv_timeout)
+        except (ConnectionError, ConnectionResetError, OSError, TimeoutError):
+            # TimeoutError: 客户端在超时时间内未发送完整消息（Slowloris 防护），关闭连接
             self._remove_client(s, socketlist)
             return
         addr = self._clients.get(s, ("unknown", 0))
