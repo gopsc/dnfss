@@ -119,6 +119,7 @@ class ConfigStore:
 
         所有文件系统操作（realpath/stat/open）均在锁内完成，
         防止路径校验与文件读取之间的 TOCTOU 竞态。
+        返回缓存条目的浅拷贝，防止调用方意外修改污染缓存。
         """
         self._validate_name(name)
         with self._lock:
@@ -132,7 +133,7 @@ class ConfigStore:
                 raise ConfigNotFound(f"配置不存在或不可读: {name}") from None
             entry = self._cache.get(name)
             if entry is not None and entry["mtime"] == mtime:
-                return entry
+                return dict(entry)
             if size > MAX_CONFIG_SIZE:
                 raise ConfigError(
                     f"配置文件过大: {name}（{size} 字节，上限 {MAX_CONFIG_SIZE} 字节）"
@@ -146,16 +147,28 @@ class ConfigStore:
                      "size": len(content.encode("utf-8"))}
             self._cache[name] = entry
             logs.info("confs", f"配置已加载 {name}（{entry['size']}B）")
-            return entry
+            return dict(entry)
 
     def list(self) -> list:
-        """列出配置目录下全部允许类型的配置文件（持锁遍历，保证 _cache 访问一致）。"""
+        """列出配置目录下全部允许类型的配置文件（持锁遍历，保证 _cache 访问一致）。
+
+        通过 os.path.realpath() 解析符号链接后校验前缀，防止逃逸到 configs/
+        目录外的符号链接泄露外部文件元信息（大小/mtime）。
+        """
         out = []
         with self._lock:
+            root_prefix = self.root + os.sep
             for name in sorted(os.listdir(self.root)):
                 if os.path.splitext(name)[1].lower() not in ALLOWED_EXT:
                     continue
-                path = os.path.join(self.root, name)
+                raw_path = os.path.join(self.root, name)
+                # realpath 解析符号链接后校验前缀，逃逸的符号链接跳过
+                try:
+                    path = os.path.realpath(raw_path)
+                except OSError:
+                    continue
+                if not path.startswith(root_prefix):
+                    continue
                 if not os.path.isfile(path):
                     continue
                 try:
@@ -204,7 +217,8 @@ def _extract_key(name: str, content: str, key: str):
     ext = os.path.splitext(name)[1].lower()
 
     if ext in (".ini", ".conf", ".cfg"):
-        parser = configparser.ConfigParser()
+        # interpolation=None：禁用 %(key)s 插值，避免配置值中裸 % 触发 InterpolationError
+        parser = configparser.ConfigParser(interpolation=None)
         try:
             parser.read_string(content)
         except configparser.Error as e:
@@ -283,7 +297,11 @@ class ConfsServer:
             return {"name": name, "content": entry["content"],
                     "size": entry["size"], "mtime": _iso(entry["mtime"])}
 
-        key = str(key).strip()
+        if not isinstance(key, str):
+            raise ConfigError("key 字段必须是字符串")
+        key = key.strip()
+        if not key:
+            raise ConfigError("key 字段不能为空")
         value = _extract_key(name, entry["content"], key)
         logs.info("confs", f"分发配置键 {name} -> {key}")
         return {"name": name, "key": key, "value": value}
@@ -293,13 +311,23 @@ class ConfsServer:
         return {"config_dir": self.store.root, "configs": self.store.list()}
 
     def _handle_reload(self, req):
-        """重载指定配置；缺省 name 时清空全部缓存（下次访问惰性重载）。"""
+        """重载指定配置；缺省 name（或 name 为 null）时清空全部缓存（下次访问惰性重载）。
+
+        注意：name 为空字符串、空白字符串或非字符串类型时返回错误，
+        不再像旧版本那样将 falsy 值（""、0、False）误判为"清空全部缓存"。
+        """
         name = req.get("name")
-        names = self.store.reload(str(name).strip() if name else None)
-        if name:
-            logs.info("confs", f"重载配置 {names[0]}")
-        else:
+        if name is None:
+            names = self.store.reload(None)
             logs.info("confs", f"清空配置缓存（{len(names)} 项）")
+            return {"reloaded": names}
+        if not isinstance(name, str):
+            raise ConfigError("name 字段必须是字符串")
+        name = name.strip()
+        if not name:
+            raise ConfigError("name 字段不能为空（要清空全部缓存请省略 name 字段）")
+        names = self.store.reload(name)
+        logs.info("confs", f"重载配置 {names[0]}")
         return {"reloaded": names}
 
     def _handle_health(self, _req):
@@ -316,7 +344,7 @@ class ConfsServer:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="confs — 统一配置服务（pymsg/TCP）")
+    parser = argparse.ArgumentParser(description="confs — 统一配置服务（pymsg RpcServer/TCP）")
     parser.add_argument("--addr", default="127.0.0.1", help="监听地址")
     parser.add_argument("--port", type=int, default=8010, help="监听端口")
     parser.add_argument("--workers", type=int, default=4,

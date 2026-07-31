@@ -30,6 +30,12 @@
 | 6 | log_client 日志时间戳在 `_send()` 时生成而非入队时，队列积压时时间不准确 | **P2** | `1b9c727` | ✅ 已修复 |
 | 7 | log_client `flush()` 固定 `sleep(0.6)` 不可靠 | **P2** | `1b9c727` | ✅ 已修复 |
 | 8 | log_client 队列无上限，线程异常时内存无限增长 | **P2** | `1b9c727` | ✅ 已修复 |
+| 9 | `_handle_reload` 空字符串/非字符串 name（falsy 值）意外清空全部缓存 | **P1** | `待填` | ✅ 已修复 |
+| 10 | `ConfigStore.get()` 返回缓存 dict 可变引用，调用方可污染缓存 | **P1** | `待填` | ✅ 已修复 |
+| 11 | `list()` 不对符号链接做 realpath 校验，可探测外部文件元信息 | **P1** | `待填` | ✅ 已修复 |
+| 12 | `_handle_get` 中 `key` 参数未做类型校验，非字符串值被 `str()` 转换后产生误导行为 | **P1** | `待填` | ✅ 已修复 |
+| 13 | `ConfigParser` 未禁用插值（`%(key)s`），含裸 `%` 的配置值触发 `InterpolationError` | **P2** | `待填` | ✅ 已修复 |
+| 14 | argparse 描述字符串未与顶部文档同步更新（`pymsg/TCP` → `pymsg RpcServer/TCP`） | **P2** | `待填` | ✅ 已修复 |
 
 ---
 
@@ -40,135 +46,16 @@
 
 ---
 
-### 🟠 P1 — High（建议尽快修复）
-
-#### P1-1 `_handle_reload` 空字符串 name 意外清空全部缓存
-
-**文件**: `confs/confs.py` 第 295-303 行
-
-**问题**:
-```python
-def _handle_reload(self, req):
-    name = req.get("name")
-    names = self.store.reload(str(name).strip() if name else None)
-```
-当调用方传入 `"name": ""`（空字符串）或 `"name": 0`/`false`（falsy 值）时，会被当作 `None` 处理，导致 `reload(None)` **清空全部配置缓存**，造成瞬间磁盘 IO 尖峰和缓存穿透。对比 `_handle_get` 对空 name 的处理是正确报错：
-```python
-name = str(req.get("name", "")).strip()
-if not name:
-    raise ConfigError("缺少 name 字段")
-```
-
-**风险**: 内部服务误传空 name 会意外清空所有配置缓存。
-
-**修复建议**:
-```python
-def _handle_reload(self, req):
-    name = req.get("name")
-    if name is None:
-        names = self.store.reload(None)
-        logs.info("confs", f"清空配置缓存（{len(names)} 项）")
-        return {"reloaded": names}
-    name = str(name).strip()
-    if not name:
-        raise ConfigError("name 字段不能为空")
-    names = self.store.reload(name)
-    logs.info("confs", f"重载配置 {names[0]}")
-    return {"reloaded": names}
-```
-
----
-
-#### P1-2 `ConfigStore.get()` 返回缓存 dict 的可变引用，调用方可污染缓存
-
-**文件**: `confs/confs.py` 第 133-149 行
-
-**问题**: `get()` 直接返回缓存中 dict 对象的引用。若调用方意外修改返回值，会直接污染缓存，在文件 mtime 变化前所有后续 get 都拿到被篡改的内容。
-
-```python
-entry = self._cache.get(name)
-if entry is not None and entry["mtime"] == mtime:
-    return entry  # 返回缓存对象的直接引用
-```
-
-**风险**: 配置缓存被意外修改，影响所有依赖该配置的服务。
-
-**修复建议**: 返回浅拷贝（content/size/mtime 都是不可变类型，浅拷贝足够）：
-```python
-if entry is not None and entry["mtime"] == mtime:
-    return dict(entry)
-# 以及新构建 entry 后存入缓存前也做一次拷贝或直接存入后返回拷贝
-return dict(entry)
-```
-
----
-
-#### P1-3 `list()` 不对符号链接做 realpath 校验，可探测外部文件元信息
-
-**文件**: `confs/confs.py` 第 151-168 行
-
-**问题**: `list()` 使用 `os.path.isfile()` 和 `os.stat()`（均跟随符号链接），未做 realpath 前缀校验。若 `configs/` 目录下存在指向目录外的符号链接（如 `probe.ini -> /etc/passwd`），`list()` 会将其列入返回结果，泄露目标文件的大小和 mtime 元信息。虽然 `get()` 已通过 TOCTOU 修复阻止内容读取，但元信息泄露仍属信息泄露。
-
-**风险**: 本地攻击者可通过符号链接探测系统文件存在性和修改时间。
-
-**修复建议**:
-```python
-for name in sorted(os.listdir(self.root)):
-    if os.path.splitext(name)[1].lower() not in ALLOWED_EXT:
-        continue
-    path = os.path.realpath(os.path.join(self.root, name))
-    if not path.startswith(self.root + os.sep):
-        continue  # 符号链接逃逸，跳过
-    if not os.path.isfile(path):
-        continue
-    ...
-```
-
----
-
-#### P1-4 `_handle_get` 中 `key` 参数类型未严格校验
-
-**文件**: `confs/confs.py` 第 280-289 行
-
-**问题**:
-```python
-key = req.get("key")
-if key is None:
-    ...
-key = str(key).strip()
-```
-当 key 为 `0`、`False`、`[]`、`{}` 等非字符串非 None 值时，`str()` 会将其转为 `"0"`/`"False"`/`"[]"`/`"{'a': 1}"` 等字符串，进入按键查询逻辑，返回误导性错误而非参数类型错误。
-
-**风险**: 调用方传参错误时得到误导性的"键不存在"而非"参数类型错误"，增加排查难度。
-
-**修复建议**:
-```python
-key = req.get("key")
-if key is not None and not isinstance(key, str):
-    raise ConfigError("key 字段必须是字符串")
-if key is None:
-    ...
-key = key.strip()
-```
+### 🟠 P1 — High
+**无遗留 P1 问题。**
 
 ---
 
 ### 🟡 P2 — Medium（建议修复）
 
-#### P2-1 ConfigParser 未禁用插值，含 `%` 的配置值可能导致解析错误
+#### P2-1 ~~ConfigParser 未禁用插值~~ ✅ 已修复
 
-**文件**: `confs/confs.py` 第 207 行
-
-`configparser.ConfigParser()` 默认启用基本插值（`%(key)s` 语法），配置值中包含裸 `%` 字符可能触发 `InterpolationError`。应使用 `ConfigParser(interpolation=None)` 禁用插值，因为 confs 仅做配置分发，不需要插值功能。
-
----
-
-#### P2-2 argparse 描述字符串未与文档同步更新
-
-**文件**: `confs/confs.py` 第 319 行
-顶部文档字符串已更新为 `pymsg RpcServer/TCP`，但 argparse description 仍为旧的 `pymsg/TCP`。
-
----
+#### P2-2 ~~argparse 描述字符串未与文档同步更新~~ ✅ 已修复
 
 #### P2-3 日志注入风险
 
@@ -206,17 +93,19 @@ key = key.strip()
 | 文件大小限制 | ✅ | 单文件上限 1 MiB（`MAX_CONFIG_SIZE`） |
 | Slowloris 防护 | ✅ | pymsg MsgServer 默认 10 秒 recv 超时 |
 | 缓存一致性 | ✅ | 所有公开方法持锁操作 |
+| 缓存防污染 | ✅ | `get()` 返回浅拷贝，调用方修改不影响缓存 |
+| list() 符号链接防护 | ✅ | realpath 解析后校验前缀，逃逸链接跳过 |
+| 参数类型校验 | ✅ | name/key 非字符串或空值明确报错，不产生误行为 |
 | 异常隔离 | ✅ | handler 异常由 RpcServer 包装为 `success=false`，不崩溃服务 |
+| ConfigParser 安全 | ✅ | `interpolation=None` 禁用 `%(key)s` 插值，裸 `%` 不报错 |
 | 仅监听本机 | ✅ | 默认 `127.0.0.1` |
-| 配置缓存防污染 | ❌ | 返回缓存可变引用（P1-2） |
-| list() 符号链接防护 | ❌ | 未做 realpath 校验（P1-3） |
-| 参数类型校验 | ❌ | key/name 参数校验不完善（P1-1/P1-4） |
+| 日志注入防护 | ❌ | 配置名/key 未过滤控制字符（P2-3） |
 | 鉴权 | ❌ | 无身份校验，依赖"仅本机"信任边界 |
 
 ---
 
 ## 五、修复优先级建议
 
-1. **立即修复（P1）**: P1-1（reload空字符串全清缓存）、P1-2（缓存可变引用）、P1-3（list符号链接）、P1-4（key类型校验）——均为几行代码的修复，成本低、收益明确
-2. **近期修复（P2）**: P2-1（ConfigParser插值）、P2-2（文档同步）、P2-3（日志注入）
+1. **全部 P0/P1 已修复**：共修复 1 个 P0 + 7 个 P1 问题（含此前修复的 pymsg/log_client/TOCTOU/OOM 等）
+2. **近期修复（P2）**: P2-3（日志注入，过滤控制字符）
 3. **可接受（P2-4/P3）**: 实际风险极低或属于运维/部署优化项
