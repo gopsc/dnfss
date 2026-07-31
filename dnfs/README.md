@@ -4,6 +4,8 @@ Dendrachy Network File-System，基于父子关系（pid）组织的树状节点
 
 监听 `127.0.0.1:8006`，提供节点的增删改查，支持以 Base64 编码形式在 `content` 中存储文件数据。所有写操作需携带由 gateway 签发的 Token。
 
+支持**特殊节点**（管理员专属）：`content` 为信封 JSON 时，前端按类型渲染为链接卡片 / 可运行网页 / 图片 / 文件下载，详见[特殊节点](#特殊节点管理员专属)。
+
 ## 架构
 
 ```
@@ -44,8 +46,25 @@ Authorization: Bearer <base64_payload>_<rsa_sign>
 - payload 中取 `user` 字段作为操作者，写入 `owner`。
 - `delete_note` 与 `update_note` 校验所有权：
   - 节点 `owner` 必须等于当前 `user`，否则 `403`；
-  - **例外**：管理员账号（`ADMIN_USERS`：`admin`、`admin@qsont.me`）可删除/更新任意节点。
+  - **例外**：管理员（Token payload `is_admin=true`，由 gateway 按 `[Admin] users` 白名单签发）可删除/更新任意节点。
 - `get_notes` 不需要鉴权。
+
+## 特殊节点（管理员专属）
+
+`content` 为以下信封 JSON 时即为特殊节点，前端 `dnfs.js` 按 `_sp` 类型差异化渲染；普通 Markdown 内容不受影响：
+
+| `_sp` | 信封字段 | 前端表现 |
+|-------|---------|---------|
+| `link` | `url`（http/https，≤2048）、`note?` | favicon 图标（经 static `/api/favicon` 代理拉取）+ 可点击链接 |
+| `html` | `code`（≤512KB）、`note?` | "审计源码"（纯文本展示）+ "运行"（新窗口执行）按钮 |
+| `image` | `name`、`data`（`data:image/` DataURL，≤3.5M 字符）、`note?` | 图片直接显示 |
+| `file` | `name`、`mime`、`data`（Base64，≤3.5M 字符）、`note?` | 下载按钮（Base64→Blob→下载） |
+
+规则：
+
+- **仅管理员可发布/更新**（`add_note` / `update_note` 中按 `is_admin` 强制，非管理员返回 403）；前端发布面板也仅对管理员显示。
+- AI 内容审核剔除 Base64 负载（体量大且无审核意义）：`link` 审 `title+url+note`，`html` 审 `title+code 前 4000 字符+note`，`image`/`file` 审 `title+name+note`。
+- `{"_sp"` 开头但 JSON 非法的内容会被拒绝发布（400），防止半截信封流入。
 
 ## 接口文档
 
@@ -154,7 +173,7 @@ curl -X POST http://localhost:8006/delete_note \
 
 更新节点的 pid / title / content（pid 变更可用于迁移节点）。流程：校验参数 → 校验 Token → 校验所有权 → AI 内容审核 → 更新。
 
-仅节点 owner 可更新；管理员账号（`ADMIN_USERS`：`admin`、`admin@qsont.me`）豁免，可更新任意节点。
+仅节点 owner 可更新；管理员（Token payload `is_admin`）豁免，可更新任意节点。
 
 **Request**
 

@@ -30,7 +30,7 @@ from log_client import logs
 # pymsg 导入
 # 我们有在依赖列表中加入pymsg
 # 这个可以省略也许
-_sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from pymsg import RpcClient, RpcError  # noqa: E402
 
 # ==================== 配置加载（三层 fail-safe） ====================
@@ -183,6 +183,82 @@ class DnfsExp(Exception):
     def get_status(self) -> int:
         return self.status
 
+# ==================== 特殊节点（管理员专属） ====================
+# 信封格式：content 为 JSON {"_sp": "link|html|image|file", ...}，前端识别后差异化渲染；
+# 普通 Markdown 内容不受影响。仅管理员可发布（Token payload is_admin）。
+_SP_TYPES = ('link', 'html', 'image', 'file')
+_SP_MAX_URL = 2048                    # link 节点 url 长度上限
+_SP_MAX_CODE = 512 * 1024             # html 节点代码长度上限（字符）
+_SP_MAX_DATA = 3500 * 1024            # image/file 节点 base64 长度上限（字符，约 2.6MB 原始数据）
+_SP_REVIEW_CODE_PREFIX = 4000         # html 节点送审的代码前缀长度
+
+
+def _parse_sp(content):
+    """识别特殊节点信封：合法信封返回 dict；普通内容返回 None；
+    以 {"_sp" 开头但 JSON 非法视为格式错误（拒绝发布，防半截信封流入）。"""
+    if not isinstance(content, str):
+        return None
+    s = content.lstrip()
+    if not s.startswith('{"_sp"'):
+        return None
+    try:
+        obj = json.loads(s)
+    except Exception:
+        raise DnfsExp('特殊节点格式非法（JSON 解析失败）', 400)
+    if isinstance(obj, dict) and obj.get('_sp') in _SP_TYPES:
+        return obj
+    return None
+
+
+def _validate_sp(sp):
+    """校验特殊节点信封字段与大小上限，非法抛 DnfsExp。"""
+    t = sp['_sp']
+    if t == 'link':
+        url = sp.get('url', '')
+        if not isinstance(url, str) or not url.startswith(('http://', 'https://')):
+            raise DnfsExp('链接节点必须是 http/https URL', 400)
+        if len(url) > _SP_MAX_URL:
+            raise DnfsExp('链接过长', 400)
+    elif t == 'html':
+        code = sp.get('code', '')
+        if not isinstance(code, str) or not code.strip():
+            raise DnfsExp('网页代码不能为空', 400)
+        if len(code) > _SP_MAX_CODE:
+            raise DnfsExp('网页代码过大（上限 512KB）', 400)
+    elif t == 'image':
+        data = sp.get('data', '')
+        if not isinstance(data, str) or not data.startswith('data:image/'):
+            raise DnfsExp('图片节点 data 必须是 data:image/ 开头的 DataURL', 400)
+        if len(data) > _SP_MAX_DATA:
+            raise DnfsExp('图片过大（上限约 2.6MB）', 400)
+    elif t == 'file':
+        name = sp.get('name', '')
+        data = sp.get('data', '')
+        if not isinstance(name, str) or not name.strip():
+            raise DnfsExp('文件节点缺少文件名', 400)
+        if len(name) > 255:
+            raise DnfsExp('文件名过长', 400)
+        if not isinstance(data, str) or not data:
+            raise DnfsExp('文件节点缺少数据', 400)
+        if len(data) > _SP_MAX_DATA:
+            raise DnfsExp('文件过大（上限约 2.6MB）', 400)
+
+
+def _sp_review_text(title, sp):
+    """特殊节点的 AI 审核文本：剔除 base64 负载（体量大且无审核意义），仅保留文本字段。"""
+    parts = [title or '']
+    note = sp.get('note')
+    if isinstance(note, str) and note.strip():
+        parts.append(note)
+    t = sp['_sp']
+    if t == 'link':
+        parts.append(str(sp.get('url', '')))
+    elif t == 'html':
+        parts.append(str(sp.get('code', ''))[:_SP_REVIEW_CODE_PREFIX])
+    else:  # image / file
+        parts.append(str(sp.get('name', '')))
+    return '\n'.join(parts)
+
 # 这个也许不用这么复杂 大不了每个异常点我们抛出DnfsExp类
 #class InvalidRequest(DnfsExp):
 #    '''非法参数异常'''
@@ -253,8 +329,15 @@ def add_note():
             raise DnfsExp('父节点不存在', 400)
 
 
-    # 内容审查
-    review = review_content(title + '\n' + content)
+    # 特殊节点（管理员专属）：非管理员拒绝，并做字段/大小校验
+    sp = _parse_sp(content)
+    if sp is not None:
+        if not info.get('is_admin'):
+            raise DnfsExp('特殊节点仅管理员可发布，用户'+info.get('user')+'，从'+request.remote_addr, 403)
+        _validate_sp(sp)
+
+    # 内容审查（特殊节点剔除 base64 负载）
+    review = review_content(_sp_review_text(title, sp) if sp is not None else title + '\n' + content)
     if True != review: raise DnfsExp('内容审核不通过，用户'+info.get('user')+'，从'+request.remote_addr, 400)
 
     # 执行插入
@@ -473,8 +556,19 @@ def update_note():
             logs.warning('dnfs', f'update_note 所有权拒绝 id={id}', extra={'user': info['user']})
             return jsonify({"error": 'It\'s not your note'}), 403
 
-    # 内容审查
-    review = review_content(title + '\n' + content)
+    # 特殊节点（管理员专属）：非管理员拒绝，并做字段/大小校验
+    sp = _parse_sp(content)
+    if sp is not None:
+        if not info.get('is_admin'):
+            logs.warning('dnfs', f'update_note 特殊节点非管理员拒绝 id={id}', extra={'user': info['user']})
+            return jsonify({"error": '特殊节点仅管理员可发布'}), 403
+        try:
+            _validate_sp(sp)
+        except DnfsExp as e:
+            return jsonify({"error": str(e)}), e.get_status()
+
+    # 内容审查（特殊节点剔除 base64 负载）
+    review = review_content(_sp_review_text(title, sp) if sp is not None else title + '\n' + content)
     if True != review:
         #return jsonify({'error': 'review failed', 'data': review}), 400
         logs.warning('dnfs', f'update_note 内容审核未通过 id={id} title={title}', extra={'user': info['user']})

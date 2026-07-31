@@ -531,6 +531,75 @@ def proxy_send_code():
 
 
 
+# ==================== favicon 代理（dnfs 特殊节点"链接"卡片用） ====================
+# 服务端拉取目标站 /favicon.ico：前端 CSP img-src 'self' 禁止外域图片，且跨域无法直取。
+# SSRF 防护：仅 http/https；解析目标 IP，禁止内网/环回/保留地址；重定向目标同样校验；512KB 上限。
+import ipaddress
+import socket
+from urllib.parse import urlparse
+
+_FAVICON_MAX_BYTES = 512 * 1024
+_FAVICON_TIMEOUT = 5
+
+
+def _is_private_host(hostname):
+    """主机解析后任一 IP 命中内网/环回/链路本地/保留/组播地址即视为非法（fail-closed）。"""
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except Exception:
+        return True  # 解析失败一律拒绝
+    if not infos:
+        return True
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return True
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return True
+    return False
+
+
+class _FaviconRedirectHandler(_urlreq.HTTPRedirectHandler):
+    """重定向时重新校验目标主机，防止 302 跳转绕过 SSRF 检查。"""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if _is_private_host(urlparse(newurl).hostname or ''):
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+@app.route('/api/favicon', methods=['GET'])
+def api_favicon():
+    target = (request.args.get('url') or '').strip()
+    try:
+        parsed = urlparse(target)
+    except Exception:
+        return jsonify({'error': 'bad url'}), 400
+    if parsed.scheme not in ('http', 'https') or not parsed.hostname:
+        return jsonify({'error': 'bad url'}), 400
+    if _is_private_host(parsed.hostname):
+        return jsonify({'error': 'forbidden host'}), 403
+
+    favicon_url = f"{parsed.scheme}://{parsed.netloc}/favicon.ico"
+    try:
+        opener = _urlreq.build_opener(_FaviconRedirectHandler())
+        req = _urlreq.Request(favicon_url, headers={'User-Agent': 'qsont-favicon-fetcher/1.0'})
+        with opener.open(req, timeout=_FAVICON_TIMEOUT) as resp:
+            data = resp.read(_FAVICON_MAX_BYTES + 1)
+            if len(data) > _FAVICON_MAX_BYTES:
+                return jsonify({'error': 'favicon too large'}), 502
+            ctype = (resp.headers.get('Content-Type') or '').split(';')[0].strip()
+            if not ctype.startswith('image/'):
+                ctype = 'image/x-icon'  # 部分站点 favicon 返回 text/html 等，统一兜底
+        out = Response(data, 200, mimetype=ctype)
+        out.headers['Cache-Control'] = 'public, max-age=86400'
+        return out
+    except Exception as e:
+        logs.info("static", "favicon 拉取失败", extra={"url": target[:128], "error": str(e)})
+        return jsonify({'error': 'fetch failed'}), 502
+
+
 # ==================== 主路由 ====================
 @app.route('/')
 def serve_view():
