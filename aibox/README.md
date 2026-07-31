@@ -53,7 +53,7 @@ python aibox.py
 
 启动后，WebSocket 服务器将运行在 `ws://localhost:8765`（地址与端口可在 `config.json` 的 `system.websocket_host` / `system.websocket_port` 中修改）。
 
-> 注意：本模块入口文件为 `aibox.py`（单文件约 8200 行，集成 WebSocket 服务器、AI 引擎、工具/技能系统、任务调度器于一体）。`client.py` 为示例 WebSocket 客户端，`voice_client.py` 为语音客户端，`_run.sh` 为被 `core` 拉起的启动脚本。
+> 注意：本模块入口文件为 `aibox.py`（单文件约 8450 行，集成 WebSocket 服务器、AI 引擎、工具/技能系统、任务调度器于一体）。`client.py` 为示例 WebSocket 客户端，`voice_client.py` 为语音客户端，`_run.sh` 为被 `core` 拉起的启动脚本。
 
 ## 📁 目录结构
 
