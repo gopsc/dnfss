@@ -12,7 +12,7 @@
 |--------|--------|--------|--------|
 | **P0 (Critical)** | 3 | 2 | 1 |
 | **P1 (High)** | 5 | 1 | 4 |
-| **P2 (Medium)** | 6 | 1 | 5 |
+| **P2 (Medium)** | 6 | 3 | 3 |
 | **P3 (Low)** | 3 | 0 | 3 |
 
 ---
@@ -213,29 +213,32 @@ db 地址硬编码为常量。项目约定其他服务（db、ai_review、dnfs�
 
 ---
 
-### P2-3: ProcessResponseHeaders 硬编码 HTTP/1.1，协议版本错误
+### ✅ P2-3: ProcessResponseHeaders 硬编码 HTTP/1.1，协议版本错误（已修复）
 
-**位置**: `internal/proxy/proxy.go#L137`
+**位置**: `internal/proxy/proxy.go`（原 L137）
 
 **问题描述**:
-```go
-tx.ProcessResponseHeaders(rw.status, "HTTP/1.1")
-```
+硬编码 `"HTTP/1.1"`，HTTP/2 请求时协议版本不正确，Coraza 规则中依赖协议版本的检测可能不准确。
 
-硬编码 `"HTTP/1.1"`。如果原始请求是 HTTP/2（WAF TLS 默认启用 h2），上游 gateway 虽然是 HTTP/1.1，但 WAF 到客户端是 HTTP/2，这里的协议版本应该从请求中获取（`r.Proto`），否则 Coraza 规则中依赖协议版本的检测可能不准确。
-
-**修复建议**: 使用 `r.Proto` 替代硬编码的 `"HTTP/1.1"`。
+**修复方案**（2026-08-01，与 WebSocket 支持一并修复）:
+将 `tx.ProcessResponseHeaders(rw.status, "HTTP/1.1")` 改为 `tx.ProcessResponseHeaders(rw.status, r.Proto)`，从请求中获取正确的协议版本。
 
 ---
 
-### P2-4: responseRecorder 不支持 http.Hijacker，WebSocket 升级无法工作
+### ✅ P2-4: responseRecorder 不支持 http.Hijacker，WebSocket 升级无法工作（已修复）
 
-**位置**: `internal/proxy/proxy.go#L157-L180`
+**位置**: `internal/proxy/proxy.go`（原 L157-L180）
 
 **问题描述**:
-`responseRecorder` 嵌入了 `http.ResponseWriter` 但只实现了 `WriteHeader` 和 `Flush`，没有实现 `http.Hijacker` 接口。如果未来需要通过 WAF 代理 WebSocket 连接（如 aibox 的 WebSocket 接口需要对外暴露），Hijacker 是必须的——WebSocket 升级需要接管底层 TCP 连接。
+`responseRecorder` 嵌入了 `http.ResponseWriter` 但只实现了 `WriteHeader` 和 `Flush`，没有实现 `http.Hijacker` 接口，WebSocket 升级（需要接管底层 TCP 连接）无法工作。
 
-**修复建议**: 实现 Hijacker 接口，将调用委托给底层 ResponseWriter（如果它支持）。
+**修复方案**（2026-08-01）:
+1. 添加 `bufio` 和 `net` import
+2. 给 `responseRecorder` 添加 `hijacked bool` 和 `statusSent bool` 字段
+3. 实现 `Hijack()` 方法，将调用委托给底层 `ResponseWriter.(http.Hijacker)`，成功后标记 `hijacked=true` 并设置 status=101
+4. 添加 `Write()` 方法确保首次 Write 前 WriteHeader 被调用（符合 http.ResponseWriter 约定）
+5. 在 `ServeHTTP` 中检测 `rw.hijacked`，WebSocket 升级后跳过响应阶段 WAF 检测，记录 Info 日志
+6. ReverseProxy（Go 1.22）内置 WebSocket 代理支持，Hijack 后自动进行双向字节流转发
 
 ---
 

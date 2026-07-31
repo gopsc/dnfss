@@ -2,9 +2,11 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -170,13 +172,26 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rw := &responseRecorder{ResponseWriter: w, status: 200}
 	p.rp.ServeHTTP(rw, r)
 
+	// WebSocket 升级成功后连接已被 Hijack，转为二进制帧协议，无需执行 HTTP 响应阶段检测
+	if rw.hijacked {
+		logclient.Info("waf", fmt.Sprintf("websocket_upgraded %s %s cost_ms=%d",
+			r.Method, r.URL.Path, time.Since(start).Milliseconds()),
+			map[string]any{
+				"ip":      r.RemoteAddr,
+				"method":  r.Method,
+				"path":    r.URL.Path,
+				"cost_ms": time.Since(start).Milliseconds(),
+			})
+		return
+	}
+
 	// 响应阶段：把 upstream 的 header 喂给 WAF
 	for k, vs := range rw.headers {
 		for _, v := range vs {
 			tx.AddResponseHeader(k, v)
 		}
 	}
-	tx.ProcessResponseHeaders(rw.status, "HTTP/1.1")
+	tx.ProcessResponseHeaders(rw.status, r.Proto)
 }
 
 // block 命中规则时统一返回 403，并将关键输入推送到日志库。
@@ -197,26 +212,58 @@ func (p *Proxy) block(w http.ResponseWriter, r *http.Request, ruleID int, start 
 }
 
 // responseRecorder 记录状态码与响应头，供响应阶段 WAF 检测使用。
+// 同时实现 http.Hijacker 以支持 WebSocket 升级（ReverseProxy 在 WebSocket 握手时需要劫持底层连接）。
 type responseRecorder struct {
 	http.ResponseWriter
-	status  int
-	headers http.Header
+	status     int
+	statusSent bool
+	headers    http.Header
+	hijacked   bool
 }
 
 func (r *responseRecorder) WriteHeader(code int) {
+	if r.hijacked {
+		return
+	}
 	r.status = code
+	r.statusSent = true
 	if r.headers == nil {
 		r.headers = http.Header{}
 	}
-	// 拷贝上游响应头
+	// 拷贝上游响应头（在 WriteHeader 调用时响应头已最终确定）
 	for k, vs := range r.Header() {
 		r.headers[k] = vs
 	}
 	r.ResponseWriter.WriteHeader(code)
 }
 
+func (r *responseRecorder) Write(b []byte) (int, error) {
+	if !r.statusSent {
+		r.WriteHeader(http.StatusOK)
+	}
+	return r.ResponseWriter.Write(b)
+}
+
+// Flush 实现 http.Flusher，支持 SSE/流式响应。
 func (r *responseRecorder) Flush() {
 	if f, ok := r.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Hijack 实现 http.Hijacker，支持 WebSocket 升级。
+// 委托给底层 ResponseWriter 的 Hijack 方法，并标记连接已被劫持。
+func (r *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("underlying ResponseWriter does not support Hijacker")
+	}
+	conn, rw, err := hijacker.Hijack()
+	if err == nil {
+		r.hijacked = true
+		// WebSocket 升级响应是 101 Switching Protocols
+		r.status = http.StatusSwitchingProtocols
+		r.statusSent = true
+	}
+	return conn, rw, err
 }

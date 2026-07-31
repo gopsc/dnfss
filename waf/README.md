@@ -283,13 +283,30 @@ Director 改写（[proxy.go:36-46](internal/proxy/proxy.go#L36)）：剥离 `Rem
 
 ErrorHandler（[proxy.go:48-53](internal/proxy/proxy.go#L48)）：upstream 不可达时返回 502，同时注入安全响应头，不暴露内部堆栈，仅服务端 log。
 
+## WebSocket 代理支持
+
+WAF 支持透明代理 WebSocket 连接（如 aibox 的 WebSocket 接口）。实现要点：
+
+- `responseRecorder` 实现了 `http.Hijacker` 接口，将 Hijack 调用委托给底层 `http.ResponseWriter`
+- WebSocket 握手阶段（HTTP Upgrade 请求/响应）仍然经过 WAF 规则检测（请求头 phase:1）
+- 握手成功（101 Switching Protocols）后，连接被 Hijack，由 `httputil.ReverseProxy` 自动进行双向字节流转发
+- 升级后连接转为二进制帧协议，跳过 HTTP 响应阶段的 WAF 检测，记录 Info 日志
+- WebSocket 帧内容不做 WAF 检测（帧是二进制双向流，Coraza 规则引擎基于 HTTP 请求/响应模型）
+- `http.Server` 的超时设置不影响 Hijack 后的 WebSocket 长连接（Hijack 后连接脱离 Server 超时管理）
+- 安全响应头（CSP/HSTS 等）不注入 WebSocket 升级响应（101 响应由协议协商决定，注入非标准头可能导致客户端兼容问题）
+
+配置要求：
+- 无特殊配置，WebSocket 连接（`Upgrade: websocket`）自动识别并代理
+- 需要上游服务正确处理 WebSocket 升级（如 aibox 监听 ws:// 端口）
+
 ## 已知限制
 
 - 响应头检测（`ProcessResponseHeaders`）当前仅做审计日志，命中后不执行拦截（响应头已发送无法撤销状态码）。如需响应头拦截需引入 buffered response writer。
 - **响应体检测未启用**（未 `ProcessResponseBody`，缓冲整个响应延迟成本高）。SQL 报错回显等响应体泄漏检测缺失。
+- **WebSocket 帧内容不检测**：升级后二进制帧直接转发，不经过 WAF 规则引擎（适用于内部可信服务如 aibox）。
 - 限流/黑白名单未实现，可后续作为 coraza 规则或独立中间件加。
 - TLS 仅设 `MinVersion: TLS1.2`，未限定 cipher suites，允许弱加密套件。
-- `X-Forwarded-For` 直接覆盖原值（`Header.Set`），未按 RFC 7239 追加；当前 gateway 也只取第一个 IP，无实际影响，但语义不严格。注意：IPv6 地址在 X-Forwarded-For 中可能带方括号（待修复）。
+- `X-Forwarded-For` 直接覆盖原值（`Header.Set`），未按 RFC 7239 追加；当前 gateway 也只取第一个 IP，无实际影响，但语义不严格。注意：IPv6 地址在 X-Forwarded-For 中可能带方括号（待修复，使用 `LastIndexByte` 无法正确处理 IPv6 格式）。
 - CSP 仍含 `'unsafe-inline'`（为兼容 forgot.html 与 games/*.html 的内联脚本），待前端清理后可收紧。
 - HSTS 已启用（半年期，不含子域），站点全量 HTTPS 覆盖后可按需收紧。
 - logclient 日志推送每次新建 TCP 短连接，高并发拦截场景可能产生较多 TIME_WAIT；db 地址硬编码 `127.0.0.1:8005`，不支持环境变量配置。
@@ -298,6 +315,15 @@ ErrorHandler（[proxy.go:48-53](internal/proxy/proxy.go#L48)）：upstream 不�
 - 标准日志（`log.SetOutput`）被静默到 `io.Discard`，net/http 的 panic 堆栈和 TLS 错误不可见。
 
 ## 版本日志
+
+### v1.2（2026-08-01）— WebSocket 支持 + 修复
+
+- **feat**: WebSocket 透明代理支持，`responseRecorder` 实现 `http.Hijacker` 接口
+- WebSocket 握手阶段仍经过 WAF 请求头检测，升级后自动双向转发
+- WebSocket 升级成功记录 Info 日志，便于追踪
+- **fix(P2-3)**: `ProcessResponseHeaders` 协议版本从硬编码 `"HTTP/1.1"` 改为 `r.Proto`，支持 HTTP/2
+- **fix(P2-4)**: responseRecorder 添加 Write 方法确保 WriteHeader 在首次 Write 前调用
+- 补充 `bufio`/`net` import 用于 Hijacker 实现
 
 ### v1.1（2026-08-01）— 安全加固
 
