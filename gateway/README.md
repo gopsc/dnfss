@@ -248,7 +248,7 @@ Gateway 0.5.4 started
 
 近期变更：
 
-- `0.5.4`：修复邮件轰炸漏洞（审计报告 P0-1）——`/register/send_code` 强制 CAPTCHA 校验（经 captcha:8009，Token 一次性消费），新增邮箱级双窗口限流（3 次/小时 + 10 次/天）；smtp 层同步增加邮箱级长期限流兜底 + 全局熔断（`SMTP_HOURLY_LIMIT` 环境变量，默认 100 封/小时）。
+- `0.5.4`：修复邮件轰炸漏洞（审计报告 P0-1）——`/register/send_code` 强制 CAPTCHA 校验（经 captcha:8009，Token 一次性消费），新增邮箱级双窗口限流（3 次/小时 + 10 次/天）；smtp 层同步增加邮箱级长期限流兜底 + 全局熔断（`SMTP_HOURLY_LIMIT` 环境变量，默认 100 封/小时）；前端 `register.html`/`register.js` 同步接入图形验证码（复用 `/captcha/image` 代理路由，方案 A：仅在「获取验证码」时要求 CAPTCHA，注册提交不加）。
 - `0.5.3`：配合 smtp 同邮箱 60 秒发送冷却——`/register/send_code` 在 smtp 返回 `retry_after` 时按 429 透传其提示文案（其余发送失败仍用通用 500 文案，SMTP 内部错误细节不向外暴露）。
 - `0.5.2`：限流错误码统一为 429（登录原 400、注册/发码原 403，并修正 "attampts" 拼写）；登录时用户不存在不再兜底 500——空结果统一走 401，并执行 dummy PBKDF2 校验拉平时序防用户名枚举；db 查询失败消息由误名的 "Login (Update Step) Failed" 改为 "Login (Query Step) Failed"；pymsg 下游调用超时常量化（`DbC::DEFAULT_TIMEOUT`、`_TIMEOUT_CAPTCHA/_SMTP_VERIFY/_SMTP_SEND`）。
 - `0.5.1`：登录成功后通过 db 更新 `Users.last_login`（`"$now"` 哨兵，db 日期适配层转为服务端当前 UTC 时间；更新失败经 THROW_EX_CUSTOM 抛 500，与其他步骤一致）。

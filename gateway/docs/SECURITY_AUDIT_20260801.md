@@ -26,7 +26,8 @@
   2. **gateway 层邮箱级双窗口限流**:3 次/小时 + 10 次/天(CAPTCHA 通过后才计入配额)。
   3. **smtp 层邮箱级长期限流兜底**:同样 3 次/小时 + 10 次/天,作为 gateway 被绕过/重启时的最后防线。
   4. **smtp 层全局熔断**:`SMTP_HOURLY_LIMIT` 环境变量(默认 100 封/小时),防 smtp 账号被服务商封禁。
-  - 改动文件:[gateway/src/main.cpp](../src/main.cpp)(新增 `_EMAIL_ADDR_RATE_HOUR`/`_EMAIL_ADDR_RATE_DAY` + `handleSendEmailCode` 强制 CAPTCHA + 邮箱限流)、[smtp/smtp_v2.py](../../smtp/smtp_v2.py)(新增 `send_log`/`global_send_log` + 限流检查 + 全局熔断 + 预占/回滚)。
+  5. **前端同步**:`register.html`/`register.js` 接入图形验证码(复用 `/captcha/image` 代理路由,方案 A:仅在「获取验证码」时要求 CAPTCHA,注册提交不加——邮箱验证码已是二次验证)。
+  - 改动文件:[gateway/src/main.cpp](../src/main.cpp)(新增 `_EMAIL_ADDR_RATE_HOUR`/`_EMAIL_ADDR_RATE_DAY` + `handleSendEmailCode` 强制 CAPTCHA + 邮箱限流)、[smtp/smtp_v2.py](../../smtp/smtp_v2.py)(新增 `send_log`/`global_send_log` + 限流检查 + 全局熔断 + 预占/回滚)、[static/public/register.html](../../static/public/register.html) + [static/public/js/register.js](../../static/public/js/register.js)(前端接入图形验证码)。
 
 ### P0-2 注册接口 CAPTCHA 可选,可被批量注册
 
