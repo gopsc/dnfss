@@ -1,7 +1,7 @@
 # micro_servers
 
 一套 DIY 的轻量级微服务架构（UniServe Framework），由 C++、Python、Go 与仓颉(Cangjie) 混合实现。
-`core` 作为进程托管服务负责拉起并守护各业务子进程，`waf` 作为前置 WAF 网关终止 TLS 并做规则匹配，`gateway` 作为应用层网关统一鉴权与反向代理，`db` 提供通用数据库访问与集中式日志收集，`ai_review` 提供 AI 内容审核，`static` 与 `dnfs` 作为业务服务对外提供能力。此外包含独立的机器人硬件控制模块 `bot4cj` 和嵌入式脚本引擎 `libtry`。
+`core` 作为进程托管服务负责拉起并守护各业务子进程，`waf` 作为前置 WAF 网关终止 TLS 并做规则匹配，`gateway` 作为应用层网关统一鉴权与反向代理，`db` 提供通用数据库访问与集中式日志收集，`confs` 提供统一配置分发，`ai_review` 提供 AI 内容审核，`static` 与 `dnfs` 作为业务服务对外提供能力。此外包含独立的机器人硬件控制模块 `bot4cj` 和嵌入式脚本引擎 `libtry`。
 
 ## 架构总览
 
@@ -24,7 +24,8 @@
         └──────────────────►│             ├─────────────►│─────────────────┘                 │
                             ├────────────►│              └─────── HTTP /review ──────────────┘
                             └────────────►│
- 日志链路: waf / gateway / static / dnfs / ai_review / captcha / smtp / aibox ──(log_client, pymsg)──► db:8005 (Logs 表)
+ 日志链路: waf / gateway / static / dnfs / ai_review / captcha / smtp / aibox / confs ──(log_client, pymsg)──► db:8005 (Logs 表)
+ 配置链路: static 等业务服务 ──(pymsg get)──► confs:8010（配置统一存放于 confs/configs/，mtime 变化自动重载）
 ```
 
 ### 请求链路
@@ -50,6 +51,7 @@
 | [ai_review](ai_review/) | Python(Flask) | 8007 | AI 内容审核服务，DeepSeek LLM + ChromaDB RAG，支持人工反馈纠偏 |
 | [captcha](captcha/) | Python(pymsg) | 8009 | 验证码服务（pymsg/TCP），生成图形验证码（5 分钟过期、一次性），经 gateway 的 `GET /captcha/image` 代理给浏览器 |
 | [smtp](smtp/) | Python(pymsg) | 8008 | 邮件服务，发送/校验邮箱验证码（pymsg 路由 send_email/verify_email/health），注册流程的邮件验证码后端，SMTP 账号配置在 .env |
+| [confs](confs/) | Python(pymsg) | 8010 | 统一配置服务，集中存放并分发各服务配置文件（pymsg 路由 get/list/reload/health），内存缓存 + mtime 自动重载，路径遍历防护 |
 | [aibox](aibox/) | Python | 8765 | 独立 AI 智能体系统（DeepSeek + WebSocket），自带技能系统/记忆/任务调度，由 core 拉起但与主干微服务无调用关系 |
 | [bot4cj](bot4cj/) | 仓颉(Cangjie) | — | 机器人硬件脚本解析器，解析 .mt 矩阵脚本通过 I2C 驱动 PCA9685 舵机 / MPU6050 陀螺仪，面向树莓派 Dashun 蜘蛛机器人平台（独立硬件项目） |
 
@@ -92,7 +94,7 @@
 - **账号旁路**：`/api/check_user`、`/api/reset_password` 等接口直接读写 `gateway/sqlite3.db` 的 Users 表；`/yhdet_callback`、`/api/yhdet_*` 对接 yhdet.top OAuth 登录。
 - 统一品牌"树状菜单"，支持深色模式（`css/theme.css`）。
 - 可使用 Nuitka 编译为独立二进制（`fsys.bin`）。
-- 配置见 [static/config.ini](static/config.ini)（注：CORS 白名单硬编码于 `fsys.py`，config.ini 的 cors 段未生效）。
+- 配置由 `confs` 统一配置服务分发（`confs/configs/static.ini`，启动时经 pymsg 拉取，`CONFS_HOST`/`CONFS_PORT` 环境变量可覆盖）；本地 [static/config.ini](static/config.ini) 作为 confs 不可用时的 fail-safe 回退。
 
 ### dnfs（树状菜单服务）
 
@@ -140,6 +142,13 @@
 - pymsg 路由：`send_email`（生成 6 位验证码并经 SMTP_SSL 发送，10 分钟有效，发送失败自动作废；同一邮箱 60 秒发送冷却，冷却期拒绝并返回 `retry_after`，不覆盖已发出的有效验证码，发送失败不计入冷却）、`verify_email`（校验，通过即一次性消费防重放，连续失败 5 次自动作废并返回 `invalidated`，兼容旧字段 `input_captcha`）、`health`。
 - 验证码存于进程内存（锁保护 + 惰性过期清理），SMTP 账号通过 `.env` 配置（`SMTP_SERVER` / `SMTP_PORT` / `SMTP_USER` / `__PASSWORD`，`__PASSWORD` 兼容别名 `SMTP_PASSWORD`）。
 
+### confs（统一配置服务）
+
+- 集中存放各微服务的配置文件（`confs/configs/`），基于 pymsg（RpcServer，TCP 长度前缀帧 + JSON）分发，监听 127.0.0.1:8010。
+- pymsg 路由：`get`（取配置文件全文；带 `key` 时按键提取，ini 用 `Section.option`、json 用点号路径）、`list`（列出全部配置及元信息）、`reload`（重载指定配置，缺省清空全部缓存）、`health`。
+- 内存缓存 + 文件 mtime 变化自动重载，改配置无需重启 confs；配置名校验（basename + realpath 前缀 + 扩展名白名单）防路径遍历。
+- 消费方约定：服务启动时用 `RpcClient(8010).call("get", {"name": "<服务名>.ini"})` 拉取配置，confs 不可用时回退本地配置文件（fail-safe）。目前 `static` 已接入。
+
 ### aibox（独立 AI 智能体系统）
 
 - 一套相对独立的单智能体产品，基于 DeepSeek + WebSocket（:8765），由 `core` 拉起但与 waf / gateway / dnfs 等主干微服务无调用关系。
@@ -185,6 +194,7 @@
 | 8007 | ai_review | 127.0.0.1 | AI 审核（仅内部调用） |
 | 8009 | captcha | 127.0.0.1 | 验证码服务（pymsg/TCP，经 gateway 代理） |
 | 8008 | smtp | 127.0.0.1 | 邮件服务（仅内部调用，注册验证码邮件后端） |
+| 8010 | confs | 127.0.0.1 | 统一配置服务（pymsg/TCP，仅内部调用） |
 | 8765 | aibox | 127.0.0.1 | AI 智能体（WebSocket，独立产品） |
 | — | bot4cj | — (树莓派 I2C) | 机器人硬件脚本解析器（独立硬件项目，不联网） |
 
@@ -218,7 +228,7 @@ bash _setup.deb.sh        # Debian/Ubuntu
 # 或
 bash _setup.rhel.sh       # RHEL/CentOS/Rocky/Fedora
 
-# 2. 依次安装各模块（libth -> libhttp -> libcrypt -> libsqlite3 -> gateway -> waf -> static -> dnfs -> db -> smtp -> core）
+# 2. 依次安装各模块（libth -> libhttp -> libcrypt -> libsqlite3 -> gateway -> waf -> static -> dnfs -> db -> smtp -> captcha -> confs -> core）
 bash _inst.sh
 ```
 
@@ -231,7 +241,7 @@ bash _run.sh   # 运行
 
 部署路径约定为 `/opt/micro_servers/`，`core` 的 `init.txt` 即从该路径拉起其余服务。
 
-> **注意**：`ai_review` 与 `captcha` 未包含在 `_inst.sh` 中，需分别进入 `ai_review/`、`captcha/` 目录执行 `_set.sh` 安装。其中 `ai_review` 需额外配置 `.env` 文件（DeepSeek API 密钥等）。
+> **注意**：`ai_review` 未包含在 `_inst.sh` 中，需进入 `ai_review/` 目录执行 `_set.sh` 安装，并额外配置 `.env` 文件（DeepSeek API 密钥等）。
 
 > **注意**：waf 首次编译需联网下载 Go 依赖，[waf/_set.sh](waf/_set.sh) 会自动调用 [waf/_goproxy.sh](waf/_goproxy.sh) 设置 GOPROXY 国内镜像。如需手动设置：`go env -w GOPROXY=https://goproxy.cn,direct`。
 
@@ -240,8 +250,9 @@ bash _run.sh   # 运行
 由 `core` 守护的子进程通过 `init.txt` 自启动（顺序很重要，waf 必须先于 gateway）：
 
 ```
-bash /opt/micro_servers/ai_review/_run.sh
 bash /opt/micro_servers/db/_run.sh
+bash /opt/micro_servers/confs/_run.sh
+bash /opt/micro_servers/ai_review/_run.sh
 bash /opt/micro_servers/dnfs/_run.sh
 bash /opt/micro_servers/smtp/_run.sh
 bash /opt/micro_servers/static/_run.sh
