@@ -3,7 +3,7 @@ APP_NAME := gateway
 INSTL_DIR := /usr/local/bin
 CPP := g++
 INCS := -I inc/
-MY_LIBS := -L/usr/lib -lus_http -lus_crypt
+MY_LIBS := -L/usr/lib -lus_http -lus_httpclient -lus_crypt
 LIBS := -pthread -lcurl -lssl -lsqlite3 -lz -lcrypto -lboost_json -lboost_program_options
 CPPFLAGS := --std=c++20 -pipe -pthread # -Wall -Werror
 BUILD_DIR = build
