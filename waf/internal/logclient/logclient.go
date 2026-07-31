@@ -25,6 +25,8 @@ const (
 	batchSize     = 50
 	flushInterval = 2 * time.Second
 	socketTimeout = 5 * time.Second
+	// 消息大小安全上限（64 MiB），与 Python / C++ 端保持一致。
+	maxMsgSize = 64 * 1024 * 1024
 )
 
 // Entry 单条日志。
@@ -247,6 +249,9 @@ func pymsgCall(payload []byte) ([]byte, error) {
 		return nil, err
 	}
 	respLen := binary.BigEndian.Uint32(header)
+	if respLen > maxMsgSize {
+		return nil, fmt.Errorf("response too large: %d bytes (max %d)", respLen, maxMsgSize)
+	}
 	resp := make([]byte, respLen)
 	if _, err := io.ReadFull(conn, resp); err != nil {
 		return nil, err

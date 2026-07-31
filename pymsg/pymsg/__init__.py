@@ -29,6 +29,10 @@ __all__ = ["send", "recv", "TimeoutError", "MsgClient", "MsgServer"]
 
 _HEADER = struct.Struct("!I")  # 4 bytes, big-endian unsigned int
 
+# 消息大小安全上限（64 MiB），与 C++ 端 Msg.hpp 保持一致。
+# 防止恶意客户端发送超大长度头导致 OOM。
+_MAX_MSG_SIZE = 64 * 1024 * 1024
+
 
 class TimeoutError(Exception):
     """Raised when a send or recv operation exceeds its timeout."""
@@ -62,6 +66,10 @@ def send(
         timeout: Optional timeout in seconds. Raises TimeoutError on expiry.
     """
     payload = data.encode("utf-8")
+    if len(payload) > _MAX_MSG_SIZE:
+        raise ValueError(
+            f"payload too large: {len(payload)} bytes (max {_MAX_MSG_SIZE})"
+        )
     header = _HEADER.pack(len(payload))
     with _timeout(sock, timeout):
         try:
@@ -95,6 +103,10 @@ def recv(
         try:
             header = _recv_exact(sock, _HEADER.size)
             (length,) = _HEADER.unpack(header)
+            if length > _MAX_MSG_SIZE:
+                raise ConnectionError(
+                    f"message too large: {length} bytes (max {_MAX_MSG_SIZE})"
+                )
             payload = _recv_exact(sock, length)
             return payload.decode("utf-8")
         except _socket.timeout:
