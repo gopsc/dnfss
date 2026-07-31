@@ -1,9 +1,12 @@
 """聊天视图：用户/AI/系统消息 + AI 回复流式 Markdown 渲染。
 
 服务端协议（aibox/aibox.py output_callback 原样透传 msg_type）：
-  - chunk     增量片段（服务端 chunk_buffer 发送后即清零），直接 append
-  - complete  收尾信号：chunk 流式是内容权威来源，complete 仅用于收尾；
-              仅当流式完全丢帧（未建 widget 且无内容）时，用 full_text 补建
+  - chunk           增量片段（正式回答内容），直接 append 到 AI 消息
+  - reasoning_start 思考开始信号，创建思考区域
+  - reasoning       思考内容增量片段，追加到思考区域
+  - reasoning_end   思考结束信号
+  - complete        收尾信号：chunk 流式是内容权威来源，complete 仅用于收尾；
+                    仅当流式完全丢帧（未建 widget 且无内容）时，用 full_text 补建
 """
 from textual.containers import VerticalScroll
 from textual.widgets import Markdown, Static
@@ -20,7 +23,9 @@ class ChatView(VerticalScroll):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._ai_widget: Markdown | None = None
+        self._reasoning_widget: Static | None = None
         self._ai_text = ""
+        self._reasoning_text = ""
         self._ai_finalized = True  # 初始无活跃 AI 消息
 
     @property
@@ -48,6 +53,39 @@ class ChatView(VerticalScroll):
         self._ai_widget = Markdown("", classes="msg-ai")
         await self.mount(self._ai_widget)
         self._anchor_bottom()
+
+    async def start_reasoning(self, hint: str = "🤔 思考中..."):
+        """开始展示思考过程区域。"""
+        if self._reasoning_widget is not None:
+            return
+        self._reasoning_text = ""
+        self._reasoning_widget = Static(hint + "\n", classes="msg-reasoning", markup=False)
+        await self.mount(self._reasoning_widget)
+        self._anchor_bottom()
+
+    async def append_reasoning(self, delta: str):
+        """追加思考内容增量。"""
+        if not delta:
+            return
+        if self._reasoning_widget is None:
+            await self.start_reasoning()
+        self._reasoning_text += delta
+        # 限制思考内容显示长度（最多显示最后 2000 字符，避免思考过长占满屏幕）
+        display = self._reasoning_text
+        if len(display) > 2000:
+            display = "...(前略)\n" + display[-2000:]
+        self._reasoning_widget.update(f"💭 思考中...\n{display}")
+        self.call_after_refresh(self.scroll_end, animate=False)
+
+    async def end_reasoning(self):
+        """结束思考区域，更新提示文字。"""
+        if self._reasoning_widget is not None and self._reasoning_text:
+            # 思考结束后保持展示，但更新标签
+            display = self._reasoning_text
+            if len(display) > 2000:
+                display = "...(前略)\n" + display[-2000:]
+            self._reasoning_widget.update(f"💭 思考过程（{len(self._reasoning_text)}字符）\n{display}\n{'─' * 30}")
+        # 思考区域保留显示，不删除
 
     async def append_ai(self, delta: str):
         """追加增量片段（服务端 chunk 为增量语义，直接拼接）。"""
@@ -97,12 +135,16 @@ class ChatView(VerticalScroll):
                 self._anchor_bottom()
 
         self._ai_text = ""
+        self._reasoning_widget = None
+        self._reasoning_text = ""
         self._ai_finalized = True
         self.call_after_refresh(self.scroll_end, animate=False)
 
     async def reset(self):
         """清空聊天区（/clear）。"""
         self._ai_widget = None
+        self._reasoning_widget = None
         self._ai_text = ""
+        self._reasoning_text = ""
         self._ai_finalized = True
         await self.remove_children()

@@ -215,9 +215,11 @@ const ws = new WebSocket('ws://localhost:8765');
 | 类型 | 说明 |
 |-----|------|
 | `chunk` | AI 响应的**增量片段**（流式输出，chunk_buffer 发送后即清零，为内容权威来源） |
+| `reasoning_start` | AI 开始思考信号（思考模式，创建思考区域展示） |
+| `reasoning` | AI 思考过程增量片段（流式输出，灰色/斜体样式） |
+| `reasoning_end` | AI 思考结束信号（切换到正式回答） |
 | `complete` | AI 响应**收尾信号**（chunk 流式是内容权威来源，complete 仅用于收尾；完全丢帧时可用 full_text 补建） |
-| `line` | 过程行（🔧 工具调用提示、工具输出、💬 助手前缀、思考提示等，供任务侧栏/终端显示） |
-| `reasoning` | AI 思考过程（思考模式，仅 debug_level≥3 发送） |
+| `line` | 过程行（🔧 工具调用提示、工具输出、💬 助手前缀等，供任务侧栏/终端显示） |
 | `error` | 错误信息（API 请求失败、解析失败等；服务端自动回滚本轮消息防止对话历史被污染） |
 | `command_result` | 命令执行结果 |
 | `task_status` | 任务状态更新（executing/complete/failed） |
@@ -427,8 +429,9 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
   "api": {
     "deepseek_api_url": "https://api.deepseek.com/chat/completions",
     "deepseek_model": "deepseek-v4-flash",
+    "reasoning_enabled": false,
     "api_key_env": "DEEPSEEK_API_KEY",
-    "timeout": 30,
+    "timeout": 120,
     "temperature": 0.7
   },
   "context": {
@@ -492,7 +495,9 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
 }
 ```
 
-> 默认模型为 `deepseek-v4-flash`（通过 `api.deepseek_model` 修改）。API Key 从环境变量 `DEEPSEEK_API_KEY` 读取（亦支持 `~/.cert/deepseek.key` 文件）。
+> 默认模型为 `deepseek-v4-flash`（通过 `api.deepseek_model` 修改）。设置 `api.reasoning_enabled: true` 可启用思考模式，此时会在请求中添加 `thinking: {type: "enabled"}` 参数，模型会先进行思考再回答，实时展示思考过程（灰色斜体区域），回答质量更高且**支持工具调用**（文件操作、命令执行、记忆搜索等工具均可在思考模式下正常使用）。
+> 
+> API Key 从环境变量 `DEEPSEEK_API_KEY` 读取（亦支持 `~/.cert/deepseek.key` 文件）。
 
 ## 🛠️ 命令行参数
 
@@ -700,6 +705,16 @@ elif command == "/mycommand":
 3. 确认工具返回值为字符串且不含二进制/控制字符
 
 ## 📄 更新日志
+
+### v2.5
+- ✅ **新增 DeepSeek 思考模式支持**（Reasoning Mode）：
+  - 新增 `api.reasoning_enabled` 配置项（默认 `false`），启用后在请求中添加 `thinking: {type: "enabled"}` 参数
+  - 使用 `deepseek-v4-flash` 模型原生思考能力，**思考模式下完整支持工具调用**（文件操作、命令执行、记忆搜索等均可正常使用）
+  - 实时展示 AI 思考过程：新增 `reasoning_start`/`reasoning`/`reasoning_end` WebSocket 消息类型
+  - 思考内容在前端以灰色斜体区域独立展示，超长思考自动折叠显示最后 2000 字符
+  - 即使未启用思考模式，若模型返回 `reasoning_content` 也会自动实时展示
+  - API 超时默认从 30s 提高到 120s，适配思考模式更长的响应时间
+- ✅ 删除重复定义的 `_add_assistant_message_with_reasoning` 方法
 
 ### v2.4
 - ✅ **新增专用工作目录规范**：

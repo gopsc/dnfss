@@ -58,6 +58,13 @@ class BotOpsApp(App):
         color: yellow;
         padding: 0 1;
     }
+    .msg-reasoning {
+        color: $text-muted;
+        background: $surface;
+        padding: 0 1;
+        margin: 0 1;
+        text-style: italic;
+    }
     #status {
         height: 1;
     }
@@ -163,21 +170,27 @@ class BotOpsApp(App):
         if t == "chunk":
             # 服务端 chunk 为增量片段（发送后即清零），直接拼接
             await self.chat.append_ai(content)
+        elif t == "reasoning_start":
+            # 开始深度思考，创建思考区域
+            await self.chat.start_reasoning(content or "🤔 深度思考中...")
+        elif t == "reasoning":
+            # 思考内容增量
+            stripped = content
+            if stripped:
+                await self.chat.append_reasoning(stripped)
+        elif t == "reasoning_end":
+            # 思考结束
+            await self.chat.end_reasoning()
         elif t == "line":
             # 过程行（服务端 output_callback 原样透传）：工具调用提示 / 工具输出 / 前缀
             stripped = content.strip()
             if not stripped:
                 pass
-            elif stripped.startswith(("💬 助手", "💬 Assistant", "🤔 思考中", "🤔 Thinking")):
-                pass  # 助手前缀 / 思考提示：聊天区已有 AI 消息框，无需展示
+            elif stripped.startswith(("💬 助手", "💬 Assistant", "🤔 思考中", "🤔 Thinking", "🤔 深度思考中")):
+                pass  # 助手前缀 / 思考提示：聊天区已有对应区域，无需展示
             else:
                 # 🔧 调用工具 / 工具输出 / 🤔 分析工具结果 等 → 任务侧栏
                 self.tasks.write(stripped)
-        elif t == "reasoning":
-            # 思考流（服务端 debug_level>=3 才发送），记入任务侧栏
-            stripped = content.strip()
-            if stripped:
-                self.tasks.write(f"💭 {stripped[-200:]}")
         elif t == "complete":
             # complete 携带完整全文，用于对齐已显示内容
             await self.chat.finish_ai(content)

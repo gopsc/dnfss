@@ -1168,8 +1168,9 @@ class ConfigManager:
             "api": {
                 "deepseek_api_url": "https://api.deepseek.com/chat/completions",
                 "deepseek_model": "deepseek-v4-flash",
+                "reasoning_enabled": false,
                 "api_key_env": "DEEPSEEK_API_KEY",
-                "timeout": 30,
+                "timeout": 120,
                 "temperature": 0.7
             },
             "context": {
@@ -1356,7 +1357,11 @@ class Constants:
     
     @property
     def DEEPSEEK_MODEL(cls):
-        return cls._get_config().get("api.deepseek_model")
+        return cls._get_config().get("api.deepseek_model", "deepseek-v4-flash")
+    
+    @property
+    def REASONING_ENABLED(cls):
+        return cls._get_config().get("api.reasoning_enabled", False)
     
     @property
     def DEFAULT_TIMEOUT(cls):
@@ -7169,11 +7174,13 @@ class DeepSeekChat:
             "stream": True
         }
         
-        # 可选：添加 thinking 模式配置（如果有）
-        payload["thinking"] = {
-            "type": "enabled"
-        }
+        # 思考模式：启用 thinking 参数
+        if constants.REASONING_ENABLED:
+            payload["thinking"] = {
+                "type": "enabled"
+            }
         
+        # 工具调用（v4-flash 支持思考+工具调用）
         tools = self.tool_registry.get_tools_schemas()
         if tools:
             payload["tools"] = tools
@@ -7182,10 +7189,16 @@ class DeepSeekChat:
         current_time = datetime.now().strftime("%H:%M:%S")
         if output_callback:
             output_callback("line", f"\n{i18n.get('thinking', current_time)}\n")
-            output_callback("line", i18n.get('assistant_prefix'))
+            if constants.REASONING_ENABLED:
+                output_callback("reasoning_start", "🤔 思考中...")
+            else:
+                # 普通模式先显示助手前缀
+                output_callback("line", i18n.get('assistant_prefix'))
         
         full_response = ""
         full_reasoning = ""  # 存储思考内容
+        reasoning_started = False
+        reasoning_ended = False
         tool_calls_buffer = []
         current_tool_calls = {}
         
@@ -7236,9 +7249,24 @@ class DeepSeekChat:
                             if 'reasoning_content' in delta and delta['reasoning_content']:
                                 reasoning = delta['reasoning_content']
                                 full_reasoning += reasoning
-                                # 可选：将思考内容也发送给前端（可以单独处理）
-                                if output_callback and self.debug_level >= 3:
+                                
+                                # 发送思考开始信号（仅第一次，且未提前发送过）
+                                if not reasoning_started and output_callback:
+                                    if not constants.REASONING_ENABLED:
+                                        # 非显式思考模式但模型返回了思考内容，动态发送开始信号
+                                        output_callback("reasoning_start", "🤔 思考中...")
+                                    reasoning_started = True
+                                
+                                # 实时发送思考内容给前端（无需debug_level限制）
+                                if output_callback:
                                     output_callback("reasoning", reasoning)
+                            
+                            # 思考结束：当开始收到content且之前有reasoning时，发送结束信号
+                            if 'content' in delta and delta['content'] and reasoning_started and not reasoning_ended:
+                                reasoning_ended = True
+                                if output_callback:
+                                    output_callback("reasoning_end", "")
+                                    output_callback("line", i18n.get('assistant_prefix'))
                             
                             # 处理正常内容
                             if 'content' in delta and delta['content']:
@@ -7290,7 +7318,12 @@ class DeepSeekChat:
             # 处理工具调用
             if current_tool_calls:
                 tool_calls_buffer = list(current_tool_calls.values())
-                if output_callback:
+                
+                # 如果之前在思考，先结束思考状态
+                if reasoning_started and not reasoning_ended and output_callback:
+                    output_callback("reasoning_end", "")
+                    output_callback("line", i18n.get('calling_tools') + "\n")
+                elif output_callback:
                     output_callback("line", i18n.get('calling_tools') + "\n")
                 
                 # 【关键修复1】先添加助手消息，包含 tool_calls
@@ -7388,19 +7421,6 @@ class DeepSeekChat:
         except Exception as e:
             self.logger.error(f"消息回滚失败: {e}")
     
-    
-    def _add_assistant_message_with_reasoning(self, content: str, reasoning_content: str = None, tool_calls: List = None):
-        """添加助手消息，包含 reasoning_content"""
-        msg = {"role": "assistant"}
-        if content:
-            msg["content"] = content
-        if reasoning_content:
-            msg["reasoning_content"] = reasoning_content
-        if tool_calls:
-            msg["tool_calls"] = tool_calls
-            msg["content"] = None
-        self.messages.append(msg)
-
     def reset_conversation(self, reload_prompts: bool = True):
         """
         重置对话状态 - 清除所有对话记忆，可选择是否重新加载系统提示词

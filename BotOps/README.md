@@ -60,7 +60,9 @@ BotOps/
 - 发送：`{"type":"message","content":...}` / `{"type":"command","command":"/..."}` / `{"type":"interrupt",...}`
 - 接收：
   - `chunk`（**增量片段**）：服务端 `chunk_buffer` 发送后即清零，前端直接 `append_ai` 拼接，为内容权威来源
+  - `reasoning_start`（**思考开始**）：创建灰色斜体思考区域，实时展示 AI 思考过程
+  - `reasoning`（**思考流**）：思考内容增量片段，追加到思考区域（超长自动折叠显示最后 2000 字符）
+  - `reasoning_end`（**思考结束**）：思考结束，切换到正式回答
   - `complete`（**收尾信号**）：chunk 流式已完整渲染，complete 仅用于收尾；仅在完全丢帧（未收到任何 chunk）时用 full_text 补建消息，**不再做全文替换对齐**（避免服务端递归调用工具后 complete 只含最后一轮内容导致重复渲染）
-  - `line`（过程行）：🔧 工具调用提示、工具输出、💬 助手前缀，路由到任务侧栏；助手前缀/思考提示在聊天区已由 AI 消息框承载，不重复展示
-  - `reasoning`（思考流）：仅服务端 debug_level≥3 发送，记入任务侧栏
+  - `line`（过程行）：🔧 工具调用提示、工具输出，路由到任务侧栏；助手前缀/思考提示在聊天区已由对应区域承载，不重复展示
   - `dialogue_ended` / `dialogue_reset` / `task_added` / `task_process` / `task_status` / `task_error` / `interrupt_ack` / `error` / `info` / `command_result` / `connection_ack` / `notification` / `pong`
