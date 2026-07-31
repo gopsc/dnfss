@@ -1,4 +1,5 @@
 bash /opt/micro_servers/db/_run.sh
+bash /opt/micro_servers/confs/_run.sh
 bash /opt/micro_servers/ai_review/_run.sh
 bash /opt/micro_servers/dnfs/_run.sh
 bash /opt/micro_servers/smtp/_run.sh
