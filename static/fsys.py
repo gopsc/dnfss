@@ -12,6 +12,8 @@ import sys
 
 # pymsg 日志客户端（集中式日志 → dbv2 Logs 表）
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# 附加 ../pymsg 源码路径作为无 venv 时的开发兜底（生产由 venv 提供 pymsg）
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "pymsg"))
 from log_client import logs  # noqa: E402
 from security_middleware import apply_security_headers  # noqa: E402
 
@@ -41,6 +43,8 @@ app = Flask(__name__)
 apply_security_headers(app)
 
 # ==================== 配置文件加载 ====================
+# 加载顺序：内置默认值 → confs 统一配置服务（static.ini）；
+# confs 不可用时 fail-safe 回退本地 config.ini
 CONFIG_FILE = args.config
 if not os.path.isabs(CONFIG_FILE):
     CONFIG_FILE = os.path.join(BASE_DIR, CONFIG_FILE)
@@ -53,14 +57,41 @@ file_config = {
     'cors': {'allowed_origins': 'https://qsont.me,https://yhdet.top'},
 }
 
-if os.path.exists(CONFIG_FILE):
-    config_parser = configparser.ConfigParser()
-    config_parser.read(CONFIG_FILE, encoding='utf-8')
+
+def _merge_ini(text):
+    """把 ini 文本合并进 file_config（仅覆盖已知的 section/key）。"""
+    ini = configparser.ConfigParser()
+    ini.read_string(text)
     for section in ['server', 'directory', 'ssl', 'cors']:
-        if section in config_parser:
-            for key, value in config_parser[section].items():
+        if ini.has_section(section):
+            for key, value in ini[section].items():
                 if key in file_config[section]:
                     file_config[section][key] = value
+
+
+def _fetch_from_confs():
+    """从 confs 统一配置服务拉取 static.ini 全文，失败返回 None（fail-safe）。"""
+    try:
+        from pymsg import RpcClient
+        host = os.environ.get('CONFS_HOST', '127.0.0.1')
+        port = int(os.environ.get('CONFS_PORT', '8010'))
+        data = RpcClient(host, port, 'static', timeout=3).call(
+            'get', {'name': 'static.ini'})
+        return data.get('content')
+    except Exception:
+        return None
+
+
+_confs_text = _fetch_from_confs()
+if _confs_text is not None:
+    _merge_ini(_confs_text)
+    logger.info("配置来源: confs 统一配置服务 (static.ini)")
+    logs.info("static", "配置来源: confs 统一配置服务 (static.ini)")
+elif os.path.exists(CONFIG_FILE):
+    with open(CONFIG_FILE, encoding='utf-8') as f:
+        _merge_ini(f.read())
+    logger.warning(f"confs 不可用，回退本地配置文件 {CONFIG_FILE}")
+    logs.warning("static", f"confs 不可用，回退本地配置文件 {CONFIG_FILE}")
 
 # ==================== CORS（配置加载完成后初始化） ====================
 _cors_origins = [o.strip() for o in file_config['cors']['allowed_origins'].split(',') if o.strip()]
