@@ -53,6 +53,11 @@ using WebSocketConnectHandler = std::function<void(
 using WebSocketDisconnectHandler = std::function<void(
     const std::string& clientId)>;
 
+// WebSocket 代理：握手回调接收 HTTP upgrade 请求，返回目标 ws:// 或 wss:// URL
+// 返回空字符串表示拒绝（返回 403）
+using WsProxyHandshakeHandler = std::function<std::string(
+    const http::request<http::string_body>& upgradeReq)>;
+
 struct RouteEntry {
     std::string path;
     std::regex pattern;
@@ -63,6 +68,11 @@ struct RouteEntry {
 struct WsRouteEntry {
     std::string path;
     WebSocketMessageHandler handler;
+};
+
+struct WsProxyRouteEntry {
+    std::string path;
+    WsProxyHandshakeHandler handshake;
 };
 
 class HttpServer {
@@ -87,6 +97,7 @@ public:
 
     // WebSocket 接口
     void ws(const std::string& path, WebSocketMessageHandler handler);
+    void ws_proxy(const std::string& path, WsProxyHandshakeHandler handshake);
     void onWsConnect(WebSocketConnectHandler handler);
     void onWsDisconnect(WebSocketDisconnectHandler handler);
     bool sendToWsClient(const std::string& clientId, const std::string& message);
@@ -139,6 +150,7 @@ private:
 
     // WebSocket 路由和处理
     std::vector<WsRouteEntry> ws_handlers_;
+    std::vector<WsProxyRouteEntry> ws_proxy_handlers_;
     WebSocketConnectHandler ws_connect_handler_;
     WebSocketDisconnectHandler ws_disconnect_handler_;
     std::unordered_map<std::string, std::shared_ptr<Session>> ws_clients_;
@@ -155,6 +167,7 @@ private:
     HttpRequestHandler findRoute(const std::string& method, const std::string& path);
     bool routeExists(const std::string& method, const std::string& path);
     WebSocketMessageHandler findWsRoute(const std::string& path);
+    WsProxyHandshakeHandler findWsProxyRoute(const std::string& path);
 
     // WebSocket 客户端管理
     std::string generateWsClientId();

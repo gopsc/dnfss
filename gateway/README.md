@@ -7,7 +7,8 @@ UniServe Framework 的应用层网关，C++20 实现。
 ## 职责
 
 - **账号鉴权**：`/register` 注册（需邮箱验证码，经 pymsg 调 smtp:8008 校验）、`/login` 登录，签发 RSA 签名的 Token。
-- **反向代理**：携带 Token 的请求校验后转发到 `Proxy.opened` 中放开的内部服务。
+- **HTTP 反向代理**：携带 Token 的请求校验后转发到 `Proxy.opened` 中放开的内部服务。
+- **WebSocket 反向代理（仅管理员）**：`[WsProxy]` 段配置的路径在 HTTP Upgrade 握手时校验 Token（`is_admin=true`），通过后透明桥接到后端 ws:// 或 wss:// 服务，支持文本/二进制帧双向转发。
 - **CAPTCHA 接口**：`/captcha` 生成验证码 token + 文本（内存存储，5 分钟过期，一次性使用）。
 - **邮箱验证码**：`/register/send_code` 发送 6 位验证码邮件（10 分钟有效）；注册时校验，一次性消费。
 - **速率限制**：登录 5 次/5 分钟、注册 3 次/10 分钟、发验证码 5 次/10 分钟（IP 级）+ 3 次/小时/10 次/天（邮箱级），按 `X-Forwarded-For` 客户端 IP 计数（由 WAF 注入），超限一律返回 429。
@@ -124,6 +125,27 @@ Target-Url: http://127.0.0.1:9200   // 可选，缺省取 Proxy.default
 
 返回 CORS 预检响应：`Access-Control-Allow-Origin: *`、`Allow-Methods: GET, POST, OPTIONS`、`Max-Age: 86400`。
 
+### WebSocket 代理（`[WsProxy]` 配置的路径）
+
+握手阶段鉴权规则：
+
+1. 从 `Authorization: Bearer <token>` 头读取 Token；若缺失则回退到 `Cookie: q4_token=<token>`。
+2. RSA 验签 + 过期校验（与 HTTP 代理同样的 Token 机制）。
+3. Token payload 中必须 `is_admin=true`（即登录账号在 `Admin.users` 白名单内）。
+4. 鉴权失败 → 返回 HTTP 403 Forbidden，连接被拒绝。
+5. 鉴权通过 → 升级为 WebSocket 并透明桥接到配置的后端 ws:// 或 wss:// 地址，双向文本/二进制帧原样转发。
+
+客户端使用方式与普通 WebSocket 一致，只需携带有效管理员 Token：
+
+```javascript
+// 浏览器（同源会自动带 q4_token Cookie）
+const ws = new WebSocket("wss://qsont.me/ws/aibox");
+
+// 或显式带 Authorization（构造子协议或连接后首条消息均可，这里由网关在 Upgrade 头校验）
+```
+
+注意：WS 代理路由必须精确匹配（与 `ws()` 一致，非通配），且优先级高于 HTTP 通配 `*` 路由。
+
 ## 数据库
 
 用户数据存于 db 服务（pymsg/TCP :8005）的 SQLite 库，表 `Users`（由 [db/create_sqlite3.sql](../db/create_sqlite3.sql) 建立，gateway 不再自动建表）：
@@ -160,6 +182,11 @@ opened  = http://127.0.0.1:9200;http://127.0.0.1:8006;
 # Token 有效期（秒），默认 3600 = 1 小时
 keep_time = 3600
 
+[Admin]
+# 管理员白名单（分号分隔邮箱），登录命中时 Token payload 写入 is_admin=true
+# WebSocket 代理仅允许管理员访问，其他需管理员权限的下游同样凭此字段判断
+users = admin@example.com
+
 [CORS]
 # 允许跨域的 Origin 白名单（分号分隔）
 # 仅命中的 Origin 才会回填 Access-Control-Allow-Origin；缺省为空（不回填）
@@ -167,13 +194,22 @@ allowed_origins = https://qsont.me;https://www.qsont.me;http://127.0.0.1:8443;ht
 
 [Database]
 path = sqlite3.db
+
+[WsProxy]
+# WebSocket 反向代理路由（仅管理员）
+# 格式：/path=ws://host:port/target;/path2=wss://host2/target2
+# 支持 ws:// 和 wss:// 后端，握手阶段校验管理员 Token
+# routes = /ws/aibox=ws://127.0.0.1:8765;/ws/log=wss://example.com/log
+routes =
 ```
 
 - `Proxy.default`：未带 `Target-Url` header 时的默认转发地址（不需 Token，主要服务前端静态资源）。
 - `Proxy.opened`：允许外部带 Token 访问的内部服务白名单（分号分隔）。
 - `Proxy.closed`：仅记录用途，实际靠"不在 opened 中即拒绝"实现隔离。
 - `Token.keep_time`：登录签发 Token 的有效期（秒），缺省 3600。
+- `Admin.users`：管理员白名单（分号分隔邮箱），登录时命中即在 Token 中写入 `is_admin=true`。
 - `CORS.allowed_origins`：OPTIONS 预检允许跨域的 Origin 白名单（分号分隔），缺省为空（不回填 ACAO）。
+- `WsProxy.routes`：WebSocket 代理路由映射，格式 `/path=ws://host:port/target`，多个用分号分隔；留空则不开启 WS 代理。
 
 ## 部署模式
 
@@ -240,14 +276,15 @@ gateway/
 
 ## 版本
 
-`0.5.4`（见 [src/main.cpp:31](src/main.cpp#L31)）。启动时打印：
+`0.6.0`（见 [src/main.cpp:31](src/main.cpp#L31)）。启动时打印：
 
 ```
-Gateway 0.5.4 started
+Gateway 0.6.0 started
 ```
 
 近期变更：
 
+- `0.6.0`：WebSocket 反向代理（仅管理员）——新增 `[WsProxy]` 配置段，支持 `routes = /path=ws://host:port/target;...` 精确路径映射；握手阶段校验 Token 中 `is_admin=true`（基于 `Admin.users` 白名单），通过后双向透明桥接文本/二进制帧到后端，支持 `ws://` 和 `wss://`；后端连接错误/鉴权失败均优雅关闭。依赖 libhttp v3.1+ 的 `ws_proxy()` 接口。顺带修复 `LocalTime.hpp` 在 Apple clang 下 C++20 tzdb 不可用的编译问题（改用 `strftime`/`get_time`/`mktime`）。
 - `0.5.4`：修复邮件轰炸漏洞（审计报告 P0-1）——`/register/send_code` 强制 CAPTCHA 校验（经 captcha:8009，Token 一次性消费），新增邮箱级双窗口限流（3 次/小时 + 10 次/天）；smtp 层同步增加邮箱级长期限流兜底 + 全局熔断（`SMTP_HOURLY_LIMIT` 环境变量，默认 100 封/小时）；前端 `register.html`/`register.js` 同步接入图形验证码（复用 `/captcha/image` 代理路由，方案 A：仅在「获取验证码」时要求 CAPTCHA，注册提交不加）。
 - `0.5.3`：配合 smtp 同邮箱 60 秒发送冷却——`/register/send_code` 在 smtp 返回 `retry_after` 时按 429 透传其提示文案（其余发送失败仍用通用 500 文案，SMTP 内部错误细节不向外暴露）。
 - `0.5.2`：限流错误码统一为 429（登录原 400、注册/发码原 403，并修正 "attampts" 拼写）；登录时用户不存在不再兜底 500——空结果统一走 401，并执行 dummy PBKDF2 校验拉平时序防用户名枚举；db 查询失败消息由误名的 "Login (Update Step) Failed" 改为 "Login (Query Step) Failed"；pymsg 下游调用超时常量化（`DbC::DEFAULT_TIMEOUT`、`_TIMEOUT_CAPTCHA/_SMTP_VERIFY/_SMTP_SEND`）。

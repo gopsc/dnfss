@@ -28,7 +28,7 @@ using namespace qing;
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-constexpr const char *_VER = "0.5.4";
+constexpr const char *_VER = "0.6.0";
 
 //////////////////////////////////
 #include <sstream>
@@ -339,6 +339,10 @@ static int			_TOKEN_MAX_REFRESH = 10;	// Token 生命周期内最大刷新次数
 static std::vector<std::string>	_CORS_ORIGINS;			// CORS 允许的 Origin 白名单，可由 [CORS] allowed_origins 配置
 static std::vector<std::string>	_ADMIN_USERS;			// 管理员账号白名单，可由 [Admin] users 配置（分号分隔），登录时写入 Token payload 的 is_admin
 
+/* WebSocket 代理路由：path -> ws://backend-host:port/target
+ * 仅管理员用户可访问，握手阶段由 ws_proxy 回调验签 Token 中的 is_admin */
+static std::unordered_map<std::string, std::string> _WS_PROXY_ROUTES;
+
 /* instance items */
 static std::unique_ptr<HttpServer>		_SERVE;
 static std::unique_ptr<MyRSA::Generator>	_KEYGEN;
@@ -520,6 +524,31 @@ int main(int argc, char **argv) {
 		_TOKEN_MAX_REFRESH = cf.get<int>("Token.max_refresh", 10);
 		_CORS_ORIGINS = split(cf.get<std::string>("CORS.allowed_origins", ""), ';');
 		_ADMIN_USERS = split(cf.get<std::string>("Admin.users", ""), ';');
+
+		/* [WsProxy] WebSocket 代理路由：格式 /path=ws://host:port/target;...
+		 * 仅管理员（Token 中 is_admin=true）可访问，用于 aibox 等内部 WS 服务的网关暴露 */
+		{
+			std::string ws_cfg = cf.get<std::string>("WsProxy.routes", "");
+			if (!ws_cfg.empty()) {
+				auto entries = split(ws_cfg, ';');
+				for (auto& entry : entries) {
+					auto eq = entry.find('=');
+					if (eq != std::string::npos) {
+						std::string path = entry.substr(0, eq);
+						std::string url  = entry.substr(eq + 1);
+						// 去除首尾空白
+						auto trim = [](std::string& s) {
+							while (!s.empty() && std::isspace((unsigned char)s.front())) s.erase(s.begin());
+							while (!s.empty() && std::isspace((unsigned char)s.back())) s.pop_back();
+						};
+						trim(path); trim(url);
+						if (!path.empty() && !url.empty()) {
+							_WS_PROXY_ROUTES[path] = url;
+						}
+					}
+				}
+			}
+		}
 		}
 
 
@@ -611,6 +640,81 @@ int main(int argc, char **argv) {
 //}
 
 
+/* WebSocket 代理握手鉴权：从 HTTP Upgrade 请求中提取 Token 并验证 is_admin。
+ * 返回 true 表示鉴权通过，out_target 填入后端 ws:// URL；返回 false 拒绝连接。 */
+static bool verifyWsAdminToken(const http::request<http::string_body>& req,
+                                const std::string& target_url,
+                                std::string& out_target) {
+	out_target.clear();
+	try {
+		std::string raw;
+		auto it = req.base().find(http::field::authorization);
+		if (it != req.base().end()) {
+			raw = std::string(it->value());
+		} else {
+			auto cit = req.base().find(http::field::cookie);
+			if (cit != req.base().end()) {
+				std::string cookie_token = get_cookie_value(std::string(cit->value()), "q4_token");
+				if (!cookie_token.empty())
+					raw = "Bearer " + cookie_token;
+			}
+		}
+		if (raw.empty() || raw.substr(0, 7) != "Bearer ")
+			return false;
+
+		raw = raw.substr(7);
+		size_t idx = raw.find("_");
+		if (idx == std::string::npos) return false;
+
+		std::string data = raw.substr(0, idx);
+		std::string sign = raw.substr(idx + 1);
+		std::string auth = Base64::base64_decode_to_string(data);
+
+		auto publ = MyRSA::Public_Key::from_pem(_KEYGEN->get_public_key_pem());
+		if (!publ.Verify(auth, sign)) return false;
+
+		json::value jv_t;
+		try { jv_t = json::parse(auth); }
+		catch (...) { return false; }
+		if (!jv_t.is_object()) return false;
+		json::object& obj = jv_t.as_object();
+
+		auto t = json::value_to<std::string>(obj["created_at"]);
+		auto keep_time_val = json::value_to<int>(obj["keep_time"]);
+		auto created_tp = LocalTime::parse(t);
+		if (created_tp) {
+			auto now = std::chrono::system_clock::now();
+			auto expire_tp = *created_tp + std::chrono::seconds(keep_time_val);
+			if (now > expire_tp) return false;
+		}
+
+		// 必须是管理员
+		bool is_admin = false;
+		if (obj.contains("is_admin")) {
+			auto& v = obj["is_admin"];
+			if (v.is_bool()) is_admin = v.as_bool();
+		}
+		if (!is_admin) {
+			logs().warning("gateway", "WS proxy rejected: non-admin user",
+				std::nullopt, std::string(req.target()));
+			return false;
+		}
+
+		out_target = target_url;
+		// 将客户端请求路径附加到目标URL后（支持子路径）
+		std::string req_path = std::string(req.target());
+		auto qpos = req_path.find('?');
+		if (qpos != std::string::npos) req_path = req_path.substr(0, qpos);
+		// 不追加路径：代理直接使用配置中指定的完整目标URL
+		(void)req_path;
+		return true;
+	}
+	catch (const std::exception& e) {
+		std::cerr << "[WS proxy auth error] " << e.what() << std::endl;
+		return false;
+	}
+}
+
 /* 注册http路由 */
 void registerRoutes(HttpServer &server) {
 
@@ -665,6 +769,20 @@ void registerRoutes(HttpServer &server) {
 		return wrapperHttp(req, params,
 			[](const auto& req, const auto& params) { return handleProxy(req, params, "post"); });
 	});
+
+	/* WebSocket 反向代理（仅管理员）：
+	 * ws_proxy 回调在 HTTP Upgrade 握手阶段触发，
+	 * 返回非空 ws:// URL 表示鉴权通过并桥接到该后端；返回空串则拒绝连接。 */
+	for (const auto& [path, url] : _WS_PROXY_ROUTES) {
+		server.ws_proxy(path, [url](const http::request<http::string_body>& upgradeReq) -> std::string {
+			std::string target;
+			if (verifyWsAdminToken(upgradeReq, url, target)) {
+				return target;
+			}
+			return "";
+		});
+		std::cout << "  WS-PROXY " << path << " -> " << url << " (admin only)" << std::endl;
+	}
 
 }
 

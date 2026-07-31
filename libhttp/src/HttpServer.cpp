@@ -35,14 +35,18 @@ class HttpServer::Session : public std::enable_shared_from_this<Session> {
     using ws_stream = websocket::stream<tcp_stream&>;
     using wss_stream = websocket::stream<ssl_stream&>;
 
+    // Proxy outbound types
+    using proxy_ws_stream = websocket::stream<tcp::socket&>;
+    using proxy_wss_stream = websocket::stream<asio::ssl::stream<tcp::socket&>&>;
+
 public:
     Session(tcp::socket&& socket, HttpServer* server)
         : stream_(std::move(socket)), server_(server), ssl_enabled_(false),
-          is_websocket_(false), client_id_("") {}
+          is_websocket_(false), is_ws_proxy_(false), client_id_("") {}
 
     Session(tcp::socket&& socket, asio::ssl::context& ssl_ctx, HttpServer* server)
         : stream_(std::move(socket)), server_(server), ssl_enabled_(true),
-          is_websocket_(false), client_id_("") {
+          is_websocket_(false), is_ws_proxy_(false), client_id_("") {
         ssl_stream_ = std::make_unique<ssl_stream>(stream_, ssl_ctx);
     }
 
@@ -78,6 +82,7 @@ public:
 private:
     void close() {
         beast::error_code ec;
+        closeProxy(websocket::close_code::going_away);
         if (is_websocket_) {
             if (ssl_enabled_ && wss_stream_) {
                 wss_stream_->close(websocket::close_code::normal, ec);
@@ -138,6 +143,33 @@ private:
                 std::string path = std::string(request_.target());
                 auto qpos = path.find('?');
                 if (qpos != std::string::npos) path = path.substr(0, qpos);
+
+                // Check proxy routes first (higher priority)
+                auto proxy_handshake = server_->findWsProxyRoute(path);
+                if (proxy_handshake) {
+                    std::string target = proxy_handshake(request_);
+                    if (target.empty()) {
+                        // Rejected by handshake callback → 403
+                        auto resp = std::make_shared<http::response<http::string_body>>();
+                        resp->version(request_.version());
+                        resp->result(http::status::forbidden);
+                        resp->set(http::field::content_type, "text/plain");
+                        resp->set(http::field::connection, "close");
+                        resp->body() = "403 Forbidden\n";
+                        resp->prepare_payload();
+                        doWrite(resp);
+                        return;
+                    }
+                    ws_path_ = path;
+                    is_ws_proxy_ = true;
+                    ws_proxy_target_ = target;
+                    if (ssl_enabled_) {
+                        doWssUpgrade();
+                    } else {
+                        doWsUpgrade();
+                    }
+                    return;
+                }
 
                 auto ws_handler = server_->findWsRoute(path);
                 if (ws_handler) {
@@ -217,12 +249,20 @@ private:
         std::cout << "[WS] Client " << client_id_ << " connected from "
                   << remote_ip_ << ":" << remote_port_ << " at " << ws_path_ << std::endl;
 
+        if (is_ws_proxy_) {
+            std::cout << "[WS-Proxy] Proxying " << ws_path_ << " -> " << ws_proxy_target_ << std::endl;
+            doProxyConnect(ws_proxy_target_);
+            return;
+        }
+
         if (server_->ws_connect_handler_) {
             server_->ws_connect_handler_(client_id_, getRemoteAddress());
         }
 
         doWsRead();
     }
+
+    // ======== Regular WebSocket message handling ========
 
     void doWsRead() {
         auto self = shared_from_this();
@@ -299,6 +339,7 @@ private:
         if (client_id_.empty()) return;
         std::cout << "[WS] Client " << client_id_ << " disconnected" << std::endl;
 
+        closeProxy(websocket::close_code::normal);
         server_->removeWsClient(client_id_);
 
         if (server_->ws_disconnect_handler_) {
@@ -306,7 +347,360 @@ private:
         }
         client_id_.clear();
         is_websocket_ = false;
+        is_ws_proxy_ = false;
     }
+
+    // ======== WebSocket Proxy (bidirectional bridge) ========
+
+    static void parseProxyUrl(const std::string& url, bool& ssl, std::string& host,
+                               std::string& port, std::string& path) {
+        std::string rest;
+        if (url.size() >= 6 && url.substr(0, 6) == "wss://") {
+            ssl = true;
+            rest = url.substr(6);
+        } else if (url.size() >= 5 && url.substr(0, 5) == "ws://") {
+            ssl = false;
+            rest = url.substr(5);
+        } else {
+            ssl = false;
+            rest = url;
+        }
+
+        size_t path_pos = rest.find('/');
+        std::string host_port;
+        if (path_pos != std::string::npos) {
+            host_port = rest.substr(0, path_pos);
+            path = rest.substr(path_pos);
+        } else {
+            host_port = rest;
+            path = "/";
+        }
+
+        size_t port_pos = host_port.find(':');
+        if (port_pos != std::string::npos) {
+            host = host_port.substr(0, port_pos);
+            port = host_port.substr(port_pos + 1);
+        } else {
+            host = host_port;
+            port = ssl ? "443" : "80";
+        }
+    }
+
+    void doProxyConnect(const std::string& target_url) {
+        auto self = shared_from_this();
+        bool ssl;
+        std::string host, port, path;
+        parseProxyUrl(target_url, ssl, host, port, path);
+        proxy_ssl_ = ssl;
+        proxy_host_ = host;
+        proxy_port_ = port;
+        proxy_path_ = path;
+
+        auto exec = stream_.get_executor();
+        proxy_resolver_ = std::make_unique<tcp::resolver>(asio::make_strand(exec));
+
+        proxy_resolver_->async_resolve(host, port,
+            asio::bind_executor(exec,
+                [self](beast::error_code ec, tcp::resolver::results_type results) {
+                    self->onProxyResolve(ec, results);
+                }));
+    }
+
+    void onProxyResolve(beast::error_code ec, tcp::resolver::results_type results) {
+        if (ec) {
+            std::cerr << "[WS-Proxy] Resolve error: " << ec.message() << std::endl;
+            close();
+            return;
+        }
+
+        auto self = shared_from_this();
+        auto exec = stream_.get_executor();
+
+        proxy_socket_ = std::make_unique<tcp::socket>(exec);
+        proxy_tcp_stream_ = std::make_unique<beast::tcp_stream>(std::move(*proxy_socket_));
+        proxy_socket_.reset();
+
+        proxy_tcp_stream_->expires_after(std::chrono::seconds(10));
+        asio::async_connect(proxy_tcp_stream_->socket(), results,
+            asio::bind_executor(exec,
+                [self](beast::error_code ec, tcp::endpoint ep) {
+                    self->onProxyConnect(ec, ep);
+                }));
+    }
+
+    void onProxyConnect(beast::error_code ec, tcp::endpoint /*ep*/) {
+        if (ec) {
+            std::cerr << "[WS-Proxy] Connect error: " << ec.message() << std::endl;
+            close();
+            return;
+        }
+
+        auto self = shared_from_this();
+        if (proxy_ssl_) {
+            proxy_ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::tlsv12_client);
+            proxy_ssl_ctx_->set_verify_mode(asio::ssl::verify_none);
+            proxy_ssl_stream_ = std::make_unique<asio::ssl::stream<tcp::socket&>>(
+                proxy_tcp_stream_->socket(), *proxy_ssl_ctx_);
+
+            if (!SSL_set_tlsext_host_name(proxy_ssl_stream_->native_handle(), proxy_host_.c_str())) {
+                std::cerr << "[WS-Proxy] Failed to set SNI" << std::endl;
+                close();
+                return;
+            }
+
+            proxy_tcp_stream_->expires_after(std::chrono::seconds(10));
+            auto exec = stream_.get_executor();
+            proxy_ssl_stream_->async_handshake(asio::ssl::stream_base::client,
+                asio::bind_executor(exec,
+                    [self](beast::error_code ec) {
+                        self->onProxySslHandshake(ec);
+                    }));
+        } else {
+            proxy_ws_stream_ = std::make_unique<proxy_ws_stream>(proxy_tcp_stream_->socket());
+            proxy_tcp_stream_->expires_never();
+
+            proxy_ws_stream_->set_option(websocket::stream_base::decorator(
+                [](websocket::request_type& req) {
+                    req.set(http::field::user_agent, "UniServe-WsProxy");
+                }));
+
+            auto exec = self->stream_.get_executor();
+            proxy_ws_stream_->async_handshake(proxy_host_, proxy_path_,
+                asio::bind_executor(exec,
+                    [self](beast::error_code ec) {
+                        self->onProxyHandshake(ec);
+                    }));
+        }
+    }
+
+    void onProxySslHandshake(beast::error_code ec) {
+        if (ec) {
+            std::cerr << "[WS-Proxy] SSL handshake error: " << ec.message() << std::endl;
+            close();
+            return;
+        }
+
+        auto self = shared_from_this();
+        proxy_wss_stream_ = std::make_unique<proxy_wss_stream>(*proxy_ssl_stream_);
+        proxy_tcp_stream_->expires_never();
+
+        proxy_wss_stream_->set_option(websocket::stream_base::decorator(
+            [](websocket::request_type& req) {
+                req.set(http::field::user_agent, "UniServe-WsProxy");
+            }));
+
+        auto exec = stream_.get_executor();
+        proxy_wss_stream_->async_handshake(proxy_host_, proxy_path_,
+            asio::bind_executor(exec,
+                [self](beast::error_code ec) {
+                    self->onProxyHandshake(ec);
+                }));
+    }
+
+    void onProxyHandshake(beast::error_code ec) {
+        if (ec) {
+            std::cerr << "[WS-Proxy] Backend handshake error: " << ec.message() << std::endl;
+            close();
+            return;
+        }
+
+        proxy_connected_ = true;
+        proxy_closed_ = false;
+        std::cout << "[WS-Proxy] Connected to backend " << proxy_host_ << ":" << proxy_port_
+                  << proxy_path_ << std::endl;
+
+        if (server_->ws_connect_handler_) {
+            server_->ws_connect_handler_(client_id_, getRemoteAddress());
+        }
+
+        // Start bidirectional bridging
+        doProxyReadClient();
+        doProxyReadBackend();
+    }
+
+    // ---- Client → Backend direction ----
+
+    void doProxyReadClient() {
+        if (proxy_closed_) return;
+        auto self = shared_from_this();
+        proxy_client_buffer_.consume(proxy_client_buffer_.size());
+
+        auto read_handler = [self](beast::error_code ec, std::size_t bytes_transferred) {
+            self->onProxyReadClient(ec, bytes_transferred);
+        };
+
+        if (ssl_enabled_ && wss_stream_) {
+            wss_stream_->async_read(proxy_client_buffer_, read_handler);
+        } else if (ws_stream_) {
+            ws_stream_->async_read(proxy_client_buffer_, read_handler);
+        }
+    }
+
+    void onProxyReadClient(beast::error_code ec, std::size_t bytes_transferred) {
+        if (ec) {
+            if (ec != websocket::error::closed) {
+                std::cerr << "[WS-Proxy] Client read error: " << ec.message() << std::endl;
+            }
+            closeProxy(websocket::close_code::normal);
+            return;
+        }
+
+        bool is_binary = false;
+        if (ssl_enabled_ && wss_stream_) {
+            is_binary = wss_stream_->got_binary();
+        } else if (ws_stream_) {
+            is_binary = ws_stream_->got_binary();
+        }
+
+        std::string data = beast::buffers_to_string(proxy_client_buffer_.data());
+        proxy_client_buffer_.consume(bytes_transferred);
+
+        // Queue to backend
+        auto exec = stream_.get_executor();
+        asio::post(exec, [self = shared_from_this(), data = std::move(data), is_binary]() {
+            self->proxy_to_backend_queue_.emplace_back(std::move(data), is_binary);
+            if (self->proxy_to_backend_queue_.size() == 1) {
+                self->doProxyWriteBackend();
+            }
+        });
+
+        doProxyReadClient();
+    }
+
+    void doProxyWriteBackend() {
+        if (proxy_to_backend_queue_.empty() || !proxy_connected_ || proxy_closed_) return;
+
+        auto self = shared_from_this();
+        auto& [msg, is_binary] = proxy_to_backend_queue_.front();
+
+        auto write_handler = [self](beast::error_code ec, std::size_t) {
+            if (ec) {
+                std::cerr << "[WS-Proxy] Backend write error: " << ec.message() << std::endl;
+                self->closeProxy(websocket::close_code::internal_error);
+                return;
+            }
+            self->proxy_to_backend_queue_.pop_front();
+            if (!self->proxy_to_backend_queue_.empty()) {
+                self->doProxyWriteBackend();
+            }
+        };
+
+        if (proxy_ssl_ && proxy_wss_stream_) {
+            proxy_wss_stream_->binary(is_binary);
+            proxy_wss_stream_->async_write(asio::buffer(msg), write_handler);
+        } else if (proxy_ws_stream_) {
+            proxy_ws_stream_->binary(is_binary);
+            proxy_ws_stream_->async_write(asio::buffer(msg), write_handler);
+        }
+    }
+
+    // ---- Backend → Client direction ----
+
+    void doProxyReadBackend() {
+        if (proxy_closed_) return;
+        auto self = shared_from_this();
+        proxy_backend_buffer_.consume(proxy_backend_buffer_.size());
+
+        auto read_handler = [self](beast::error_code ec, std::size_t bytes_transferred) {
+            self->onProxyReadBackend(ec, bytes_transferred);
+        };
+
+        if (proxy_ssl_ && proxy_wss_stream_) {
+            proxy_wss_stream_->async_read(proxy_backend_buffer_, read_handler);
+        } else if (proxy_ws_stream_) {
+            proxy_ws_stream_->async_read(proxy_backend_buffer_, read_handler);
+        }
+    }
+
+    void onProxyReadBackend(beast::error_code ec, std::size_t bytes_transferred) {
+        if (ec) {
+            if (ec != websocket::error::closed) {
+                std::cerr << "[WS-Proxy] Backend read error: " << ec.message() << std::endl;
+            }
+            closeProxy(websocket::close_code::normal);
+            return;
+        }
+
+        bool is_binary = false;
+        if (proxy_ssl_ && proxy_wss_stream_) {
+            is_binary = proxy_wss_stream_->got_binary();
+        } else if (proxy_ws_stream_) {
+            is_binary = proxy_ws_stream_->got_binary();
+        }
+
+        std::string data = beast::buffers_to_string(proxy_backend_buffer_.data());
+        proxy_backend_buffer_.consume(bytes_transferred);
+
+        // Queue to client
+        auto exec = stream_.get_executor();
+        asio::post(exec, [self = shared_from_this(), data = std::move(data), is_binary]() {
+            self->proxy_to_client_queue_.emplace_back(std::move(data), is_binary);
+            if (self->proxy_to_client_queue_.size() == 1) {
+                self->doProxyWriteClient();
+            }
+        });
+
+        doProxyReadBackend();
+    }
+
+    void doProxyWriteClient() {
+        if (proxy_to_client_queue_.empty() || !proxy_connected_ || proxy_closed_) return;
+
+        auto self = shared_from_this();
+        auto& [msg, is_binary] = proxy_to_client_queue_.front();
+
+        auto write_handler = [self](beast::error_code ec, std::size_t) {
+            if (ec) {
+                std::cerr << "[WS-Proxy] Client write error: " << ec.message() << std::endl;
+                self->closeProxy(websocket::close_code::internal_error);
+                return;
+            }
+            self->proxy_to_client_queue_.pop_front();
+            if (!self->proxy_to_client_queue_.empty()) {
+                self->doProxyWriteClient();
+            }
+        };
+
+        if (ssl_enabled_ && wss_stream_) {
+            wss_stream_->binary(is_binary);
+            wss_stream_->async_write(asio::buffer(msg), write_handler);
+        } else if (ws_stream_) {
+            ws_stream_->binary(is_binary);
+            ws_stream_->async_write(asio::buffer(msg), write_handler);
+        }
+    }
+
+    void closeProxy(websocket::close_code code) {
+        if (proxy_closed_) return;
+        proxy_closed_ = true;
+        proxy_connected_ = false;
+
+        beast::error_code ec;
+        // Close backend connection
+        if (proxy_ssl_ && proxy_wss_stream_) {
+            proxy_wss_stream_->close(code, ec);
+        } else if (proxy_ws_stream_) {
+            proxy_ws_stream_->close(code, ec);
+        }
+        if (proxy_ssl_stream_) {
+            proxy_ssl_stream_->shutdown(ec);
+        }
+        if (proxy_tcp_stream_) {
+            proxy_tcp_stream_->socket().shutdown(tcp::socket::shutdown_send, ec);
+            proxy_tcp_stream_->close();
+        }
+
+        proxy_to_backend_queue_.clear();
+        proxy_to_client_queue_.clear();
+        proxy_ws_stream_.reset();
+        proxy_wss_stream_.reset();
+        proxy_ssl_stream_.reset();
+        proxy_ssl_ctx_.reset();
+        proxy_tcp_stream_.reset();
+        proxy_resolver_.reset();
+    }
+
+    // ======== Regular HTTP ========
 
     void processRequest(http::request<http::string_body> req) {
         try {
@@ -352,6 +746,7 @@ private:
         }
     }
 
+    // ---- Client stream (inbound) ----
     tcp_stream stream_;
     std::unique_ptr<ssl_stream> ssl_stream_;
     std::unique_ptr<ws_stream>  ws_stream_;
@@ -368,10 +763,31 @@ private:
     unsigned short remote_port_ = 0;
 
     bool is_websocket_;
+    bool is_ws_proxy_;
     std::string client_id_;
     std::string ws_path_;
     WebSocketMessageHandler ws_handler_;
     std::deque<std::string> ws_send_queue_;
+
+    // ---- Proxy state (outbound to backend) ----
+    std::string ws_proxy_target_;
+    bool proxy_ssl_ = false;
+    bool proxy_connected_ = false;
+    bool proxy_closed_ = false;
+    std::string proxy_host_, proxy_port_, proxy_path_;
+
+    std::unique_ptr<tcp::resolver> proxy_resolver_;
+    std::unique_ptr<tcp::socket> proxy_socket_;
+    std::unique_ptr<beast::tcp_stream> proxy_tcp_stream_;
+    std::unique_ptr<asio::ssl::context> proxy_ssl_ctx_;
+    std::unique_ptr<asio::ssl::stream<tcp::socket&>> proxy_ssl_stream_;
+    std::unique_ptr<proxy_ws_stream>  proxy_ws_stream_;
+    std::unique_ptr<proxy_wss_stream> proxy_wss_stream_;
+
+    beast::flat_buffer proxy_client_buffer_;
+    beast::flat_buffer proxy_backend_buffer_;
+    std::deque<std::pair<std::string, bool>> proxy_to_backend_queue_;
+    std::deque<std::pair<std::string, bool>> proxy_to_client_queue_;
 };
 
 // ===================== Listener =====================
@@ -624,6 +1040,13 @@ void HttpServer::ws(const std::string& path, WebSocketMessageHandler handler) {
     ws_handlers_.push_back(entry);
 }
 
+void HttpServer::ws_proxy(const std::string& path, WsProxyHandshakeHandler handshake) {
+    WsProxyRouteEntry entry;
+    entry.path = path;
+    entry.handshake = handshake;
+    ws_proxy_handlers_.push_back(entry);
+}
+
 void HttpServer::onWsConnect(WebSocketConnectHandler handler) {
     ws_connect_handler_ = handler;
 }
@@ -734,6 +1157,13 @@ bool HttpServer::routeExists(const std::string& method, const std::string& path)
 WebSocketMessageHandler HttpServer::findWsRoute(const std::string& path) {
     for (const auto& e : ws_handlers_) {
         if (e.path == path) return e.handler;
+    }
+    return nullptr;
+}
+
+WsProxyHandshakeHandler HttpServer::findWsProxyRoute(const std::string& path) {
+    for (const auto& e : ws_proxy_handlers_) {
+        if (e.path == path) return e.handshake;
     }
     return nullptr;
 }
@@ -924,6 +1354,9 @@ void HttpServer::showStatus() const {
     std::cout << "  WebSocket: " << ws_handlers_.size() << " route(s)" << std::endl;
     for (const auto& entry : ws_handlers_)
         std::cout << "    WS " << entry.path << std::endl;
+    std::cout << "  WebSocket-Proxy: " << ws_proxy_handlers_.size() << " route(s)" << std::endl;
+    for (const auto& entry : ws_proxy_handlers_)
+        std::cout << "    WS-PROXY " << entry.path << std::endl;
     std::cout << "  WebSocket clients: " << getWsClientCount() << std::endl;
     std::cout << "Middlewares: " << middlewares_.size() << std::endl;
     std::cout << "==========================" << std::endl;

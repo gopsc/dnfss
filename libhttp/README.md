@@ -7,6 +7,7 @@ C++20 network library for the UniServe microservice framework, providing unified
 ### HttpServer
 - **HTTP/HTTPS Server**: Asynchronous HTTP 1.1 server with TLS support
 - **WebSocket Integration**: Single port can serve both HTTP(S) and WebSocket(S) endpoints
+- **WebSocket Reverse Proxy**: Transparent bidirectional WebSocket proxy with handshake-time auth/callback (supports ws:// and wss:// backends)
 - **Routing**: Exact path matching + wildcard (`*`) routing
 - **Middleware**: `use()` for middleware chains (CORS, auth, logging, etc.)
 - **Static Files**: `setStaticDirectory()` for serving static files
@@ -151,6 +152,28 @@ void disconnectWsClient(const std::string& clientId);
 size_t getWsClientCount() const;
 ```
 
+**WebSocket Reverse Proxy**
+```cpp
+void ws_proxy(const std::string& path, WsProxyHandshakeHandler handshake);
+```
+
+The `WsProxyHandshakeHandler` is called during the HTTP Upgrade handshake. It receives the upgrade request and must return the backend WebSocket URL (`ws://host:port/path` or `wss://host:port/path`) to bridge to. Returning an empty string rejects the connection (HTTP 403 is sent to the client). Proxy routes take priority over regular `ws()` routes on the same path.
+
+Example — admin-only proxy:
+```cpp
+server.ws_proxy("/ws/admin", [](const http::request<http::string_body>& req) -> std::string {
+    if (!isAdmin(req)) return "";           // reject non-admins
+    return "ws://127.0.0.1:9000/stream";    // bridge to backend
+});
+```
+
+Features:
+- Full-duplex async bridging (text and binary frames preserved)
+- Write queues in both directions to maintain message ordering
+- Automatic SNI for wss:// backends
+- Graceful close propagation between client and backend
+- Errors during backend connect/handshake close the client connection cleanly
+
 **Lifecycle**
 ```cpp
 void start();          // non-blocking, spawns worker threads
@@ -214,6 +237,9 @@ using WebSocketConnectHandler = std::function<void(
 
 using WebSocketDisconnectHandler = std::function<void(
     const std::string& clientId)>;
+
+using WsProxyHandshakeHandler = std::function<std::string(
+    const http::request<http::string_body>& upgradeReq)>;
 ```
 
 ## Backward Compatibility
@@ -227,5 +253,6 @@ using WebSocketClientBase = HttpClient;
 
 ## Version History
 
+- **v3.1.0**: Added WebSocket reverse proxy (`ws_proxy()`) with bidirectional async bridging, ws:// and wss:// backend support, handshake-time authorization callback.
 - **v3.0.0**: Merged WebSocketServer into HttpServer and WebSocketClient into HttpClient. Single-port HTTP+WebSocket support.
 - **v2.x**: Separate HttpServer, WebSocketServer, and HttpClient modules.
