@@ -147,9 +147,9 @@ class BotOpsApp(App):
             await self.notify_system("未连接到服务器，先 /connect", level="error")
             return
         await self.chat.add_user(text)
-        await self.chat.start_ai()          # 预建 AI 消息框，即时反馈
+        await self.chat.start_ai()          # 标记AI回复开始状态（不预创建空widget）
         if not await self.ws.send_message(text):
-            await self.chat.finish_ai("")   # 发送失败：移除预建的空消息框
+            await self.chat.finish_ai("")   # 发送失败：重置AI状态
             await self.notify_system("❌ 发送失败：连接已断开，请 /connect 重连", level="error")
 
     # ── 快捷键 ────────────────────────────────────────────────────────────

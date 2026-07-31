@@ -63,20 +63,22 @@ BotOps/
   - `reasoning_start`（**思考开始**）：创建灰色斜体思考区域，实时展示 AI 思考过程
   - `reasoning`（**思考流**）：思考内容增量片段，追加到思考区域（超长自动折叠显示最后 3000 字符）
   - `reasoning_end`（**思考结束**）：思考结束，切换到正式回答
-  - **顺序保证**：通过动态重排 widget，思考区域始终显示在 AI 正式回答**之前**
-  - `complete`（**收尾信号**）：chunk 流式已完整渲染，complete 仅用于收尾；仅在完全丢帧（未收到任何 chunk）时用 full_text 补建消息，**不再做全文替换对齐**（避免服务端递归调用工具后 complete 只含最后一轮内容导致重复渲染）
+  - **顺序保证**：不预创建空 AI widget，按消息到达顺序自然挂载（`reasoning_start`→`reasoning`→`chunk`），思考区域必然在 AI 正式回答**之前**
+  - `complete`（**收尾信号**）：chunk 流式已完整渲染，complete 仅用于收尾（重置状态）
   - `line`（过程行）：🔧 工具调用提示、工具输出，路由到任务侧栏；助手前缀/思考提示在聊天区已由对应区域承载，不重复展示
   - `info`（系统信息）：过滤"Conversation started"/"对话开始"等隐式通知，避免污染聊天流
   - `dialogue_ended` / `dialogue_reset` / `task_added` / `task_process` / `task_status` / `task_error` / `interrupt_ack` / `error` / `command_result` / `connection_ack` / `notification` / `pong`
 
 ## 更新日志
 
+### v1.2
+- ✅ **彻底修复思考区域顺序问题**：移除预创建空 AI widget 的逻辑，改为第一次收到 `chunk` 时才创建 widget。按消息到达顺序自然挂载（`reasoning_start`→`reasoning`→`chunk`），从根本上保证思考区域始终在正式回答之前
+- ✅ 简化 `complete` 处理逻辑：仅作为收尾重置状态信号，不再进行补建逻辑
+
 ### v1.1
 - ✅ 支持 DeepSeek 思考模式展示：新增 `reasoning_start`/`reasoning`/`reasoning_end` 消息处理，思考内容以灰色斜体区域展示
-- ✅ **修复思考区域顺序问题**：通过 widget 动态重排，保证思考过程始终显示在 AI 正式回答之前（而非之后）
 - ✅ 超长思考内容自动折叠（显示最后 3000 字符）
 - ✅ 过滤"Conversation started"/"对话开始"等隐式系统通知，避免在回答末尾显示无用信息
-- ✅ 即使服务端未显式启用思考模式，若模型返回 reasoning_content 也能自动展示思考过程
 
 ### v1.0
 - 初始版本：Markdown 增量流式渲染、任务独立侧栏、自动重连、快捷键支持
