@@ -28,7 +28,7 @@ using namespace qing;
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-constexpr const char *_VER = "0.5.3";
+constexpr const char *_VER = "0.5.4";
 
 //////////////////////////////////
 #include <sstream>
@@ -345,8 +345,13 @@ static std::unique_ptr<MyRSA::Generator>	_KEYGEN;
 //static std::unique_ptr<Sqlite3>			_SQLDB;
 static RateLimiter				_LOGIN_RATE;
 static RateLimiter				_REGISTER_RATE;
-static RateLimiter				_EMAIL_CODE_RATE;	// 发送邮箱验证码限流
+static RateLimiter				_EMAIL_CODE_RATE;	// 发送邮箱验证码 IP 级限流
 static RateLimiter				_REFRESH_TOKEN_RATE;	// Token 刷新限流
+// 邮箱级双窗口限流:同一邮箱在 gateway 层的发送配额。
+// 配合 IP 限流(IP 可被代理池绕过)与 smtp 同邮箱 60s 冷却(仅防短期重复)。
+// 双窗口设计:小时窗限制短期轰炸,天窗限制长期骚扰。
+static RateLimiter				_EMAIL_ADDR_RATE_HOUR;	// 3 次/小时/邮箱
+static RateLimiter				_EMAIL_ADDR_RATE_DAY;	// 10 次/天/邮箱
 
 /* pymsg 下游调用超时（秒）：
  * captcha / smtp verify_email 均为本机内存操作，5s 足够；
@@ -1420,6 +1425,28 @@ http::response<http::string_body> handleSendEmailCode(
 	std::regex email_regex(R"(^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$)");
 	if (!std::regex_match(email, email_regex))
 		THROW_EX_CUSTOM(HttpException, 3004, "Invalid email format", 400, "/register/send_code");
+
+	// CAPTCHA 强制校验（防邮件轰炸:挡住自动化脚本,见审计报告 P0-1）
+	// captcha_token / captcha_answer 必填,经 captcha:8009 pymsg 校验,Token 一次性消费。
+	// fail-closed:captcha 服务不可用或响应异常一律视为校验失败。
+	auto captcha_token_it = obj.find("captcha_token");
+	auto captcha_answer_it = obj.find("captcha_answer");
+	if (captcha_token_it == obj.end() || captcha_answer_it == obj.end())
+		THROW_EX_CUSTOM(HttpException, 3007, "CAPTCHA required", 400, "/register/send_code");
+	if (!verify_captcha_remote(std::string(captcha_token_it->value().as_string()),
+	                          std::string(captcha_answer_it->value().as_string())))
+		THROW_EX_CUSTOM(HttpException, 2201, "Invalid CAPTCHA", 400, "/register/send_code");
+
+	// 邮箱级双窗口限流（CAPTCHA 通过后才计入配额,避免无效请求消耗限流额度）
+	// 3 次/小时 + 10 次/天;IP 限流可被代理池绕过,邮箱维度是更可靠的限制。
+	if (!_EMAIL_ADDR_RATE_HOUR.check_and_record(email, 3, 3600))
+		THROW_EX_CUSTOM(HttpException, 3104,
+			"Too many code requests for this email. Please try again later.",
+			429, "/register/send_code");
+	if (!_EMAIL_ADDR_RATE_DAY.check_and_record(email, 10, 86400))
+		THROW_EX_CUSTOM(HttpException, 3105,
+			"Daily email limit exceeded. Please try again tomorrow.",
+			429, "/register/send_code");
 
 	// 调 smtp 服务（pymsg/TCP :8008）发送验证码
 	bool sent = false;

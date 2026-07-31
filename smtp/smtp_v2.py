@@ -73,6 +73,13 @@ CODE_LEN = 6
 CODE_TTL = 600           # 验证码有效期（秒）
 SEND_INTERVAL = 60       # 同一邮箱两次成功发送的最小间隔（秒）
 MAX_VERIFY_ATTEMPTS = 5  # 同一验证码最大校验失败次数，达到即作废（防枚举 6 位数字码）
+
+# ── 邮件轰炸防护（兜底:gateway 层已有 CAPTCHA + 邮箱级限流,此处为最后防线） ──
+# 邮箱级双窗口:与 gateway 对齐,但作为 gateway 被绕过/重启时的兜底
+EMAIL_HOURLY_LIMIT = int(os.environ.get("EMAIL_HOURLY_LIMIT", "3"))   # 单邮箱 3 次/小时
+EMAIL_DAILY_LIMIT = int(os.environ.get("EMAIL_DAILY_LIMIT", "10"))    # 单邮箱 10 次/天
+# 全局熔断:防止 smtp 账号被服务商封禁;正常注册流量通常 <10/小时,默认值已是 10 倍异常
+SMTP_HOURLY_LIMIT = int(os.environ.get("SMTP_HOURLY_LIMIT", "100"))   # 全局 100 封/小时
 # 多数邮箱服务商（163/QQ 等）强制 From 头与登录账号一致，故默认跟随 SMTP_USER；
 # 仅当服务商允许自定义发件身份时才在 .env 里显式配 MAIL_FROM 覆盖
 MAIL_FROM = os.environ.get("MAIL_FROM") or SMTP_USER
@@ -82,6 +89,14 @@ DEFAULT_CONTENT = f"DNFS: 您的邮箱验证码为 {{code}}，{CODE_TTL // 60} �
 
 code_store = {}          # email -> {'code': str, 'expires_at': float, 'attempts': int}
 send_history = {}        # email -> 上次成功发送的时间戳（发送冷却用）
+
+# 邮件轰炸防护:邮箱级长期限流与全局熔断的发送日志。
+# send_log[email] = {'hour': [ts,...], 'day': [ts,...]}  仅记录成功发送的时间戳。
+# global_send_log = [ts,...]  全局成功发送时间戳(小时窗口)。
+# 惰性清理:每次检查时剔除已滑出窗口的时间戳,避免内存无限增长。
+send_log = {}            # email -> {'hour': [ts], 'day': [ts]}
+global_send_log = []     # [ts]  全局小时窗口发送时间戳
+
 STORE_LOCK = threading.Lock()
 
 
@@ -155,6 +170,34 @@ class SmtpServer:
             # 发送失败时在下方回滚，"失败不计入冷却"语义不变
             send_history[email] = time.time()
 
+        # 邮件轰炸防护：邮箱级长期限流 + 全局熔断（预占模式，与 60s 冷却一致）
+        # gateway 层已有 CAPTCHA + 邮箱级限流，此处为 gateway 被绕过/重启时的兜底。
+        # 预占：检查时立即记录时间戳；发送失败时回滚，"失败不计入配额"语义不变。
+        now = time.time()
+        with STORE_LOCK:
+            log = send_log.setdefault(email, {'hour': [], 'day': []})
+            # 清理已滑出窗口的时间戳（惰性清理，避免内存无限增长）
+            log['hour'] = [t for t in log['hour'] if now - t < 3600]
+            log['day']  = [t for t in log['day']  if now - t < 86400]
+            global_send_log[:] = [t for t in global_send_log if now - t < 3600]
+            # 邮箱级配额检查
+            if len(log['hour']) >= EMAIL_HOURLY_LIMIT:
+                return {"sent": False,
+                        "error": f"该邮箱每小时发送上限（{EMAIL_HOURLY_LIMIT}次）已达，请稍后重试"}
+            if len(log['day']) >= EMAIL_DAILY_LIMIT:
+                return {"sent": False,
+                        "error": f"该邮箱每日发送上限（{EMAIL_DAILY_LIMIT}次）已达，请明日重试"}
+            # 全局熔断：防 smtp 账号被服务商封禁
+            if len(global_send_log) >= SMTP_HOURLY_LIMIT:
+                logs.error("smtp", f"全局熔断：近 1 小时已发送 {len(global_send_log)} 封，"
+                                   f"达到上限 {SMTP_HOURLY_LIMIT}，拒绝发送给 {email}")
+                return {"sent": False,
+                        "error": "邮件服务发送量已达上限，请稍后重试"}
+            # 预占（发送失败时在下方回滚）
+            log['hour'].append(now)
+            log['day'].append(now)
+            global_send_log.append(now)
+
         code = "".join(str(random.randint(0, 9)) for _ in range(CODE_LEN))
         subject = str(req.get("subject") or DEFAULT_SUBJECT)
         content = str(req.get("content") or DEFAULT_CONTENT).replace("{code}", code)
@@ -184,6 +227,15 @@ class SmtpServer:
             with STORE_LOCK:
                 code_store.pop(email, None)
                 send_history.pop(email, None)   # 回滚冷却占位，允许立即重试
+                # 回滚限流预占（移除刚才追加的时间戳）
+                log = send_log.get(email)
+                if log:
+                    if log['hour'] and log['hour'][-1] == now:
+                        log['hour'].pop()
+                    if log['day'] and log['day'][-1] == now:
+                        log['day'].pop()
+                if global_send_log and global_send_log[-1] == now:
+                    global_send_log.pop()
             logs.error("smtp", f"{email}: 验证码发送失败({err})")
             return {"sent": False, "error": f"验证码发送失败：{err}"}
 
