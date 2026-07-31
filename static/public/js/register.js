@@ -7,10 +7,44 @@ const repeatPasswordInput = document.getElementById('repwd');
 const emlTip = document.getElementById('emlTip');
 const pwdTip = document.getElementById('pwdTip');
 const codeTip = document.getElementById('codeTip');
+const captchaImg = document.getElementById('captchaImg');
+const captchaInput = document.getElementById('captchaAnswer');
+const captchaTip = document.getElementById('captchaTip');
 const submitButton = document.getElementById('formsub');
 
 let codeTarget = '';	// 已发送验证码的目标邮箱（验证码本体由服务端校验，前端不经手）
 let cooldownTimer = null;	// 重发倒计时（与服务端同邮箱 60s 发送冷却对齐）
+
+/* ── 图形验证码（gateway 代理 captcha 服务：GET /captcha/image） ── */
+let captchaToken = '';
+let captchaLoading = false;	// 防重复点击：加载中忽略再次触发
+
+async function refreshCaptcha() {
+	if (captchaLoading) return;
+	captchaLoading = true;
+	captchaToken = '';
+	try {
+		const res = await fetch('/captcha/image', { cache: 'no-store' });
+		if (res.status === 403) {	// WAF 拦截：body 非图片，提示后待用户点击重试
+			captchaImg.removeAttribute('src');
+			captchaImg.alt = '验证码加载被安全规则拦截，点击重试';
+			return;
+		}
+		if (!res.ok) throw new Error('captcha load failed');
+		captchaToken = res.headers.get('X-Captcha-Token') || '';
+		const blob = await res.blob();
+		if (captchaImg.src && captchaImg.src.startsWith('blob:')) URL.revokeObjectURL(captchaImg.src);
+		captchaImg.src = URL.createObjectURL(blob);
+		captchaImg.alt = '点击刷新';
+	} catch (e) {
+		captchaImg.removeAttribute('src');
+		captchaImg.alt = '加载失败，点击重试';
+	} finally {
+		captchaLoading = false;
+	}
+}
+captchaImg.addEventListener('click', refreshCaptcha);
+refreshCaptcha();
 
 // 发送成功后进入倒计时，避免用户触发服务端同邮箱 60s 发送冷却
 function startResendCooldown(seconds) {
@@ -34,16 +68,20 @@ function startResendCooldown(seconds) {
 form.addEventListener('reset', function () {
 	clearTipStyle();
 	codeTarget = '';
+	captchaInput.value = '';
+	refreshCaptcha();
 });
 
 function clearTipStyle() {
 	emlTip.innerHTML = '';
 	pwdTip.innerHTML = '';
 	codeTip.innerHTML = '';
+	captchaTip.innerHTML = '';
 
 	emlTip.classList.remove('tip-red', 'tip-yellow', 'tip-green');
 	pwdTip.classList.remove('tip-red', 'tip-yellow', 'tip-green');
 	codeTip.classList.remove('tip-red', 'tip-yellow', 'tip-green');
+	captchaTip.classList.remove('tip-red', 'tip-yellow', 'tip-green');
 }
 clearTipStyle();
 
@@ -101,6 +139,23 @@ function checkCode() {
 	return code;
 }
 
+function checkCaptcha() {
+	captchaTip.innerHTML = '';
+	captchaTip.classList.remove('tip-red', 'tip-yellow', 'tip-green');
+	const v = captchaInput.value.trim();
+	if (!v) {
+		captchaTip.textContent = '请输入图形验证码！';
+		captchaTip.classList.add('tip-red');
+		return false;
+	}
+	if (!captchaToken) {
+		captchaTip.textContent = '图形验证码未加载，请点击图片刷新';
+		captchaTip.classList.add('tip-red');
+		return false;
+	}
+	return v;
+}
+
 passwordInput.addEventListener('focus', checkPassword);
 repeatPasswordInput.addEventListener('focus', checkPassword);
 
@@ -126,9 +181,9 @@ codeInput.addEventListener('blur', checkCode);
 getCodeButton.addEventListener('click', async function () {
 	if (getCodeButton.disabled) return;	// 防重复点击
 	const email = checkEmail();
-	if (!email) {
-		return;
-	}
+	if (!email) return;
+	const captchaAnswer = checkCaptcha();
+	if (!captchaAnswer) return;
 
 	getCodeButton.disabled = true;
 	codeTip.textContent = '验证码发送中…';
@@ -139,7 +194,11 @@ getCodeButton.addEventListener('click', async function () {
 		const res = await fetch('/register/send_code', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ email })
+			body: JSON.stringify({
+				email,
+				captcha_token: captchaToken,
+				captcha_answer: captchaAnswer
+			})
 		});
 		httpStatus = res.status;
 		const responseText = await res.text();
@@ -160,6 +219,9 @@ getCodeButton.addEventListener('click', async function () {
 		codeTip.classList.add('tip-red');
 		if (httpStatus === 429) startResendCooldown(60);	// 命中冷却/限流，倒计时对齐
 	} finally {
+		// CAPTCHA Token 一次性消费，无论成败都刷新
+		captchaInput.value = '';
+		refreshCaptcha();
 		if (!cooldownTimer) getCodeButton.disabled = false;
 	}
 });

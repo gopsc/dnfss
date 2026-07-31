@@ -2,9 +2,11 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -15,6 +17,10 @@ import (
 	"github.com/micro_servers/waf/internal/engine"
 	"github.com/micro_servers/waf/internal/logclient"
 )
+
+// maxRequestBodySize 请求体最大大小（10MB），与 rules/waf.conf 中 SecRequestBodyLimit 保持一致。
+// 超过此限制的请求直接返回 413 Request Entity Too Large，防止 OOM。
+const maxRequestBodySize = 10 * 1024 * 1024
 
 // Proxy 持有 ReverseProxy 与 WAF 引擎引用。
 type Proxy struct {
@@ -84,6 +90,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		tx.ProcessLogging()
 		_ = tx.Close()
+		// 确保 r.Body 被关闭并耗尽，保证 TCP 连接可复用
+		if r.Body != nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 1024))
+			_ = r.Body.Close()
+		}
 	}()
 
 	// 解析 RemoteAddr 中的 IP 与端口
@@ -111,14 +122,47 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 请求体：读全量喂给 coraza，再用 buffer 恢复 r.Body 给 proxy 转发
+	// 请求体：读取时限制大小（maxRequestBodySize + 1 字节用于判断超限），防止 OOM
 	if r.Body != nil && r.Body != http.NoBody {
-		bodyBytes, err := io.ReadAll(r.Body)
-		if err == nil {
-			_, _, _ = tx.ReadRequestBodyFrom(bytes.NewReader(bodyBytes))
-			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		// 限制读取大小：多读 1 字节，若能读到说明超限
+		limitReader := io.LimitReader(r.Body, maxRequestBodySize+1)
+		bodyBytes, err := io.ReadAll(limitReader)
+		if err != nil {
+			// 客户端中途断开或读取错误，直接返回无需继续处理
+			logclient.Info("waf", fmt.Sprintf("body_read_error path=%s err=%v", r.URL.Path, err),
+				map[string]any{"ip": r.RemoteAddr})
+			return
 		}
-		if it, _ := tx.ProcessRequestBody(); it != nil {
+		if len(bodyBytes) > maxRequestBodySize {
+			// 请求体超限，返回 413
+			logclient.Warning("waf", fmt.Sprintf("body_too_large %s %s size=%d", r.Method, r.URL.Path, len(bodyBytes)),
+				map[string]any{
+					"ip":      r.RemoteAddr,
+					"method":  r.Method,
+					"path":    r.URL.Path,
+					"size":    len(bodyBytes),
+					"limit":   maxRequestBodySize,
+					"cost_ms": time.Since(start).Milliseconds(),
+				})
+			setSecurityHeaders(w.Header())
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			_, _ = w.Write([]byte("request body too large\n"))
+			return
+		}
+		// 喂给 coraza 进行请求体检测
+		if _, _, err := tx.ReadRequestBodyFrom(bytes.NewReader(bodyBytes)); err != nil {
+			logclient.Warning("waf", fmt.Sprintf("body_parse_error path=%s err=%v", r.URL.Path, err),
+				map[string]any{"ip": r.RemoteAddr})
+		}
+		// 恢复 r.Body 供 ReverseProxy 转发
+		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+		it, err := tx.ProcessRequestBody()
+		if err != nil {
+			logclient.Warning("waf", fmt.Sprintf("body_process_error path=%s err=%v", r.URL.Path, err),
+				map[string]any{"ip": r.RemoteAddr})
+		}
+		if it != nil {
 			p.block(w, r, it.RuleID, start)
 			return
 		}
@@ -128,13 +172,26 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rw := &responseRecorder{ResponseWriter: w, status: 200}
 	p.rp.ServeHTTP(rw, r)
 
+	// WebSocket 升级成功后连接已被 Hijack，转为二进制帧协议，无需执行 HTTP 响应阶段检测
+	if rw.hijacked {
+		logclient.Info("waf", fmt.Sprintf("websocket_upgraded %s %s cost_ms=%d",
+			r.Method, r.URL.Path, time.Since(start).Milliseconds()),
+			map[string]any{
+				"ip":      r.RemoteAddr,
+				"method":  r.Method,
+				"path":    r.URL.Path,
+				"cost_ms": time.Since(start).Milliseconds(),
+			})
+		return
+	}
+
 	// 响应阶段：把 upstream 的 header 喂给 WAF
 	for k, vs := range rw.headers {
 		for _, v := range vs {
 			tx.AddResponseHeader(k, v)
 		}
 	}
-	tx.ProcessResponseHeaders(rw.status, "HTTP/1.1")
+	tx.ProcessResponseHeaders(rw.status, r.Proto)
 }
 
 // block 命中规则时统一返回 403，并将关键输入推送到日志库。
@@ -155,26 +212,58 @@ func (p *Proxy) block(w http.ResponseWriter, r *http.Request, ruleID int, start 
 }
 
 // responseRecorder 记录状态码与响应头，供响应阶段 WAF 检测使用。
+// 同时实现 http.Hijacker 以支持 WebSocket 升级（ReverseProxy 在 WebSocket 握手时需要劫持底层连接）。
 type responseRecorder struct {
 	http.ResponseWriter
-	status  int
-	headers http.Header
+	status     int
+	statusSent bool
+	headers    http.Header
+	hijacked   bool
 }
 
 func (r *responseRecorder) WriteHeader(code int) {
+	if r.hijacked {
+		return
+	}
 	r.status = code
+	r.statusSent = true
 	if r.headers == nil {
 		r.headers = http.Header{}
 	}
-	// 拷贝上游响应头
+	// 拷贝上游响应头（在 WriteHeader 调用时响应头已最终确定）
 	for k, vs := range r.Header() {
 		r.headers[k] = vs
 	}
 	r.ResponseWriter.WriteHeader(code)
 }
 
+func (r *responseRecorder) Write(b []byte) (int, error) {
+	if !r.statusSent {
+		r.WriteHeader(http.StatusOK)
+	}
+	return r.ResponseWriter.Write(b)
+}
+
+// Flush 实现 http.Flusher，支持 SSE/流式响应。
 func (r *responseRecorder) Flush() {
 	if f, ok := r.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Hijack 实现 http.Hijacker，支持 WebSocket 升级。
+// 委托给底层 ResponseWriter 的 Hijack 方法，并标记连接已被劫持。
+func (r *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("underlying ResponseWriter does not support Hijacker")
+	}
+	conn, rw, err := hijacker.Hijack()
+	if err == nil {
+		r.hijacked = true
+		// WebSocket 升级响应是 101 Switching Protocols
+		r.status = http.StatusSwitchingProtocols
+		r.statusSent = true
+	}
+	return conn, rw, err
 }

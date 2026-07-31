@@ -12,6 +12,8 @@ import sys
 
 # pymsg 日志客户端（集中式日志 → dbv2 Logs 表）
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# 附加 ../pymsg 源码路径作为无 venv 时的开发兜底（生产由 venv 提供 pymsg）
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "pymsg"))
 from log_client import logs  # noqa: E402
 from security_middleware import apply_security_headers  # noqa: E402
 
@@ -41,6 +43,8 @@ app = Flask(__name__)
 apply_security_headers(app)
 
 # ==================== 配置文件加载 ====================
+# 加载顺序：内置默认值 → confs 统一配置服务（static.ini）；
+# confs 不可用时 fail-safe 回退本地 config.ini
 CONFIG_FILE = args.config
 if not os.path.isabs(CONFIG_FILE):
     CONFIG_FILE = os.path.join(BASE_DIR, CONFIG_FILE)
@@ -53,14 +57,41 @@ file_config = {
     'cors': {'allowed_origins': 'https://qsont.me,https://yhdet.top'},
 }
 
-if os.path.exists(CONFIG_FILE):
-    config_parser = configparser.ConfigParser()
-    config_parser.read(CONFIG_FILE, encoding='utf-8')
+
+def _merge_ini(text):
+    """把 ini 文本合并进 file_config（仅覆盖已知的 section/key）。"""
+    ini = configparser.ConfigParser()
+    ini.read_string(text)
     for section in ['server', 'directory', 'ssl', 'cors']:
-        if section in config_parser:
-            for key, value in config_parser[section].items():
+        if ini.has_section(section):
+            for key, value in ini[section].items():
                 if key in file_config[section]:
                     file_config[section][key] = value
+
+
+def _fetch_from_confs():
+    """从 confs 统一配置服务拉取 static.ini 全文，失败返回 None（fail-safe）。"""
+    try:
+        from pymsg import RpcClient
+        host = os.environ.get('CONFS_HOST', '127.0.0.1')
+        port = int(os.environ.get('CONFS_PORT', '8010'))
+        data = RpcClient(host, port, 'static', timeout=3).call(
+            'get', {'name': 'static.ini'})
+        return data.get('content')
+    except Exception:
+        return None
+
+
+_confs_text = _fetch_from_confs()
+if _confs_text is not None:
+    _merge_ini(_confs_text)
+    logger.info("配置来源: confs 统一配置服务 (static.ini)")
+    logs.info("static", "配置来源: confs 统一配置服务 (static.ini)")
+elif os.path.exists(CONFIG_FILE):
+    with open(CONFIG_FILE, encoding='utf-8') as f:
+        _merge_ini(f.read())
+    logger.warning(f"confs 不可用，回退本地配置文件 {CONFIG_FILE}")
+    logs.warning("static", f"confs 不可用，回退本地配置文件 {CONFIG_FILE}")
 
 # ==================== CORS（配置加载完成后初始化） ====================
 _cors_origins = [o.strip() for o in file_config['cors']['allowed_origins'].split(',') if o.strip()]
@@ -474,22 +505,6 @@ def proxy_update_note():
         return _cors(make_response(_json.dumps({"error": str(e)}), 502, {"Content-Type": "application/json"}))
 
 
-@app.route('/whoami', methods=['POST', 'OPTIONS'])
-def proxy_whoami():
-    if request.method == "OPTIONS": return _cors(make_response("", 204))
-    try:
-        data = request.get_json(force=True, silent=True) or {}
-        h = {"Content-Type": "application/json"}
-        if "Authorization" in request.headers: h["Authorization"] = request.headers["Authorization"]
-        elif request.cookies.get("q4_token"): h["Authorization"] = f"Bearer {request.cookies['q4_token']}"  # HttpOnly Cookie 模式：Cookie 转 Bearer
-        req = _urlreq.Request(f"{DNFS_URL}/whoami", data=_json.dumps(data).encode(), headers=h, method="POST")
-        with _urlreq.urlopen(req, timeout=15) as r:
-            return _cors(make_response(r.read().decode(), 200, {"Content-Type": "application/json"}))
-    except Exception as e:
-        logs.warning("static", "dnfs whoami 代理失败", extra={"error": str(e)})
-        return _cors(make_response(_json.dumps({"error": str(e)}), 502, {"Content-Type": "application/json"}))
-
-
 @app.route('/api/proxy_send_code', methods=['POST'])
 def proxy_send_code():
     from flask import request, jsonify
@@ -514,6 +529,75 @@ def proxy_send_code():
 
 
 
+
+
+# ==================== favicon 代理（dnfs 特殊节点"链接"卡片用） ====================
+# 服务端拉取目标站 /favicon.ico：前端 CSP img-src 'self' 禁止外域图片，且跨域无法直取。
+# SSRF 防护：仅 http/https；解析目标 IP，禁止内网/环回/保留地址；重定向目标同样校验；512KB 上限。
+import ipaddress
+import socket
+from urllib.parse import urlparse
+
+_FAVICON_MAX_BYTES = 512 * 1024
+_FAVICON_TIMEOUT = 5
+
+
+def _is_private_host(hostname):
+    """主机解析后任一 IP 命中内网/环回/链路本地/保留/组播地址即视为非法（fail-closed）。"""
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except Exception:
+        return True  # 解析失败一律拒绝
+    if not infos:
+        return True
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return True
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return True
+    return False
+
+
+class _FaviconRedirectHandler(_urlreq.HTTPRedirectHandler):
+    """重定向时重新校验目标主机，防止 302 跳转绕过 SSRF 检查。"""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if _is_private_host(urlparse(newurl).hostname or ''):
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+@app.route('/api/favicon', methods=['GET'])
+def api_favicon():
+    target = (request.args.get('url') or '').strip()
+    try:
+        parsed = urlparse(target)
+    except Exception:
+        return jsonify({'error': 'bad url'}), 400
+    if parsed.scheme not in ('http', 'https') or not parsed.hostname:
+        return jsonify({'error': 'bad url'}), 400
+    if _is_private_host(parsed.hostname):
+        return jsonify({'error': 'forbidden host'}), 403
+
+    favicon_url = f"{parsed.scheme}://{parsed.netloc}/favicon.ico"
+    try:
+        opener = _urlreq.build_opener(_FaviconRedirectHandler())
+        req = _urlreq.Request(favicon_url, headers={'User-Agent': 'qsont-favicon-fetcher/1.0'})
+        with opener.open(req, timeout=_FAVICON_TIMEOUT) as resp:
+            data = resp.read(_FAVICON_MAX_BYTES + 1)
+            if len(data) > _FAVICON_MAX_BYTES:
+                return jsonify({'error': 'favicon too large'}), 502
+            ctype = (resp.headers.get('Content-Type') or '').split(';')[0].strip()
+            if not ctype.startswith('image/'):
+                ctype = 'image/x-icon'  # 部分站点 favicon 返回 text/html 等，统一兜底
+        out = Response(data, 200, mimetype=ctype)
+        out.headers['Cache-Control'] = 'public, max-age=86400'
+        return out
+    except Exception as e:
+        logs.info("static", "favicon 拉取失败", extra={"url": target[:128], "error": str(e)})
+        return jsonify({'error': 'fetch failed'}), 502
 
 
 # ==================== 主路由 ====================

@@ -105,6 +105,7 @@ async function addNode(pid, title, content) {
 
 		input_note_title.value = "";
 		input_note_content.value = "";
+		cancelEdit();	/* 退出编辑模式并重置高度 */
 		getNode(stack[stack.length - 1]).then(load_notes);
 		getNode(stack[stack.length - 1]).then(loadMap)
 
@@ -417,6 +418,151 @@ function renderMarkdown(element, content) {
 	element.innerHTML = md.render(content, {html: false});
 }
 
+/* ===== by qing — 特殊节点（管理员专属）=====
+ * 信封：content 为 {"_sp":"link|html|image|file", ...} JSON，普通内容走 Markdown。
+ * 发布权限由后端 dnfs 强制（is_admin），前端仅做展示与表单切换。 */
+
+/* 与后端 base64 上限（3.5M 字符）对齐：原始文件约 2.5MB */
+var SP_MAX_FILE_BYTES = 2.5 * 1024 * 1024;
+
+function parseSp(content) {
+	if (typeof content !== 'string') return null;
+	var s = content.trim();
+	if (s.indexOf('{"_sp"') !== 0) return null;
+	try {
+		var obj = JSON.parse(s);
+	} catch (e) {
+		return null;	// 非法信封按普通文本展示（后端发布时已拦截，这里是兜底）
+	}
+	if (obj && typeof obj === 'object' && ['link', 'html', 'image', 'file'].indexOf(obj._sp) !== -1) return obj;
+	return null;
+}
+
+/* 内容渲染分发：特殊节点按类型渲染，否则 Markdown */
+function renderContent(container, item) {
+	var sp = parseSp(item.content);
+	if (!sp) {
+		renderMarkdown(container, item.content);
+		return;
+	}
+	function appendNote() {
+		if (typeof sp.note === 'string' && sp.note.trim()) {
+			var note = document.createElement('div');
+			note.className = 'sp-note';
+			note.textContent = sp.note;
+			container.appendChild(note);
+		}
+	}
+	if (sp._sp === 'link') renderSpLink(container, sp, appendNote);
+	else if (sp._sp === 'html') renderSpHtml(container, sp, appendNote);
+	else if (sp._sp === 'image') renderSpImage(container, sp, appendNote);
+	else if (sp._sp === 'file') renderSpFile(container, sp, appendNote);
+}
+
+/* 链接节点：服务端代理拉取的 favicon + 可点击链接（卡片内交互需 stopPropagation） */
+function renderSpLink(container, sp, appendNote) {
+	var box = document.createElement('div');
+	box.className = 'sp-link';
+	var icon = document.createElement('img');
+	icon.className = 'sp-favicon';
+	icon.alt = '';
+	icon.src = '/api/favicon?url=' + encodeURIComponent(sp.url);
+	icon.addEventListener('error', function() { icon.style.display = 'none'; });
+	var anchor = document.createElement('a');
+	anchor.className = 'sp-anchor';
+	anchor.href = sp.url;
+	anchor.target = '_blank';
+	anchor.rel = 'noopener noreferrer';
+	anchor.textContent = sp.url;
+	anchor.addEventListener('click', function(e) { e.stopPropagation(); });
+	box.appendChild(icon);
+	box.appendChild(anchor);
+	container.appendChild(box);
+	appendNote();
+}
+
+/* 网页代码节点：审计（展开源码，textContent 防注入）+ 运行（新窗口 document.write） */
+function renderSpHtml(container, sp, appendNote) {
+	var bar = document.createElement('div');
+	bar.className = 'sp-actions';
+	var audit_btn = document.createElement('button');
+	audit_btn.className = 'act-btn act-edit';
+	audit_btn.textContent = '审计源码';
+	var run_btn = document.createElement('button');
+	run_btn.className = 'act-btn act-move';
+	run_btn.textContent = '运行';
+	var pre = document.createElement('pre');
+	pre.className = 'sp-code';
+	pre.style.display = 'none';
+	pre.textContent = sp.code;
+	audit_btn.addEventListener('click', function(e) {
+		e.stopPropagation();
+		var hidden = (pre.style.display === 'none');
+		pre.style.display = hidden ? 'block' : 'none';
+		audit_btn.textContent = hidden ? '收起源码' : '审计源码';
+	});
+	run_btn.addEventListener('click', function(e) {
+		e.stopPropagation();
+		var win = window.open('', '_blank');
+		if (!win) { alert('浏览器拦截了弹窗，请允许后重试'); return; }
+		win.document.open();
+		win.document.write(sp.code);
+		win.document.close();
+	});
+	bar.appendChild(audit_btn);
+	bar.appendChild(run_btn);
+	container.appendChild(bar);
+	container.appendChild(pre);
+	appendNote();
+}
+
+/* 图片节点：DataURL 直接显示（CSP img-src 允许 data:） */
+function renderSpImage(container, sp, appendNote) {
+	var img = document.createElement('img');
+	img.className = 'sp-image';
+	img.src = sp.data;
+	img.alt = sp.name || '图片';
+	container.appendChild(img);
+	appendNote();
+}
+
+/* 文件节点：base64 → Blob → 触发下载（blob: 下载不受 CSP 限制） */
+function renderSpFile(container, sp, appendNote) {
+	var bar = document.createElement('div');
+	bar.className = 'sp-actions';
+	var btn = document.createElement('button');
+	btn.className = 'act-btn act-edit';
+	btn.textContent = '下载 ' + (sp.name || '文件') + '（' + formatBytes(Math.floor((sp.data || '').length * 3 / 4)) + '）';
+	btn.addEventListener('click', function(e) {
+		e.stopPropagation();
+		try {
+			var bin = atob(sp.data);
+			var bytes = new Uint8Array(bin.length);
+			for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+			var blob = new Blob([bytes], { type: sp.mime || 'application/octet-stream' });
+			var a = document.createElement('a');
+			a.href = URL.createObjectURL(blob);
+			a.download = sp.name || 'download';
+			document.body.appendChild(a);
+			a.click();
+			a.remove();
+			setTimeout(function() { URL.revokeObjectURL(a.href); }, 10000);
+		} catch (err) {
+			alert('文件解码失败：' + err.message);
+		}
+	});
+	bar.appendChild(btn);
+	container.appendChild(bar);
+	appendNote();
+}
+
+function formatBytes(n) {
+	var units = ['B', 'KB', 'MB', 'GB'];
+	var i = 0;
+	while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+	return n.toFixed(1) + units[i];
+}
+
 /* by qing — 互动统计图标：inline SVG，stroke=currentColor 自动跟随主题色 */
 const ICON_EYE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
 const ICON_HEART = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>';
@@ -449,16 +595,96 @@ var recommend_list = document.getElementById('recommend-list');
 var delete_note = document.getElementById('delete-note');
 var minimap = document.getElementById("minimap");
 var movebar = document.getElementById("movebar");
+/* 特殊节点面板（管理员专属，loadUserPanel 判定后显示） */
+var sp_panel = document.getElementById('sp-panel');
+var sp_type = document.getElementById('sp-type');
+var sp_file = document.getElementById('sp-file');
+var sp_file_tip = document.getElementById('sp-file-tip');
+var sp_edit_original = null;	/* 编辑图片/文件节点时的原信封字符串：未选新文件则原样提交 */
 /* 面板默认展开的最小视口宽度（px）：窄屏下面板展开会遮挡内容，默认折叠；宽屏默认展开 */
 var PANEL_EXPAND_MIN_WIDTH = 768;
 var is_expand = window.innerWidth >= PANEL_EXPAND_MIN_WIDTH;
 var editing_id = null;	/* 编辑模式：正在编辑的节点 id，null 表示当前是新增模式 */
 var moving_node = null;	/* 移动模式：待移动的节点 {id, pid, title, content}，null 表示未在移动 */
 
+/* ===== 输入框自动高度调整 ===== */
+function autoResizeTextarea(el) {
+	el.style.height = 'auto';
+	el.style.height = Math.min(el.scrollHeight, 400) + 'px';
+	el.style.overflowY = el.scrollHeight > 400 ? 'auto' : 'hidden';
+}
+input_note_content.addEventListener('input', function() {
+	autoResizeTextarea(input_note_content);
+});
+function resetTextareaHeight() {
+	input_note_content.style.height = '120px';
+	input_note_content.style.overflowY = 'hidden';
+}
+autoResizeTextarea(input_note_content);	/* 初始化高度 */
+
+/* ===== 特殊节点表单：类型切换控制输入区形态 ===== */
+sp_type.addEventListener('change', function() {
+	var t = sp_type.value;
+	var is_file = (t === 'image' || t === 'file');
+	sp_file.style.display = is_file ? '' : 'none';
+	input_note_content.style.display = is_file ? 'none' : '';
+	sp_file_tip.textContent = '';
+	sp_file_tip.className = is_file ? 'tip-yellow' : '';
+	if (!is_file) {
+		sp_file.value = '';
+		sp_edit_original = null;
+	}
+	if (t === 'link') input_note_content.placeholder = '请输入链接 URL（https://…）';
+	else if (t === 'html') input_note_content.placeholder = '请输入完整 HTML 代码';
+	else input_note_content.placeholder = '';
+});
+
+function readFileAsDataURL(f) {
+	return new Promise(function(resolve, reject) {
+		var r = new FileReader();
+		r.onload = function() { resolve(r.result); };
+		r.onerror = function() { reject(new Error('文件读取失败')); };
+		r.readAsDataURL(f);
+	});
+}
+
+/* by qing — 构造提交内容：普通节点返回原文本，特殊节点返回信封 JSON 字符串。
+ * 校验失败返回 null（已弹提示）；非管理员永远按普通文本提交。 */
+async function buildSubmitContent() {
+	var t = (current_user && current_user.is_admin) ? sp_type.value : 'text';
+	if (t === 'text') return input_note_content.value;
+	if (t === 'link') {
+		var url = input_note_content.value.trim();
+		if (!/^https?:\/\//i.test(url)) { alert('链接必须以 http:// 或 https:// 开头'); return null; }
+		return JSON.stringify({ _sp: 'link', url: url });
+	}
+	if (t === 'html') {
+		var code = input_note_content.value;
+		if (!code.trim()) { alert('请输入 HTML 代码'); return null; }
+		return JSON.stringify({ _sp: 'html', code: code });
+	}
+	/* image / file：优先使用新选择的文件；编辑模式下未选新文件则保留原信封 */
+	if (sp_file.files.length === 0) {
+		if (sp_edit_original) return sp_edit_original;
+		alert('请选择要上传的' + (t === 'image' ? '图片' : '文件'));
+		return null;
+	}
+	var f = sp_file.files[0];
+	if (f.size > SP_MAX_FILE_BYTES) {
+		alert('文件过大（上限约 2.5MB）：' + f.name);
+		return null;
+	}
+	var dataUrl = await readFileAsDataURL(f);
+	if (t === 'image') {
+		if (dataUrl.indexOf('data:image/') !== 0) { alert('所选文件不是图片'); return null; }
+		return JSON.stringify({ _sp: 'image', name: f.name, data: dataUrl });
+	}
+	return JSON.stringify({ _sp: 'file', name: f.name, mime: f.type || 'application/octet-stream', data: dataUrl.split(',')[1] });
+}
+
 input_note_submit.addEventListener('click', function(event) {
 	if (input_note_submit.disabled) return;	// 防重复点击
 	var title = input_note_title.value
-	var content = input_note_content.value
 	var pid = (stack.length == 0) ? 0 : stack[stack.length - 1];
 	//alert(stack.length)
 	//alert(pid)
@@ -466,9 +692,16 @@ input_note_submit.addEventListener('click', function(event) {
 	input_note_submit.disabled = true;
 	input_note_clear.disabled = true;
 	delete_note.disabled = true;
-	// 编辑模式下保存修改，否则新增节点
-	var req = (editing_id != null) ? updateNode(editing_id, pid, title, content) : addNode(pid, title, content);
-	Promise.resolve(req)
+	// 编辑模式下保存修改，否则新增节点；特殊节点先异步构造信封（可能涉及读文件）
+	buildSubmitContent()
+		.then(function(content) {
+			if (content == null) return null;	// 校验失败，已弹提示
+			return (editing_id != null) ? updateNode(editing_id, pid, title, content) : addNode(pid, title, content);
+		})
+		.catch(function(err) {
+			alert(err.message || '内容处理失败');
+			console.error('构造提交内容异常：', err);
+		})
 		.finally(() => {
 			input_note_submit.disabled = false;
 			input_note_clear.disabled = false;
@@ -497,12 +730,30 @@ delete_note.addEventListener('click', (event) => {
 	}
 })
 
-/* by qing — 点击卡片"编辑"：把节点标题/内容载入下方表单，进入编辑模式 */
+/* by qing — 点击卡片"编辑"：把节点标题/内容载入下方表单，进入编辑模式。
+ * 特殊节点：link/html 回填 url/code 到文本域；image/file 记住原信封（未选新文件则原样提交） */
 function startEdit(item) {
 	editing_id = item.id;
 	input_note_title.value = item.title;
-	input_note_content.value = item.content;
+	var sp = parseSp(item.content);
+	sp_edit_original = null;
+	if (sp && (sp._sp === 'link' || sp._sp === 'html')) {
+		sp_type.value = sp._sp;
+		sp_type.dispatchEvent(new Event('change'));
+		input_note_content.value = (sp._sp === 'link') ? (sp.url || '') : (sp.code || '');
+	} else if (sp) {
+		sp_type.value = sp._sp;
+		sp_type.dispatchEvent(new Event('change'));
+		sp_edit_original = item.content;
+		sp_file_tip.textContent = '不选择新文件则保持原' + (sp._sp === 'image' ? '图片' : '文件');
+		input_note_content.value = '';
+	} else {
+		sp_type.value = 'text';
+		sp_type.dispatchEvent(new Event('change'));
+		input_note_content.value = item.content;
+	}
 	input_note_submit.textContent = "保存修改";
+	autoResizeTextarea(input_note_content);	/* 根据载入内容调整高度 */
 	input_note_title.scrollIntoView({ behavior: 'smooth', block: 'center' });
 	input_note_title.focus();
 }
@@ -510,7 +761,15 @@ function startEdit(item) {
 /* by qing — 退出编辑模式，表单恢复为新增状态 */
 function cancelEdit() {
 	editing_id = null;
+	sp_edit_original = null;
+	sp_file.value = '';
+	sp_file_tip.textContent = '';
+	if (sp_type.value !== 'text') {
+		sp_type.value = 'text';
+		sp_type.dispatchEvent(new Event('change'));
+	}
 	input_note_submit.textContent = "提交";
+	resetTextareaHeight();	/* 恢复初始高度 */
 }
 
 function load_notes(main_node) {
@@ -579,7 +838,7 @@ function load_notes(main_node) {
 		ttl.appendChild(wrt_div);
 		ttl.appendChild(sts_div);
 		let ctt = document.createElement('p');
-		renderMarkdown(ctt, item.content);
+		renderContent(ctt, item);
 		card.appendChild(ctt)
 		if (item.can_operate === true) {
 			let act_div = document.createElement('div');
@@ -681,6 +940,10 @@ async function loadUserPanel() {
 		});
 		if (!res.ok) return;
 		current_user = await res.json();
+		/* 管理员显示特殊节点面板（普通用户始终普通文本） */
+		if (current_user.login && current_user.is_admin) {
+			sp_panel.style.display = '';
+		}
 		renderUserPanel();
 	} catch (e) {
 		console.error('获取用户信息失败：', e);

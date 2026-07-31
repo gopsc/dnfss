@@ -19,6 +19,8 @@
 - 🔐 **SOCKS5 代理**：通过 `set_proxy` / `get_proxy` 工具为网页访问与 API 调用配置代理，可持久化
 - 💾 **对话管理**：历史对话归档、开始新对话（重置 AI 记忆并重新加载提示词）
 - 📦 **对话压缩**：消息数或 Token 数达到阈值时自动压缩，保持上下文质量
+- 🛡️ **内存安全防护**：文件读取按需加载不全载、命令输出 1MB 限制、单行超长截断、工具结果多层防护防止 OOM
+- 🔒 **错误自动恢复**：API 请求失败自动回滚消息，工具结果安全清洗（控制字符过滤、非字符串转换）
 
 ## 🚀 快速开始
 
@@ -32,7 +34,7 @@
 
 ```bash
 # 克隆或下载代码后，安装依赖
-pip install websockets requests beautifulsoup4
+pip install -r requirements.txt
 ```
 
 ### 配置
@@ -46,18 +48,18 @@ export DEEPSEEK_API_KEY="your-api-key"
 
 3. **启动服务器**：
 ```bash
-python main.py
+python aibox.py
 ```
 
 启动后，WebSocket 服务器将运行在 `ws://localhost:8765`（地址与端口可在 `config.json` 的 `system.websocket_host` / `system.websocket_port` 中修改）。
 
-> 注意：本模块入口文件为 `main.py`（不是 `agent.py`）。`client.py` 为示例 WebSocket 客户端，`voice_client.py` 为语音客户端，`_run.sh` 为被 `core` 拉起的启动脚本。
+> 注意：本模块入口文件为 `aibox.py`（单文件约 8450 行，集成 WebSocket 服务器、AI 引擎、工具/技能系统、任务调度器于一体）。`client.py` 为示例 WebSocket 客户端，`voice_client.py` 为语音客户端，`_run.sh` 为被 `core` 拉起的启动脚本。
 
 ## 📁 目录结构
 
 ```
 aibox/
-├── main.py            # 服务主程序（WebSocket 服务器 + AI 引擎 + 工具/技能系统）
+├── aibox.py           # 服务主程序（WebSocket 服务器 + AI 引擎 + 工具/技能系统 + 任务调度器）
 ├── client.py          # 示例 WebSocket 客户端
 ├── voice_client.py    # 语音客户端
 ├── entry.html         # 前端入口页
@@ -85,18 +87,38 @@ aibox/
 ```
 ~/.aibox/
 ├── config.json              # 配置文件
-├── prompts/                 # 系统提示词目录
-│   ├── 00_IDENTITY.md       # 用户身份信息
-│   ├── 1_*.md               # 基础技能提示词（文件操作、网页访问等）
+├── prompts/                 # 系统提示词目录（按文件名数字前缀排序加载）
+│   ├── 00_IDENTITY.md       # 用户身份信息（最先加载）
+│   ├── 1_memory_search.md   # 基础技能提示词（1-10，按数字升序加载）
+│   ├── 2_memory_save.md
+│   ├── 3_file_operations.md
+│   ├── 4_web_access.md
+│   ├── 5_memo_management.md
+│   ├── 6_command_execution.md
+│   ├── 7_extension_skills.md
+│   ├── 8_identity_management.md
+│   ├── 9_language_instruction.md
+│   ├── 10_task_handling.md
 │   ├── 99_SOUL.md           # AI 灵魂定义（角色、性格、能力边界）
-│   └── 100_STATUS.md        # AI 状态记录
+│   └── 100_STATUS.md        # AI 状态记录（最后加载）
 ├── skills/                  # 扩展技能目录（运行时从仓库 skills/ 复制或用户自建）
+├── workspace/               # AI 专用工作目录（临时文件、脚本、数据文件默认存放位置）
 ├── memories.db              # 记忆和任务数据库（SQLite）
 ├── current_conversation.json # 当前对话
 ├── conversation_history.json # 对话索引
 ├── archive/                 # 历史对话归档
 └── tool_results/            # 工具结果缓存
 ```
+
+## 📂 工作目录规范
+
+为避免 AI 产生的临时文件污染系统其他目录，所有 AI 主动创建的临时文件、脚本、数据文件默认写入 `~/.aibox/workspace/` 目录：
+
+- **文件操作**：`write_file` 工具默认路径为 `~/.aibox/workspace/`（用户明确指定路径时除外）
+- **命令执行**：`run_command` 工具默认 `work_dir` 为 `~/.aibox/workspace/`，命令产生的文件落在该专用工作区
+- **用户指定路径优先**：当用户明确要求在特定路径操作时，按用户指定路径执行
+- **读取不受限**：读取系统文件、项目文件时使用实际路径，不受工作目录限制
+- **技能调用**：`~/.aibox/skills/` 下的技能执行不受此限制
 
 ## 🔧 可用工具
 
@@ -192,15 +214,23 @@ const ws = new WebSocket('ws://localhost:8765');
 
 | 类型 | 说明 |
 |-----|------|
-| `chunk` | AI 响应的片段（流式输出） |
-| `complete` | AI 响应完成 |
-| `reasoning` | AI 思考过程（思考模式） |
-| `error` | 错误信息 |
+| `chunk` | AI 响应的**增量片段**（流式输出，chunk_buffer 发送后即清零，为内容权威来源） |
+| `reasoning_start` | AI 开始思考信号（思考模式，创建思考区域展示） |
+| `reasoning` | AI 思考过程增量片段（流式输出，灰色/斜体样式） |
+| `reasoning_end` | AI 思考结束信号（切换到正式回答） |
+| `complete` | AI 响应**收尾信号**（chunk 流式是内容权威来源，complete 仅用于收尾；完全丢帧时可用 full_text 补建） |
+| `line` | 过程行（🔧 工具调用提示、工具输出、💬 助手前缀等，供任务侧栏/终端显示） |
+| `error` | 错误信息（API 请求失败、解析失败等；服务端自动回滚本轮消息防止对话历史被污染） |
 | `command_result` | 命令执行结果 |
 | `task_status` | 任务状态更新（executing/complete/failed） |
 | `task_process` | 任务执行过程中的 AI 输出 |
+| `task_error` | 任务执行错误 |
+| `task_added` | 任务添加成功 |
 | `dialogue_ended` | 对话结束通知 |
 | `dialogue_reset` | 对话重置完成 |
+| `notification` | 通知消息 |
+| `connection_ack` | 连接确认 |
+| `interrupt_ack` | 中断确认 |
 | `info` | 系统信息 |
 | `pong` | Ping 响应 |
 
@@ -358,14 +388,16 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
 
 ## 🧩 提示词系统
 
-提示词文件位于 `~/.aibox/prompts/`：
+提示词文件位于 `~/.aibox/prompts/`，按文件名**数字前缀升序**加载（identity → 技能 1~10 → soul → status）：
 
 | 文件 | 用途 | 更新方式 |
 |-----|------|---------|
 | `00_IDENTITY.md` | 用户身份信息 | AI 通过 `update_identity` 工具更新 |
-| `1_*.md` | 基础技能提示词 | 手动编辑，AI 通过 `reload_prompts` 重载 |
-| `99_SOUL.md` | AI 灵魂定义（角色、性格） | AI 通过 `update_soul` 工具更新 |
+| `N_*.md`（N=1~10） | 基础技能提示词（记忆搜索/保存、文件/网页/命令/任务操作、技能扩展、身份管理、语言、任务规则） | 手动编辑，AI 通过 `/reload_prompts` 重载 |
+| `99_SOUL.md` | AI 灵魂定义（角色、性格、能力边界、行为准则） | AI 通过 `update_soul` 工具更新 |
 | `100_STATUS.md` | AI 状态记录 | AI 通过 `save_memory_and_end_conversation` 更新 |
+
+> **加载顺序保证**：`00_IDENTITY.md` 最先加载（AI 先知道用户是谁），然后是 1~10 号技能提示词（按数字升序），接着是 `99_SOUL.md`（AI 的角色定位），最后是 `100_STATUS.md`（当前状态）。每轮用户输入前会附加一段简洁的工作流程提醒（不重复 system prompt 中的详细说明），工具调用后递归继续时不再重复注入。
 
 ## ⚙️ 配置说明
 
@@ -385,7 +417,8 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
     "websocket_host": "localhost",
     "websocket_port": 8765,
     "skills_dir": "~/.aibox/skills",
-    "prompts_dir": "~/.aibox/prompts"
+    "prompts_dir": "~/.aibox/prompts",
+    "workspace_dir": "~/.aibox/workspace"
   },
   "scheduler": {
     "enabled": true,
@@ -396,8 +429,9 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
   "api": {
     "deepseek_api_url": "https://api.deepseek.com/chat/completions",
     "deepseek_model": "deepseek-v4-flash",
+    "reasoning_enabled": false,
     "api_key_env": "DEEPSEEK_API_KEY",
-    "timeout": 30,
+    "timeout": 120,
     "temperature": 0.7
   },
   "context": {
@@ -441,7 +475,7 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
     "archive_dir": "archive"
   },
   "tools": {
-    "max_result_length": 10000,
+    "max_result_length": 1048576,
     "save_result_to_file": false,
     "tool_results_dir": "tool_results"
   },
@@ -461,12 +495,14 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
 }
 ```
 
-> 默认模型为 `deepseek-v4-flash`（通过 `api.deepseek_model` 修改）。API Key 从环境变量 `DEEPSEEK_API_KEY` 读取（亦支持 `~/.cert/deepseek.key` 文件）。
+> 默认模型为 `deepseek-v4-flash`（通过 `api.deepseek_model` 修改）。设置 `api.reasoning_enabled: true` 可启用思考模式，此时会在请求中添加 `thinking: {type: "enabled"}` 参数，模型会先进行思考再回答，实时展示思考过程（灰色斜体区域），回答质量更高且**支持工具调用**（文件操作、命令执行、记忆搜索等工具均可在思考模式下正常使用）。
+> 
+> API Key 从环境变量 `DEEPSEEK_API_KEY` 读取（亦支持 `~/.cert/deepseek.key` 文件）。
 
 ## 🛠️ 命令行参数
 
 ```bash
-python main.py [选项]
+python aibox.py [选项]
 
 选项:
   --verbose, -v         显示详细日志
@@ -487,19 +523,19 @@ python main.py [选项]
 
 ```bash
 # 启动服务器（详细日志）
-python main.py --verbose
+python aibox.py --verbose
 
 # 指定端口
-python main.py --port 9000
+python aibox.py --port 9000
 
 # 检查任务
-python main.py --check-memo
+python aibox.py --check-memo
 
 # 添加任务（命令行）
-python main.py --memo-add "提醒开会|下午3点会议室A|+1h"
+python aibox.py --memo-add "提醒开会|下午3点会议室A|+1h"
 
 # 查看所有任务
-python main.py --memo-list
+python aibox.py --memo-list
 ```
 
 ## 🔄 架构流程
@@ -539,9 +575,8 @@ python main.py --memo-list
 ### 普通对话流程
 ```
 Client -> Server: {type: "message", content: "帮我查天气"}
-Server -> Client: {type: "chunk", content: "正在查"}
-Server -> Client: {type: "chunk", content: "询天气..."}
-Server -> Client: {type: "tool_call", tool: "search_skills", args: {keyword: "天气"}}
+Server -> Client: {type: "line", content: "🔧 调用工具: search_skills\n"}
+Server -> Client: {type: "line", content: "🔧 调用工具: bing_search\n"}
 Server -> Client: {type: "chunk", content: "今日天气晴朗..."}
 Server -> Client: {type: "complete", content: "今日天气晴朗，温度25°C"}
 ```
@@ -569,10 +604,10 @@ Server -> Client: {type: "dialogue_reset", content: "✅ 对话状态已完全�
 
 ### 添加新工具
 
-1. 继承 `Tool` 基类（位于 `main.py`）
+1. 继承 `Tool` 基类（位于 `aibox.py`）
 2. 实现 `get_name()`、`get_description()`、`get_parameters()`、`execute()`
-3. 可选实现 `execute_streaming()` 支持流式输出
-4. 在 `DeepSeekChat` 的工具注册处注册
+3. 可选实现 `execute_streaming()` 支持流式输出（通过 `output_queue` 发送 `("line", content)` 和 `("complete", final_result)`）
+4. 在 `DeepSeekChat._register_tools()` 中注册
 
 ```python
 class MyTool(Tool):
@@ -593,6 +628,11 @@ class MyTool(Tool):
         return f"执行结果: {param}"
 ```
 
+> **注意**：`execute()` 必须返回字符串。工具结果会经过多层安全防护：
+> 1. **工具层源头限制**：`read_file` 按需读取不全载（最多500行，单行≤10KB），`run_command` 输出≤1MB（超出立即终止进程）
+> 2. **`_sanitize_tool_result()`**：None/非字符串转为安全字符串，过滤控制字符
+> 3. **最终兜底截断**：超过 `tools.max_result_length`（默认1MB字符）时截断并提示，避免破坏 API 请求格式
+
 ### 添加新命令
 
 在 `WebSocketHandler` 的命令处理分支（`handle_command`）中添加：
@@ -602,6 +642,10 @@ elif command == "/mycommand":
     result = "命令执行结果"
     await self.send_message(websocket, {"type": "command_result", "content": result})
 ```
+
+### 错误恢复机制
+
+`think_and_respond()` 在每轮对话开始前记录消息列表长度 `msgs_before_turn`。若 API 请求失败（网络错误、HTTP 错误、JSON 解析错误或其他异常），会自动调用 `_rollback_messages(msgs_before_turn)` 回滚本轮添加的所有消息（包括 user 消息、可能的 assistant/tool_calls 消息、tool 响应消息），防止格式错误的消息污染对话历史导致后续请求持续失败。客户端收到 `error` 消息后可安全重试。
 
 ## ❓ 常见问题
 
@@ -648,15 +692,65 @@ elif command == "/mycommand":
 
 ### Q: WebSocket 连接断开？
 **A:**
-1. 检查服务器是否运行：`ps aux | grep main.py`
+1. 检查服务器是否运行：`ps aux | grep aibox.py`
 2. 确认端口未被占用：`netstat -tlnp | grep 8765`
 3. 检查防火墙设置
 4. 查看服务器日志：`tail -f ~/.aibox/ai.log`
 5. 考虑使用 `--host 0.0.0.0` 允许外部连接
 
+### Q: 工具调用后 API 报错无法继续？
+**A:** 此问题已在 v2.1 修复：工具结果会经过安全清洗（控制字符过滤、非字符串转换、超长截断），API 请求失败时自动回滚本轮消息。如果仍出现问题：
+1. 查看日志：`tail -f ~/.aibox/ai.log`
+2. 使用 `/new` 命令重置对话
+3. 确认工具返回值为字符串且不含二进制/控制字符
+
 ## 📄 更新日志
 
-### v2.0 (当前版本)
+### v2.5
+- ✅ **新增 DeepSeek 思考模式支持**（Reasoning Mode）：
+  - 新增 `api.reasoning_enabled` 配置项（默认 `false`），启用后在请求中添加 `thinking: {type: "enabled"}` 参数
+  - 使用 `deepseek-v4-flash` 模型原生思考能力，**思考模式下完整支持工具调用**（文件操作、命令执行、记忆搜索等均可正常使用）
+  - 实时展示 AI 思考过程：新增 `reasoning_start`/`reasoning`/`reasoning_end` WebSocket 消息类型
+  - 思考内容在前端以灰色斜体区域独立展示，超长思考自动折叠显示最后 2000 字符
+  - 即使未启用思考模式，若模型返回 `reasoning_content` 也会自动实时展示
+  - API 超时默认从 30s 提高到 120s，适配思考模式更长的响应时间
+- ✅ 删除重复定义的 `_add_assistant_message_with_reasoning` 方法
+
+### v2.4
+- ✅ **新增专用工作目录规范**：
+  - AI 主动创建的临时文件、脚本、数据文件默认写入 `~/.aibox/workspace/`，避免污染系统其他目录
+  - `write_file` 工具默认路径设为工作目录（用户明确指定路径时除外）
+  - `run_command` 工具默认 `work_dir` 设为工作目录，命令产生的文件落在专用工作区
+  - 新增 `system.workspace_dir` 配置项（默认 `~/.aibox/workspace`），可自定义工作目录位置
+  - 在文件操作和命令执行提示词中明确工作目录规范
+- ✅ 命令执行提示词补充 1MB 输出大小限制说明
+
+### v2.3
+- ✅ **修复工具输出OOM崩溃问题**：
+  - `read_file`：不再一次性 `readlines()` 加载整个文件，改为按行范围按需读取；大文件 `tail=true` 使用反向块读取（>1MB文件不全文遍历）；新增单行长度限制（10KB/行，超长截断）；`max_lines` 硬上限500行防止请求超大范围
+  - `run_command`：非流式执行从 `capture_output=True` 改为逐行读取并实时计数，输出达到1MB立即终止进程；流式执行同样增加1MB输出大小限制，超出终止并提示截断；统一stdout/stderr合并计数
+  - `tools.max_result_length` 默认值从10KB提高到1MB字符，作为最终兜底截断
+  - 形成"工具层源头限制→结果清洗→最终兜底"三层防护，彻底防止大文件/大输出导致内存溢出
+
+### v2.2
+- ✅ 修复提示词系统排序 bug：`SKILL_PREFIX = "1_"` 只匹配 `1_` 开头文件，导致 `2_`~`10_` 技能提示词排序错乱（`10_task_handling.md` 排在 `1_memory_search.md` 前面）；改用正则按数字前缀排序
+- ✅ 修复 `_init_system_prompts` 使用未排序列表的问题，确保 system prompt 按 identity → 技能 → soul → status 正确顺序加载
+- ✅ 精简每轮用户输入的 pre_prompt：原来约 30 行重复指令（与 system prompt 内容重复），每轮浪费 ~300 token；精简为 5 条简洁提醒
+- ✅ 修复工具调用后递归继续时重复注入工作流指令的问题：新增 `is_continuation` 参数，递归时跳过 pre_prompt
+- ✅ 优化默认大文件阈值：50KB/200行 → 500KB/2000行，增加 `tail=true` 和二进制文件处理指导
+- ✅ 优化记忆搜索习惯："每次都要做"→"根据话题相关性判断"，避免简单问候也触发无意义搜索
+
+### v2.1
+- ✅ 修复工具调用结果破坏对话导致 API 持续请求失败的问题
+  - 不再回传 `reasoning_content`（API 响应字段）到请求中
+  - `tool_call.id` 为空时自动生成 fallback id，防止 API 400
+  - 新增 `_sanitize_tool_result()`：None/非字符串安全转换、控制字符过滤、超长结果截断
+  - `execute_tool` 异常捕获，避免工具执行异常中断整个对话
+  - API 请求失败时自动回滚本轮消息（`_rollback_messages`），防止坏消息污染历史
+- ✅ 修复 `complete` 消息语义：chunk 流式为内容权威来源，complete 仅用于收尾
+- ✅ 修正文档：入口文件为 `aibox.py`（非 `main.py`），补充缺失的消息类型（`line`/`task_error`/`notification` 等）
+
+### v2.0
 - ✅ 新增 `update_soul` 工具（智能体自我进化）
 - ✅ 新增 `create_skill` 工具（AI 自主创建技能）
 - ✅ 新增 `install_skill` 工具（技能安装指引）

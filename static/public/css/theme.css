@@ -119,6 +119,21 @@ textarea:focus {
 input::placeholder, textarea::placeholder { color: var(--muted); }
 textarea { min-height: 80px; resize: vertical; }
 
+select {
+    display: block;
+    width: 100%;
+    padding: 0.6rem 0.9rem;
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 0.9rem;
+    font-family: inherit;
+    background: var(--bg);
+    color: var(--fg);
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+
 /* ===== Buttons ===== */
 button, input[type="submit"], input[type="reset"], input[type="button"] {
     padding: 0.55rem 1.3rem;
@@ -190,6 +205,18 @@ input[type="button"]:disabled {
 }
 .code-box input[type="text"] { width: auto; flex: 1; min-width: 100px; display: inline-block; }
 .code-box input[type="button"] { white-space: nowrap; }
+/* 图形验证码图片（register 图形/邮箱验证码同排布局） */
+.code-box .captcha-img {
+    width: 120px;
+    height: 38px;
+    flex: none;
+    cursor: pointer;
+    border: 1.5px solid var(--border);
+    border-radius: 10px;
+    box-sizing: border-box;
+    object-fit: cover;
+    background: var(--bg);
+}
 
 /* ===== Validation Tips ===== */
 .tip-red { color: var(--error); font-size: 0.78rem; }
@@ -480,6 +507,30 @@ input[type="button"]:disabled {
     border-color: var(--accent);
 }
 
+/* ===== Special Nodes (dnfs，管理员发布的特殊节点) ===== */
+.sp-link { display: flex; align-items: center; gap: 0.5rem; }
+.sp-favicon { width: 20px; height: 20px; flex: none; border-radius: 4px; }
+.sp-anchor { color: var(--accent); word-break: break-all; }
+.sp-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.4rem; }
+.sp-code {
+    max-height: 320px;
+    overflow: auto;
+    margin-top: 0.5rem;
+    padding: 0.75rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 0.78rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+.sp-image { display: block; max-width: 100%; border-radius: var(--radius-sm); }
+.sp-note { font-size: 0.82rem; color: var(--fg-secondary); margin-top: 0.4rem; }
+#sp-panel { margin-top: 0.4rem; }
+#sp-panel select { margin-bottom: 0.4rem; }
+#sp-file-tip { font-size: 0.78rem; }
+
 /* ===== Node Form (dnfs) ===== */
 .node-form { margin-top: 1rem; }
 .node-form .form-actions { margin-top: 0.75rem; }
@@ -491,7 +542,10 @@ input[type="button"]:disabled {
 	padding: 0.9rem 1rem;
 	font-size: 0.95rem;
 	min-height: 120px;
+	max-height: 400px;
 	line-height: 1.7;
+	overflow-y: hidden;
+	resize: none;
 }
 
 /* ===== Markdown Content ===== */

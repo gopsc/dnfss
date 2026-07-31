@@ -19,7 +19,6 @@ SMTP 账号经 .env 配置：SMTP_SERVER / SMTP_PORT / SMTP_USER / __PASSWORD
 （__PASSWORD 兼容别名 SMTP_PASSWORD）。
 """
 
-import json
 import os
 import random
 import smtplib
@@ -60,7 +59,7 @@ from log_client import logs
 # pymsg 导入
 import sys as _sys
 _sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from pymsg import MsgServer  # noqa: E402
+from pymsg import RpcServer  # noqa: E402
 
 # ── 配置 ────────────────────────────────────────────────────────────────
 
@@ -74,6 +73,13 @@ CODE_LEN = 6
 CODE_TTL = 600           # 验证码有效期（秒）
 SEND_INTERVAL = 60       # 同一邮箱两次成功发送的最小间隔（秒）
 MAX_VERIFY_ATTEMPTS = 5  # 同一验证码最大校验失败次数，达到即作废（防枚举 6 位数字码）
+
+# ── 邮件轰炸防护（兜底:gateway 层已有 CAPTCHA + 邮箱级限流,此处为最后防线） ──
+# 邮箱级双窗口:与 gateway 对齐,但作为 gateway 被绕过/重启时的兜底
+EMAIL_HOURLY_LIMIT = int(os.environ.get("EMAIL_HOURLY_LIMIT", "3"))   # 单邮箱 3 次/小时
+EMAIL_DAILY_LIMIT = int(os.environ.get("EMAIL_DAILY_LIMIT", "10"))    # 单邮箱 10 次/天
+# 全局熔断:防止 smtp 账号被服务商封禁;正常注册流量通常 <10/小时,默认值已是 10 倍异常
+SMTP_HOURLY_LIMIT = int(os.environ.get("SMTP_HOURLY_LIMIT", "100"))   # 全局 100 封/小时
 # 多数邮箱服务商（163/QQ 等）强制 From 头与登录账号一致，故默认跟随 SMTP_USER；
 # 仅当服务商允许自定义发件身份时才在 .env 里显式配 MAIL_FROM 覆盖
 MAIL_FROM = os.environ.get("MAIL_FROM") or SMTP_USER
@@ -83,6 +89,14 @@ DEFAULT_CONTENT = f"DNFS: 您的邮箱验证码为 {{code}}，{CODE_TTL // 60} �
 
 code_store = {}          # email -> {'code': str, 'expires_at': float, 'attempts': int}
 send_history = {}        # email -> 上次成功发送的时间戳（发送冷却用）
+
+# 邮件轰炸防护:邮箱级长期限流与全局熔断的发送日志。
+# send_log[email] = {'hour': [ts,...], 'day': [ts,...]}  仅记录成功发送的时间戳。
+# global_send_log = [ts,...]  全局成功发送时间戳(小时窗口)。
+# 惰性清理:每次检查时剔除已滑出窗口的时间戳,避免内存无限增长。
+send_log = {}            # email -> {'hour': [ts], 'day': [ts]}
+global_send_log = []     # [ts]  全局小时窗口发送时间戳
+
 STORE_LOCK = threading.Lock()
 
 
@@ -93,17 +107,17 @@ STORE_LOCK = threading.Lock()
 class SmtpServer:
     """基于 pymsg 的邮箱验证码服务，通过 TCP 长连接收发 JSON。"""
 
-    def __init__(self, addr="127.0.0.1", port=8008):
+    def __init__(self, addr="127.0.0.1", port=8008, workers=4):
         self.addr = addr
         self.port = port
-        self._server = MsgServer(addr, port)
-
-        # 路由表
-        self._routes = {
-            "send_email": self._handle_send_email,
-            "verify_email": self._handle_verify_email,
-            "health": self._handle_health,
-        }
+        self._server = RpcServer(
+            addr, port, workers=workers,
+            on_error=lambda route, e: logs.error(
+                "smtp", f"路由 {route} 处理异常: {e}"),
+        )
+        self._server.add_route("send_email", self._handle_send_email)
+        self._server.add_route("verify_email", self._handle_verify_email)
+        self._server.add_route("health", self._handle_health)
 
     # ── 启动 / 停止 ──────────────────────────────────────────────────
     def start(self) -> None:
@@ -118,41 +132,11 @@ class SmtpServer:
             print(f"[smtp] 警告: SMTP 配置缺失: {','.join(missing)}（.env 加载 {_env_loaded} 项）")
         print(f"[smtp] 监听 tcp://{self.addr}:{self.port}")
         logs.info("smtp", f"开始监听 tcp://{self.addr}:{self.port}")
-        self._server.start(self._dispatch)
+        self._server.start()
 
     def stop(self) -> None:
         """从另一线程停止服务。"""
         self._server.stop()
-
-    # ── 消息调度 -------------------------------------------------------
-    def _dispatch(self, sock, addr, text):
-        """解析 JSON 中的 _route，分发给对应的 handler，并回复结果。"""
-        try:
-            req = json.loads(text)
-        except json.JSONDecodeError as e:
-            self._reply(sock, False, error=f"JSON 解析失败: {e}")
-            return
-
-        route = req.pop("_route", "")
-        handler = self._routes.get(route)
-        if handler is None:
-            self._reply(sock, False, error=f"未知路由: {route}")
-            return
-
-        try:
-            result = handler(req)
-            self._reply(sock, True, data=result)
-        except Exception as e:
-            logs.error("smtp", f"路由 {route} 处理异常: {e}")
-            self._reply(sock, False, error=str(e))
-
-    def _reply(self, sock, success, data=None, error=None):
-        resp = {"success": success}
-        if data is not None:
-            resp["data"] = data
-        if error is not None:
-            resp["error"] = error
-        self._server.reply(sock, json.dumps(resp, ensure_ascii=False))
 
     # ═══════════════════════════════════════════════════════════════════
     # 路由处理
@@ -182,6 +166,37 @@ class SmtpServer:
                 logs.info("smtp", f"{email}: 发送冷却中，剩余 {wait}s，已拒绝")
                 return {"sent": False, "retry_after": wait,
                         "error": f"发送过于频繁，请 {wait} 秒后重试"}
+            # 立即占位：防止并发请求同时通过冷却检查导致同邮箱重复发送；
+            # 发送失败时在下方回滚，"失败不计入冷却"语义不变
+            send_history[email] = time.time()
+
+        # 邮件轰炸防护：邮箱级长期限流 + 全局熔断（预占模式，与 60s 冷却一致）
+        # gateway 层已有 CAPTCHA + 邮箱级限流，此处为 gateway 被绕过/重启时的兜底。
+        # 预占：检查时立即记录时间戳；发送失败时回滚，"失败不计入配额"语义不变。
+        now = time.time()
+        with STORE_LOCK:
+            log = send_log.setdefault(email, {'hour': [], 'day': []})
+            # 清理已滑出窗口的时间戳（惰性清理，避免内存无限增长）
+            log['hour'] = [t for t in log['hour'] if now - t < 3600]
+            log['day']  = [t for t in log['day']  if now - t < 86400]
+            global_send_log[:] = [t for t in global_send_log if now - t < 3600]
+            # 邮箱级配额检查
+            if len(log['hour']) >= EMAIL_HOURLY_LIMIT:
+                return {"sent": False,
+                        "error": f"该邮箱每小时发送上限（{EMAIL_HOURLY_LIMIT}次）已达，请稍后重试"}
+            if len(log['day']) >= EMAIL_DAILY_LIMIT:
+                return {"sent": False,
+                        "error": f"该邮箱每日发送上限（{EMAIL_DAILY_LIMIT}次）已达，请明日重试"}
+            # 全局熔断：防 smtp 账号被服务商封禁
+            if len(global_send_log) >= SMTP_HOURLY_LIMIT:
+                logs.error("smtp", f"全局熔断：近 1 小时已发送 {len(global_send_log)} 封，"
+                                   f"达到上限 {SMTP_HOURLY_LIMIT}，拒绝发送给 {email}")
+                return {"sent": False,
+                        "error": "邮件服务发送量已达上限，请稍后重试"}
+            # 预占（发送失败时在下方回滚）
+            log['hour'].append(now)
+            log['day'].append(now)
+            global_send_log.append(now)
 
         code = "".join(str(random.randint(0, 9)) for _ in range(CODE_LEN))
         subject = str(req.get("subject") or DEFAULT_SUBJECT)
@@ -211,10 +226,20 @@ class SmtpServer:
             # 发送失败：作废刚写入的验证码，避免"码已存但邮件没到"的不可用状态
             with STORE_LOCK:
                 code_store.pop(email, None)
+                send_history.pop(email, None)   # 回滚冷却占位，允许立即重试
+                # 回滚限流预占（移除刚才追加的时间戳）
+                log = send_log.get(email)
+                if log:
+                    if log['hour'] and log['hour'][-1] == now:
+                        log['hour'].pop()
+                    if log['day'] and log['day'][-1] == now:
+                        log['day'].pop()
+                if global_send_log and global_send_log[-1] == now:
+                    global_send_log.pop()
             logs.error("smtp", f"{email}: 验证码发送失败({err})")
             return {"sent": False, "error": f"验证码发送失败：{err}"}
 
-        # 发送成功：记录冷却起点，并惰性清理已失效的冷却记录
+        # 发送成功：刷新冷却起点（检查阶段已占位），并惰性清理已失效的冷却记录
         with STORE_LOCK:
             send_history[email] = time.time()
             stale = [k for k, v in send_history.items()
@@ -280,9 +305,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="smtp — pymsg 邮箱验证码服务")
     parser.add_argument("--addr", default="127.0.0.1", help="监听地址")
     parser.add_argument("--port", type=int, default=8008, help="监听端口")
+    parser.add_argument("--workers", type=int, default=4,
+                        help="回调并发线程数（0=同步串行模式）")
     args = parser.parse_args()
 
-    server = SmtpServer(args.addr, args.port)
+    server = SmtpServer(args.addr, args.port, workers=args.workers)
     try:
         server.start()
     except KeyboardInterrupt:

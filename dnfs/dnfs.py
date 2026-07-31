@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
 
-
-
-
-
 '''
 
 Dendrachy Network File-System (dnfs)
@@ -18,11 +14,13 @@ Dendrachy Network File-System (dnfs)
 
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-#from flask_sqlalchemy import SQLAlchemy
+#from flask_sqlalchemy import SQLAlchemy    # 使用pymsg模块进行通信
 from waitress import serve
 import os
+import sys
 import json
 import base64
+import configparser
 import urllib.request
 import urllib.error
 from typing import Dict, Any
@@ -30,39 +28,112 @@ from security_middleware import apply_security_headers
 from log_client import logs
 
 # pymsg 导入
-import sys as _sys
-_sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from pymsg import MsgClient  # noqa: E402
+# 我们有在依赖列表中加入pymsg
+# 这个可以省略也许
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from pymsg import RpcClient, RpcError  # noqa: E402
 
-_DBV2_ADDR = '127.0.0.1'
-_DBV2_PORT = 8005
+# ==================== 配置加载（三层 fail-safe） ====================
+# 加载顺序：内置默认值 → confs 统一配置服务（dnfs.ini） → 环境变量覆盖
+# 环境变量优先级最高（Docker 环境使用服务名 db/ai_review 而非 127.0.0.1）
+
+_dnfs_config = {
+    'server': {'host': '127.0.0.1', 'port': '8006'},
+    'database': {'host': '127.0.0.1', 'port': '8005', 'timeout': '10'},
+    'ai_review': {'url': 'http://127.0.0.1:8007/review', 'timeout': '10'},
+    'confs': {'host': '127.0.0.1', 'port': '8010'},
+}
+
+
+def _merge_ini(text):
+    """把 ini 文本合并进 _dnfs_config（仅覆盖已知的 section/key，白名单合并）。"""
+    ini = configparser.ConfigParser(interpolation=None)
+    ini.read_string(text)
+    for section in _dnfs_config:
+        if ini.has_section(section):
+            for key, value in ini[section].items():
+                if key in _dnfs_config[section]:
+                    _dnfs_config[section][key] = value
+
+
+def _fetch_from_confs():
+    """从 confs 统一配置服务拉取 dnfs.ini 全文，失败返回 None（fail-safe）。"""
+    try:
+        host = os.environ.get('CONFS_HOST', _dnfs_config['confs']['host'])
+        port = int(os.environ.get('CONFS_PORT', _dnfs_config['confs']['port']))
+        data = RpcClient(host, port, 'dnfs', timeout=3).call(
+            'get', {'name': 'dnfs.ini'})
+        return data.get('content')
+    except Exception:
+        return None
+
+
+_confs_text = _fetch_from_confs()
+if _confs_text is not None:
+    _merge_ini(_confs_text)
+    logs.info("dnfs", "配置来源: confs 统一配置服务 (dnfs.ini)")
+else:
+    logs.warning("dnfs", "confs 不可用，使用内置默认值 + 环境变量")
+
+# 环境变量覆盖（优先级最高，Docker 环境需要）
+if os.environ.get('LISTEN_ADDR'):
+    _dnfs_config['server']['host'] = os.environ['LISTEN_ADDR']
+if os.environ.get('LISTEN_PORT'):
+    _dnfs_config['server']['port'] = os.environ['LISTEN_PORT']
+if os.environ.get('DB_HOST'):
+    _dnfs_config['database']['host'] = os.environ['DB_HOST']
+if os.environ.get('DB_PORT'):
+    _dnfs_config['database']['port'] = os.environ['DB_PORT']
+if os.environ.get('REVIEW_URL'):
+    _dnfs_config['ai_review']['url'] = os.environ['REVIEW_URL']
+if os.environ.get('CONFS_HOST'):
+    _dnfs_config['confs']['host'] = os.environ['CONFS_HOST']
+if os.environ.get('CONFS_PORT'):
+    _dnfs_config['confs']['port'] = os.environ['CONFS_PORT']
+
+# 提取配置常量
+_DBV2_ADDR = _dnfs_config['database']['host']
+_DBV2_PORT = int(_dnfs_config['database']['port'])
+_DB_TIMEOUT = int(_dnfs_config['database']['timeout'])
+_REVIEW_SERVER_URL = _dnfs_config['ai_review']['url']
+_REVIEW_TIMEOUT = int(_dnfs_config['ai_review']['timeout'])
+_ADDR = _dnfs_config['server']['host']
+_PORT = int(_dnfs_config['server']['port'])
 
 # 管理员判定已上移至 gateway：登录时命中 [Admin] users 白名单即在 Token payload
 # 写入 is_admin=true，本服务通过 info.get('is_admin') 读取，不再本地维护名单。
 # 旧 Token 无此字段，按非管理员处理（安全方向）。
 
-def _call_dbv2(payload: dict, timeout: int = 10) -> dict:
-    """通过 pymsg 短连接调用 dbv2 数据库服务。
-    自动注入 ``_route: "execute"``。
+_rpc = RpcClient(_DBV2_ADDR, _DBV2_PORT, "dnfs")
+
+
+def _call_dbv2(payload: dict, timeout: int = None) -> dict:
+    """通过 pymsg RPC 调用 dbv2 数据库服务（自动注入 ``_route: "execute"``）。
+
+    返回完整响应 dict（``{"success": ..., "data"/"error": ...}``），
+    与历史行为一致，调用方无需改动。服务端业务错误返回 success=False；
+    网络层故障抛 ConnectionError。
     """
-    payload = {**payload, "_route": "execute"}
+    if timeout is None:
+        timeout = _DB_TIMEOUT
     try:
-        client = MsgClient(_DBV2_ADDR, _DBV2_PORT, "dnfs")
-        resp_text = client.call(json.dumps(payload), timeout=timeout)
-        return json.loads(resp_text)
+        data = _rpc.call("execute", payload, timeout=timeout)
+        return {"success": True, "data": data}
+    except RpcError as e:
+        return {"success": False, "error": str(e)}
     except Exception as e:
         raise ConnectionError(
             f"dbv2 调用失败 ({_DBV2_ADDR}:{_DBV2_PORT}): {e}"
         ) from None
 
-REVIEW_SERVER_URL = 'http://127.0.0.1:8007/review'
-def review_content(content: str, timeout: int = 10) -> Dict[str, Any]:
+# AI审核服务地址
+def review_content(content: str, timeout: int = None) -> Dict[str, Any]:
     """
     调用 AI 内容审核服务的 /review 接口，对给定文本进行审核。
 
     Args:
         content: 待审核的文本内容，不可为空。
-        timeout: 请求超时时间（秒），默认 10 秒。
+        timeout: 请求超时时间（秒），默认使用配置值。
 
     Returns:
         字典，包含接口返回的字段，例如：
@@ -72,7 +143,9 @@ def review_content(content: str, timeout: int = 10) -> Dict[str, Any]:
         - 请求参数错误时：{"error": "content is required"} 等
         - 网络或异常时：{"error": "request_failed", "detail": "..."}
     """
-    url = REVIEW_SERVER_URL
+    if timeout is None:
+        timeout = _REVIEW_TIMEOUT
+    url = _REVIEW_SERVER_URL
     payload = {"content": content}
     json_data = json.dumps(payload).encode("utf-8")
 
@@ -102,47 +175,112 @@ def review_content(content: str, timeout: int = 10) -> Dict[str, Any]:
     except Exception as e:
         raise e
 
+class DnfsExp(Exception):
+    '''dnfs异常类'''
+    def __init__(self, msg: str, code: int):
+        super().__init__(self, msg)
+        self.status = code
+    def get_status(self) -> int:
+        return self.status
+
+# ==================== 特殊节点（管理员专属） ====================
+# 信封格式：content 为 JSON {"_sp": "link|html|image|file", ...}，前端识别后差异化渲染；
+# 普通 Markdown 内容不受影响。仅管理员可发布（Token payload is_admin）。
+_SP_TYPES = ('link', 'html', 'image', 'file')
+_SP_MAX_URL = 2048                    # link 节点 url 长度上限
+_SP_MAX_CODE = 512 * 1024             # html 节点代码长度上限（字符）
+_SP_MAX_DATA = 3500 * 1024            # image/file 节点 base64 长度上限（字符，约 2.6MB 原始数据）
+_SP_REVIEW_CODE_PREFIX = 4000         # html 节点送审的代码前缀长度
 
 
-#basedir = os.path.abspath(os.path.dirname(__file__))
+def _parse_sp(content):
+    """识别特殊节点信封：合法信封返回 dict；普通内容返回 None；
+    以 {"_sp" 开头但 JSON 非法视为格式错误（拒绝发布，防半截信封流入）。"""
+    if not isinstance(content, str):
+        return None
+    s = content.lstrip()
+    if not s.startswith('{"_sp"'):
+        return None
+    try:
+        obj = json.loads(s)
+    except Exception:
+        raise DnfsExp('特殊节点格式非法（JSON 解析失败）', 400)
+    if isinstance(obj, dict) and obj.get('_sp') in _SP_TYPES:
+        return obj
+    return None
+
+
+def _validate_sp(sp):
+    """校验特殊节点信封字段与大小上限，非法抛 DnfsExp。"""
+    t = sp['_sp']
+    if t == 'link':
+        url = sp.get('url', '')
+        if not isinstance(url, str) or not url.startswith(('http://', 'https://')):
+            raise DnfsExp('链接节点必须是 http/https URL', 400)
+        if len(url) > _SP_MAX_URL:
+            raise DnfsExp('链接过长', 400)
+    elif t == 'html':
+        code = sp.get('code', '')
+        if not isinstance(code, str) or not code.strip():
+            raise DnfsExp('网页代码不能为空', 400)
+        if len(code) > _SP_MAX_CODE:
+            raise DnfsExp('网页代码过大（上限 512KB）', 400)
+    elif t == 'image':
+        data = sp.get('data', '')
+        if not isinstance(data, str) or not data.startswith('data:image/'):
+            raise DnfsExp('图片节点 data 必须是 data:image/ 开头的 DataURL', 400)
+        if len(data) > _SP_MAX_DATA:
+            raise DnfsExp('图片过大（上限约 2.6MB）', 400)
+    elif t == 'file':
+        name = sp.get('name', '')
+        data = sp.get('data', '')
+        if not isinstance(name, str) or not name.strip():
+            raise DnfsExp('文件节点缺少文件名', 400)
+        if len(name) > 255:
+            raise DnfsExp('文件名过长', 400)
+        if not isinstance(data, str) or not data:
+            raise DnfsExp('文件节点缺少数据', 400)
+        if len(data) > _SP_MAX_DATA:
+            raise DnfsExp('文件过大（上限约 2.6MB）', 400)
+
+
+def _sp_review_text(title, sp):
+    """特殊节点的 AI 审核文本：剔除 base64 负载（体量大且无审核意义），仅保留文本字段。"""
+    parts = [title or '']
+    note = sp.get('note')
+    if isinstance(note, str) and note.strip():
+        parts.append(note)
+    t = sp['_sp']
+    if t == 'link':
+        parts.append(str(sp.get('url', '')))
+    elif t == 'html':
+        parts.append(str(sp.get('code', ''))[:_SP_REVIEW_CODE_PREFIX])
+    else:  # image / file
+        parts.append(str(sp.get('name', '')))
+    return '\n'.join(parts)
+
+# 这个也许不用这么复杂 大不了每个异常点我们抛出DnfsExp类
+#class InvalidRequest(DnfsExp):
+#    '''非法参数异常'''
+#    def __init__(self, msg: str):
+#        super().__init__(msg)
+
+def _handle_exp(func):
+    '''处理视图函数中抛出的异常，并在日志模块中进行记录'''
+    def wrapper():
+        try: return func()
+        except DnfsExp as e:
+            logs.warning('dnfs', str(e), extra={})
+            return jsonify({'error': str(e)}), e.get_status()
+        except Exception as e:
+            logs.warning('dnfs', str(e), extra={})
+            return jsonify({'error': str(e)}), 500
+    return wrapper
 
 app = Flask(__name__)
 apply_security_headers(app)
 CORS(app)
 
-#app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'notes.db')
-
-#app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-#db = SQLAlchemy(app)
-
-#class Note(db.Model):
-
-#    id = db.Column(db.Integer, primary_key=True)
-
-#    pid = db.Column(db.Integer, nullable=False)
-
-#    title = db.Column(db.String(128), nullable=False)
-
-#    content = db.Column(db.Text, nullable=False)
-
-
-
-#    def __repr__(self):
-
-#        return f"<Node {self.title}>"
-
-#with app.app_context():
-
-#    db.create_all()
-
-
-
-# eg: {
-#    "pid": 0,
-#    "title": "test",
-#    "content": "hello"
-#}
 
 def decode_token(token:  str):
     idx = token.find('_')
@@ -155,32 +293,26 @@ def decode_token(token:  str):
        
 
 @app.route('/add_note', methods=['POST'])
-
+@_handle_exp
 def add_note():
-
+    # 获取请求数据
     data = request.get_json()
-
     pid: int = data.get('pid')
-
     title: str = data.get('title')
-
     content: str = data.get('content')
-
     if pid is None or not title or not content:
-
-        logs.warning('dnfs', 'add_note 参数缺失', extra={'ip': request.remote_addr})
-        return jsonify({"error": "Pid, title and content are required"}), 400
+        raise DnfsExp("非法参数", 400)
 
     info = None
     auth: str = request.headers.get('Authorization', '')
     if auth.startswith('Bearer '):
         token: str = auth[7:]
         info  = decode_token(token)
-
     if info is None:
-        logs.warning('dnfs', 'add_note 未授权访问', extra={'ip': request.remote_addr})
-        return jsonify({"error": "Warning: no Authorization"}), 401
+        raise DnfsExp("未授权访问，从"+request.remote_addr, 401)
 
+
+    # 父节点是否存在
     if pid != 0:
 
         select_payload = {
@@ -193,19 +325,22 @@ def add_note():
 
         notes = _call_dbv2(select_payload)
 
-        # 不存在的父节点
         if len( notes['data']) == 0:
-            logs.warning('dnfs', f'add_note 父节点不存在 pid={pid}', extra={'user': info['user']})
-            return jsonify({'error': 'the new node need a parent'}), 400
+            raise DnfsExp('父节点不存在', 400)
 
 
-    # 内容审查
-    review = review_content(title + '\n' + content, 10)
-    if True != review:
-        #return jsonify({'error': 'review failed', 'data': review}), 400
-        logs.warning('dnfs', f'add_note 内容审核未通过 title={title}', extra={'user': info['user']})
-        return jsonify({'error': 'review failed'}), 400
+    # 特殊节点（管理员专属）：非管理员拒绝，并做字段/大小校验
+    sp = _parse_sp(content)
+    if sp is not None:
+        if not info.get('is_admin'):
+            raise DnfsExp('特殊节点仅管理员可发布，用户'+info.get('user')+'，从'+request.remote_addr, 403)
+        _validate_sp(sp)
 
+    # 内容审查（特殊节点剔除 base64 负载）
+    review = review_content(_sp_review_text(title, sp) if sp is not None else title + '\n' + content)
+    if True != review: raise DnfsExp('内容审核不通过，用户'+info.get('user')+'，从'+request.remote_addr, 400)
+
+    # 执行插入
     insert_payload = {
         'action': 'insert',
         'table': 'Notes',
@@ -218,20 +353,17 @@ def add_note():
     }
 
     result = _call_dbv2(insert_payload)
-
     success = result['success']
-
     if success is True:
         logs.info('dnfs', f'add_note 成功 title={title} pid={pid}', extra={'user': info['user']})
         return jsonify({'success': success}), 200
     else:
-        logs.error('dnfs', f'add_note 写入失败 title={title}', extra={'user': info['user']})
-        return jsonify({'success': success}), 400
+        raise DnfsExp('插入节点失败，用户'+info.get('user')+'，从'+request.remote_addr, 400)
 
 
 # {“pid”: 0} 
+@_handle_exp
 @app.route('/get_notes', methods=["POST"])
-
 def get_notes():
 
     data = request.get_json()
@@ -271,36 +403,6 @@ def get_notes():
 
     logs.info('dnfs', f'get_notes 查询 pid={pid} 返回{len(result)}条', extra={'ip': request.remote_addr})
     return jsonify(result), 200
-
-
-# 当前用户身份查询：配合前端用户面板，返回 user / is_admin。
-# 与 get_notes 同款可选解析：无 Token 或畸形 Token 按未登录处理（不 500）。
-@app.route('/whoami', methods=["POST"])
-def whoami():
-    info = None
-    auth: str = request.headers.get('Authorization', '')
-    if auth.startswith('Bearer '):
-        try:
-            info = decode_token(auth[7:])
-        except Exception:
-            info = None
-
-    if info is None:
-        return jsonify({'login': False}), 200
-
-    resp = {
-        'login': True,
-        'user': info.get('user'),
-        'is_admin': bool(info.get('is_admin'))
-    }
-    # 附加 Token 生命周期信息，供前端 Token 管理器估算过期时间
-    if info.get('iat'):
-        resp['iat'] = info['iat']
-    if info.get('created_at'):
-        resp['created_at'] = info['created_at']
-    if info.get('keep_time'):
-        resp['keep_time'] = info['keep_time']
-    return jsonify(resp), 200
 
 
 # eg: {"id": 1}
@@ -454,8 +556,19 @@ def update_note():
             logs.warning('dnfs', f'update_note 所有权拒绝 id={id}', extra={'user': info['user']})
             return jsonify({"error": 'It\'s not your note'}), 403
 
-    # 内容审查
-    review = review_content(title + '\n' + content, 10)
+    # 特殊节点（管理员专属）：非管理员拒绝，并做字段/大小校验
+    sp = _parse_sp(content)
+    if sp is not None:
+        if not info.get('is_admin'):
+            logs.warning('dnfs', f'update_note 特殊节点非管理员拒绝 id={id}', extra={'user': info['user']})
+            return jsonify({"error": '特殊节点仅管理员可发布'}), 403
+        try:
+            _validate_sp(sp)
+        except DnfsExp as e:
+            return jsonify({"error": str(e)}), e.get_status()
+
+    # 内容审查（特殊节点剔除 base64 负载）
+    review = review_content(_sp_review_text(title, sp) if sp is not None else title + '\n' + content)
     if True != review:
         #return jsonify({'error': 'review failed', 'data': review}), 400
         logs.warning('dnfs', f'update_note 内容审核未通过 id={id} title={title}', extra={'user': info['user']})
@@ -545,10 +658,7 @@ def get_note():
 #    """返回应用主页"""
 #    return render_template('index.html')
 
-ADDR='127.0.0.1'
-PORT=8006
 if __name__ == "__main__":
-    logs.info('dnfs', f'服务启动，监听 http://{ADDR}:{PORT}')
-    print(f'Listen at http://{ADDR}:{PORT}')
-    #app.run(host="127.0.0.1", port=8006)
-    serve(app, host='127.0.0.1', port=8006)
+    logs.info('dnfs', f'服务启动，监听 http://{_ADDR}:{_PORT}（db={_DBV2_ADDR}:{_DBV2_PORT}, ai_review={_REVIEW_SERVER_URL}）')
+    print(f'Listen at http://{_ADDR}:{_PORT}')
+    serve(app, host=_ADDR, port=_PORT)

@@ -21,7 +21,6 @@ captcha — 基于 pymsg 协议（MsgServer）的图形验证码服务。
 
 import base64
 import io
-import json
 import os
 import random
 import secrets
@@ -34,7 +33,7 @@ from PIL import Image, ImageDraw, ImageFont
 # pymsg 导入
 import sys as _sys
 _sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from pymsg import MsgServer  # noqa: E402
+from pymsg import RpcServer  # noqa: E402
 
 # ── 配置 ────────────────────────────────────────────────────────────────
 
@@ -97,56 +96,23 @@ def generate_image(text):
 class CaptchaServer:
     """基于 pymsg 的验证码服务，通过 TCP 长连接收发 JSON。"""
 
-    def __init__(self, addr="127.0.0.1", port=8009):
+    def __init__(self, addr="127.0.0.1", port=8009, workers=4):
         self.addr = addr
         self.port = port
-        self._server = MsgServer(addr, port)
-
-        # 路由表
-        self._routes = {
-            "image": self._handle_image,
-            "verify": self._handle_verify,
-            "health": self._handle_health,
-        }
+        self._server = RpcServer(addr, port, workers=workers)
+        self._server.add_route("image", self._handle_image)
+        self._server.add_route("verify", self._handle_verify)
+        self._server.add_route("health", self._handle_health)
 
     # ── 启动 / 停止 ──────────────────────────────────────────────────
     def start(self) -> None:
         """启动服务（阻塞当前线程）。"""
         print(f"[captcha] 监听 tcp://{self.addr}:{self.port}")
-        self._server.start(self._dispatch)
+        self._server.start()
 
     def stop(self) -> None:
         """从另一线程停止服务。"""
         self._server.stop()
-
-    # ── 消息调度 -------------------------------------------------------
-    def _dispatch(self, sock, addr, text):
-        """解析 JSON 中的 _route，分发给对应的 handler，并回复结果。"""
-        try:
-            req = json.loads(text)
-        except json.JSONDecodeError as e:
-            self._reply(sock, False, error=f"JSON 解析失败: {e}")
-            return
-
-        route = req.pop("_route", "")
-        handler = self._routes.get(route)
-        if handler is None:
-            self._reply(sock, False, error=f"未知路由: {route}")
-            return
-
-        try:
-            result = handler(req)
-            self._reply(sock, True, data=result)
-        except Exception as e:
-            self._reply(sock, False, error=str(e))
-
-    def _reply(self, sock, success, data=None, error=None):
-        resp = {"success": success}
-        if data is not None:
-            resp["data"] = data
-        if error is not None:
-            resp["error"] = error
-        self._server.reply(sock, json.dumps(resp, ensure_ascii=False))
 
     # ═══════════════════════════════════════════════════════════════════
     # 路由处理
@@ -209,9 +175,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="captcha — pymsg 验证码服务")
     parser.add_argument("--addr", default="127.0.0.1", help="监听地址")
     parser.add_argument("--port", type=int, default=8009, help="监听端口")
+    parser.add_argument("--workers", type=int, default=4,
+                        help="回调并发线程数（0=同步串行模式）")
     args = parser.parse_args()
 
-    server = CaptchaServer(args.addr, args.port)
+    server = CaptchaServer(args.addr, args.port, workers=args.workers)
     try:
         server.start()
     except KeyboardInterrupt:

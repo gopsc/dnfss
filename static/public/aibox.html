@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<!-- viewport-fit=cover：配合 safe-area 适配刘海屏；maximum-scale 防输入框聚焦自动缩放 -->
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no,viewport-fit=cover">
+<title>aibox 智能体</title>
+<link rel="stylesheet" href="css/theme.css">
+<link rel="stylesheet" href="css/aibox.css">
+</head>
+<body>
+<div id="app">
+	<header id="topbar">
+		<span class="title">🤖 aibox 智能体</span>
+		<span id="conn-status" class="disconnected"><span class="dot"></span><b id="status-text">未连接</b></span>
+		<button id="task-toggle" type="button">📋 任务<span id="task-badge"></span></button>
+		<button id="conn-btn" type="button">连接</button>
+	</header>
+	<div id="admin-tip" style="display:none"></div>
+	<main id="chat"></main>
+	<div id="input-bar">
+		<button id="interrupt-btn" type="button" style="display:none" title="中断当前生成">⏸</button>
+		<textarea id="input" rows="1" placeholder="输入消息，/help 查看命令"></textarea>
+		<button id="send-btn" type="button">发送</button>
+	</div>
+</div>
+<aside id="task-panel">
+	<header>任务面板<button id="task-close" type="button" aria-label="关闭">×</button></header>
+	<div id="task-list"></div>
+</aside>
+<div id="backdrop"></div>
+<script src="js/markdown-it-12_0_0.js"></script>
+<script src="js/aibox.js"></script>
+</body>
+</html>

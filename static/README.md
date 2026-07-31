@@ -21,6 +21,7 @@ static :9200 (Flask + CORS)
         ├── index.html   社区首页
         ├── forgot.html  忘记密码
         ├── dnfs.html    树状笔记（调用 dnfs:8006）
+        ├── aibox.html   aibox 智能体 Web 客户端（管理员专属，经 gateway WS 反向代理）
         ├── __view.html  文件浏览器（系统文件，不在列表中显示）
         ├── allcolor.html 调色板
         ├── LICENSE.html 许可证页面
@@ -50,6 +51,7 @@ static :9200 (Flask + CORS)
 | `POST /api/hash` | SHA256 密码哈希 |
 | `POST /api/check_user` | 检查用户是否已注册（查询 gateway 数据库） |
 | `POST /api/reset_password` | 重置用户密码（直接操作 gateway 数据库） |
+| `GET /api/favicon?url=` | favicon 服务端代理（dnfs 链接卡片用；SSRF 防护：仅 http/https + 内网地址拦截 + 重定向校验，512KB 上限，缓存 1 天） |
 
 ### yhdet OAuth 路由
 
@@ -68,15 +70,19 @@ static :9200 (Flask + CORS)
 | `POST /add_note` | 新增笔记（代理至 dnfs:8006） |
 | `POST /delete_note` | 删除笔记（代理至 dnfs:8006） |
 | `POST /update_note` | 更新笔记（代理至 dnfs:8006） |
-| `POST /whoami` | 当前用户身份查询（代理至 dnfs:8006） |
 
-以上 5 个 dnfs 代理路由均支持 HttpOnly Cookie 模式：当请求携带 `q4_token` Cookie 时，自动转为 `Authorization: Bearer` 头转发。
+以上 4 个 dnfs 代理路由均支持 HttpOnly Cookie 模式：当请求携带 `q4_token` Cookie 时，自动转为 `Authorization: Bearer` 头转发。
+
+> `/whoami` 已上移至 gateway，由 gateway 直接验签 Token 返回用户身份，不再经 static 代理到 dnfs。
 
 ## 功能
 
 - 文件浏览：目录导航、面包屑、实时搜索（`/` 或 `Ctrl+F`）、文件统计
 - 流媒体：视频（MP4/WebM/OGG/AVI/MOV/MKV）与音频（MP3/WAV/OGG/FLAC/AAC/M4A）在线播放，支持进度拖动
 - 深色模式：`css/theme.css` 统一主题，自动适配系统偏好
+- 表单组件：注册页图形/邮箱验证码统一 `.code-box` 行内布局（文字标签 + 输入框 + 控件同排，窄屏自动换行），验证码图片样式复用 `theme.css` 的 `.captcha-img` 类
+- 特殊节点（dnfs 管理员专属）：信封 JSON `{"_sp":...}` 内容差异化渲染 —— 链接（favicon 卡片）/ 网页代码（可审计可运行）/ 图片（直显）/ 文件（下载）；发布权限由 dnfs 后端按 `is_admin` 强制
+- aibox Web 客户端：`aibox.html` 移动端适配聊天页，经 gateway `[WsProxy]` 反向代理（如 `/ws/aibox → ws://127.0.0.1:8765`）与 aibox 智能体通信，握手由 gateway 强制 `is_admin` 验签；协议与 BotOps/client.py 兼容（chunk 流式 / reasoning 思考区 / task 任务面板 / 指数退避重连）
 - 路径遍历防护：`safe_path_join` 限制访问范围在 `directory.root` 内
 - Nuitka 编译：可打包为独立二进制 `fsys.bin`（`sys.frozen` 检测 + BASE_DIR 锚定）
 - 安全头注入：`security_middleware.py` 为所有响应注入 CSP、X-Frame-Options 等安全头

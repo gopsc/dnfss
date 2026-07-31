@@ -4,6 +4,8 @@ Dendrachy Network File-System，基于父子关系（pid）组织的树状节点
 
 监听 `127.0.0.1:8006`，提供节点的增删改查，支持以 Base64 编码形式在 `content` 中存储文件数据。所有写操作需携带由 gateway 签发的 Token。
 
+支持**特殊节点**（管理员专属）：`content` 为信封 JSON 时，前端按类型渲染为链接卡片 / 可运行网页 / 图片 / 文件下载，详见[特殊节点](#特殊节点管理员专属)。
+
 ## 架构
 
 ```
@@ -44,8 +46,25 @@ Authorization: Bearer <base64_payload>_<rsa_sign>
 - payload 中取 `user` 字段作为操作者，写入 `owner`。
 - `delete_note` 与 `update_note` 校验所有权：
   - 节点 `owner` 必须等于当前 `user`，否则 `403`；
-  - **例外**：管理员账号（`ADMIN_USERS`：`admin`、`admin@qsont.me`）可删除/更新任意节点。
+  - **例外**：管理员（Token payload `is_admin=true`，由 gateway 按 `[Admin] users` 白名单签发）可删除/更新任意节点。
 - `get_notes` 不需要鉴权。
+
+## 特殊节点（管理员专属）
+
+`content` 为以下信封 JSON 时即为特殊节点，前端 `dnfs.js` 按 `_sp` 类型差异化渲染；普通 Markdown 内容不受影响：
+
+| `_sp` | 信封字段 | 前端表现 |
+|-------|---------|---------|
+| `link` | `url`（http/https，≤2048）、`note?` | favicon 图标（经 static `/api/favicon` 代理拉取）+ 可点击链接 |
+| `html` | `code`（≤512KB）、`note?` | "审计源码"（纯文本展示）+ "运行"（新窗口执行）按钮 |
+| `image` | `name`、`data`（`data:image/` DataURL，≤3.5M 字符）、`note?` | 图片直接显示 |
+| `file` | `name`、`mime`、`data`（Base64，≤3.5M 字符）、`note?` | 下载按钮（Base64→Blob→下载） |
+
+规则：
+
+- **仅管理员可发布/更新**（`add_note` / `update_note` 中按 `is_admin` 强制，非管理员返回 403）；前端发布面板也仅对管理员显示。
+- AI 内容审核剔除 Base64 负载（体量大且无审核意义）：`link` 审 `title+url+note`，`html` 审 `title+code 前 4000 字符+note`，`image`/`file` 审 `title+name+note`。
+- `{"_sp"` 开头但 JSON 非法的内容会被拒绝发布（400），防止半截信封流入。
 
 ## 接口文档
 
@@ -154,7 +173,7 @@ curl -X POST http://localhost:8006/delete_note \
 
 更新节点的 pid / title / content（pid 变更可用于迁移节点）。流程：校验参数 → 校验 Token → 校验所有权 → AI 内容审核 → 更新。
 
-仅节点 owner 可更新；管理员账号（`ADMIN_USERS`：`admin`、`admin@qsont.me`）豁免，可更新任意节点。
+仅节点 owner 可更新；管理员（Token payload `is_admin`）豁免，可更新任意节点。
 
 **Request**
 
@@ -196,15 +215,41 @@ curl -X POST http://localhost:8006/update_note \
 
 ## 配置
 
-服务地址与上游依赖硬编码在 [dnfs.py](dnfs.py)：
+dnfs 已接入 confs 统一配置服务，采用**三层 fail-safe** 加载模式（与 static 服务一致）：
 
-| 常量 | 值 | 说明 |
-|------|----|------|
-| `ADDR` / `PORT` | `127.0.0.1` / `8006` | 监听地址 |
-| `DB_SERVER_URL` | `http://127.0.0.1:8005/execute` | db 服务 |
-| `REVIEW_SERVER_URL` | `http://127.0.0.1:8007/review` | ai_review 服务 |
+**加载顺序**：内置默认值 → confs 统一配置服务（dnfs.ini，优先）→ 环境变量覆盖（最高优先级）
 
-调用超时均为 10 秒。
+### 配置文件
+
+集中托管在 [confs/configs/dnfs.ini](../confs/configs/dnfs.ini)，由 confs 服务分发：
+
+| Section | Key | 默认值 | 说明 |
+|---------|-----|--------|------|
+| `[server]` | `host` | `127.0.0.1` | 监听地址 |
+| `[server]` | `port` | `8006` | 监听端口 |
+| `[database]` | `host` | `127.0.0.1` | db 服务地址 |
+| `[database]` | `port` | `8005` | db 服务端口 |
+| `[database]` | `timeout` | `10` | RPC 调用超时（秒） |
+| `[ai_review]` | `url` | `http://127.0.0.1:8007/review` | AI 审核接口地址 |
+| `[ai_review]` | `timeout` | `10` | AI 审核请求超时（秒） |
+| `[confs]` | `host` | `127.0.0.1` | confs 服务地址 |
+| `[confs]` | `port` | `8010` | confs 服务端口 |
+
+### 环境变量（Docker 环境必需，优先级最高）
+
+环境变量覆盖配置文件值，容器化部署时通过 docker-compose.yml 传入服务名：
+
+| 变量 | 容器内值 | 说明 |
+|------|---------|------|
+| `LISTEN_ADDR` | `0.0.0.0` | 监听地址（容器内需绑定所有网卡） |
+| `LISTEN_PORT` | `8006` | 监听端口 |
+| `DB_HOST` | `db` | db 服务主机名（docker-compose 服务名） |
+| `DB_PORT` | `8005` | db 服务端口 |
+| `REVIEW_URL` | `http://ai_review:8007/review` | ai_review 服务地址 |
+| `CONFS_HOST` | - | 可选，confs 容器化后使用 |
+| `CONFS_PORT` | - | 可选，confs 容器化后使用 |
+
+配置来源会记录到日志（`logs.info/warning`），便于排查实际用了哪一层。本地裸机运行时 confs 不可用会自动回退到内置默认值 + 环境变量。
 
 ## 前端
 

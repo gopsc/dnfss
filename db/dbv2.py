@@ -29,6 +29,7 @@ dbv2 — 基于 pymsg 协议（MsgServer）的数据库服务。
 
 import json
 import os
+import threading
 import time
 import traceback
 from datetime import datetime, date, time as dt_time, timezone, timedelta
@@ -36,6 +37,7 @@ from datetime import datetime, date, time as dt_time, timezone, timedelta
 from sqlalchemy import (
     create_engine, MetaData, Table,
     select, insert, update, delete, func, and_,
+    event,
 )
 from sqlalchemy import types as sa_types
 from sqlalchemy.exc import SQLAlchemyError
@@ -43,11 +45,31 @@ from sqlalchemy.exc import SQLAlchemyError
 # pymsg 导入
 import sys as _sys
 _sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from pymsg import MsgServer  # noqa: E402
+from pymsg import RpcServer  # noqa: E402
 
 # ── 数据库配置 ──────────────────────────────────────────────────────────
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///database.db")
+
+# ── SQLite 连接配置（针对 Docker/多线程环境优化）──────────────────────
+
+def _configure_sqlite(dbapi_connection, connection_record):
+    """为每个 SQLite 连接设置 PRAGMA，优化并发与持久化性能。
+
+    - WAL 模式：读写不互斥，并发性能大幅提升，Docker 卷挂载下更稳定
+    - NORMAL 同步级别：在断电时可能丢失最近提交的事务（但不会损坏数据库）
+      配合 WAL checkpoint 足够安全，性能显著提升
+    - foreign_keys=ON：启用外键约束
+    - busy_timeout：锁等待超时 5 秒，避免 SQLITE_BUSY 错误
+    - mmap_size：使用内存映射 I/O 提升读取性能
+    """
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.execute("PRAGMA mmap_size=268435456")  # 256MB
+    cursor.close()
 
 # ── 日志模块常量 ────────────────────────────────────────────────────────
 
@@ -76,69 +98,66 @@ def _json_default(o):
 class DBServer:
     """基于 pymsg 的数据库服务，通过 TCP 长连接收发 JSON。"""
 
-    def __init__(self, addr="127.0.0.1", port=8005):
+    def __init__(self, addr="127.0.0.1", port=8005, workers=4):
         self.addr = addr
         self.port = port
-        self.engine = create_engine(DATABASE_URL)
+        self.engine = create_engine(
+            DATABASE_URL,
+            connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
+        )
+        # 为 SQLite 连接应用 PRAGMA 优化
+        if DATABASE_URL.startswith("sqlite"):
+            event.listen(self.engine, "connect", _configure_sqlite)
         self.metadata = MetaData()
-        self._server = MsgServer(addr, port)
+        self._server = RpcServer(
+            addr, port, workers=workers,
+            json_default=_json_default,
+            on_error=lambda route, e: traceback.print_exc(),
+        )
+        self._server.add_route("execute", self._handle_execute)
 
         # 日志表缓存（避免重复反射）
         self._logs_table_cache = {}
 
-        # 路由表
-        self._routes = {
-            "execute": self._handle_execute,
-        }
+        # 业务表缓存：仅缓存"已完整反射"的表。
+        # 注意不能用 metadata.tables 作完成标记 —— Table(autoload_with=...)
+        # 会先注册进 metadata.tables（此时无列）再填充列，锁外快路径可能
+        # 读到反射半途的空列表。
+        self._tables_cache = {}
+
+        # 表反射锁：workers>0 时多个 worker 线程可能对同一新表并发做
+        # check-then-act 反射（Table(..., autoload_with=...) 对已定义表名会
+        # 抛 InvalidRequestError），反射操作需串行化
+        self._reflect_lock = threading.Lock()
 
     # ── 启动 / 停止 ──────────────────────────────────────────────────
     def start(self) -> None:
         """启动服务（阻塞当前线程）。"""
         print(f"[dbv2] 监听 tcp://{self.addr}:{self.port}")
-        self._ensure_logs_table()   # 确保 Logs 表已建好（外部 MsgClient 写日志前）
+        self._ensure_logs_table()   # 确保 Logs 表已建好（外部写日志前）
         self._start_cleanup_thread()
-        self._server.start(self._dispatch)
+        self._server.start()
 
     def stop(self) -> None:
         """从另一线程停止服务。"""
         self._server.stop()
 
-    # ── 消息调度 -------------------------------------------------------
-    def _dispatch(self, sock, addr, text):
-        """解析 JSON 中的 _route，分发给对应的 handler，并回复结果。"""
-        try:
-            req = json.loads(text)
-        except json.JSONDecodeError as e:
-            self._reply(sock, False, error=f"JSON 解析失败: {e}")
-            return
-
-        route = req.pop("_route", "")
-        handler = self._routes.get(route)
-        if handler is None:
-            self._reply(sock, False, error=f"未知路由: {route}")
-            return
-
-        try:
-            result = handler(req, sock=sock)
-            self._reply(sock, True, data=result)
-        except Exception as e:
-            traceback.print_exc()
-            self._reply(sock, False, error=str(e))
-
-    def _reply(self, sock, success, data=None, error=None):
-        resp = {"success": success}
-        if data is not None:
-            resp["data"] = data
-        if error is not None:
-            resp["error"] = error
-        self._server.reply(sock, json.dumps(resp, ensure_ascii=False,
-                                            default=_json_default))
-
     # ── 表反射 ---------------------------------------------------------
     def _get_table(self, table_name):
-        if table_name not in self.metadata.tables:
-            Table(table_name, self.metadata, autoload_with=self.engine)
-        return self.metadata.tables[table_name]
+        # double-check：_tables_cache 只在反射完整完成后写入（dict 读写 GIL
+        # 下安全），锁外快路径读到的要么是完整表要么是 None
+        table = self._tables_cache.get(table_name)
+        if table is None:
+            with self._reflect_lock:
+                table = self._tables_cache.get(table_name)
+                if table is None:
+                    # 持锁期间无其他反射在进行，metadata 中的表必然完整
+                    table = self.metadata.tables.get(table_name)
+                    if table is None:
+                        table = Table(table_name, self.metadata,
+                                      autoload_with=self.engine)
+                    self._tables_cache[table_name] = table
+        return table
 
     # ── 日期/时间类型适配 ------------------------------------------------
     def _coerce_value(self, column, value):
@@ -222,7 +241,7 @@ class DBServer:
     # 路由处理 — execute
     # ═══════════════════════════════════════════════════════════════════
 
-    def _handle_execute(self, data, **kw):
+    def _handle_execute(self, data):
         action = data.get("action", "select")
         table_name = data.get("table")
         if not table_name:
@@ -316,35 +335,43 @@ class DBServer:
         if "Logs" in self._logs_table_cache:
             return self._logs_table_cache["Logs"]
 
-        with self.engine.connect() as conn:
-            conn.exec_driver_sql("""
-                CREATE TABLE IF NOT EXISTS Logs (
-                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ts        TEXT    NOT NULL,
-                    service   TEXT    NOT NULL,
-                    level     TEXT    NOT NULL,
-                    message   TEXT    NOT NULL,
-                    trace_id  TEXT,
-                    extra     TEXT
-                )
-            """)
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS idx_logs_service_ts ON Logs(service, ts)"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS idx_logs_level_ts  ON Logs(level, ts)"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS idx_logs_ts         ON Logs(ts)"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS idx_logs_trace      ON Logs(trace_id)"
-            )
-            conn.commit()
+        # 与 _get_table 共用反射锁，double-check 保证并发下只建/反射一次；
+        # Logs 可能已被 _get_table("Logs") 反射进 metadata，需幂等处理
+        with self._reflect_lock:
+            if "Logs" in self._logs_table_cache:
+                return self._logs_table_cache["Logs"]
 
-        table = Table("Logs", self.metadata, autoload_with=self.engine)
-        self._logs_table_cache["Logs"] = table
-        return table
+            table = self.metadata.tables.get("Logs")
+            if table is None:
+                with self.engine.connect() as conn:
+                    conn.exec_driver_sql("""
+                        CREATE TABLE IF NOT EXISTS Logs (
+                            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                            ts        TEXT    NOT NULL,
+                            service   TEXT    NOT NULL,
+                            level     TEXT    NOT NULL,
+                            message   TEXT    NOT NULL,
+                            trace_id  TEXT,
+                            extra     TEXT
+                        )
+                    """)
+                    conn.exec_driver_sql(
+                        "CREATE INDEX IF NOT EXISTS idx_logs_service_ts ON Logs(service, ts)"
+                    )
+                    conn.exec_driver_sql(
+                        "CREATE INDEX IF NOT EXISTS idx_logs_level_ts  ON Logs(level, ts)"
+                    )
+                    conn.exec_driver_sql(
+                        "CREATE INDEX IF NOT EXISTS idx_logs_ts         ON Logs(ts)"
+                    )
+                    conn.exec_driver_sql(
+                        "CREATE INDEX IF NOT EXISTS idx_logs_trace      ON Logs(trace_id)"
+                    )
+                    conn.commit()
+                table = Table("Logs", self.metadata, autoload_with=self.engine)
+
+            self._logs_table_cache["Logs"] = table
+            return table
 
     # ── 内部日志（直接写库，无 HTTP）──────────────────────────────────
     def _log_internal(self, service, level, message,
@@ -429,12 +456,17 @@ class DBServer:
 if __name__ == "__main__":
     import argparse
 
+    default_addr = os.environ.get("LISTEN_ADDR", "0.0.0.0")
+    default_port = int(os.environ.get("LISTEN_PORT", "8005"))
+
     parser = argparse.ArgumentParser(description="dbv2 — pymsg 数据库服务")
-    parser.add_argument("--addr", default="127.0.0.1", help="监听地址")
-    parser.add_argument("--port", type=int, default=8005, help="监听端口")
+    parser.add_argument("--addr", default=default_addr, help="监听地址")
+    parser.add_argument("--port", type=int, default=default_port, help="监听端口")
+    parser.add_argument("--workers", type=int, default=4,
+                        help="回调并发线程数（0=同步串行模式）")
     args = parser.parse_args()
 
-    server = DBServer(args.addr, args.port)
+    server = DBServer(args.addr, args.port, workers=args.workers)
     try:
         server.start()
     except KeyboardInterrupt:

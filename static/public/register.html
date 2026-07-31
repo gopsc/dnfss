@@ -13,12 +13,17 @@
 				<div>
 				<label>邮箱号：</label>
 					<input type="email" id="regemail" placeholder="请输入邮箱号">
-					<div class="code-box">验证码：
+					<span id="emlTip"></span>
+				<div class="code-box">图形验证码：
+					<input type="text" id="captchaAnswer" placeholder="请输入图形验证码" maxlength="4" autocomplete="off">
+					<img id="captchaImg" class="captcha-img" alt="加载中…" title="点击刷新验证码">
+					<span id="captchaTip"></span>
+				</div>
+				<div class="code-box">邮箱验证码：
 						<input type="text" id="code" placeholder="请输入6位验证码" inputmode="numeric" maxlength="6">
 						<input type="button" id="getCode" value="获取验证码">
 						<span id="codeTip"></span>
 					</div>
-					<span id="emlTip"></span>
 					<label>密码：</label>
 					<input type="password" id="regpsw" placeholder="密码至少6位">
 					<label>验证密码：</label>
@@ -36,6 +41,6 @@
 			<a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">蜀ICP备2024107064号-2</a>
 		</footer>
 		<script src="js/validation.js"></script>
-		<script src="js/register.js?v=6"></script>
+		<script src="js/register.js?v=7"></script>
 	</body>
 </html>

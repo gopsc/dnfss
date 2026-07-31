@@ -28,7 +28,7 @@ using namespace qing;
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-constexpr const char *_VER = "0.5.3";
+constexpr const char *_VER = "0.6.0";
 
 //////////////////////////////////
 #include <sstream>
@@ -306,6 +306,11 @@ http::response<http::string_body> handleRefreshToken(
 		const http::request<http::string_body>& req,
 		const std::unordered_map<std::string, std::string>& params);
 
+/* 当前用户身份查询：验签 Token 后返回 user / is_admin / Token 生命周期信息 */
+http::response<http::string_body> handleWhoami(
+		const http::request<http::string_body>& req,
+		const std::unordered_map<std::string, std::string>& params);
+
 /* 代理 captcha 图形验证码：pymsg 调 captcha 服务，返回 PNG 图片 */
 http::response<http::string_body> handleCaptchaImage(
 		const http::request<http::string_body>& req,
@@ -334,14 +339,23 @@ static int			_TOKEN_MAX_REFRESH = 10;	// Token 生命周期内最大刷新次数
 static std::vector<std::string>	_CORS_ORIGINS;			// CORS 允许的 Origin 白名单，可由 [CORS] allowed_origins 配置
 static std::vector<std::string>	_ADMIN_USERS;			// 管理员账号白名单，可由 [Admin] users 配置（分号分隔），登录时写入 Token payload 的 is_admin
 
+/* WebSocket 代理路由：path -> ws://backend-host:port/target
+ * 仅管理员用户可访问，握手阶段由 ws_proxy 回调验签 Token 中的 is_admin */
+static std::unordered_map<std::string, std::string> _WS_PROXY_ROUTES;
+
 /* instance items */
 static std::unique_ptr<HttpServer>		_SERVE;
 static std::unique_ptr<MyRSA::Generator>	_KEYGEN;
 //static std::unique_ptr<Sqlite3>			_SQLDB;
 static RateLimiter				_LOGIN_RATE;
 static RateLimiter				_REGISTER_RATE;
-static RateLimiter				_EMAIL_CODE_RATE;	// 发送邮箱验证码限流
+static RateLimiter				_EMAIL_CODE_RATE;	// 发送邮箱验证码 IP 级限流
 static RateLimiter				_REFRESH_TOKEN_RATE;	// Token 刷新限流
+// 邮箱级双窗口限流:同一邮箱在 gateway 层的发送配额。
+// 配合 IP 限流(IP 可被代理池绕过)与 smtp 同邮箱 60s 冷却(仅防短期重复)。
+// 双窗口设计:小时窗限制短期轰炸,天窗限制长期骚扰。
+static RateLimiter				_EMAIL_ADDR_RATE_HOUR;	// 3 次/小时/邮箱
+static RateLimiter				_EMAIL_ADDR_RATE_DAY;	// 10 次/天/邮箱
 
 /* pymsg 下游调用超时（秒）：
  * captcha / smtp verify_email 均为本机内存操作，5s 足够；
@@ -510,6 +524,31 @@ int main(int argc, char **argv) {
 		_TOKEN_MAX_REFRESH = cf.get<int>("Token.max_refresh", 10);
 		_CORS_ORIGINS = split(cf.get<std::string>("CORS.allowed_origins", ""), ';');
 		_ADMIN_USERS = split(cf.get<std::string>("Admin.users", ""), ';');
+
+		/* [WsProxy] WebSocket 代理路由：格式 /path=ws://host:port/target;...
+		 * 仅管理员（Token 中 is_admin=true）可访问，用于 aibox 等内部 WS 服务的网关暴露 */
+		{
+			std::string ws_cfg = cf.get<std::string>("WsProxy.routes", "");
+			if (!ws_cfg.empty()) {
+				auto entries = split(ws_cfg, ';');
+				for (auto& entry : entries) {
+					auto eq = entry.find('=');
+					if (eq != std::string::npos) {
+						std::string path = entry.substr(0, eq);
+						std::string url  = entry.substr(eq + 1);
+						// 去除首尾空白
+						auto trim = [](std::string& s) {
+							while (!s.empty() && std::isspace((unsigned char)s.front())) s.erase(s.begin());
+							while (!s.empty() && std::isspace((unsigned char)s.back())) s.pop_back();
+						};
+						trim(path); trim(url);
+						if (!path.empty() && !url.empty()) {
+							_WS_PROXY_ROUTES[path] = url;
+						}
+					}
+				}
+			}
+		}
 		}
 
 
@@ -601,6 +640,81 @@ int main(int argc, char **argv) {
 //}
 
 
+/* WebSocket 代理握手鉴权：从 HTTP Upgrade 请求中提取 Token 并验证 is_admin。
+ * 返回 true 表示鉴权通过，out_target 填入后端 ws:// URL；返回 false 拒绝连接。 */
+static bool verifyWsAdminToken(const http::request<http::string_body>& req,
+                                const std::string& target_url,
+                                std::string& out_target) {
+	out_target.clear();
+	try {
+		std::string raw;
+		auto it = req.base().find(http::field::authorization);
+		if (it != req.base().end()) {
+			raw = std::string(it->value());
+		} else {
+			auto cit = req.base().find(http::field::cookie);
+			if (cit != req.base().end()) {
+				std::string cookie_token = get_cookie_value(std::string(cit->value()), "q4_token");
+				if (!cookie_token.empty())
+					raw = "Bearer " + cookie_token;
+			}
+		}
+		if (raw.empty() || raw.substr(0, 7) != "Bearer ")
+			return false;
+
+		raw = raw.substr(7);
+		size_t idx = raw.find("_");
+		if (idx == std::string::npos) return false;
+
+		std::string data = raw.substr(0, idx);
+		std::string sign = raw.substr(idx + 1);
+		std::string auth = Base64::base64_decode_to_string(data);
+
+		auto publ = MyRSA::Public_Key::from_pem(_KEYGEN->get_public_key_pem());
+		if (!publ.Verify(auth, sign)) return false;
+
+		json::value jv_t;
+		try { jv_t = json::parse(auth); }
+		catch (...) { return false; }
+		if (!jv_t.is_object()) return false;
+		json::object& obj = jv_t.as_object();
+
+		auto t = json::value_to<std::string>(obj["created_at"]);
+		auto keep_time_val = json::value_to<int>(obj["keep_time"]);
+		auto created_tp = LocalTime::parse(t);
+		if (created_tp) {
+			auto now = std::chrono::system_clock::now();
+			auto expire_tp = *created_tp + std::chrono::seconds(keep_time_val);
+			if (now > expire_tp) return false;
+		}
+
+		// 必须是管理员
+		bool is_admin = false;
+		if (obj.contains("is_admin")) {
+			auto& v = obj["is_admin"];
+			if (v.is_bool()) is_admin = v.as_bool();
+		}
+		if (!is_admin) {
+			logs().warning("gateway", "WS proxy rejected: non-admin user",
+				std::nullopt, std::string(req.target()));
+			return false;
+		}
+
+		out_target = target_url;
+		// 将客户端请求路径附加到目标URL后（支持子路径）
+		std::string req_path = std::string(req.target());
+		auto qpos = req_path.find('?');
+		if (qpos != std::string::npos) req_path = req_path.substr(0, qpos);
+		// 不追加路径：代理直接使用配置中指定的完整目标URL
+		(void)req_path;
+		return true;
+	}
+	catch (const std::exception& e) {
+		std::cerr << "[WS proxy auth error] " << e.what() << std::endl;
+		return false;
+	}
+}
+
 /* 注册http路由 */
 void registerRoutes(HttpServer &server) {
 
@@ -635,6 +749,11 @@ void registerRoutes(HttpServer &server) {
 			[](const auto& req, const auto& params) { return handleRefreshToken(req, params); });
 	});
 
+	server.post("/whoami", [](const auto& req, const auto& params) -> http::response<http::string_body> {
+		return wrapperHttp(req, params,
+			[](const auto& req, const auto& params) { return handleWhoami(req, params); });
+	});
+
 	/* 代理 captcha 图形验证码（须在 get("*") 通配符之前注册） */
 	server.get("/captcha/image", [](const auto& req, const auto& params) -> http::response<http::string_body> {
 		return wrapperHttp(req, params,
@@ -647,8 +766,23 @@ void registerRoutes(HttpServer &server) {
 	});
 
 	server.post("*", [](const auto& req, const auto& params) {
-		return handleProxy(req, params, "post");
+		return wrapperHttp(req, params,
+			[](const auto& req, const auto& params) { return handleProxy(req, params, "post"); });
 	});
+
+	/* WebSocket 反向代理（仅管理员）：
+	 * ws_proxy 回调在 HTTP Upgrade 握手阶段触发，
+	 * 返回非空 ws:// URL 表示鉴权通过并桥接到该后端；返回空串则拒绝连接。 */
+	for (const auto& [path, url] : _WS_PROXY_ROUTES) {
+		server.ws_proxy(path, [url](const http::request<http::string_body>& upgradeReq) -> std::string {
+			std::string target;
+			if (verifyWsAdminToken(upgradeReq, url, target)) {
+				return target;
+			}
+			return "";
+		});
+		std::cout << "  WS-PROXY " << path << " -> " << url << " (admin only)" << std::endl;
+	}
 
 }
 
@@ -942,6 +1076,132 @@ http::response<http::string_body> handleLogout(
 	res.set("Connection", "close");
 	res.result(http::status::ok);
 	res.body() = R"({"success": true, "message": "logged out"})";
+	res.prepare_payload();
+	return res;
+}
+
+/* 当前用户身份查询 /whoami
+ *
+ * 验签 Token 后返回 user / is_admin / Token 生命周期信息（iat / created_at / keep_time）。
+ * Token 来源：Authorization: Bearer 优先，回退 Cookie q4_token。
+ * 无 Token 或验签失败返回 {"login": false}，与 dnfs 旧接口契约一致。 */
+http::response<http::string_body> handleWhoami(
+	const http::request<http::string_body>& req,
+	const std::unordered_map<std::string, std::string>& params)
+{
+	http::response<http::string_body> res;
+	res.version(req.version());
+
+	auto _PUBL = MyRSA::Public_Key::from_pem(_KEYGEN->get_public_key_pem());
+
+	/* 获取 Token：Authorization 头优先，回退 Cookie */
+	std::string raw;
+	auto it_auth = req.base().find("Authorization");
+	if (it_auth != req.base().end()) {
+		raw = std::string(it_auth->value());
+	} else {
+		auto cit = req.base().find("Cookie");
+		if (cit != req.base().end()) {
+			std::string cookie_token = get_cookie_value(std::string(cit->value()), "q4_token");
+			if (!cookie_token.empty())
+				raw = "Bearer " + cookie_token;
+		}
+	}
+
+	/* 无 Token 或格式错误：返回未登录 */
+	if (raw.empty() || raw.substr(0, 7) != "Bearer ") {
+		res.set(http::field::content_type, "application/json");
+		res.set("Connection", "close");
+		res.result(http::status::ok);
+		res.body() = R"({"login": false})";
+		res.prepare_payload();
+		return res;
+	}
+
+	raw = raw.substr(7);
+	size_t idx = raw.find("_");
+	if (idx == std::string::npos) {
+		res.set(http::field::content_type, "application/json");
+		res.set("Connection", "close");
+		res.result(http::status::ok);
+		res.body() = R"({"login": false})";
+		res.prepare_payload();
+		return res;
+	}
+
+	std::string data = raw.substr(0, idx);
+	std::string sign = raw.substr(idx + 1);
+	std::string auth;
+	try { auth = Base64::base64_decode_to_string(data); }
+	catch (const std::exception&) {
+		res.set(http::field::content_type, "application/json");
+		res.set("Connection", "close");
+		res.result(http::status::ok);
+		res.body() = R"({"login": false})";
+		res.prepare_payload();
+		return res;
+	}
+
+	/* RSA 验签：失败按未登录处理 */
+	if (!_PUBL.Verify(auth, sign)) {
+		res.set(http::field::content_type, "application/json");
+		res.set("Connection", "close");
+		res.result(http::status::ok);
+		res.body() = R"({"login": false})";
+		res.prepare_payload();
+		return res;
+	}
+
+	/* 解析 Token payload */
+	json::value jv_t;
+	try { jv_t = json::parse(auth); }
+	catch (const std::exception&) {
+		res.set(http::field::content_type, "application/json");
+		res.set("Connection", "close");
+		res.result(http::status::ok);
+		res.body() = R"({"login": false})";
+		res.prepare_payload();
+		return res;
+	}
+	if (!jv_t.is_object()) {
+		res.set(http::field::content_type, "application/json");
+		res.set("Connection", "close");
+		res.result(http::status::ok);
+		res.body() = R"({"login": false})";
+		res.prepare_payload();
+		return res;
+	}
+
+	json::object& obj = jv_t.as_object();
+	std::string username = json::value_to<std::string>(obj.at("user"));
+
+	/* is_admin：旧 Token 未携带时默认为 false */
+	bool is_admin = false;
+	auto it_admin = obj.find("is_admin");
+	if (it_admin != obj.end() && it_admin->value().is_bool())
+		is_admin = it_admin->value().as_bool();
+
+	json::value jv_r = {
+		{"login", true},
+		{"user", username},
+		{"is_admin", is_admin}
+	};
+
+	/* 附加 Token 生命周期信息，供前端 Token 管理器估算过期时间 */
+	auto it_iat = obj.find("iat");
+	if (it_iat != obj.end() && it_iat->value().is_string())
+		jv_r.as_object()["iat"] = it_iat->value();
+	auto it_created = obj.find("created_at");
+	if (it_created != obj.end() && it_created->value().is_string())
+		jv_r.as_object()["created_at"] = it_created->value();
+	auto it_keep = obj.find("keep_time");
+	if (it_keep != obj.end() && it_keep->value().is_int64())
+		jv_r.as_object()["keep_time"] = it_keep->value();
+
+	res.set(http::field::content_type, "application/json");
+	res.set("Connection", "close");
+	res.result(http::status::ok);
+	res.body() = json::serialize(jv_r);
 	res.prepare_payload();
 	return res;
 }
@@ -1283,6 +1543,28 @@ http::response<http::string_body> handleSendEmailCode(
 	std::regex email_regex(R"(^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$)");
 	if (!std::regex_match(email, email_regex))
 		THROW_EX_CUSTOM(HttpException, 3004, "Invalid email format", 400, "/register/send_code");
+
+	// CAPTCHA 强制校验（防邮件轰炸:挡住自动化脚本,见审计报告 P0-1）
+	// captcha_token / captcha_answer 必填,经 captcha:8009 pymsg 校验,Token 一次性消费。
+	// fail-closed:captcha 服务不可用或响应异常一律视为校验失败。
+	auto captcha_token_it = obj.find("captcha_token");
+	auto captcha_answer_it = obj.find("captcha_answer");
+	if (captcha_token_it == obj.end() || captcha_answer_it == obj.end())
+		THROW_EX_CUSTOM(HttpException, 3007, "CAPTCHA required", 400, "/register/send_code");
+	if (!verify_captcha_remote(std::string(captcha_token_it->value().as_string()),
+	                          std::string(captcha_answer_it->value().as_string())))
+		THROW_EX_CUSTOM(HttpException, 2201, "Invalid CAPTCHA", 400, "/register/send_code");
+
+	// 邮箱级双窗口限流（CAPTCHA 通过后才计入配额,避免无效请求消耗限流额度）
+	// 3 次/小时 + 10 次/天;IP 限流可被代理池绕过,邮箱维度是更可靠的限制。
+	if (!_EMAIL_ADDR_RATE_HOUR.check_and_record(email, 3, 3600))
+		THROW_EX_CUSTOM(HttpException, 3104,
+			"Too many code requests for this email. Please try again later.",
+			429, "/register/send_code");
+	if (!_EMAIL_ADDR_RATE_DAY.check_and_record(email, 10, 86400))
+		THROW_EX_CUSTOM(HttpException, 3105,
+			"Daily email limit exceeded. Please try again tomorrow.",
+			429, "/register/send_code");
 
 	// 调 smtp 服务（pymsg/TCP :8008）发送验证码
 	bool sent = false;

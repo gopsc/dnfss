@@ -58,4 +58,27 @@ BotOps/
 
 与 aibox 服务端协议完全兼容（详见 aibox/client.py 注释）：
 - 发送：`{"type":"message","content":...}` / `{"type":"command","command":"/..."}` / `{"type":"interrupt",...}`
-- 接收：`chunk`（**增量片段**，服务端 `chunk_buffer` 发送后即清零，前端直接拼接）/ `complete`（**完整全文**，用于对齐已显示内容）/ `line`（过程行：🔧 工具调用提示、工具输出、💬 助手前缀，路由到任务侧栏）/ `reasoning`（思考流，仅服务端 debug_level≥3 发送）/ `dialogue_ended` / `dialogue_reset` / `task_added` / `task_process` / `task_status` / `task_error` / `interrupt_ack` / `error` / `info` / `command_result` / `connection_ack` / `notification` / `pong`
+- 接收：
+  - `chunk`（**增量片段**）：服务端 `chunk_buffer` 发送后即清零，前端直接 `append_ai` 拼接，为内容权威来源
+  - `reasoning_start`（**思考开始**）：创建灰色斜体思考区域，实时展示 AI 思考过程
+  - `reasoning`（**思考流**）：思考内容增量片段，追加到思考区域（超长自动折叠显示最后 3000 字符）
+  - `reasoning_end`（**思考结束**）：思考结束，切换到正式回答
+  - **顺序保证**：不预创建空 AI widget，按消息到达顺序自然挂载（`reasoning_start`→`reasoning`→`chunk`），思考区域必然在 AI 正式回答**之前**
+  - `complete`（**收尾信号**）：chunk 流式已完整渲染，complete 仅用于收尾（重置状态）
+  - `line`（过程行）：🔧 工具调用提示、工具输出，路由到任务侧栏；助手前缀/思考提示在聊天区已由对应区域承载，不重复展示
+  - `info`（系统信息）：过滤"Conversation started"/"对话开始"等隐式通知，避免污染聊天流
+  - `dialogue_ended` / `dialogue_reset` / `task_added` / `task_process` / `task_status` / `task_error` / `interrupt_ack` / `error` / `command_result` / `connection_ack` / `notification` / `pong`
+
+## 更新日志
+
+### v1.2
+- ✅ **彻底修复思考区域顺序问题**：移除预创建空 AI widget 的逻辑，改为第一次收到 `chunk` 时才创建 widget。按消息到达顺序自然挂载（`reasoning_start`→`reasoning`→`chunk`），从根本上保证思考区域始终在正式回答之前
+- ✅ 简化 `complete` 处理逻辑：仅作为收尾重置状态信号，不再进行补建逻辑
+
+### v1.1
+- ✅ 支持 DeepSeek 思考模式展示：新增 `reasoning_start`/`reasoning`/`reasoning_end` 消息处理，思考内容以灰色斜体区域展示
+- ✅ 超长思考内容自动折叠（显示最后 3000 字符）
+- ✅ 过滤"Conversation started"/"对话开始"等隐式系统通知，避免在回答末尾显示无用信息
+
+### v1.0
+- 初始版本：Markdown 增量流式渲染、任务独立侧栏、自动重连、快捷键支持

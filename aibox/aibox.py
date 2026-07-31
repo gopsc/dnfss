@@ -436,7 +436,7 @@ class PromptManager:
     
     文件命名规范:
     - 00_IDENTITY.md: 用户身份信息
-    - 1_*.md/txt: 基础技能（必须从1_开头）
+    - N_*.md/txt: 基础技能提示词（N 为数字，如 1_memory_search.md、10_task_handling.md），按数字升序加载
     - 99_SOUL.md: 智能体灵魂文件（角色定位、身份定义、性格等）
     - 100_STATUS.md: 智能体状态记录
     """
@@ -450,8 +450,8 @@ class PromptManager:
     STATUS_FILE = "100_STATUS.md"
     SOUL_FILE = "99_SOUL.md"  # 智能体灵魂文件 - 所有角色定位内容
     
-    # 基础技能前缀
-    SKILL_PREFIX = "1_"  # 基础技能文件必须以这个开头
+    # 基础技能文件名模式：N_xxx.md（N 为数字，如 1_memory_search.md、10_task_handling.md）
+    _SKILL_FILE_RE = re.compile(r'^(\d+)_')
     
     def __new__(cls):
         if cls._instance is None:
@@ -642,14 +642,17 @@ class PromptManager:
                 print(f"⚠️ 创建默认灵魂文件失败: {e}")
     
     def _ensure_skill_files(self):
-        """确保基础技能文件存在 - 以1_开头的文件"""
+        """确保基础技能文件存在 - N_ 开头的文件（N 为数字，按数字顺序加载）"""
         skill_files = [
             {
                 'filename': '1_memory_search.md',
                 'content': """# 记忆搜索习惯
 
-## 重要习惯
-在每次回答用户问题前，**必须**先使用 `memory search` 工具搜索记忆库中与当前话题相关的记忆。
+## 核心习惯
+在回答用户问题前，**应根据话题相关性判断是否需要搜索记忆**：
+- 涉及过往讨论、用户偏好、之前做过的事 → 必须搜索
+- 全新话题、简单问候（"你好"）、确认回应（"好的""明白了"）→ 无需搜索
+- 不确定时，搜索一下也无妨
 
 ## 为什么要这样做？
 - 保持对话的连贯性
@@ -665,11 +668,9 @@ memory search keywords=["关键词1", "关键词2"]
 ## 示例
 如果用户说："上次我们讨论的那个项目怎么样了？"
 你应该：
-1. 先搜索 "项目" 相关的记忆
+1. 搜索 "项目" 相关的记忆
 2. 根据搜索结果回答
 3. 如果找不到相关记忆，诚实告知用户
-
-记住：这是你的核心习惯，每次都要做！
 """
             },
             {
@@ -705,25 +706,34 @@ save_memory_and_end_conversation(
                 'filename': '3_file_operations.md',
                 'content': """# 文件操作能力
 
+## 工作目录规范（重要）
+**所有你主动创建的临时文件、脚本、数据文件，必须写入 `~/.aibox/workspace/` 目录，不要在其他目录随便写文件。**
+- 该目录是你的专用工作区，用于存放代码片段、临时脚本、下载的数据、生成的文件等
+- 用户明确指定文件路径时，按照用户要求的路径操作
+- 读取系统文件、项目文件时使用实际路径，不限制
+
 ## 可用工具
 - **read_file**: 读取文件内容
 - **write_file**: 写入文件
 - **list_files**: 列出目录
 
 ## 大文件处理规则
-当遇到以下情况时，**必须先告知用户文件过大**：
-1. 文件大小超过 50KB
-2. 文件行数超过 200 行
+当遇到以下情况时，**必须分页读取**，不要一次性读取整个文件：
+1. 文件大小超过 500KB
+2. 文件行数超过 2000 行
 
 对于大文件，应该：
-- 使用 head/tail 参数只读取开头或结尾
+- 先用 head=true 读取前50行了解文件结构
 - 使用 start_line/end_line 参数指定行范围
-- 建议用户提供更具体的查询条件
+- 使用 tail=true 读取文件末尾
+- 对于二进制文件或特殊格式文件，使用 run_command 配合 head/strings 等命令查看
+- 建议用户提供更具体的查询条件以缩小范围
 
 ## 示例
 ```
 read_file filepath="/path/to/file.txt" head=true max_lines=50
-read_file filepath="/path/to/file.txt" start_line=10 end_line=20
+read_file filepath="/path/to/file.txt" start_line=100 end_line=200
+read_file filepath="/path/to/file.txt" tail=true max_lines=50
 ```
 """
             },
@@ -779,6 +789,12 @@ web action="get" url="https://www.baidu.com/s?wd=人工智能"
                 'filename': '6_command_execution.md',
                 'content': """# 命令执行能力
 
+## 工作目录规范（重要）
+**执行命令时，默认 work_dir 设置为 `~/.aibox/workspace/`**，所有命令执行产生的文件都落在这个专用工作区，不会污染其他目录。
+- 只有当用户明确要求在特定目录执行命令时，才修改 work_dir
+- 技能调用（~/.aibox/skills/）不受此限制
+- 需要在用户项目目录操作时，按用户指定路径设置 work_dir
+
 ## 可用工具
 - **run_command**: 执行系统命令
 
@@ -786,17 +802,18 @@ web action="get" url="https://www.baidu.com/s?wd=人工智能"
 - command: 要执行的命令（必填）
 - timeout: 超时时间（秒），默认30秒
 - stream: 是否实时输出，默认true
-- work_dir: 工作目录，默认当前目录
+- work_dir: 工作目录，默认 `~/.aibox/workspace/`
 
 ## 安全提醒
 - 命令执行功能可能被禁用（根据配置）
 - 执行危险命令前请三思
 - 超时机制可以防止命令卡死
+- 命令输出有大小限制（1MB），超出会自动截断
 
 ## 示例
 ```
 run_command command="ls -la" timeout=10
-run_command command="python script.py" stream=true
+run_command command="python script.py" stream=true work_dir="~/.aibox/workspace"
 ```
 """
             },
@@ -1047,42 +1064,55 @@ update_soul content="我是...（新的自我定义）"
         """创建默认提示词（已由各 _ensure_* 方法处理）"""
         pass
     
+    @classmethod
+    def _skill_sort_key(cls, filename: str):
+        """技能文件按前缀数字排序，非技能文件返回 None。"""
+        m = cls._SKILL_FILE_RE.match(filename)
+        return int(m.group(1)) if m else None
+
+    def _prompt_sort_key(self, p):
+        """排序规则：00_IDENTITY → 技能文件(按数字升序) → 99_SOUL → 100_STATUS → 其他"""
+        file = p['file']
+        if file == self.IDENTITY_FILE:
+            return (0,)
+        skill_num = self._skill_sort_key(file)
+        if skill_num is not None:
+            return (1, skill_num)
+        if file == self.SOUL_FILE:
+            return (2,)
+        if file == self.STATUS_FILE:
+            return (4,)
+        return (3, file)  # 其他文件按名字排序
+
     def get_prompts(self, join_with: str = "\n\n") -> str:
-        """获取所有提示词，按顺序拼接"""
+        """获取所有提示词，按顺序拼接（identity → 技能文件 → soul → status）"""
         if not self._prompts:
             return ""
-        
-        # 排序规则：先基础技能（1_开头），再其他，最后灵魂文件
-        def sort_key(p):
-            file = p['file']
-            if file == self.SOUL_FILE:
-                return 3  # 灵魂文件最后加载
-            elif file.startswith(self.SKILL_PREFIX):
-                return 1  # 基础技能
-            elif file == self.IDENTITY_FILE:
-                return 0  # 身份文件最先
-            elif file == self.STATUS_FILE:
-                return 4  # 状态文件最后
-            else:
-                return 2
-        
-        sorted_prompts = sorted(self._prompts, key=sort_key)
+        sorted_prompts = sorted(self._prompts, key=self._prompt_sort_key)
         contents = [p['content'] for p in sorted_prompts]
         return join_with.join(contents)
-    
+
+    def get_sorted_prompts_list(self) -> List[Dict]:
+        """获取按正确顺序排列的提示词列表（用于 system 消息构建）。"""
+        return sorted(self._prompts, key=self._prompt_sort_key)
+
     def get_prompts_list(self) -> List[Dict]:
-        """获取所有提示词列表"""
+        """获取所有提示词列表（原始加载顺序，已弃用，请用 get_sorted_prompts_list）。"""
         return self._prompts.copy()
-    
+
+    def get_skill_prompts(self) -> List[Dict]:
+        """获取所有基础技能提示词（N_ 开头的文件）。"""
+        return [p for p in self._prompts if self._skill_sort_key(p['file']) is not None]
+
     def reload(self):
         """重新加载所有提示词"""
         self._prompts = []
         self._load_prompts()
         return len(self._prompts)
-    
+
     def get_prompt_count(self) -> int:
         return len(self._prompts)
-    
+
     def get_prompts_dir_path(self) -> str:
         return self._prompts_dir
 
@@ -1125,6 +1155,7 @@ class ConfigManager:
                 "log_backup_count": 5,
                 "skills_dir": "~/.aibox/skills",
                 "prompts_dir": "~/.aibox/prompts",
+                "workspace_dir": "~/.aibox/workspace",
                 "websocket_host": "localhost",
                 "websocket_port": 8765,
             },
@@ -1137,8 +1168,9 @@ class ConfigManager:
             "api": {
                 "deepseek_api_url": "https://api.deepseek.com/chat/completions",
                 "deepseek_model": "deepseek-v4-flash",
+                "reasoning_enabled": false,
                 "api_key_env": "DEEPSEEK_API_KEY",
-                "timeout": 30,
+                "timeout": 120,
                 "temperature": 0.7
             },
             "context": {
@@ -1325,7 +1357,11 @@ class Constants:
     
     @property
     def DEEPSEEK_MODEL(cls):
-        return cls._get_config().get("api.deepseek_model")
+        return cls._get_config().get("api.deepseek_model", "deepseek-v4-flash")
+    
+    @property
+    def REASONING_ENABLED(cls):
+        return cls._get_config().get("api.reasoning_enabled", False)
     
     @property
     def DEFAULT_TIMEOUT(cls):
@@ -1354,6 +1390,10 @@ class Constants:
     @property
     def SKILLS_DIR(cls):
         return os.path.expanduser(cls._get_config().get("system.skills_dir", "~/.aibox/skills"))
+    
+    @property
+    def WORKSPACE_DIR(cls):
+        return os.path.expanduser(cls._get_config().get("system.workspace_dir", "~/.aibox/workspace"))
     
     @property
     def PROMPTS_DIR(cls):
@@ -1498,7 +1538,7 @@ class Constants:
     
     @property
     def TOOL_MAX_RESULT_LENGTH(cls):
-        return cls._get_config().get("tools.max_result_length", 10000)
+        return cls._get_config().get("tools.max_result_length", 1048576)  # 1MB 字符限制
     
     @property
     def COMPRESSOR_MIN_MESSAGES(cls):
@@ -3492,77 +3532,75 @@ class CommandExecutor(ABC):
 
 
 class SubprocessCommandExecutor(CommandExecutor):
-    """基于subprocess的命令执行器 - 支持超时和工作目录"""
+    """基于subprocess的命令执行器 - 支持超时、工作目录和输出大小限制"""
     
-    def execute(self, command: str, timeout: int = 30, work_dir: str = ".", env: Dict = None, **kwargs) -> str:
-        """执行命令并返回完整结果"""
+    # 命令输出最大字节数（1MB），超出截断
+    MAX_OUTPUT_BYTES = 1 * 1024 * 1024
+    
+    def _read_with_limit(self, process, timeout: int, start_time: float, output_queue=None) -> Tuple[str, bool, bool]:
+        """从进程读取输出，限制总大小和超时。
+        返回 (output_str, timeout_occurred, truncated)
+        """
+        output_chunks = []
+        total_bytes = 0
+        timeout_occurred = False
+        truncated = False
+        
+        while True:
+            # 检查超时
+            if timeout > 0 and time.time() - start_time > timeout:
+                process.terminate()
+                timeout_occurred = True
+                break
+            
+            # 检查输出大小
+            if total_bytes >= self.MAX_OUTPUT_BYTES:
+                truncated = True
+                process.terminate()
+                break
+            
+            # 读取一行
+            line = process.stdout.readline()
+            if not line and process.poll() is not None:
+                break
+            if line:
+                line_bytes = len(line.encode('utf-8', errors='replace'))
+                if total_bytes + line_bytes > self.MAX_OUTPUT_BYTES and not truncated:
+                    allowed = self.MAX_OUTPUT_BYTES - total_bytes
+                    if allowed > 0:
+                        output_chunks.append(line.encode('utf-8', errors='replace')[:allowed].decode('utf-8', errors='replace'))
+                        total_bytes = self.MAX_OUTPUT_BYTES
+                    truncated = True
+                    process.terminate()
+                    break
+                
+                output_chunks.append(line)
+                total_bytes += line_bytes
+                
+                if output_queue:
+                    output_queue.put(("line", line.rstrip('\n') + "\n"))
+        
+        return ''.join(output_chunks), timeout_occurred, truncated
+    
+    def execute(self, command: str, timeout: int = 30, work_dir: str = None, env: Dict = None, **kwargs) -> str:
+        """执行命令并返回完整结果（带输出大小限制）"""
         if not self.is_enabled():
             return "❌ 命令执行功能已禁用"
         
-        self.logger.info(f"执行命令: {command}")
+        # 默认工作目录为workspace，避免在启动目录散落文件
+        if work_dir is None or work_dir == ".":
+            work_dir = constants.WORKSPACE_DIR
+        
+        self.logger.info(f"执行命令: {command} (work_dir={work_dir})")
         
         # 准备环境变量
         exec_env = os.environ.copy()
         if env:
             exec_env.update(env)
         
+        process = None
         try:
-            result = subprocess.run(
-                command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env=exec_env,
-                cwd=os.path.expanduser(work_dir)
-            )
-            
-            data = {}
-            
-            if result.stdout:
-                data["输出"] = result.stdout.strip()
-            if result.stderr:
-                data["错误"] = result.stderr.strip()
-            
-            data["返回码"] = result.returncode
-            
-            if not result.stdout and not result.stderr:
-                return self.format_result(True, "命令执行成功，无输出", data)
-            
-            return self.format_result(result.returncode == 0, "命令执行完成", data)
-            
-        except subprocess.TimeoutExpired:
-            return f"❌ 命令执行超时（{timeout}秒）"
-        except FileNotFoundError as e:
-            return f"❌ 命令执行错误: 命令未找到 - {str(e)}"
-        except PermissionError as e:
-            return f"❌ 命令执行错误: 权限不足 - {str(e)}"
-        except Exception as e:
-            return f"❌ 执行错误: {str(e)}"
-    
-    def execute_streaming(self, command: str, output_queue: queue.Queue, timeout: int = 30, 
-                          work_dir: str = ".", env: Dict = None, **kwargs):
-        """流式执行命令，支持超时控制和工作目录"""
-        if not self.is_enabled():
-            output_queue.put(("line", "❌ 命令执行功能已禁用\n"))
-            output_queue.put(("complete", "❌ 命令执行功能已禁用"))
-            return
-        
-        self.logger.info(f"流式执行命令: {command}")
-        output_queue.put(("line", f"\n🔧 执行命令: {command}\n"))
-        output_queue.put(("line", f"⏱️ 超时设置: {timeout} 秒\n"))
-        if work_dir != ".":
-            output_queue.put(("line", f"📁 工作目录: {work_dir}\n"))
-        output_queue.put(("line", "-" * 50 + "\n"))
-        
-        # 准备环境变量
-        exec_env = os.environ.copy()
-        if env:
-            exec_env.update(env)
-        
-        try:
-            # 使用管道来实时获取输出
-            self.process = subprocess.Popen(
+            process = subprocess.Popen(
                 command,
                 shell=True,
                 stdout=subprocess.PIPE,
@@ -3576,56 +3614,164 @@ class SubprocessCommandExecutor(CommandExecutor):
             )
             
             start_time = time.time()
+            output_str, timeout_occurred, truncated = self._read_with_limit(process, timeout, start_time)
+            
+            # 确保进程终止
+            if process.poll() is None:
+                if timeout_occurred or truncated:
+                    process.kill()
+                else:
+                    process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except:
+                    process.kill()
+            
+            return_code = process.returncode if process.returncode is not None else -1
+            
+            data = {
+                "输出": output_str.strip() if output_str.strip() else "(无输出)",
+                "返回码": return_code
+            }
+            
+            if timeout_occurred:
+                return self.format_result(False, f"命令执行超时（{timeout}秒）", data)
+            
+            if truncated:
+                data["警告"] = f"输出超过 {self.MAX_OUTPUT_BYTES/1024/1024:.0f}MB 限制，结果已截断"
+                return self.format_result(False, "命令执行完成（输出已截断）", data)
+            
+            return self.format_result(return_code == 0, "命令执行完成", data)
+            
+        except subprocess.TimeoutExpired:
+            return f"❌ 命令执行超时（{timeout}秒）"
+        except FileNotFoundError as e:
+            return f"❌ 命令执行错误: 命令未找到 - {str(e)}"
+        except PermissionError as e:
+            return f"❌ 命令执行错误: 权限不足 - {str(e)}"
+        except Exception as e:
+            return f"❌ 执行错误: {str(e)}"
+        finally:
+            if process and process.poll() is None:
+                process.kill()
+    
+    def execute_streaming(self, command: str, output_queue: queue.Queue, timeout: int = 30, 
+                          work_dir: str = None, env: Dict = None, **kwargs):
+        """流式执行命令，支持超时控制、工作目录和输出大小限制"""
+        if not self.is_enabled():
+            output_queue.put(("line", "❌ 命令执行功能已禁用\n"))
+            output_queue.put(("complete", "❌ 命令执行功能已禁用"))
+            return
+        
+        # 默认工作目录为workspace，避免在启动目录散落文件
+        if work_dir is None or work_dir == ".":
+            work_dir = constants.WORKSPACE_DIR
+        
+        self.logger.info(f"流式执行命令: {command} (work_dir={work_dir})")
+        output_queue.put(("line", f"\n🔧 执行命令: {command}\n"))
+        output_queue.put(("line", f"⏱️ 超时设置: {timeout} 秒\n"))
+        output_queue.put(("line", f"📦 输出限制: {self.MAX_OUTPUT_BYTES/1024/1024:.0f}MB\n"))
+        output_queue.put(("line", f"📁 工作目录: {work_dir}\n"))
+        output_queue.put(("line", "-" * 50 + "\n"))
+        
+        # 准备环境变量
+        exec_env = os.environ.copy()
+        if env:
+            exec_env.update(env)
+        
+        process = None
+        try:
+            process = subprocess.Popen(
+                command,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                universal_newlines=True,
+                env=exec_env,
+                cwd=os.path.expanduser(work_dir)
+            )
+            self.process = process
+            
+            start_time = time.time()
             output_lines = []
+            total_bytes = 0
             timeout_occurred = False
+            truncated = False
             
             # 实时读取输出
             while True:
                 # 检查超时
                 if timeout > 0 and time.time() - start_time > timeout:
-                    self.process.terminate()
+                    process.terminate()
                     timeout_occurred = True
                     output_queue.put(("line", f"\n⏰ 命令执行超时（{timeout}秒）\n"))
                     break
                 
+                # 检查输出大小
+                if total_bytes >= self.MAX_OUTPUT_BYTES:
+                    truncated = True
+                    process.terminate()
+                    output_queue.put(("line", f"\n📦 输出超过 {self.MAX_OUTPUT_BYTES/1024/1024:.0f}MB 限制，结果已截断\n"))
+                    break
+                
                 # 读取一行输出
-                line = self.process.stdout.readline()
-                if not line and self.process.poll() is not None:
+                line = process.stdout.readline()
+                if not line and process.poll() is not None:
                     break
                 if line:
-                    line = line.rstrip('\n')
-                    output_queue.put(("line", line + "\n"))
+                    line_bytes = len(line.encode('utf-8', errors='replace'))
+                    
+                    if total_bytes + line_bytes > self.MAX_OUTPUT_BYTES and not truncated:
+                        allowed = self.MAX_OUTPUT_BYTES - total_bytes
+                        if allowed > 0:
+                            truncated_line = line.encode('utf-8', errors='replace')[:allowed].decode('utf-8', errors='replace')
+                            output_queue.put(("line", truncated_line))
+                            output_lines.append(truncated_line)
+                            total_bytes = self.MAX_OUTPUT_BYTES
+                        truncated = True
+                        process.terminate()
+                        output_queue.put(("line", f"\n📦 输出超过 {self.MAX_OUTPUT_BYTES/1024/1024:.0f}MB 限制，结果已截断\n"))
+                        break
+                    
+                    stripped = line.rstrip('\n')
+                    output_queue.put(("line", stripped + "\n"))
                     output_lines.append(line)
+                    total_bytes += line_bytes
             
-            # 如果超时，确保进程被终止
-            if timeout_occurred and self.process.poll() is None:
-                self.process.kill()
-                self.process.wait(timeout=2)
+            # 如果超时或截断，确保进程被终止
+            if (timeout_occurred or truncated) and process.poll() is None:
+                process.kill()
+                try:
+                    process.wait(timeout=2)
+                except:
+                    pass
             
-            # 获取剩余输出
-            remaining, _ = self.process.communicate(timeout=5)
-            if remaining:
-                output_queue.put(("line", remaining))
-                output_lines.append(remaining)
-            
-            return_code = self.process.returncode if self.process.returncode is not None else -1
+            return_code = process.returncode if process.returncode is not None else -1
             
             output_queue.put(("line", "-" * 50 + "\n"))
             
             if timeout_occurred:
                 output_queue.put(("line", f"⏰ 命令执行超时（{timeout}秒），返回码: {return_code}\n"))
+            elif truncated:
+                output_queue.put(("line", f"📦 输出已截断，返回码: {return_code}\n"))
             else:
                 output_queue.put(("line", f"✅ 命令执行完成，返回码: {return_code}\n"))
             
             # 准备完整结果
-            full_output = "\n".join(output_lines)
+            full_output = "".join(output_lines)
             data = {
-                "输出": full_output if full_output else "(无输出)",
+                "输出": full_output.strip() if full_output.strip() else "(无输出)",
                 "返回码": return_code
             }
             
             if timeout_occurred:
                 result = self.format_result(False, f"命令执行超时（{timeout}秒）", data)
+            elif truncated:
+                data["警告"] = f"输出超过 {self.MAX_OUTPUT_BYTES/1024/1024:.0f}MB 限制，结果已截断"
+                result = self.format_result(False, "命令执行完成（输出已截断）", data)
             else:
                 result = self.format_result(return_code == 0, "命令执行完成", data)
             
@@ -3635,12 +3781,13 @@ class SubprocessCommandExecutor(CommandExecutor):
             output_queue.put(("line", f"❌ 执行错误: {str(e)}\n"))
             output_queue.put(("complete", f"❌ 执行错误: {str(e)}"))
         finally:
-            if self.process and self.process.poll() is None:
-                self.process.terminate()
+            if process and process.poll() is None:
+                process.terminate()
                 try:
-                    self.process.wait(timeout=5)
+                    process.wait(timeout=2)
                 except:
-                    self.process.kill()
+                    process.kill()
+            self.process = None
 
 # ==================== 工具基类 ====================
 
@@ -5823,6 +5970,63 @@ class ReadFileTool(FileToolBase):
         
         return start, end, desc
     
+    @staticmethod
+    def _count_lines(filepath: str, encoding: str) -> int:
+        """高效统计文件行数，不存储内容"""
+        line_count = 0
+        with open(filepath, 'r', encoding=encoding) as f:
+            for _ in f:
+                line_count += 1
+        return line_count
+    
+    @staticmethod
+    def _read_lines_range(filepath: str, encoding: str, start: int, end: int) -> List[str]:
+        """读取指定行范围 [start, end)（0-indexed），只读取需要的行"""
+        lines = []
+        with open(filepath, 'r', encoding=encoding) as f:
+            for i, line in enumerate(f):
+                if i >= end:
+                    break
+                if i >= start:
+                    lines.append(line)
+        return lines
+    
+    @staticmethod
+    def _read_tail_lines(filepath: str, encoding: str, num_lines: int) -> Tuple[List[str], int]:
+        """高效读取文件末尾N行，无需遍历整个文件。返回 (lines, total_line_count)"""
+        # 对于小文件直接读全部
+        file_size = os.path.getsize(filepath)
+        if file_size < 1024 * 1024:  # < 1MB 直接读
+            with open(filepath, 'r', encoding=encoding) as f:
+                all_lines = f.readlines()
+            return all_lines[-num_lines:] if num_lines > 0 else [], len(all_lines)
+        
+        # 大文件：从后向前找换行符
+        with open(filepath, 'rb') as f:
+            block_size = 8192
+            blocks = []
+            lines_found = 0
+            position = file_size
+            
+            while position > 0 and lines_found <= num_lines:
+                read_size = min(block_size, position)
+                position -= read_size
+                f.seek(position)
+                block = f.read(read_size)
+                blocks.append(block)
+                lines_found += block.count(b'\n')
+            
+            # 拼接并解码
+            data = b''.join(reversed(blocks))
+            text = data.decode(encoding, errors='replace')
+            all_lines = text.splitlines()
+            
+            # 统计总行数
+            f.seek(0)
+            total_lines = sum(1 for _ in f)
+            
+            return all_lines[-num_lines:], total_lines
+    
     def execute(self, filepath: str, encoding: str = "utf-8", 
                 start_line: int = 1, end_line: int = 0, 
                 max_lines: int = 100, head: bool = False, 
@@ -5834,13 +6038,15 @@ class ReadFileTool(FileToolBase):
         if not is_safe:
             return error
         
+        # 限制max_lines上限，防止请求超大范围
+        max_lines = min(max_lines, 500)
+        
         try:
             file_size = os.path.getsize(abs_path)
             modified_time = datetime.fromtimestamp(os.path.getmtime(abs_path))
             
-            with open(abs_path, 'r', encoding=encoding) as f:
-                all_lines = f.readlines()
-                line_count = len(all_lines)
+            # 高效读取：先统计行数
+            line_count = self._count_lines(abs_path, encoding)
             
             start, end, range_desc = self._calculate_line_range(
                 line_count, start_line, end_line, max_lines, head, tail
@@ -5849,7 +6055,25 @@ class ReadFileTool(FileToolBase):
             if end <= start:
                 return f"❌ 无效的行范围"
             
-            display_lines = all_lines[start:end]
+            lines_to_read = end - start
+            
+            # 对于tail模式，用高效的尾部读取
+            if tail and line_count > 200:
+                display_lines_raw, _ = self._read_tail_lines(abs_path, encoding, lines_to_read)
+            else:
+                display_lines_raw = self._read_lines_range(abs_path, encoding, start, end)
+            
+            # 限制单行大小（防止单行超大导致内存问题）
+            MAX_LINE_LENGTH = 10000
+            content_lines = []
+            truncated_lines = 0
+            for i, line in enumerate(display_lines_raw):
+                line_num = start + i + 1
+                content = line.rstrip('\n\r')
+                if len(content) > MAX_LINE_LENGTH:
+                    content = content[:MAX_LINE_LENGTH] + f"... (行超长，已截断，原始长度 {len(content)})"
+                    truncated_lines += 1
+                content_lines.append(f"   {line_num:4d} | {content}")
             
             data = {
                 "路径": abs_path,
@@ -5859,17 +6083,13 @@ class ReadFileTool(FileToolBase):
                 "显示范围": f"{range_desc} (行 {start+1}-{end})"
             }
             
-            if display_lines:
-                content_lines = []
-                for i, line in enumerate(display_lines):
-                    line_num = start + i + 1
-                    content = line.rstrip('\n\r')
-                    content_lines.append(f"   {line_num:4d} | {content}")
-                
+            if content_lines:
                 data["内容"] = "\n" + "\n".join(content_lines)
                 
                 if end < line_count:
                     data["提示"] = f"还有 {line_count - end} 行未显示"
+                    if truncated_lines > 0:
+                        data["提示"] += f"，{truncated_lines} 行因超长被截断"
             
             return self.format_result(True, "文件读取成功", data)
             
@@ -6536,19 +6756,19 @@ class DeepSeekChat:
         self._register_tools(exit_callback, command_executor)
     
     def _init_system_prompts(self, system_prompt: str = None):
-        """初始化系统提示词 - 从 PromptManager 加载"""
+        """初始化系统提示词 - 从 PromptManager 加载（按 identity → 技能 → soul → status 顺序）"""
         if system_prompt:
             # 如果明确指定了 system_prompt，使用它
             self._add_message("system", system_prompt)
             self.logger.info("使用指定的系统提示词")
         else:
-            # 从 PromptManager 加载所有提示词
-            prompts = self.prompt_manager.get_prompts_list()
+            # 从 PromptManager 加载所有提示词，按正确顺序排列
+            prompts = self.prompt_manager.get_sorted_prompts_list()
             if prompts:
                 for prompt in prompts:
                     if prompt['content'].strip():
                         self._add_message("system", prompt['content'].strip())
-                self.logger.info(f"已加载 {len(prompts)} 个系统提示词")
+                self.logger.info(f"已加载 {len(prompts)} 个系统提示词（顺序: identity → 技能 → soul → status）")
             else:
                 # 如果没有任何提示词，添加一个默认的
                 default_prompt = "你是一个智能AI助手。"
@@ -6710,6 +6930,25 @@ class DeepSeekChat:
             self.logger.error(f"保存工具结果失败: {e}")
             return None
 
+    @staticmethod
+    def _sanitize_tool_result(result) -> str:
+        """将工具返回值安全转换为字符串，清理控制字符，防止破坏 API 请求。"""
+        if result is None:
+            return ""
+        if not isinstance(result, str):
+            try:
+                result = str(result)
+            except Exception:
+                return f"⚠️ 工具返回了无法序列化的结果类型: {type(result).__name__}"
+        # 清理控制字符：保留 \n \t \r，移除其他可能导致 JSON/API 问题的控制字符
+        cleaned_chars = []
+        for ch in result:
+            code = ord(ch)
+            if ch in ('\n', '\t', '\r') or code >= 0x20:
+                cleaned_chars.append(ch)
+            # 跳过 NULL、BEL、BS 等控制字符
+        return ''.join(cleaned_chars)
+
     def _handle_tool_calls(self, tool_calls: List[Dict], output_callback: Callable = None) -> List[Dict]:
         """处理工具调用 - 所有工具的输出都进行发送，并在开始和结束时发送两个回车"""
         if not tool_calls:
@@ -6727,25 +6966,29 @@ class DeepSeekChat:
         
         for tool_call in tool_calls:
             function = tool_call.get("function", {})
-            tool_name = function.get("name")
+            tool_name = function.get("name", "unknown")
             arguments = function.get("arguments", "{}")
+            tc_id = tool_call.get("id") or f"call_fallback_{self.stats['tool_calls']}_{int(time.time()*1000)}"
             
             try:
                 args = json.loads(arguments) if arguments else {}
             except json.JSONDecodeError:
                 args = {}
             
-            # 【修改】开始调用工具时发送两个回车
+            # 开始调用工具时发送提示
             if output_callback:
                 output_callback("line", "\n\n")
                 output_callback("line", f"🔧 调用工具: {tool_name}\n")
             
-            # 直接调用 execute_tool（同步）。
-            # - 若工具支持流式：execute_tool 内部开线程调 execute_streaming(**args)，
-            #   收集输出后转发到 current_output_queue（即此处的 output_queue），join 后返回。
-            # - 若工具不支持流式：execute_tool 直接调 execute(**args) 返回结果。
-            # 两种情况下 execute_tool 返回时执行均已完成，args 完整传入，不再有参数丢失。
-            result = self.tool_registry.execute_tool(tool_name, **args)
+            result_raw = None
+            try:
+                result_raw = self.tool_registry.execute_tool(tool_name, **args)
+            except Exception as e:
+                result_raw = f"❌ 工具 {tool_name} 执行异常: {str(e)}"
+                self.logger.error(f"工具 {tool_name} 执行异常: {e}")
+
+            # 安全转换并清理结果
+            result = self._sanitize_tool_result(result_raw)
 
             # 排空 output_queue，把流式行输出转发给 output_callback
             has_stream_output = False
@@ -6753,7 +6996,7 @@ class DeepSeekChat:
                 try:
                     msg_type, content = output_queue.get_nowait()
                     if output_callback and msg_type in ("line", "complete"):
-                        output_callback("line", content)
+                        output_callback("line", str(content) if content is not None else "")
                         has_stream_output = True
                 except queue.Empty:
                     break
@@ -6762,36 +7005,39 @@ class DeepSeekChat:
             if not has_stream_output and output_callback and result:
                 output_callback("line", result + "\n")
             
-            # 检查结果大小，如果超过阈值，不返回结果，只返回提示信息
-            if result and len(result) > MAX_RESULT_LENGTH:
-                # 不保存文件，直接返回提示信息
-                result = f"⚠️ 工具 {tool_name} 执行结果过大（{len(result)} 字符），超过限制（{MAX_RESULT_LENGTH} 字符），已放弃返回结果。\n\n请考虑：\n1. 使用更精确的查询条件\n2. 使用其他工具获取部分数据\n3. 优化查询方式减少结果数量"
+            # 检查结果大小，如果超过阈值，截断返回提示信息
+            if len(result) > MAX_RESULT_LENGTH:
+                truncated_note = f"\n\n⚠️ 结果已截断（原始 {len(result)} 字符，限制 {MAX_RESULT_LENGTH} 字符）。请使用更精确的查询获取所需信息。"
+                result = result[:MAX_RESULT_LENGTH] + truncated_note
                 if output_callback:
-                    output_callback("line", result + "\n")
+                    output_callback("line", truncated_note + "\n")
             
-            # 【修改】结束调用工具时发送两个回车
+            # 结束调用工具时发送换行
             if output_callback:
                 output_callback("line", "\n\n")
             
+            # 历史记录（安全截断）
             if self.history_manager:
-                self.history_manager.add_tool_call(tool_name, args, result[:200] + "..." if len(result) > 200 else result)
+                try:
+                    history_preview = result[:200] + "..." if len(result) > 200 else result
+                    self.history_manager.add_tool_call(tool_name, args, history_preview)
+                except Exception:
+                    pass
             
-            if tool_name == "save_memory_and_end_conversation" and "✅" in result:
+            # 检查是否结束对话
+            end_conversation = (tool_name == "save_memory_and_end_conversation" and "✅" in result)
+            if end_conversation:
                 self.logger.info("检测到保存记忆并结束对话工具调用")
                 self.conversation_active = False
-                tool_messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.get("id"),
-                    "content": result
-                })
-                # 【修复】不直接返回，而是添加后继续处理，但设置标志让后续停止
-                break
             
             tool_messages.append({
                 "role": "tool",
-                "tool_call_id": tool_call.get("id"),
+                "tool_call_id": tc_id,
                 "content": result
             })
+            
+            if end_conversation:
+                break
         
         # 清除输出队列
         self.tool_registry.set_output_queue(None)
@@ -6821,8 +7067,15 @@ class DeepSeekChat:
         # 默认情况下，如果记忆库存在，搜索一下也无妨
         return True
     
-    def think_and_respond(self, input_text: str, output_callback: Callable = None) -> Optional[str]:
-        """思考并回应 - 支持实时流式输出，支持思考模式"""
+    def think_and_respond(self, input_text: str, output_callback: Callable = None, is_continuation: bool = False) -> Optional[str]:
+        """思考并回应 - 支持实时流式输出，支持思考模式。
+        
+        Args:
+            input_text: 用户输入或继续提示
+            output_callback: 流式输出回调
+            is_continuation: 是否为工具调用后的递归继续；为 True 时不注入冗长的工作流指令，
+                            因为 system prompt 中已有完整行为规范，继续时只需传递工具结果
+        """
         if not self.conversation_active:
             self.logger.info("对话已结束，重置状态")
             self.conversation_active = True
@@ -6854,54 +7107,17 @@ class DeepSeekChat:
         
         self.stats["api_calls"] += 1
         
-        # 前置提示词
-        pre_prompt = """【系统指令 - 核心工作流程】
-
-        在开始任何任务之前，你必须严格按照以下优先级执行：
-
-        ## 第一步：搜索可用技能（最高优先级）⭐
-        当用户提出任何任务、需求或问题时，**必须先使用 `search_skills` 工具**搜索相关技能：
-        - 使用 `search_skills keyword="[任务关键词]"` 搜索是否有现成的扩展技能可以完成该任务
-        - 例如：用户说"帮我查天气"，你应该先执行 `search_skills keyword="天气"`
-        - 例如：用户说"帮我计算BMI"，你应该先执行 `search_skills keyword="BMI"`
-        - 如果搜索结果中有匹配的技能，优先使用该技能完成任务
-        - 只有在没有合适技能的情况下，才考虑使用其他工具或方法
-
-        ## 第二步：搜索相关记忆
-        在每次回答用户问题前，**必须**使用 `memory search` 工具搜索记忆库中与当前话题相关的记忆，确保回答的连贯性和准确性。
-
-        ## 第三步：积极向用户提问
-        如果你有任何无法确定的事情，那么你需要用户提供额外信息，
-        请务必使用 `ask_user` 工具向用户提问，以便获得更准确的指引。
-
-        ## 第四步：执行任务或回答问题
-        根据搜索结果，选择合适的工具或直接回答。
-
-        【重要提醒】
-        - 技能优先原则：有技能先用技能，不要自己硬编码实现
-        - 如果没有合适的技能，可以使用其他工具或直接回答
-        - 对话结束时，必须使用 `save_memory_and_end_conversation` 工具保存本次对话的重要信息并更新智能体状态
-        - 当了解到用户的身份信息时，使用 `update_identity` 工具更新 00_IDENTITY.md
-        - 当你的角色、性格、能力边界需要调整时，使用 `update_soul` 工具更新 99_SOUL.md 文件来重新定义自己
-        - 绝对不要直接打开大文件来读，应该使用额外的压缩工具
-
-        现在请处理用户的输入："""
+        if is_continuation:
+            # 递归继续（工具调用后）：直接使用输入文本，不重复注入工作流指令
+            # system prompt 中已有完整行为规范，此处只需传递工具结果的上下文
+            enhanced_input = input_text
+        else:
+            # 首轮回话：附加简洁的工作流程提醒（不重复 system prompt 中已有的详细说明）
+            pre_prompt = "【工作流程提醒】\n1. 如果用户提出新任务，先用 search_skills 搜索是否有现成技能可用\n2. 根据话题相关性决定是否 memory search（简单问候/确认无需搜索）\n3. 信息不足时用 ask_user 提问，不要猜测\n4. 遇到大文件用分页读取（head/tail/start_line/end_line），不要直接打开大文件\n5. 话题完成时用 save_memory_and_end_conversation 保存记忆并结束"
+            enhanced_input = pre_prompt + "\n\n" + input_text
         
-        # 后置提示词
-        post_prompt = """
-        
-                【注意】
-                当本次对话的话题讨论完成时，请使用 `save_memory_and_end_conversation` 工具结束对话并保存重要信息到记忆库，同时更新你的状态到 100_STATUS.md。
-        
-                【自我认知更新】
-                在对话过程中，如果你发现：
-                - 自己的角色定位需要调整
-                - 性格特点需要改变
-                - 能力边界需要重新定义
-                - 行为准则需要优化
-                请使用 `update_soul` 工具更新 99_SOUL.md 文件，这有助于你更好地理解自己并为用户提供更精准的服务。"""
-        
-        enhanced_input = pre_prompt + "\n\n" + input_text + post_prompt
+        # 记录本轮开始前的消息长度，用于 API 失败时回滚，防止坏消息污染对话历史
+        msgs_before_turn = len(self.messages)
         
         self._add_message("user", enhanced_input)
         
@@ -6921,19 +7137,32 @@ class DeepSeekChat:
             if msg["role"] == "system":
                 enhanced_messages.append(msg)
         
-        # 添加非系统消息，但确保消息结构正确
+        # 添加非系统消息，确保消息结构正确
         for msg in self.messages:
             if msg["role"] != "system":
                 if msg["role"] == "assistant":
                     assistant_msg = {"role": "assistant"}
-                    if "content" in msg and msg["content"]:
+                    has_content = "content" in msg and msg["content"] is not None
+                    has_tool_calls = "tool_calls" in msg and msg["tool_calls"]
+                    if has_content:
                         assistant_msg["content"] = msg["content"]
-                    if "reasoning_content" in msg:
-                        assistant_msg["reasoning_content"] = msg["reasoning_content"]
-                    if "tool_calls" in msg and msg["tool_calls"]:
+                    if has_tool_calls:
                         assistant_msg["tool_calls"] = msg["tool_calls"]
+                        # 有 tool_calls 时 content 必须为 null（API 要求）
                         assistant_msg["content"] = None
+                    elif not has_content:
+                        # 无 content 也无 tool_calls 时，设为空字符串避免 API 拒绝
+                        assistant_msg["content"] = ""
+                    # 注意：不回传 reasoning_content，它是 API 响应字段，回传可能导致请求失败
                     enhanced_messages.append(assistant_msg)
+                elif msg["role"] == "tool":
+                    # 确保 tool 消息 content 始终是字符串
+                    tool_msg = {
+                        "role": "tool",
+                        "tool_call_id": msg.get("tool_call_id", ""),
+                        "content": str(msg.get("content", "")) if msg.get("content") is not None else ""
+                    }
+                    enhanced_messages.append(tool_msg)
                 else:
                     enhanced_messages.append(msg)
         
@@ -6945,11 +7174,13 @@ class DeepSeekChat:
             "stream": True
         }
         
-        # 可选：添加 thinking 模式配置（如果有）
-        payload["thinking"] = {
-            "type": "enabled"
-        }
+        # 思考模式：启用 thinking 参数
+        if constants.REASONING_ENABLED:
+            payload["thinking"] = {
+                "type": "enabled"
+            }
         
+        # 工具调用（v4-flash 支持思考+工具调用）
         tools = self.tool_registry.get_tools_schemas()
         if tools:
             payload["tools"] = tools
@@ -6958,10 +7189,16 @@ class DeepSeekChat:
         current_time = datetime.now().strftime("%H:%M:%S")
         if output_callback:
             output_callback("line", f"\n{i18n.get('thinking', current_time)}\n")
-            output_callback("line", i18n.get('assistant_prefix'))
+            if constants.REASONING_ENABLED:
+                output_callback("reasoning_start", "🤔 思考中...")
+            else:
+                # 普通模式先显示助手前缀
+                output_callback("line", i18n.get('assistant_prefix'))
         
         full_response = ""
         full_reasoning = ""  # 存储思考内容
+        reasoning_started = False
+        reasoning_ended = False
         tool_calls_buffer = []
         current_tool_calls = {}
         
@@ -7012,9 +7249,24 @@ class DeepSeekChat:
                             if 'reasoning_content' in delta and delta['reasoning_content']:
                                 reasoning = delta['reasoning_content']
                                 full_reasoning += reasoning
-                                # 可选：将思考内容也发送给前端（可以单独处理）
-                                if output_callback and self.debug_level >= 3:
+                                
+                                # 发送思考开始信号（仅第一次，且未提前发送过）
+                                if not reasoning_started and output_callback:
+                                    if not constants.REASONING_ENABLED:
+                                        # 非显式思考模式但模型返回了思考内容，动态发送开始信号
+                                        output_callback("reasoning_start", "🤔 思考中...")
+                                    reasoning_started = True
+                                
+                                # 实时发送思考内容给前端（无需debug_level限制）
+                                if output_callback:
                                     output_callback("reasoning", reasoning)
+                            
+                            # 思考结束：当开始收到content且之前有reasoning时，发送结束信号
+                            if 'content' in delta and delta['content'] and reasoning_started and not reasoning_ended:
+                                reasoning_ended = True
+                                if output_callback:
+                                    output_callback("reasoning_end", "")
+                                    output_callback("line", i18n.get('assistant_prefix'))
                             
                             # 处理正常内容
                             if 'content' in delta and delta['content']:
@@ -7036,14 +7288,22 @@ class DeepSeekChat:
                                     index = tc.get('index', 0)
                                     
                                     if index not in current_tool_calls:
+                                        # 确保 tool_call id 非空，空 id 会导致 API 400 错误污染对话历史
+                                        tc_id = tc.get('id', '') or f"call_{self.stats['tool_calls']}_{index}_{int(time.time()*1000)}"
                                         current_tool_calls[index] = {
-                                            'id': tc.get('id', ''),
+                                            'id': tc_id,
                                             'type': 'function',
                                             'function': {
                                                 'name': '',
                                                 'arguments': ''
                                             }
                                         }
+                                    else:
+                                        # 流式传输中 id 可能分片到达，后续补充
+                                        existing_id = current_tool_calls[index].get('id', '')
+                                        new_id = tc.get('id', '')
+                                        if new_id and (not existing_id or existing_id.startswith('call_')):
+                                            current_tool_calls[index]['id'] = new_id
                                     
                                     if 'function' in tc:
                                         if 'name' in tc['function']:
@@ -7058,7 +7318,12 @@ class DeepSeekChat:
             # 处理工具调用
             if current_tool_calls:
                 tool_calls_buffer = list(current_tool_calls.values())
-                if output_callback:
+                
+                # 如果之前在思考，先结束思考状态
+                if reasoning_started and not reasoning_ended and output_callback:
+                    output_callback("reasoning_end", "")
+                    output_callback("line", i18n.get('calling_tools') + "\n")
+                elif output_callback:
                     output_callback("line", i18n.get('calling_tools') + "\n")
                 
                 # 【关键修复1】先添加助手消息，包含 tool_calls
@@ -7096,9 +7361,8 @@ class DeepSeekChat:
                 if output_callback:
                     output_callback("line", i18n.get('analyzing_tool_results') + "\n")
                 
-                # 【关键修复4】递归调用，让AI基于工具结果继续回答
-                # 使用一个新的输入提示，避免重复
-                return self.think_and_respond("请基于以上工具执行结果继续回答用户的问题。", output_callback)
+                # 递归调用，让AI基于工具结果继续回答；is_continuation=True 避免重复注入工作流指令
+                return self.think_and_respond("请基于以上工具执行结果继续回答。", output_callback, is_continuation=True)
             
             elif full_response:
                 # 正常添加助手消息，包含 reasoning_content
@@ -7119,37 +7383,44 @@ class DeepSeekChat:
             return full_response if full_response else ""
                 
         except requests.exceptions.RequestException as e:
+            # 网络/HTTP 错误：回滚本轮添加的消息（user 消息 + 可能的 assistant/tool 消息），
+            # 防止格式错误的消息污染历史导致后续请求持续失败
+            self._rollback_messages(msgs_before_turn)
             error_msg = f"\n{i18n.get('error_prefix')}API请求失败: {str(e)}"
             if output_callback:
                 output_callback("error", error_msg)
             self.stats["errors"].append(str(e))
+            self.logger.error(f"API请求失败，已回滚消息到位置 {msgs_before_turn}: {e}")
             return error_msg
         except json.JSONDecodeError as e:
+            # JSON 解析错误：回滚消息
+            self._rollback_messages(msgs_before_turn)
             error_msg = f"\n{i18n.get('error_prefix')}API响应解析失败: {str(e)}"
             if output_callback:
                 output_callback("error", error_msg)
             self.stats["errors"].append(str(e))
+            self.logger.error(f"API响应解析失败，已回滚消息到位置 {msgs_before_turn}: {e}")
             return error_msg
         except Exception as e:
+            # 未知错误：回滚消息，防止对话状态被破坏
+            self._rollback_messages(msgs_before_turn)
             error_msg = f"\n{i18n.get('error_prefix')}{str(e)}"
             if output_callback:
                 output_callback("error", error_msg)
             self.stats["errors"].append(str(e))
+            self.logger.error(f"未知错误，已回滚消息到位置 {msgs_before_turn}: {e}")
             return error_msg
     
+    def _rollback_messages(self, to_length: int):
+        """回滚 self.messages 到指定长度，用于 API 失败时恢复对话状态。"""
+        try:
+            current_len = len(self.messages)
+            if current_len > to_length:
+                del self.messages[to_length:]
+                self.logger.info(f"消息已回滚，从 {current_len} 条回滚到 {len(self.messages)} 条")
+        except Exception as e:
+            self.logger.error(f"消息回滚失败: {e}")
     
-    def _add_assistant_message_with_reasoning(self, content: str, reasoning_content: str = None, tool_calls: List = None):
-        """添加助手消息，包含 reasoning_content"""
-        msg = {"role": "assistant"}
-        if content:
-            msg["content"] = content
-        if reasoning_content:
-            msg["reasoning_content"] = reasoning_content
-        if tool_calls:
-            msg["tool_calls"] = tool_calls
-            msg["content"] = None
-        self.messages.append(msg)
-
     def reset_conversation(self, reload_prompts: bool = True):
         """
         重置对话状态 - 清除所有对话记忆，可选择是否重新加载系统提示词
@@ -8176,6 +8447,9 @@ def main():
     
     # 确保 prompts 目录存在
     os.makedirs(constants.PROMPTS_DIR, exist_ok=True)
+    
+    # 确保 workspace 工作目录存在（智能体专用文件区）
+    os.makedirs(constants.WORKSPACE_DIR, exist_ok=True)
     
     Logger.init_file_logging()
     

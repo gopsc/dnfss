@@ -1,7 +1,7 @@
 # pymsg 模块技术手册
 
 > 文档版本：2026-07-30
-> 代码版本：0.1.0
+> 代码版本：0.3.0
 > 语言：Python 3.9+（核心）、C++（gateway 集成）、Go（waf 集成）
 > 定位：跨语言 TCP 消息帧协议库
 
@@ -144,7 +144,11 @@ log_client.push(entry)
 ```
 pymsg/
 ├── pymsg/
-│   └── __init__.py     # 核心实现（~370 行）
+│   ├── __init__.py     # 核心协议与 MsgClient/MsgServer（~470 行）
+│   └── rpc.py          # JSON RPC 约定层 RpcClient/RpcServer（~170 行，v0.3.0）
+├── tests/
+│   ├── test_threadpool.py  # 线程池/同步模式单元测试（纯 stdlib）
+│   └── test_rpc.py         # RPC 约定层单元测试（纯 stdlib）
 ├── README.md            # 用户文档
 ├── pyproject.toml       # 项目配置
 └── .gitignore
@@ -165,23 +169,40 @@ pymsg/
 
 | 函数/类 | 行号 | 功能 |
 |---------|------|------|
-| `send(sock, data, *, timeout=None)` | L48 | 底层发送 |
-| `recv(sock, *, timeout=None)` | L72 | 底层接收 |
-| `_recv_exact(sock, n)` | L103 | 精确读 n 字节 |
-| `_timeout(sock, seconds)` | L34 | 超时 context manager |
-| `TimeoutError` | L30 | 超时异常 |
-| `MsgClient` | L120 | TCP 客户端 |
-| `MsgClient.__init__` | L136 | 构造器 |
-| `MsgClient.connect()` | L144 | 建立长连接 |
-| `MsgClient.send(msg)` | L150 | 短连接发送（带 name 前缀） |
-| `MsgClient.call(msg, *, timeout=None)` | L163 | 短连接 RPC |
-| `MsgClient.listen(on_message)` | L193 | 长连接监听 |
-| `MsgClient.stop()` | L220 | 停止监听 |
-| `MsgServer` | L234 | TCP 服务端 |
-| `MsgServer.start(on_message)` | L259 | 启动服务 |
-| `MsgServer.broadcast(msg, except_sock)` | L296 | 广播 |
-| `MsgServer.reply(sock, msg)` | L321 | 回复 |
-| `MsgServer.stop()` | L329 | 停止服务 |
+| `send(sock, data, *, timeout=None)` | L51 | 底层发送 |
+| `recv(sock, *, timeout=None)` | L75 | 底层接收 |
+| `_recv_exact(sock, n)` | L106 | 精确读 n 字节 |
+| `_timeout(sock, seconds)` | L38 | 超时 context manager |
+| `TimeoutError` | L33 | 超时异常 |
+| `MsgClient` | L123 | TCP 客户端 |
+| `MsgClient.__init__` | L139 | 构造器 |
+| `MsgClient.connect()` | L147 | 建立长连接 |
+| `MsgClient.send(msg)` | L153 | 短连接发送（带 name 前缀） |
+| `MsgClient.call(msg, *, timeout=None)` | L166 | 短连接 RPC |
+| `MsgClient.listen(on_message)` | L196 | 长连接监听 |
+| `MsgClient.stop()` | L223 | 停止监听 |
+| `MsgServer` | L237 | TCP 服务端 |
+| `MsgServer.__init__(addr, port, *, workers=0)` | L262 | 构造器（workers>0 启用线程池） |
+| `MsgServer.start(on_message)` | L276 | 启动服务 |
+| `MsgServer.broadcast(msg, except_sock)` | L329 | 广播（每连接锁串行化） |
+| `MsgServer.reply(sock, msg)` | L355 | 回复（每连接锁串行化） |
+| `MsgServer._locked_send(sock, msg)` | L363 | 带每连接锁的发送 |
+| `MsgServer.stop()` | L373 | 停止服务 |
+| `MsgServer._run_task(...)` | L413 | 工作线程：执行回调、失败打标记 |
+| `MsgServer._reap_failed(socketlist)` | L434 | 主循环统一移除失败连接 |
+
+#### RPC 约定层（rpc.py，v0.3.0）
+
+| 函数/类 | 行号 | 功能 |
+|---------|------|------|
+| `RpcError` | L28 | 业务错误异常（success=false / 非法响应） |
+| `RpcClient` | L32 | JSON RPC 客户端 |
+| `RpcClient.call(route, payload, *, timeout)` | L46 | 注入 _route、编解码、检查 success，返回 data |
+| `RpcServer` | L80 | JSON RPC 服务端（基于 MsgServer） |
+| `RpcServer.route(name)` / `add_route` | L119/L126 | 注册路由 handler（`fn(req) -> data`） |
+| `RpcServer.start()` / `stop()` | L131/L135 | 启动（阻塞）/ 停止 |
+| `RpcServer._dispatch` | L140 | 路由分发与异常包装 |
+| `RpcServer._reply` | L164 | 响应包装（支持 json_default） |
 
 #### C++ 实现（Msg.hpp）
 
@@ -319,12 +340,38 @@ client.listen(on_message)  # 阻塞，直到 stop()
 #### 构造
 
 ```python
-server = MsgServer(addr: str, port: int)
+server = MsgServer(addr: str, port: int, *, workers: int = 0)
 ```
 
 **参数**：
 - `addr`：监听地址（`0.0.0.0` 表示所有网卡）
 - `port`：监听端口
+- `workers`：工作线程数（v0.2.0+）。默认 `0` 为同步模式（回调在 select 循环线程内串行执行）；`>0` 时回调提交到 `ThreadPoolExecutor` 并发执行
+
+#### 并发模型（v0.2.0）
+
+```
+客户端 A ──┐
+客户端 B ──┼──► select 主循环（单线程）
+客户端 C ──┘      │
+                  ├── accept / recv（主线程，快速 I/O）
+                  │
+                  ├── workers=0：on_message 就地同步执行（串行）
+                  │
+                  └── workers>0：标记 busy → submit 到 ThreadPoolExecutor
+                                      │
+                                      ▼
+                            worker 线程执行 on_message
+                            ├── reply() 经该连接发送锁串行化
+                            ├── 异常 → 标记 _failed（主循环下轮统一移除）
+                            └── 完成 → 清除 busy，连接恢复 select 监听
+```
+
+保证：
+- **同连接串行**：busy 标记使回调完成前该连接暂停 select 监听，同一连接的消息不会并发执行（恢复粒度 ≤100ms，短连接 RPC 无感）
+- **发送原子性**：`reply()`/`broadcast()` 经每连接 `Lock` 串行化，多 worker 向同一 socket 写入不会帧交错
+- **故障隔离**：回调抛非连接异常时打印 traceback 并移除该连接，服务整体存活（同步模式下异常会使 `start()` 崩溃，两模式语义不同）
+- **fd 安全**：worker 线程不直接 close socket，连接移除统一由主循环执行，避免与 accept/select 产生 fd 复用竞态
 
 #### 方法
 
@@ -530,11 +577,11 @@ func pymsgCall(payload []byte) ([]byte, error) {
 | 场景 | 安全性 | 说明 |
 |------|--------|------|
 | `MsgServer.stop()` 跨线程调用 | ✅ 安全 | 设置原子标志并关闭监听 socket |
-| `MsgServer.reply()` 在回调内调用 | ✅ 安全 | 同一线程内调用 |
-| `MsgServer.broadcast()` 在回调内调用 | ✅ 安全 | 同一线程内调用 |
+| `MsgServer.reply()` 在回调内调用 | ✅ 安全 | 经每连接发送锁串行化，worker 线程内同样安全 |
+| `MsgServer.broadcast()` 在回调内调用 | ✅ 安全 | 发送经每连接锁；但会遍历客户端列表，仅限回调线程，勿从无关第三方线程并发调用 |
 | `MsgClient.stop()` 跨线程调用 | ✅ 安全 | 可中断 `listen()` |
-| `send()`/`recv()` 多线程共享 socket | ⚠️ 不安全 | 调用方需自行串行化 |
-| `MsgServer` 并发调用 broadcast/reply | ⚠️ 不支持 | 仅在 `on_message` 回调内（同一线程）安全 |
+| `send()`/`recv()` 多线程共享 socket | ⚠️ 不安全 | 底层函数无锁，调用方需自行串行化（MsgServer 内部已用每连接锁保护） |
+| 同一连接消息并发执行回调 | ✅ 不会 | busy 标记暂停 select 监听，保证同连接串行 |
 
 ---
 
@@ -702,7 +749,9 @@ python test_runner.py
 
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
-| 0.1.0 | 当前 | 初始版本：核心协议、MsgClient、MsgServer、跨语言实现 |
+| 0.1.0 | — | 初始版本：核心协议、MsgClient、MsgServer、跨语言实现 |
+| 0.2.0 | 2026-07-30 | `MsgServer` 新增 `workers` 参数：回调可提交线程池并发执行；同连接串行（busy 标记）、每连接发送锁防帧交错、回调异常故障隔离；`tests/test_threadpool.py` 单元测试 |
+| 0.3.0 | 2026-07-30 | 新增 `rpc.py` JSON RPC 约定层：`RpcClient`（_route 注入 + 编解码 + success 检查 + `RpcError`）、`RpcServer`（路由分发 + 响应包装 + `json_default`/`on_error` 钩子）；db/smtp/captcha 服务端与 dnfs/log_client 客户端完成迁移；`tests/test_rpc.py` 单元测试 |
 
 ---
 

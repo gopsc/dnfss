@@ -15,8 +15,21 @@
 			<div class="recommend-list" id="recommend-list"></div>
 			<div class="card node-form">
 				<h3>节点操作</h3>
-				<label>新增节点</label><input id="input-note-title">
-				<label>节点内容</label><textarea id="input-note-content"></textarea>
+			<label>新增节点</label><input id="input-note-title">
+			<!-- 特殊节点面板：仅管理员可见（dnfs.js 按 /whoami is_admin 显示） -->
+			<div id="sp-panel" style="display:none">
+				<label>节点类型</label>
+				<select id="sp-type">
+					<option value="text">普通文本</option>
+					<option value="link">链接（自动显示站点图标）</option>
+					<option value="html">网页代码（可审计/可运行）</option>
+					<option value="image">图片（自动显示）</option>
+					<option value="file">文件（可下载）</option>
+				</select>
+				<input type="file" id="sp-file" style="display:none">
+				<span id="sp-file-tip"></span>
+			</div>
+			<label>节点内容</label><textarea id="input-note-content"></textarea>
 				<div class="form-actions">
 					<button id="input-note-submit">提交</button>
 					<button id="input-note-clear">重置</button>
