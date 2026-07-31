@@ -190,6 +190,20 @@ port = resp["data"]["value"]
 - 各内部服务通过 pymsg 调 `get` 路由按需获取配置，替代本地散落的 ini/json/yaml
 - 自身日志通过 `log_client.py` 异步推送至 `db:8005` 的 Logs 表（与其他服务一致）
 
+### 已接入的服务
+
+| 服务 | 配置文件 | 接入方式 |
+|------|---------|---------|
+| [static](../static/) | [static.ini](configs/static.ini) | 三层 fail-safe：内置默认值 → confs（优先）→ 本地 `config.ini` 回退 |
+
+static 的接入实现见 [static/fsys.py](../static/fsys.py)：
+- `_fetch_from_confs()` 通过 `RpcClient` 调 `get` 路由取 `static.ini`，3 秒超时
+- `CONFS_HOST` / `CONFS_PORT` 环境变量定位 confs（默认 `127.0.0.1:8010`）
+- `_merge_ini()` 仅覆盖已知的 section/key（白名单合并，不引入未预期字段）
+- 配置来源会记录到日志（`logs.info/warning`），便于排查实际用了哪一层
+
+其他服务（gateway / waf / ai_review / smtp / dnfs / db）尚未接入，仍读各自本地配置。
+
 ## 项目结构
 
 ```
@@ -211,4 +225,4 @@ confs/
 - 文件以 UTF-8 读取，非 UTF-8 文件会返回 `配置读取失败` 错误
 - 配置名区分大小写（与文件系统一致）
 - 缓存基于文件 mtime 判断变化，若同秒内修改且 mtime 精度不足（如某些 FAT 文件系统），可能无法及时重载——可手动调 `reload` 路由强制刷新
-- `static` 已接入 confs 统一分发（启动时拉取 `static.ini`，本地 `config.ini` 为 fail-safe 回退）；其余服务仍读本地配置文件，接入示例见上文"调用示例"
+- 当前接入情况见上文"集成关系 → 已接入的服务"；新服务接入可参考 static 的三层 fail-safe 模式（内置默认 → confs 优先 → 本地回退）
