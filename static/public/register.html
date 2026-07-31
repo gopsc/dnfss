@@ -14,13 +14,12 @@
 				<label>邮箱号：</label>
 					<input type="email" id="regemail" placeholder="请输入邮箱号">
 					<span id="emlTip"></span>
-					<label>图形验证码：</label>
-					<div style="display:flex;align-items:center;gap:8px">
-						<input type="text" id="captchaAnswer" placeholder="请输入图形验证码" maxlength="4" autocomplete="off" style="flex:1;min-width:0;width:auto">
-						<img id="captchaImg" alt="加载中…" title="点击刷新验证码" style="width:120px;height:38px;flex:none;cursor:pointer;border:1.5px solid var(--border);border-radius:10px;box-sizing:border-box">
-					</div>
+				<div class="code-box">图形验证码：
+					<input type="text" id="captchaAnswer" placeholder="请输入图形验证码" maxlength="4" autocomplete="off">
+					<img id="captchaImg" class="captcha-img" alt="加载中…" title="点击刷新验证码">
 					<span id="captchaTip"></span>
-					<div class="code-box">邮箱验证码：
+				</div>
+				<div class="code-box">邮箱验证码：
 						<input type="text" id="code" placeholder="请输入6位验证码" inputmode="numeric" maxlength="6">
 						<input type="button" id="getCode" value="获取验证码">
 						<span id="codeTip"></span>

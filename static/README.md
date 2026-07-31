@@ -78,6 +78,7 @@ static :9200 (Flask + CORS)
 - 文件浏览：目录导航、面包屑、实时搜索（`/` 或 `Ctrl+F`）、文件统计
 - 流媒体：视频（MP4/WebM/OGG/AVI/MOV/MKV）与音频（MP3/WAV/OGG/FLAC/AAC/M4A）在线播放，支持进度拖动
 - 深色模式：`css/theme.css` 统一主题，自动适配系统偏好
+- 表单组件：注册页图形/邮箱验证码统一 `.code-box` 行内布局（文字标签 + 输入框 + 控件同排，窄屏自动换行），验证码图片样式复用 `theme.css` 的 `.captcha-img` 类
 - 路径遍历防护：`safe_path_join` 限制访问范围在 `directory.root` 内
 - Nuitka 编译：可打包为独立二进制 `fsys.bin`（`sys.frozen` 检测 + BASE_DIR 锚定）
 - 安全头注入：`security_middleware.py` 为所有响应注入 CSP、X-Frame-Options 等安全头

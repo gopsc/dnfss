@@ -190,6 +190,18 @@ input[type="button"]:disabled {
 }
 .code-box input[type="text"] { width: auto; flex: 1; min-width: 100px; display: inline-block; }
 .code-box input[type="button"] { white-space: nowrap; }
+/* 图形验证码图片（register 图形/邮箱验证码同排布局） */
+.code-box .captcha-img {
+    width: 120px;
+    height: 38px;
+    flex: none;
+    cursor: pointer;
+    border: 1.5px solid var(--border);
+    border-radius: 10px;
+    box-sizing: border-box;
+    object-fit: cover;
+    background: var(--bg);
+}
 
 /* ===== Validation Tips ===== */
 .tip-red { color: var(--error); font-size: 0.78rem; }
