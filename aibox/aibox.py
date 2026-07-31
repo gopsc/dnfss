@@ -6710,6 +6710,25 @@ class DeepSeekChat:
             self.logger.error(f"保存工具结果失败: {e}")
             return None
 
+    @staticmethod
+    def _sanitize_tool_result(result) -> str:
+        """将工具返回值安全转换为字符串，清理控制字符，防止破坏 API 请求。"""
+        if result is None:
+            return ""
+        if not isinstance(result, str):
+            try:
+                result = str(result)
+            except Exception:
+                return f"⚠️ 工具返回了无法序列化的结果类型: {type(result).__name__}"
+        # 清理控制字符：保留 \n \t \r，移除其他可能导致 JSON/API 问题的控制字符
+        cleaned_chars = []
+        for ch in result:
+            code = ord(ch)
+            if ch in ('\n', '\t', '\r') or code >= 0x20:
+                cleaned_chars.append(ch)
+            # 跳过 NULL、BEL、BS 等控制字符
+        return ''.join(cleaned_chars)
+
     def _handle_tool_calls(self, tool_calls: List[Dict], output_callback: Callable = None) -> List[Dict]:
         """处理工具调用 - 所有工具的输出都进行发送，并在开始和结束时发送两个回车"""
         if not tool_calls:
@@ -6727,25 +6746,29 @@ class DeepSeekChat:
         
         for tool_call in tool_calls:
             function = tool_call.get("function", {})
-            tool_name = function.get("name")
+            tool_name = function.get("name", "unknown")
             arguments = function.get("arguments", "{}")
+            tc_id = tool_call.get("id") or f"call_fallback_{self.stats['tool_calls']}_{int(time.time()*1000)}"
             
             try:
                 args = json.loads(arguments) if arguments else {}
             except json.JSONDecodeError:
                 args = {}
             
-            # 【修改】开始调用工具时发送两个回车
+            # 开始调用工具时发送提示
             if output_callback:
                 output_callback("line", "\n\n")
                 output_callback("line", f"🔧 调用工具: {tool_name}\n")
             
-            # 直接调用 execute_tool（同步）。
-            # - 若工具支持流式：execute_tool 内部开线程调 execute_streaming(**args)，
-            #   收集输出后转发到 current_output_queue（即此处的 output_queue），join 后返回。
-            # - 若工具不支持流式：execute_tool 直接调 execute(**args) 返回结果。
-            # 两种情况下 execute_tool 返回时执行均已完成，args 完整传入，不再有参数丢失。
-            result = self.tool_registry.execute_tool(tool_name, **args)
+            result_raw = None
+            try:
+                result_raw = self.tool_registry.execute_tool(tool_name, **args)
+            except Exception as e:
+                result_raw = f"❌ 工具 {tool_name} 执行异常: {str(e)}"
+                self.logger.error(f"工具 {tool_name} 执行异常: {e}")
+
+            # 安全转换并清理结果
+            result = self._sanitize_tool_result(result_raw)
 
             # 排空 output_queue，把流式行输出转发给 output_callback
             has_stream_output = False
@@ -6753,7 +6776,7 @@ class DeepSeekChat:
                 try:
                     msg_type, content = output_queue.get_nowait()
                     if output_callback and msg_type in ("line", "complete"):
-                        output_callback("line", content)
+                        output_callback("line", str(content) if content is not None else "")
                         has_stream_output = True
                 except queue.Empty:
                     break
@@ -6762,36 +6785,39 @@ class DeepSeekChat:
             if not has_stream_output and output_callback and result:
                 output_callback("line", result + "\n")
             
-            # 检查结果大小，如果超过阈值，不返回结果，只返回提示信息
-            if result and len(result) > MAX_RESULT_LENGTH:
-                # 不保存文件，直接返回提示信息
-                result = f"⚠️ 工具 {tool_name} 执行结果过大（{len(result)} 字符），超过限制（{MAX_RESULT_LENGTH} 字符），已放弃返回结果。\n\n请考虑：\n1. 使用更精确的查询条件\n2. 使用其他工具获取部分数据\n3. 优化查询方式减少结果数量"
+            # 检查结果大小，如果超过阈值，截断返回提示信息
+            if len(result) > MAX_RESULT_LENGTH:
+                truncated_note = f"\n\n⚠️ 结果已截断（原始 {len(result)} 字符，限制 {MAX_RESULT_LENGTH} 字符）。请使用更精确的查询获取所需信息。"
+                result = result[:MAX_RESULT_LENGTH] + truncated_note
                 if output_callback:
-                    output_callback("line", result + "\n")
+                    output_callback("line", truncated_note + "\n")
             
-            # 【修改】结束调用工具时发送两个回车
+            # 结束调用工具时发送换行
             if output_callback:
                 output_callback("line", "\n\n")
             
+            # 历史记录（安全截断）
             if self.history_manager:
-                self.history_manager.add_tool_call(tool_name, args, result[:200] + "..." if len(result) > 200 else result)
+                try:
+                    history_preview = result[:200] + "..." if len(result) > 200 else result
+                    self.history_manager.add_tool_call(tool_name, args, history_preview)
+                except Exception:
+                    pass
             
-            if tool_name == "save_memory_and_end_conversation" and "✅" in result:
+            # 检查是否结束对话
+            end_conversation = (tool_name == "save_memory_and_end_conversation" and "✅" in result)
+            if end_conversation:
                 self.logger.info("检测到保存记忆并结束对话工具调用")
                 self.conversation_active = False
-                tool_messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.get("id"),
-                    "content": result
-                })
-                # 【修复】不直接返回，而是添加后继续处理，但设置标志让后续停止
-                break
             
             tool_messages.append({
                 "role": "tool",
-                "tool_call_id": tool_call.get("id"),
+                "tool_call_id": tc_id,
                 "content": result
             })
+            
+            if end_conversation:
+                break
         
         # 清除输出队列
         self.tool_registry.set_output_queue(None)
@@ -6903,6 +6929,9 @@ class DeepSeekChat:
         
         enhanced_input = pre_prompt + "\n\n" + input_text + post_prompt
         
+        # 记录本轮开始前的消息长度，用于 API 失败时回滚，防止坏消息污染对话历史
+        msgs_before_turn = len(self.messages)
+        
         self._add_message("user", enhanced_input)
         
         if self.history_manager:
@@ -6921,19 +6950,32 @@ class DeepSeekChat:
             if msg["role"] == "system":
                 enhanced_messages.append(msg)
         
-        # 添加非系统消息，但确保消息结构正确
+        # 添加非系统消息，确保消息结构正确
         for msg in self.messages:
             if msg["role"] != "system":
                 if msg["role"] == "assistant":
                     assistant_msg = {"role": "assistant"}
-                    if "content" in msg and msg["content"]:
+                    has_content = "content" in msg and msg["content"] is not None
+                    has_tool_calls = "tool_calls" in msg and msg["tool_calls"]
+                    if has_content:
                         assistant_msg["content"] = msg["content"]
-                    if "reasoning_content" in msg:
-                        assistant_msg["reasoning_content"] = msg["reasoning_content"]
-                    if "tool_calls" in msg and msg["tool_calls"]:
+                    if has_tool_calls:
                         assistant_msg["tool_calls"] = msg["tool_calls"]
+                        # 有 tool_calls 时 content 必须为 null（API 要求）
                         assistant_msg["content"] = None
+                    elif not has_content:
+                        # 无 content 也无 tool_calls 时，设为空字符串避免 API 拒绝
+                        assistant_msg["content"] = ""
+                    # 注意：不回传 reasoning_content，它是 API 响应字段，回传可能导致请求失败
                     enhanced_messages.append(assistant_msg)
+                elif msg["role"] == "tool":
+                    # 确保 tool 消息 content 始终是字符串
+                    tool_msg = {
+                        "role": "tool",
+                        "tool_call_id": msg.get("tool_call_id", ""),
+                        "content": str(msg.get("content", "")) if msg.get("content") is not None else ""
+                    }
+                    enhanced_messages.append(tool_msg)
                 else:
                     enhanced_messages.append(msg)
         
@@ -7036,14 +7078,22 @@ class DeepSeekChat:
                                     index = tc.get('index', 0)
                                     
                                     if index not in current_tool_calls:
+                                        # 确保 tool_call id 非空，空 id 会导致 API 400 错误污染对话历史
+                                        tc_id = tc.get('id', '') or f"call_{self.stats['tool_calls']}_{index}_{int(time.time()*1000)}"
                                         current_tool_calls[index] = {
-                                            'id': tc.get('id', ''),
+                                            'id': tc_id,
                                             'type': 'function',
                                             'function': {
                                                 'name': '',
                                                 'arguments': ''
                                             }
                                         }
+                                    else:
+                                        # 流式传输中 id 可能分片到达，后续补充
+                                        existing_id = current_tool_calls[index].get('id', '')
+                                        new_id = tc.get('id', '')
+                                        if new_id and (not existing_id or existing_id.startswith('call_')):
+                                            current_tool_calls[index]['id'] = new_id
                                     
                                     if 'function' in tc:
                                         if 'name' in tc['function']:
@@ -7119,23 +7169,43 @@ class DeepSeekChat:
             return full_response if full_response else ""
                 
         except requests.exceptions.RequestException as e:
+            # 网络/HTTP 错误：回滚本轮添加的消息（user 消息 + 可能的 assistant/tool 消息），
+            # 防止格式错误的消息污染历史导致后续请求持续失败
+            self._rollback_messages(msgs_before_turn)
             error_msg = f"\n{i18n.get('error_prefix')}API请求失败: {str(e)}"
             if output_callback:
                 output_callback("error", error_msg)
             self.stats["errors"].append(str(e))
+            self.logger.error(f"API请求失败，已回滚消息到位置 {msgs_before_turn}: {e}")
             return error_msg
         except json.JSONDecodeError as e:
+            # JSON 解析错误：回滚消息
+            self._rollback_messages(msgs_before_turn)
             error_msg = f"\n{i18n.get('error_prefix')}API响应解析失败: {str(e)}"
             if output_callback:
                 output_callback("error", error_msg)
             self.stats["errors"].append(str(e))
+            self.logger.error(f"API响应解析失败，已回滚消息到位置 {msgs_before_turn}: {e}")
             return error_msg
         except Exception as e:
+            # 未知错误：回滚消息，防止对话状态被破坏
+            self._rollback_messages(msgs_before_turn)
             error_msg = f"\n{i18n.get('error_prefix')}{str(e)}"
             if output_callback:
                 output_callback("error", error_msg)
             self.stats["errors"].append(str(e))
+            self.logger.error(f"未知错误，已回滚消息到位置 {msgs_before_turn}: {e}")
             return error_msg
+    
+    def _rollback_messages(self, to_length: int):
+        """回滚 self.messages 到指定长度，用于 API 失败时恢复对话状态。"""
+        try:
+            current_len = len(self.messages)
+            if current_len > to_length:
+                del self.messages[to_length:]
+                self.logger.info(f"消息已回滚，从 {current_len} 条回滚到 {len(self.messages)} 条")
+        except Exception as e:
+            self.logger.error(f"消息回滚失败: {e}")
     
     
     def _add_assistant_message_with_reasoning(self, content: str, reasoning_content: str = None, tool_calls: List = None):
