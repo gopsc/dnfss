@@ -657,7 +657,8 @@ void registerRoutes(HttpServer &server) {
 	});
 
 	server.post("*", [](const auto& req, const auto& params) {
-		return handleProxy(req, params, "post");
+		return wrapperHttp(req, params,
+			[](const auto& req, const auto& params) { return handleProxy(req, params, "post"); });
 	});
 
 }
