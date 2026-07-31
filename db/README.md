@@ -189,7 +189,7 @@ CREATE TABLE IF NOT EXISTS Logs (
 
 ### 写入方式
 
-**外部服务**：复制 `example_log_client.py` 为各自目录下的 `log_client.py`，改 `service_name` 即用。客户端底层通过 pymsg 调 `execute` 路由逐条 INSERT 到 Logs 表：
+**外部服务**：复制 `example_log_client.py` 为各自目录下的 `log_client.py`，改 `service_name` 即用。客户端底层通过 pymsg `RpcClient`（高层 RPC 封装）调 `execute` 路由逐条 INSERT 到 Logs 表：
 
 ```python
 from log_client import logs
@@ -202,11 +202,16 @@ logs.push("gateway", "WARNING", "登录失败次数超限",
 
 客户端特性：
 - 无第三方依赖（仅依赖 pymsg 项目内置库），异步非阻塞：内存队列 + 后台线程批量推送
-- fail-safe：db 不可用时静默丢弃，绝不影响业务
+- **RpcClient 高层 RPC**：直接传 dict 对象，无需手动拼 `_route` / json.dumps / json.loads
+- fail-safe：db 不可用时静默丢弃，绝不影响业务；后台线程外层 try/except 捕获所有异常，任何网络/序列化错误都不会杀死日志线程（防止队列无限增长导致 OOM）
 - 缓冲批量：队列满 50 条或超时 2 秒时自动 flush
-- 长度保护：`message` 上限 8192 字节、`extra` 上限 4096 字节，超长自动截断
+- 时间戳准确：日志入队时即生成 UTC ISO 时间戳，而非发送时生成，队列积压时时间仍反映事件真实发生时间
+- 队列保护：队列上限 10000 条，满时丢弃最旧条目（drop-oldest），`push()` 永远不阻塞业务线程
+- 安全序列化：`extra` 字段包含不可 JSON 序列化对象时自动 fallback 为 `str()`/`repr()`，不会因 TypeError 中断
+- flush 可靠：`flush()` 使用 Event 通知而非固定 sleep，精确等待后台线程完成批量发送
+- 长度保护：服务端 `_log_internal()` 对内部日志有 `message` 上限 8192 字节、`extra` 上限 4096 字节的自动截断；外部客户端建议在业务层控制日志长度
 
-**db 自身**：`_log_internal()` 直接写库，无网络往返（防递归）。
+**db 自身**：`_log_internal()` 直接写库，无网络往返（防递归），并在写入前做长度截断。
 
 ### 查询日志
 
@@ -239,8 +244,9 @@ SQLAlchemy 会自动生成适配各数据库的 SQL 方言，无需修改接口�
 
 | 文件 | 说明 |
 |------|------|
-| `dbv2.py` | 服务主程序（pymsg/TCP，唯一在跑的实现） |
-| `example_log_client.py` | 日志客户端 SDK 模板，各服务复制为 `log_client.py` 使用 |
+| `dbv2.py` | 服务主程序（pymsg RpcServer/TCP，唯一在跑的实现） |
+| `example_log_client.py` | 日志客户端 SDK 模板，各服务复制为 `log_client.py` 使用（基于 RpcClient，含线程保护/队列上限/安全序列化等健壮性设计） |
+| `db_tools.py` | SQLite 运维工具：backup / export / import / vacuum / wal-checkpoint / info，供 docker.sh 等脚本调用 |
 | `create_sqlite3.sql` | Users / Notes / Logs 建表脚本 |
 | `_view_db.sqlite3.py` | 非交互式查看 database.db 的工具脚本 |
 | `_set.sh` / `_run.sh` | 环境安装 / 启动脚本 |
