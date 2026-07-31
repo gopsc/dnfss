@@ -230,7 +230,10 @@ class BotOpsApp(App):
         elif t == "error":
             await self.notify_system(f"❌ {content}", level="error")
         elif t == "info":
-            await self.notify_system(f"ℹ️ {content}")
+            # 过滤掉对话开始这类隐式通知（用户发消息自然知道对话开始了）
+            skip_keywords = ("Conversation started", "对话开始", "🎭")
+            if not any(k in content for k in skip_keywords):
+                await self.notify_system(f"ℹ️ {content}")
         elif t == "command_result":
             await self.notify_system(content)
         elif t == "connection_ack":
