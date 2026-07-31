@@ -436,7 +436,7 @@ class PromptManager:
     
     文件命名规范:
     - 00_IDENTITY.md: 用户身份信息
-    - 1_*.md/txt: 基础技能（必须从1_开头）
+    - N_*.md/txt: 基础技能提示词（N 为数字，如 1_memory_search.md、10_task_handling.md），按数字升序加载
     - 99_SOUL.md: 智能体灵魂文件（角色定位、身份定义、性格等）
     - 100_STATUS.md: 智能体状态记录
     """
@@ -450,8 +450,8 @@ class PromptManager:
     STATUS_FILE = "100_STATUS.md"
     SOUL_FILE = "99_SOUL.md"  # 智能体灵魂文件 - 所有角色定位内容
     
-    # 基础技能前缀
-    SKILL_PREFIX = "1_"  # 基础技能文件必须以这个开头
+    # 基础技能文件名模式：N_xxx.md（N 为数字，如 1_memory_search.md、10_task_handling.md）
+    _SKILL_FILE_RE = re.compile(r'^(\d+)_')
     
     def __new__(cls):
         if cls._instance is None:
@@ -642,14 +642,17 @@ class PromptManager:
                 print(f"⚠️ 创建默认灵魂文件失败: {e}")
     
     def _ensure_skill_files(self):
-        """确保基础技能文件存在 - 以1_开头的文件"""
+        """确保基础技能文件存在 - N_ 开头的文件（N 为数字，按数字顺序加载）"""
         skill_files = [
             {
                 'filename': '1_memory_search.md',
                 'content': """# 记忆搜索习惯
 
-## 重要习惯
-在每次回答用户问题前，**必须**先使用 `memory search` 工具搜索记忆库中与当前话题相关的记忆。
+## 核心习惯
+在回答用户问题前，**应根据话题相关性判断是否需要搜索记忆**：
+- 涉及过往讨论、用户偏好、之前做过的事 → 必须搜索
+- 全新话题、简单问候（"你好"）、确认回应（"好的""明白了"）→ 无需搜索
+- 不确定时，搜索一下也无妨
 
 ## 为什么要这样做？
 - 保持对话的连贯性
@@ -665,11 +668,9 @@ memory search keywords=["关键词1", "关键词2"]
 ## 示例
 如果用户说："上次我们讨论的那个项目怎么样了？"
 你应该：
-1. 先搜索 "项目" 相关的记忆
+1. 搜索 "项目" 相关的记忆
 2. 根据搜索结果回答
 3. 如果找不到相关记忆，诚实告知用户
-
-记住：这是你的核心习惯，每次都要做！
 """
             },
             {
@@ -711,19 +712,22 @@ save_memory_and_end_conversation(
 - **list_files**: 列出目录
 
 ## 大文件处理规则
-当遇到以下情况时，**必须先告知用户文件过大**：
-1. 文件大小超过 50KB
-2. 文件行数超过 200 行
+当遇到以下情况时，**必须分页读取**，不要一次性读取整个文件：
+1. 文件大小超过 500KB
+2. 文件行数超过 2000 行
 
 对于大文件，应该：
-- 使用 head/tail 参数只读取开头或结尾
+- 先用 head=true 读取前50行了解文件结构
 - 使用 start_line/end_line 参数指定行范围
-- 建议用户提供更具体的查询条件
+- 使用 tail=true 读取文件末尾
+- 对于二进制文件或特殊格式文件，使用 run_command 配合 head/strings 等命令查看
+- 建议用户提供更具体的查询条件以缩小范围
 
 ## 示例
 ```
 read_file filepath="/path/to/file.txt" head=true max_lines=50
-read_file filepath="/path/to/file.txt" start_line=10 end_line=20
+read_file filepath="/path/to/file.txt" start_line=100 end_line=200
+read_file filepath="/path/to/file.txt" tail=true max_lines=50
 ```
 """
             },
@@ -1047,42 +1051,55 @@ update_soul content="我是...（新的自我定义）"
         """创建默认提示词（已由各 _ensure_* 方法处理）"""
         pass
     
+    @classmethod
+    def _skill_sort_key(cls, filename: str):
+        """技能文件按前缀数字排序，非技能文件返回 None。"""
+        m = cls._SKILL_FILE_RE.match(filename)
+        return int(m.group(1)) if m else None
+
+    def _prompt_sort_key(self, p):
+        """排序规则：00_IDENTITY → 技能文件(按数字升序) → 99_SOUL → 100_STATUS → 其他"""
+        file = p['file']
+        if file == self.IDENTITY_FILE:
+            return (0,)
+        skill_num = self._skill_sort_key(file)
+        if skill_num is not None:
+            return (1, skill_num)
+        if file == self.SOUL_FILE:
+            return (2,)
+        if file == self.STATUS_FILE:
+            return (4,)
+        return (3, file)  # 其他文件按名字排序
+
     def get_prompts(self, join_with: str = "\n\n") -> str:
-        """获取所有提示词，按顺序拼接"""
+        """获取所有提示词，按顺序拼接（identity → 技能文件 → soul → status）"""
         if not self._prompts:
             return ""
-        
-        # 排序规则：先基础技能（1_开头），再其他，最后灵魂文件
-        def sort_key(p):
-            file = p['file']
-            if file == self.SOUL_FILE:
-                return 3  # 灵魂文件最后加载
-            elif file.startswith(self.SKILL_PREFIX):
-                return 1  # 基础技能
-            elif file == self.IDENTITY_FILE:
-                return 0  # 身份文件最先
-            elif file == self.STATUS_FILE:
-                return 4  # 状态文件最后
-            else:
-                return 2
-        
-        sorted_prompts = sorted(self._prompts, key=sort_key)
+        sorted_prompts = sorted(self._prompts, key=self._prompt_sort_key)
         contents = [p['content'] for p in sorted_prompts]
         return join_with.join(contents)
-    
+
+    def get_sorted_prompts_list(self) -> List[Dict]:
+        """获取按正确顺序排列的提示词列表（用于 system 消息构建）。"""
+        return sorted(self._prompts, key=self._prompt_sort_key)
+
     def get_prompts_list(self) -> List[Dict]:
-        """获取所有提示词列表"""
+        """获取所有提示词列表（原始加载顺序，已弃用，请用 get_sorted_prompts_list）。"""
         return self._prompts.copy()
-    
+
+    def get_skill_prompts(self) -> List[Dict]:
+        """获取所有基础技能提示词（N_ 开头的文件）。"""
+        return [p for p in self._prompts if self._skill_sort_key(p['file']) is not None]
+
     def reload(self):
         """重新加载所有提示词"""
         self._prompts = []
         self._load_prompts()
         return len(self._prompts)
-    
+
     def get_prompt_count(self) -> int:
         return len(self._prompts)
-    
+
     def get_prompts_dir_path(self) -> str:
         return self._prompts_dir
 
@@ -6536,19 +6553,19 @@ class DeepSeekChat:
         self._register_tools(exit_callback, command_executor)
     
     def _init_system_prompts(self, system_prompt: str = None):
-        """初始化系统提示词 - 从 PromptManager 加载"""
+        """初始化系统提示词 - 从 PromptManager 加载（按 identity → 技能 → soul → status 顺序）"""
         if system_prompt:
             # 如果明确指定了 system_prompt，使用它
             self._add_message("system", system_prompt)
             self.logger.info("使用指定的系统提示词")
         else:
-            # 从 PromptManager 加载所有提示词
-            prompts = self.prompt_manager.get_prompts_list()
+            # 从 PromptManager 加载所有提示词，按正确顺序排列
+            prompts = self.prompt_manager.get_sorted_prompts_list()
             if prompts:
                 for prompt in prompts:
                     if prompt['content'].strip():
                         self._add_message("system", prompt['content'].strip())
-                self.logger.info(f"已加载 {len(prompts)} 个系统提示词")
+                self.logger.info(f"已加载 {len(prompts)} 个系统提示词（顺序: identity → 技能 → soul → status）")
             else:
                 # 如果没有任何提示词，添加一个默认的
                 default_prompt = "你是一个智能AI助手。"
@@ -6847,8 +6864,15 @@ class DeepSeekChat:
         # 默认情况下，如果记忆库存在，搜索一下也无妨
         return True
     
-    def think_and_respond(self, input_text: str, output_callback: Callable = None) -> Optional[str]:
-        """思考并回应 - 支持实时流式输出，支持思考模式"""
+    def think_and_respond(self, input_text: str, output_callback: Callable = None, is_continuation: bool = False) -> Optional[str]:
+        """思考并回应 - 支持实时流式输出，支持思考模式。
+        
+        Args:
+            input_text: 用户输入或继续提示
+            output_callback: 流式输出回调
+            is_continuation: 是否为工具调用后的递归继续；为 True 时不注入冗长的工作流指令，
+                            因为 system prompt 中已有完整行为规范，继续时只需传递工具结果
+        """
         if not self.conversation_active:
             self.logger.info("对话已结束，重置状态")
             self.conversation_active = True
@@ -6880,54 +6904,14 @@ class DeepSeekChat:
         
         self.stats["api_calls"] += 1
         
-        # 前置提示词
-        pre_prompt = """【系统指令 - 核心工作流程】
-
-        在开始任何任务之前，你必须严格按照以下优先级执行：
-
-        ## 第一步：搜索可用技能（最高优先级）⭐
-        当用户提出任何任务、需求或问题时，**必须先使用 `search_skills` 工具**搜索相关技能：
-        - 使用 `search_skills keyword="[任务关键词]"` 搜索是否有现成的扩展技能可以完成该任务
-        - 例如：用户说"帮我查天气"，你应该先执行 `search_skills keyword="天气"`
-        - 例如：用户说"帮我计算BMI"，你应该先执行 `search_skills keyword="BMI"`
-        - 如果搜索结果中有匹配的技能，优先使用该技能完成任务
-        - 只有在没有合适技能的情况下，才考虑使用其他工具或方法
-
-        ## 第二步：搜索相关记忆
-        在每次回答用户问题前，**必须**使用 `memory search` 工具搜索记忆库中与当前话题相关的记忆，确保回答的连贯性和准确性。
-
-        ## 第三步：积极向用户提问
-        如果你有任何无法确定的事情，那么你需要用户提供额外信息，
-        请务必使用 `ask_user` 工具向用户提问，以便获得更准确的指引。
-
-        ## 第四步：执行任务或回答问题
-        根据搜索结果，选择合适的工具或直接回答。
-
-        【重要提醒】
-        - 技能优先原则：有技能先用技能，不要自己硬编码实现
-        - 如果没有合适的技能，可以使用其他工具或直接回答
-        - 对话结束时，必须使用 `save_memory_and_end_conversation` 工具保存本次对话的重要信息并更新智能体状态
-        - 当了解到用户的身份信息时，使用 `update_identity` 工具更新 00_IDENTITY.md
-        - 当你的角色、性格、能力边界需要调整时，使用 `update_soul` 工具更新 99_SOUL.md 文件来重新定义自己
-        - 绝对不要直接打开大文件来读，应该使用额外的压缩工具
-
-        现在请处理用户的输入："""
-        
-        # 后置提示词
-        post_prompt = """
-        
-                【注意】
-                当本次对话的话题讨论完成时，请使用 `save_memory_and_end_conversation` 工具结束对话并保存重要信息到记忆库，同时更新你的状态到 100_STATUS.md。
-        
-                【自我认知更新】
-                在对话过程中，如果你发现：
-                - 自己的角色定位需要调整
-                - 性格特点需要改变
-                - 能力边界需要重新定义
-                - 行为准则需要优化
-                请使用 `update_soul` 工具更新 99_SOUL.md 文件，这有助于你更好地理解自己并为用户提供更精准的服务。"""
-        
-        enhanced_input = pre_prompt + "\n\n" + input_text + post_prompt
+        if is_continuation:
+            # 递归继续（工具调用后）：直接使用输入文本，不重复注入工作流指令
+            # system prompt 中已有完整行为规范，此处只需传递工具结果的上下文
+            enhanced_input = input_text
+        else:
+            # 首轮回话：附加简洁的工作流程提醒（不重复 system prompt 中已有的详细说明）
+            pre_prompt = "【工作流程提醒】\n1. 如果用户提出新任务，先用 search_skills 搜索是否有现成技能可用\n2. 根据话题相关性决定是否 memory search（简单问候/确认无需搜索）\n3. 信息不足时用 ask_user 提问，不要猜测\n4. 遇到大文件用分页读取（head/tail/start_line/end_line），不要直接打开大文件\n5. 话题完成时用 save_memory_and_end_conversation 保存记忆并结束"
+            enhanced_input = pre_prompt + "\n\n" + input_text
         
         # 记录本轮开始前的消息长度，用于 API 失败时回滚，防止坏消息污染对话历史
         msgs_before_turn = len(self.messages)
@@ -7146,9 +7130,8 @@ class DeepSeekChat:
                 if output_callback:
                     output_callback("line", i18n.get('analyzing_tool_results') + "\n")
                 
-                # 【关键修复4】递归调用，让AI基于工具结果继续回答
-                # 使用一个新的输入提示，避免重复
-                return self.think_and_respond("请基于以上工具执行结果继续回答用户的问题。", output_callback)
+                # 递归调用，让AI基于工具结果继续回答；is_continuation=True 避免重复注入工作流指令
+                return self.think_and_respond("请基于以上工具执行结果继续回答。", output_callback, is_continuation=True)
             
             elif full_response:
                 # 正常添加助手消息，包含 reasoning_content
