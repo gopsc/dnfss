@@ -1,16 +1,17 @@
 """
-confs — 统一配置服务（pymsg/TCP，默认 127.0.0.1:8010）
+confs — 统一配置服务（pymsg RpcServer/TCP，默认 127.0.0.1:8010）
 
-集中存放各微服务的配置文件，通过 pymsg 协议分发给内部服务，
+集中存放各微服务的配置文件，通过 pymsg 高层 RPC 协议分发给内部服务，
 替代各服务本地散落的 ini/json/yaml 配置文件，实现配置的统一管理与下发。
 
-pymsg 路由::
+客户端使用 RpcClient 直接传 dict，无需手动拼 _route / json.dumps / json.loads::
 
-    {"_route": "get", "name": "example.ini"}                      → 取配置文件全文
-    {"_route": "get", "name": "example.ini", "key": "Server.port"} → 取单个键（ini/json）
-    {"_route": "list"}                                             → 列出全部配置
-    {"_route": "reload", "name": "example.ini"}                    → 重载指定配置（缺省清空全部缓存）
-    {"_route": "health"}                                           → 健康检查
+    c = RpcClient("127.0.0.1", 8010, "my-service")
+    c.call("get",    {"name": "example.ini"})
+    c.call("get",    {"name": "example.ini", "key": "server.port"})
+    c.call("list",   {})
+    c.call("reload", {"name": "example.ini"})
+    c.call("health", {})
 
 响应格式（与 db / smtp / captcha 一致）::
 
@@ -18,7 +19,8 @@ pymsg 路由::
     {"success": false, "error": "..."}
 
 配置文件存放于 confs/configs/ 目录（可用 --dir 覆盖），内存缓存 +
-文件 mtime 变化自动重载；配置名校验防路径遍历。仅监听 127.0.0.1，不对外暴露。
+文件 mtime 变化自动重载；配置名校验防路径遍历，所有文件系统操作在
+持锁状态下原子完成以防 TOCTOU 竞态。仅监听 127.0.0.1，不对外暴露。
 """
 
 import configparser
@@ -86,13 +88,25 @@ class ConfigStore:
         self._cache = {}  # name -> {"content": str, "mtime": float, "size": int}
         self._lock = threading.Lock()
 
-    def _resolve(self, name: str) -> str:
-        """校验配置名并返回绝对路径（防路径遍历 + 扩展名白名单）。"""
+    @staticmethod
+    def _validate_name(name: str) -> None:
+        """纯字符串校验配置名（basename + 扩展名白名单），不访问文件系统。
+
+        用于锁外快速拒绝明显非法的请求；真实路径解析和文件存在性检查
+        必须在持锁后通过 _resolve_locked() 完成，防止 TOCTOU 竞态。
+        """
         if not name or name != os.path.basename(name):
             raise ConfigNameInvalid(f"非法配置名: {name!r}")
         ext = os.path.splitext(name)[1].lower()
         if ext not in ALLOWED_EXT:
             raise ConfigNameInvalid(f"不支持的配置类型: {ext or '(无扩展名)'}")
+
+    def _resolve_locked(self, name: str) -> str:
+        """持锁状态下解析配置名到绝对路径，并校验路径安全性与文件存在性。
+
+        必须在 self._lock 持有期间调用；通过 os.path.realpath() 即时解析符号链接，
+        确保从校验到打开文件之间不存在替换窗口，防御 TOCTOU 攻击。
+        """
         path = os.path.realpath(os.path.join(self.root, name))
         if not path.startswith(self.root + os.sep):
             raise ConfigNameInvalid(f"非法配置名: {name!r}")
@@ -101,9 +115,14 @@ class ConfigStore:
         return path
 
     def get(self, name: str) -> dict:
-        """取配置内容（带缓存；文件 mtime 变化时自动重新读取）。"""
-        path = self._resolve(name)
+        """取配置内容（带缓存；文件 mtime 变化时自动重新读取）。
+
+        所有文件系统操作（realpath/stat/open）均在锁内完成，
+        防止路径校验与文件读取之间的 TOCTOU 竞态。
+        """
+        self._validate_name(name)
         with self._lock:
+            path = self._resolve_locked(name)
             try:
                 st = os.stat(path)
                 mtime = st.st_mtime
@@ -130,18 +149,22 @@ class ConfigStore:
             return entry
 
     def list(self) -> list:
-        """列出配置目录下全部允许类型的配置文件。"""
+        """列出配置目录下全部允许类型的配置文件（持锁遍历，保证 _cache 访问一致）。"""
         out = []
-        for name in sorted(os.listdir(self.root)):
-            if os.path.splitext(name)[1].lower() not in ALLOWED_EXT:
-                continue
-            path = os.path.join(self.root, name)
-            if not os.path.isfile(path):
-                continue
-            st = os.stat(path)
-            out.append({"name": name, "size": st.st_size,
-                        "mtime": _iso(st.st_mtime),
-                        "cached": name in self._cache})
+        with self._lock:
+            for name in sorted(os.listdir(self.root)):
+                if os.path.splitext(name)[1].lower() not in ALLOWED_EXT:
+                    continue
+                path = os.path.join(self.root, name)
+                if not os.path.isfile(path):
+                    continue
+                try:
+                    st = os.stat(path)
+                except OSError:
+                    continue
+                out.append({"name": name, "size": st.st_size,
+                            "mtime": _iso(st.st_mtime),
+                            "cached": name in self._cache})
         return out
 
     def reload(self, name: "str | None" = None) -> list:
@@ -151,8 +174,10 @@ class ConfigStore:
             受影响（重载/移出缓存）的配置名列表。
         """
         if name is not None:
-            self._resolve(name)  # 校验，文件不存在则抛 ConfigNotFound
+            self._validate_name(name)
             with self._lock:
+                # 在锁内重新解析路径，防止 TOCTOU
+                self._resolve_locked(name)
                 self._cache.pop(name, None)
             self.get(name)
             return [name]

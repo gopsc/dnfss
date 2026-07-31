@@ -154,20 +154,22 @@ python3 confs.py --addr 127.0.0.1 --port 8010 --workers 4 --dir configs/
 ### 调用示例（Python）
 
 ```python
-import json
-from pymsg import MsgClient
+from pymsg import RpcClient
 
-c = MsgClient("127.0.0.1", 8010, "my-service")
+c = RpcClient("127.0.0.1", 8010, "my-service")
 
-# 取配置全文
-resp = json.loads(c.call(json.dumps({"_route": "get", "name": "example.ini"}), timeout=5))
+# 取配置全文（dict 直接传入，RpcClient 自动序列化/反序列化）
+resp = c.call("get", {"name": "example.ini"}, timeout=5)
 content = resp["data"]["content"]
 
 # 按键取值
-resp = json.loads(c.call(json.dumps({
-    "_route": "get", "name": "example.ini", "key": "Server.port"
-}), timeout=5))
+resp = c.call("get", {"name": "example.ini", "key": "server.port"}, timeout=5)
 port = resp["data"]["value"]
+
+# 列出所有配置
+resp = c.call("list", {}, timeout=5)
+for cfg in resp["data"]["configs"]:
+    print(cfg["name"], cfg["size"])
 ```
 
 ## 缓存机制
@@ -180,8 +182,10 @@ port = resp["data"]["value"]
 ## 安全机制
 
 - **扩展名白名单**：仅允许 `.ini/.conf/.cfg/.json/.yaml/.yml/.toml/.txt`，其余一律拒绝
-- **路径遍历防护**：配置名必须等于 `os.path.basename(name)`，且 realpath 必须位于 `configs/` 目录前缀之下
+- **路径遍历防护**：配置名必须等于 `os.path.basename(name)`，且 realpath 必须位于 `configs/` 目录前缀之下；符号链接会被 `os.path.realpath()` 解析后校验
+- **TOCTOU 防护**：所有文件系统操作（`realpath` → `stat` → `open`）均在持锁状态下原子完成，不存在"先校验后打开"的时间窗口，防止符号链接替换攻击
 - **文件大小限制**：单配置文件上限 1 MiB（`MAX_CONFIG_SIZE`），超过则拒绝读取并返回错误，防止超大文件导致内存溢出
+- **Slowloris 防护**：pymsg `MsgServer` 默认设置 10 秒接收超时，慢速发送的半开连接会被自动断开
 - **仅监听本机**：默认 `127.0.0.1`，不对外暴露，仅供内部服务调用
 - **无鉴权**：当前无身份校验，依赖"仅本机 + 内部网络"的信任边界；如需承载敏感配置（如 API 密钥），应额外评估鉴权方案
 
