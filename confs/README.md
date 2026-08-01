@@ -236,7 +236,7 @@ except RpcError as e:
 | 服务 | 配置文件 | 接入方式 |
 |------|---------|---------|
 | [static](../static/) | [static.ini](configs/static.ini) | 三层 fail-safe：内置默认值 → confs（优先）→ 本地 `config.ini` 回退 |
-| [dnfs](../dnfs/) | [dnfs.ini](configs/dnfs.ini) | 三层 fail-safe：内置默认值 → confs（优先）→ 环境变量覆盖 |
+| [dnfs](../dnfs/) | [dnfs.ini](configs/dnfs.ini) | confs 强依赖（confs 不可用时 dnfs 直接退出）→ 环境变量覆盖（最高优先级，Docker 兼容） |
 | [db](../db/) | [db.ini](configs/db.ini) | confs 强依赖（confs 不可用时 db 直接退出）→ 环境变量覆盖（最高优先级，Docker 兼容） |
 
 static 的接入实现见 [static/fsys.py](../static/fsys.py)：
@@ -246,9 +246,12 @@ static 的接入实现见 [static/fsys.py](../static/fsys.py)：
 - 配置来源会记录到日志（`logs.info/warning`），便于排查实际用了哪一层
 
 dnfs 的接入实现见 [dnfs/dnfs.py](../dnfs/dnfs.py)：
-- 三层加载顺序：内置默认值 → confs（dnfs.ini）→ 环境变量覆盖（优先级最高）
+- 两层加载顺序：confs（dnfs.ini，强依赖）→ 环境变量覆盖（优先级最高）
+- confs 连接失败或 dnfs.ini 缺失必需配置项时，dnfs 直接 `sys.exit(1)` 终止，不使用默认值
+- 配置项涵盖：`[server]` host/port、`[database]` host/port/timeout、`[ai_review]` url/timeout
+- confs 连接地址为引导配置：环境变量 `CONFS_HOST`/`CONFS_PORT` 优先，默认 `127.0.0.1:8010`
 - 支持的环境变量：`LISTEN_ADDR`/`LISTEN_PORT`/`DB_HOST`/`DB_PORT`/`REVIEW_URL`/`CONFS_HOST`/`CONFS_PORT`
-- Docker 环境通过环境变量传入服务名（db/ai_review），覆盖 confs 中的 127.0.0.1 默认值
+- 启动顺序：confs → db → dnfs → ai_review/...（dnfs 同时依赖 confs 和 db）
 
 db 的接入实现见 [db/dbv2.py](../db/dbv2.py)：
 - 两层加载顺序：confs（db.ini，强依赖）→ 环境变量覆盖（优先级最高）

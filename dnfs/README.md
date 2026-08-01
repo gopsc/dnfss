@@ -215,27 +215,32 @@ curl -X POST http://localhost:8006/update_note \
 
 ## 配置
 
-dnfs 已接入 confs 统一配置服务，采用**三层 fail-safe** 加载模式（与 static 服务一致）：
+dnfs 已接入 confs 统一配置服务，confs 是 dnfs 启动的**强依赖**：
 
-**加载顺序**：内置默认值 → confs 统一配置服务（dnfs.ini，优先）→ 环境变量覆盖（最高优先级）
+1. **confs 统一配置服务** — 必须成功从 confs 拉取 `dnfs.ini`，否则 dnfs 启动失败直接退出（exit code 1）
+2. **环境变量覆盖**（最高优先级）— Docker/部署环境通过环境变量覆盖 confs 中的值
 
 ### 配置文件
 
 集中托管在 [confs/configs/dnfs.ini](../confs/configs/dnfs.ini)，由 confs 服务分发：
 
-| Section | Key | 默认值 | 说明 |
-|---------|-----|--------|------|
-| `[server]` | `host` | `127.0.0.1` | 监听地址 |
-| `[server]` | `port` | `8006` | 监听端口 |
-| `[database]` | `host` | `127.0.0.1` | db 服务地址 |
-| `[database]` | `port` | `8005` | db 服务端口 |
-| `[database]` | `timeout` | `10` | RPC 调用超时（秒） |
-| `[ai_review]` | `url` | `http://127.0.0.1:8007/review` | AI 审核接口地址 |
-| `[ai_review]` | `timeout` | `10` | AI 审核请求超时（秒） |
-| `[confs]` | `host` | `127.0.0.1` | confs 服务地址 |
-| `[confs]` | `port` | `8010` | confs 服务端口 |
+| Section | Key | 说明 |
+|---------|-----|------|
+| `[server]` | `host` | 监听地址 |
+| `[server]` | `port` | 监听端口 |
+| `[database]` | `host` | db 服务地址 |
+| `[database]` | `port` | db 服务端口 |
+| `[database]` | `timeout` | RPC 调用超时（秒） |
+| `[ai_review]` | `url` | AI 审核接口地址 |
+| `[ai_review]` | `timeout` | AI 审核请求超时（秒） |
 
-### 环境变量（Docker 环境必需，优先级最高）
+### 引导配置（confs 连接地址）
+
+confs 自身的连接地址不通过 confs 获取（避免循环依赖），通过以下方式确定（优先级从高到低）：
+- 环境变量 `CONFS_HOST` / `CONFS_PORT`
+- 默认值 `127.0.0.1:8010`
+
+### 环境变量（最高优先级，覆盖 confs 配置值）
 
 环境变量覆盖配置文件值，容器化部署时通过 docker-compose.yml 传入服务名：
 
@@ -246,10 +251,16 @@ dnfs 已接入 confs 统一配置服务，采用**三层 fail-safe** 加载模�
 | `DB_HOST` | `db` | db 服务主机名（docker-compose 服务名） |
 | `DB_PORT` | `8005` | db 服务端口 |
 | `REVIEW_URL` | `http://ai_review:8007/review` | ai_review 服务地址 |
-| `CONFS_HOST` | - | 可选，confs 容器化后使用 |
-| `CONFS_PORT` | - | 可选，confs 容器化后使用 |
+| `CONFS_HOST` | `confs` | confs 服务主机名（引导配置） |
+| `CONFS_PORT` | `8010` | confs 服务端口（引导配置） |
 
-配置来源会记录到日志（`logs.info/warning`），便于排查实际用了哪一层。本地裸机运行时 confs 不可用会自动回退到内置默认值 + 环境变量。
+### 启动顺序要求
+
+**confs 必须先于 dnfs 启动**（启动顺序：confs → db → dnfs → ai_review/...）。若 confs 不可用：
+- dnfs 打印致命错误到 stderr（包含 confs 地址和具体错误原因），以 exit code 1 终止
+- 不会静默使用默认值启动
+- 配置完整性校验：若 dnfs.ini 中缺少必需的 section/key 且无对应环境变量覆盖，同样报错退出
+- 启动成功时控制台打印：`配置来源: confs (dnfs.ini @ host:port)`
 
 ## 前端
 

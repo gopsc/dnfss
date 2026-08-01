@@ -33,15 +33,21 @@ from log_client import logs
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from pymsg import RpcClient, RpcError  # noqa: E402
 
-# ==================== 配置加载（三层 fail-safe） ====================
-# 加载顺序：内置默认值 → confs 统一配置服务（dnfs.ini） → 环境变量覆盖
-# 环境变量优先级最高（Docker 环境使用服务名 db/ai_review 而非 127.0.0.1）
+# ==================== 配置加载（两层：confs 强依赖 → 环境变量覆盖） ====================
+# confs 是 dnfs 启动的强依赖：必须成功从 confs 拉取 dnfs.ini，否则直接退出。
+# 环境变量优先级最高（Docker 环境使用服务名 db/ai_review 而非 127.0.0.1）。
+# confs 自身的连接地址通过引导配置确定：环境变量 CONFS_HOST/CONFS_PORT 优先，
+# 缺省使用 127.0.0.1:8010（与其他服务一致的约定）。
 
+# 引导配置：confs 连接地址（不依赖 confs 本身）
+_confs_host = os.environ.get('CONFS_HOST', '127.0.0.1')
+_confs_port = int(os.environ.get('CONFS_PORT', '8010'))
+
+# 白名单结构：_merge_ini 仅覆盖此处列出的 section/key，防止意外字段
 _dnfs_config = {
-    'server': {'host': '127.0.0.1', 'port': '8006'},
-    'database': {'host': '127.0.0.1', 'port': '8005', 'timeout': '10'},
-    'ai_review': {'url': 'http://127.0.0.1:8007/review', 'timeout': '10'},
-    'confs': {'host': '127.0.0.1', 'port': '8010'},
+    'server': {'host': '', 'port': ''},
+    'database': {'host': '', 'port': '', 'timeout': ''},
+    'ai_review': {'url': '', 'timeout': ''},
 }
 
 
@@ -57,23 +63,29 @@ def _merge_ini(text):
 
 
 def _fetch_from_confs():
-    """从 confs 统一配置服务拉取 dnfs.ini 全文，失败返回 None（fail-safe）。"""
+    """从 confs 统一配置服务拉取 dnfs.ini 全文，失败直接终止进程。"""
     try:
-        host = os.environ.get('CONFS_HOST', _dnfs_config['confs']['host'])
-        port = int(os.environ.get('CONFS_PORT', _dnfs_config['confs']['port']))
-        data = RpcClient(host, port, 'dnfs', timeout=3).call(
+        data = RpcClient(_confs_host, _confs_port, 'dnfs', timeout=5).call(
             'get', {'name': 'dnfs.ini'})
         return data.get('content')
-    except Exception:
-        return None
+    except (ConnectionRefusedError, ConnectionError, OSError) as e:
+        print(f'[dnfs] 致命错误: 无法连接 confs 服务 ({_confs_host}:{_confs_port}): {e}',
+              file=sys.stderr)
+        print(f'[dnfs] 请确认 confs 服务已启动并监听 {_confs_host}:{_confs_port}',
+              file=sys.stderr)
+        sys.exit(1)
+    except RpcError as e:
+        print(f'[dnfs] 致命错误: 从 confs 获取 dnfs.ini 失败: {e}',
+              file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f'[dnfs] 致命错误: confs 配置拉取异常: {e}',
+              file=sys.stderr)
+        sys.exit(1)
 
 
 _confs_text = _fetch_from_confs()
-if _confs_text is not None:
-    _merge_ini(_confs_text)
-    logs.info("dnfs", "配置来源: confs 统一配置服务 (dnfs.ini)")
-else:
-    logs.warning("dnfs", "confs 不可用，使用内置默认值 + 环境变量")
+_merge_ini(_confs_text)
 
 # 环境变量覆盖（优先级最高，Docker 环境需要）
 if os.environ.get('LISTEN_ADDR'):
@@ -86,19 +98,31 @@ if os.environ.get('DB_PORT'):
     _dnfs_config['database']['port'] = os.environ['DB_PORT']
 if os.environ.get('REVIEW_URL'):
     _dnfs_config['ai_review']['url'] = os.environ['REVIEW_URL']
-if os.environ.get('CONFS_HOST'):
-    _dnfs_config['confs']['host'] = os.environ['CONFS_HOST']
-if os.environ.get('CONFS_PORT'):
-    _dnfs_config['confs']['port'] = os.environ['CONFS_PORT']
+
+# 配置完整性校验
+_required = {
+    'server': ['host', 'port'],
+    'database': ['host', 'port', 'timeout'],
+    'ai_review': ['url', 'timeout'],
+}
+for section, keys in _required.items():
+    for key in keys:
+        if not _dnfs_config[section][key]:
+            print(f'[dnfs] 致命错误: 配置项 [{section}] {key} 缺失（dnfs.ini 中未配置且无环境变量覆盖）',
+                  file=sys.stderr)
+            sys.exit(1)
 
 # 提取配置常量
+_DB_TIMEOUT = int(_dnfs_config['database']['timeout'])
 _DBV2_ADDR = _dnfs_config['database']['host']
 _DBV2_PORT = int(_dnfs_config['database']['port'])
-_DB_TIMEOUT = int(_dnfs_config['database']['timeout'])
 _REVIEW_SERVER_URL = _dnfs_config['ai_review']['url']
 _REVIEW_TIMEOUT = int(_dnfs_config['ai_review']['timeout'])
 _ADDR = _dnfs_config['server']['host']
 _PORT = int(_dnfs_config['server']['port'])
+
+_config_source = f'confs (dnfs.ini @ {_confs_host}:{_confs_port})'
+print(f'[dnfs] 配置来源: {_config_source}')
 
 # 管理员判定已上移至 gateway：登录时命中 [Admin] users 白名单即在 Token payload
 # 写入 is_admin=true，本服务通过 info.get('is_admin') 读取，不再本地维护名单。
