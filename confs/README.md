@@ -227,7 +227,7 @@ except RpcError as e:
 
 ## 集成关系
 
-- 由 `core`（`PMC`）通过 `init.txt` 中的 `bash /opt/micro_servers/confs/_run.sh` 拉起并守护（需先于 db 启动，db 对 confs 有强依赖）
+- 由 `core`（`PMC`）通过 `init.txt` 中的 `bash /opt/micro_servers/confs/_run.sh` 拉起并守护（confs 最先启动，所有依赖 confs 的服务必须在 confs 就绪后启动；confs 日志推送 db 为异步 fail-safe，db 不可用时静默丢弃，不阻塞 confs 启动）
 - 各内部服务通过 pymsg `RpcClient` 调 `get` 路由按需获取配置，替代本地散落的 ini/json/yaml
 - 自身日志通过 `log_client.py` 异步推送至 `db:8005` 的 Logs 表（与其他服务一致）
 
@@ -235,15 +235,17 @@ except RpcError as e:
 
 | 服务 | 配置文件 | 接入方式 |
 |------|---------|---------|
-| [static](../static/) | [static.ini](configs/static.ini) | 三层 fail-safe：内置默认值 → confs（优先）→ 本地 `config.ini` 回退 |
+| [static](../static/) | [static.ini](configs/static.ini) | confs 强依赖（confs 不可用时 static 直接退出）→ 环境变量覆盖（最高优先级，Docker 兼容） |
 | [dnfs](../dnfs/) | [dnfs.ini](configs/dnfs.ini) | confs 强依赖（confs 不可用时 dnfs 直接退出）→ 环境变量覆盖（最高优先级，Docker 兼容） |
 | [db](../db/) | [db.ini](configs/db.ini) | confs 强依赖（confs 不可用时 db 直接退出）→ 环境变量覆盖（最高优先级，Docker 兼容） |
 
 static 的接入实现见 [static/fsys.py](../static/fsys.py)：
-- `_fetch_from_confs()` 通过 `RpcClient` 调 `get` 路由取 `static.ini`，3 秒超时
-- `CONFS_HOST` / `CONFS_PORT` 环境变量定位 confs（默认 `127.0.0.1:8010`）
-- `_merge_ini()` 仅覆盖已知的 section/key（白名单合并，不引入未预期字段）
-- 配置来源会记录到日志（`logs.info/warning`），便于排查实际用了哪一层
+- 两层加载顺序：confs（static.ini，强依赖）→ 环境变量覆盖（优先级最高）
+- confs 连接失败或 static.ini 缺失必需配置项时，static 直接 `sys.exit(1)` 终止，不使用默认值或回退本地文件
+- 配置项涵盖：`[server]` host/port、`[directory]` root、`[ssl]` enabled/cert_file/key_file（ssl 有默认值）、`[cors]` allowed_origins
+- confs 连接地址为引导配置：环境变量 `CONFS_HOST`/`CONFS_PORT` 优先，默认 `127.0.0.1:8010`
+- 支持的环境变量：`LISTEN_ADDR`/`LISTEN_PORT`/`STATIC_ROOT`/`CONFS_HOST`/`CONFS_PORT`
+- 启动顺序：confs 必须先于 static 启动；已删除 `--config` 命令行参数和本地 `config.ini` 回退逻辑
 
 dnfs 的接入实现见 [dnfs/dnfs.py](../dnfs/dnfs.py)：
 - 两层加载顺序：confs（dnfs.ini，强依赖）→ 环境变量覆盖（优先级最高）
