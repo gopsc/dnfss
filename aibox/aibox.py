@@ -1168,7 +1168,7 @@ class ConfigManager:
             "api": {
                 "deepseek_api_url": "https://api.deepseek.com/chat/completions",
                 "deepseek_model": "deepseek-v4-flash",
-                "reasoning_enabled": false,
+                "reasoning_enabled": False,
                 "api_key_env": "DEEPSEEK_API_KEY",
                 "timeout": 120,
                 "temperature": 0.7
