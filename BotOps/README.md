@@ -71,6 +71,13 @@ BotOps/
 
 ## 更新日志
 
+### v1.3
+- ✅ **适配服务端中断机制（Ctrl+C可靠停止）**：
+  - 收到 `interrupt_ack` 时立即收尾前端状态：调用 `abort_reasoning()` 将思考区域更新为"🛑 思考已中断"标签，调用 `finish_ai()` 结束AI回复状态
+  - 新增 `ChatView.abort_reasoning()` 方法：中断时更新思考区域标签（保留已展示的思考内容）
+  - `append_reasoning()` 增加 `_ai_finalized` 检查，中断后丢弃残留的思考片段防止重新创建思考区域
+  - 中断后服务端发来的残留 `chunk`/`reasoning`/`complete` 消息均被安全忽略，不会污染UI
+
 ### v1.2
 - ✅ **彻底修复思考区域顺序问题**：移除预创建空 AI widget 的逻辑，改为第一次收到 `chunk` 时才创建 widget。按消息到达顺序自然挂载（`reasoning_start`→`reasoning`→`chunk`），从根本上保证思考区域始终在正式回答之前
 - ✅ 简化 `complete` 处理逻辑：仅作为收尾重置状态信号，不再进行补建逻辑

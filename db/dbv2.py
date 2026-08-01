@@ -27,6 +27,7 @@ dbv2 — 基于 pymsg 协议（MsgServer）的数据库服务。
     响应中的日期时间一律序列化为 ISO 8601（T 分隔）。
 """
 
+import configparser
 import json
 import os
 import threading
@@ -47,9 +48,91 @@ import sys as _sys
 _sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from pymsg import RpcServer  # noqa: E402
 
-# ── 数据库配置 ──────────────────────────────────────────────────────────
+# ── 配置加载（两层：confs 强依赖 → 环境变量覆盖）──────────────────────
+# confs 是 db 启动的强依赖：必须成功从 confs 拉取 db.ini，否则直接退出。
+# 环境变量优先级最高（Docker 兼容），可覆盖 confs 中的配置值。
+# confs 自身的连接地址（host/port）通过引导配置确定：环境变量 CONFS_HOST/CONFS_PORT
+# 优先，缺省使用 127.0.0.1:8010（与其他服务一致的约定）。
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///database.db")
+# 引导配置：confs 连接地址（不依赖 confs 本身，可通过环境变量覆盖）
+_confs_host = os.environ.get('CONFS_HOST', '127.0.0.1')
+_confs_port = int(os.environ.get('CONFS_PORT', '8010'))
+
+# 白名单结构：_merge_ini 仅覆盖此处列出的 section/key，防止意外字段
+_db_config = {
+    'server': {'host': '', 'port': '', 'workers': ''},
+    'database': {'url': ''},
+    'logs': {
+        'retention_days': '',
+        'max_records': '',
+        'cleanup_interval': '',
+    },
+}
+
+
+def _merge_ini(text):
+    """把 ini 文本合并进 _db_config（仅覆盖已知的 section/key）。"""
+    ini = configparser.ConfigParser(interpolation=None)
+    ini.read_string(text)
+    for section in _db_config:
+        if ini.has_section(section):
+            for key, value in ini[section].items():
+                if key in _db_config[section]:
+                    _db_config[section][key] = value
+
+
+def _fetch_from_confs():
+    """从 confs 统一配置服务拉取 db.ini 全文。
+
+    使用 retry_on_refused=True：confs 未就绪时 pymsg 自动阻塞重试（每秒一次，
+    每 5 秒打印一次等待提示），直到 confs 启动后自动连接成功。
+    RpcError（如配置文件不存在）仍直接报错退出——这是配置错误而非启动时序问题。
+    """
+    from pymsg import RpcClient, RpcError  # noqa: E402
+    client = RpcClient(_confs_host, _confs_port, 'db', timeout=5,
+                       retry_on_refused=True)
+    try:
+        data = client.call('get', {'name': 'db.ini'})
+    except RpcError as e:
+        print(f'[dbv2] 致命错误: 从 confs 获取 db.ini 失败: {e}',
+              file=_sys.stderr)
+        _sys.exit(1)
+    return data.get('content')
+
+
+_confs_text = _fetch_from_confs()
+_merge_ini(_confs_text)
+_config_source = 'confs (db.ini)'
+print(f'[dbv2] 配置来源: confs 统一配置服务 (db.ini @ {_confs_host}:{_confs_port})')
+
+# 环境变量覆盖（最高优先级，保持 Docker 兼容）
+if os.environ.get('LISTEN_ADDR'):
+    _db_config['server']['host'] = os.environ['LISTEN_ADDR']
+if os.environ.get('LISTEN_PORT'):
+    _db_config['server']['port'] = os.environ['LISTEN_PORT']
+if os.environ.get('WORKERS'):
+    _db_config['server']['workers'] = os.environ['WORKERS']
+if os.environ.get('DATABASE_URL'):
+    _db_config['database']['url'] = os.environ['DATABASE_URL']
+
+# 配置完整性校验
+_required = {
+    'server': ['host', 'port', 'workers'],
+    'database': ['url'],
+    'logs': ['retention_days', 'max_records', 'cleanup_interval'],
+}
+for section, keys in _required.items():
+    for key in keys:
+        if not _db_config[section][key]:
+            print(f'[dbv2] 致命错误: 配置项 [{section}] {key} 缺失（db.ini 中未配置且无环境变量覆盖）',
+                  file=_sys.stderr)
+            _sys.exit(1)
+
+# 解析为最终常量
+DATABASE_URL = _db_config['database']['url']
+DEFAULT_RETENTION_DAYS = int(_db_config['logs']['retention_days'])
+DEFAULT_MAX_RECORDS = int(_db_config['logs']['max_records'])
+DEFAULT_CLEANUP_INTERVAL = int(_db_config['logs']['cleanup_interval'])
 
 # ── SQLite 连接配置（针对 Docker/多线程环境优化）──────────────────────
 
@@ -75,10 +158,6 @@ def _configure_sqlite(dbapi_connection, connection_record):
 
 MAX_MESSAGE_LEN = 8192   # message 上限 8KB
 MAX_EXTRA_LEN = 4096     # extra 上限 4KB
-
-DEFAULT_RETENTION_DAYS = 30
-DEFAULT_MAX_RECORDS = 1_000_000
-DEFAULT_CLEANUP_INTERVAL = 3600  # 秒
 
 #: where/values 中的哨兵值：服务端当前 UTC 时间
 NOW_SENTINEL = "$now"
@@ -456,17 +535,19 @@ class DBServer:
 if __name__ == "__main__":
     import argparse
 
-    default_addr = os.environ.get("LISTEN_ADDR", "0.0.0.0")
-    default_port = int(os.environ.get("LISTEN_PORT", "8005"))
+    default_addr = _db_config['server']['host']
+    default_port = int(_db_config['server']['port'])
+    default_workers = int(_db_config['server']['workers'])
 
     parser = argparse.ArgumentParser(description="dbv2 — pymsg 数据库服务")
     parser.add_argument("--addr", default=default_addr, help="监听地址")
     parser.add_argument("--port", type=int, default=default_port, help="监听端口")
-    parser.add_argument("--workers", type=int, default=4,
+    parser.add_argument("--workers", type=int, default=default_workers,
                         help="回调并发线程数（0=同步串行模式）")
     args = parser.parse_args()
 
     server = DBServer(args.addr, args.port, workers=args.workers)
+    print(f'[dbv2] 配置来源: {_config_source}')
     try:
         server.start()
     except KeyboardInterrupt:

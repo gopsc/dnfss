@@ -1168,7 +1168,7 @@ class ConfigManager:
             "api": {
                 "deepseek_api_url": "https://api.deepseek.com/chat/completions",
                 "deepseek_model": "deepseek-v4-flash",
-                "reasoning_enabled": false,
+                "reasoning_enabled": False,
                 "api_key_env": "DEEPSEEK_API_KEY",
                 "timeout": 120,
                 "temperature": 0.7
@@ -3532,10 +3532,27 @@ class CommandExecutor(ABC):
 
 
 class SubprocessCommandExecutor(CommandExecutor):
-    """基于subprocess的命令执行器 - 支持超时、工作目录和输出大小限制"""
+    """基于subprocess的命令执行器 - 支持超时、工作目录、输出大小限制和取消"""
     
     # 命令输出最大字节数（1MB），超出截断
     MAX_OUTPUT_BYTES = 1 * 1024 * 1024
+    
+    def __init__(self, logger=None):
+        super().__init__(logger)
+        self._current_process = None
+        self._process_lock = threading.Lock()
+    
+    def cancel(self):
+        """取消当前正在运行的命令（kill子进程）。线程安全。"""
+        with self._process_lock:
+            proc = self._current_process
+        if proc is not None:
+            try:
+                if proc.poll() is None:
+                    proc.kill()
+                    self.logger.info("已终止正在运行的子进程")
+            except Exception:
+                pass
     
     def _read_with_limit(self, process, timeout: int, start_time: float, output_queue=None) -> Tuple[str, bool, bool]:
         """从进程读取输出，限制总大小和超时。
@@ -3612,6 +3629,9 @@ class SubprocessCommandExecutor(CommandExecutor):
                 env=exec_env,
                 cwd=os.path.expanduser(work_dir)
             )
+            # 保存进程引用以便cancel()可以kill它
+            with self._process_lock:
+                self._current_process = process
             
             start_time = time.time()
             output_str, timeout_occurred, truncated = self._read_with_limit(process, timeout, start_time)
@@ -3654,6 +3674,9 @@ class SubprocessCommandExecutor(CommandExecutor):
         finally:
             if process and process.poll() is None:
                 process.kill()
+            # 清除当前进程引用
+            with self._process_lock:
+                self._current_process = None
     
     def execute_streaming(self, command: str, output_queue: queue.Queue, timeout: int = 30, 
                           work_dir: str = None, env: Dict = None, **kwargs):
@@ -3694,6 +3717,9 @@ class SubprocessCommandExecutor(CommandExecutor):
                 cwd=os.path.expanduser(work_dir)
             )
             self.process = process
+            # 保存进程引用以便cancel()可以kill它
+            with self._process_lock:
+                self._current_process = process
             
             start_time = time.time()
             output_lines = []
@@ -3788,6 +3814,8 @@ class SubprocessCommandExecutor(CommandExecutor):
                 except:
                     process.kill()
             self.process = None
+            with self._process_lock:
+                self._current_process = None
 
 # ==================== 工具基类 ====================
 
@@ -6750,10 +6778,50 @@ class DeepSeekChat:
         self.preserve_system = constants.PRESERVE_SYSTEM_PROMPTS
         self.stats = {"api_calls": 0, "tool_calls": 0, "errors": []}
         
+        # 取消机制：threading.Event 用于跨线程信号，_current_response 用于中断HTTP请求
+        self._cancel_event = threading.Event()
+        self._current_response = None
+        self._command_executor = command_executor  # 保存命令执行器引用，用于取消时kill子进程
+        
         self._init_system_prompts(system_prompt)
         
         self.tool_registry = ToolRegistry(self.logger)
         self._register_tools(exit_callback, command_executor)
+    
+    def cancel(self):
+        """中断当前正在进行的AI思考/工具执行。线程安全，可从任意线程调用。"""
+        self.logger.info("收到中断信号，正在取消当前操作...")
+        self._cancel_event.set()
+        # 强制关闭当前HTTP响应，立即中断 iter_lines() 的阻塞读取
+        # 仅调用 response.close() 可能无法中断底层socket recv()，需要先关闭raw连接
+        if self._current_response is not None:
+            try:
+                resp = self._current_response
+                self._current_response = None
+                # 先关闭底层raw socket连接，强制阻塞的recv()立即抛出异常
+                if hasattr(resp, 'raw') and resp.raw is not None:
+                    try:
+                        resp.raw.close()
+                    except Exception:
+                        pass
+                resp.close()
+            except Exception:
+                pass
+        # 终止正在运行的子进程
+        if self._command_executor is not None and hasattr(self._command_executor, 'cancel'):
+            try:
+                self._command_executor.cancel()
+            except Exception:
+                pass
+    
+    def _is_cancelled(self) -> bool:
+        """检查是否已被取消。"""
+        return self._cancel_event.is_set()
+    
+    def _check_cancelled(self):
+        """如果已取消，抛出异常中断当前流程。"""
+        if self._cancel_event.is_set():
+            raise InterruptedError(i18n.get('user_interrupted', '用户中断'))
     
     def _init_system_prompts(self, system_prompt: str = None):
         """初始化系统提示词 - 从 PromptManager 加载（按 identity → 技能 → soul → status 顺序）"""
@@ -6965,6 +7033,11 @@ class DeepSeekChat:
         MAX_RESULT_LENGTH = constants.TOOL_MAX_RESULT_LENGTH
         
         for tool_call in tool_calls:
+            # 每个工具调用前检查取消信号
+            if self._is_cancelled():
+                self.logger.info("工具调用被用户中断")
+                break
+            
             function = tool_call.get("function", {})
             tool_name = function.get("name", "unknown")
             arguments = function.get("arguments", "{}")
@@ -7076,6 +7149,13 @@ class DeepSeekChat:
             is_continuation: 是否为工具调用后的递归继续；为 True 时不注入冗长的工作流指令，
                             因为 system prompt 中已有完整行为规范，继续时只需传递工具结果
         """
+        # 首轮开始时清除取消标志
+        if not is_continuation:
+            self._cancel_event.clear()
+        
+        # 立即检查是否已被取消
+        self._check_cancelled()
+        
         if not self.conversation_active:
             self.logger.info("对话已结束，重置状态")
             self.conversation_active = True
@@ -7217,6 +7297,7 @@ class DeepSeekChat:
                 stream=True,
                 proxies=proxies   # 动态代理
             )
+            self._current_response = response  # 保存引用以便cancel()关闭连接
             
             if response.status_code != 200:
                 error_msg = f"\n错误状态码: {response.status_code}\n错误响应: {response.text}"
@@ -7225,6 +7306,9 @@ class DeepSeekChat:
                 response.raise_for_status()
             
             for line in response.iter_lines():
+                # 流式循环中检查取消信号
+                if self._is_cancelled():
+                    break
                 if line:
                     line = line.decode('utf-8')
                     if line.startswith('data: '):
@@ -7315,6 +7399,16 @@ class DeepSeekChat:
                             self.logger.error(f"JSON解析错误: {e}, 数据: {data}")
                             continue
             
+            # 流式循环结束，检查是否被取消
+            if self._is_cancelled():
+                self._rollback_messages(msgs_before_turn)
+                interrupt_msg = i18n.get('user_interrupted', '用户中断')
+                if output_callback:
+                    output_callback("line", "\n" + interrupt_msg + "\n")
+                    output_callback("complete", interrupt_msg)
+                self.logger.info("AI响应被用户中断")
+                return interrupt_msg
+            
             # 处理工具调用
             if current_tool_calls:
                 tool_calls_buffer = list(current_tool_calls.values())
@@ -7382,7 +7476,24 @@ class DeepSeekChat:
             
             return full_response if full_response else ""
                 
+        except InterruptedError:
+            # 用户主动中断：回滚消息，通知前端
+            self._rollback_messages(msgs_before_turn)
+            interrupt_msg = i18n.get('user_interrupted', '用户中断')
+            if output_callback:
+                output_callback("line", "\n" + interrupt_msg + "\n")
+                output_callback("complete", interrupt_msg)
+            self.logger.info("AI响应被用户中断")
+            return interrupt_msg
         except requests.exceptions.RequestException as e:
+            # 如果是因为取消导致的连接关闭，按中断处理
+            if self._is_cancelled():
+                self._rollback_messages(msgs_before_turn)
+                interrupt_msg = i18n.get('user_interrupted', '用户中断')
+                if output_callback:
+                    output_callback("line", "\n" + interrupt_msg + "\n")
+                    output_callback("complete", interrupt_msg)
+                return interrupt_msg
             # 网络/HTTP 错误：回滚本轮添加的消息（user 消息 + 可能的 assistant/tool 消息），
             # 防止格式错误的消息污染历史导致后续请求持续失败
             self._rollback_messages(msgs_before_turn)
@@ -7402,6 +7513,14 @@ class DeepSeekChat:
             self.logger.error(f"API响应解析失败，已回滚消息到位置 {msgs_before_turn}: {e}")
             return error_msg
         except Exception as e:
+            # 如果是因为取消导致的异常，按中断处理
+            if self._is_cancelled():
+                self._rollback_messages(msgs_before_turn)
+                interrupt_msg = i18n.get('user_interrupted', '用户中断')
+                if output_callback:
+                    output_callback("line", "\n" + interrupt_msg + "\n")
+                    output_callback("complete", interrupt_msg)
+                return interrupt_msg
             # 未知错误：回滚消息，防止对话状态被破坏
             self._rollback_messages(msgs_before_turn)
             error_msg = f"\n{i18n.get('error_prefix')}{str(e)}"
@@ -7410,6 +7529,9 @@ class DeepSeekChat:
             self.stats["errors"].append(str(e))
             self.logger.error(f"未知错误，已回滚消息到位置 {msgs_before_turn}: {e}")
             return error_msg
+        finally:
+            # 清除当前响应引用
+            self._current_response = None
     
     def _rollback_messages(self, to_length: int):
         """回滚 self.messages 到指定长度，用于 API 失败时恢复对话状态。"""
@@ -7471,6 +7593,8 @@ class WebSocketHandler:
         self.logger = Logger("WebSocket")
         self.connected_clients = set()
         self.client_sessions = {}
+        self._processing_tasks = {}  # websocket id -> 当前正在处理的asyncio Task
+        self._is_processing_message = False  # 是否正在处理用户消息（防止并发）
         
     async def register(self, websocket):
         """注册新客户端"""
@@ -7623,6 +7747,8 @@ class WebSocketHandler:
                 await self.handle_command(websocket, data)
             elif msg_type == "message":
                 await self.handle_user_message(websocket, data)
+            elif msg_type == "interrupt":
+                await self.handle_interrupt(websocket, data)
             elif msg_type == "task":
                 await self.handle_task_message(websocket, data)
             elif msg_type == "ping":
@@ -7647,6 +7773,18 @@ class WebSocketHandler:
                 "type": "error",
                 "content": f"处理失败: {str(e)}"
             })
+    
+    async def handle_interrupt(self, websocket, data):
+        """处理中断信号：取消正在进行的AI思考和工具执行"""
+        self.logger.info("收到客户端中断信号")
+        # 先发送确认，让前端立即得到反馈
+        await self.send_message(websocket, {
+            "type": "interrupt_ack",
+            "content": "已收到中断信号，正在停止..."
+        })
+        # 直接同步调用cancel()：cancel是线程安全的（只set Event + close连接 + kill进程），执行极快
+        # 无需通过run_in_executor提交到线程池，避免额外调度延迟
+        self.ai_manager.cancel()
     
     async def handle_task_message(self, websocket, data):
         """处理任务相关消息 - 简化版，所有任务都是对话任务"""
@@ -7947,6 +8085,16 @@ class WebSocketHandler:
         if not content:
             return
         
+        # 防止并发处理用户消息：如果正在处理中，提示用户先中断
+        if self._is_processing_message:
+            await self.send_message(websocket, {
+                "type": "info",
+                "content": "⏳ AI正在响应中，请等待完成或发送中断信号（Ctrl+C）"
+            })
+            return
+        
+        self._is_processing_message = True
+        
         self.logger.info(f"收到用户消息: {content[:50]}...")
         
         # 确保AI已初始化
@@ -7988,7 +8136,6 @@ class WebSocketHandler:
             # 提交到事件循环
             asyncio.run_coroutine_threadsafe(send_msg(), loop)
         
-        # 让AI思考并回应 - 不等待完整响应，通过回调实时发送
         try:
             self.logger.info("开始AI思考...")
             
@@ -8028,6 +8175,9 @@ class WebSocketHandler:
                 }, ensure_ascii=False))
             except:
                 pass
+        finally:
+            # 无论成功、失败还是被中断，都清除处理标志
+            self._is_processing_message = False
 
 
 # ==================== 对话管理器（修改版：添加重置对话功能） ====================
@@ -8109,6 +8259,17 @@ class EnhancedAIManager:
         self.logger.info("AI已初始化")
         return ai
     
+    def cancel(self):
+        """中断当前AI操作（线程安全，可从任意线程调用）"""
+        if self.ai:
+            self.ai.cancel()
+        # 同时确保命令执行器中的进程也被终止
+        if self.command_executor and hasattr(self.command_executor, 'cancel'):
+            try:
+                self.command_executor.cancel()
+            except Exception:
+                pass
+    
     def show_welcome_message(self):
         """显示欢迎信息"""
         print("\n" + "="*70)
@@ -8181,17 +8342,30 @@ class EnhancedAIManager:
         print(i18n.get('websocket_started', host, port))
     
     async def handle_connection(self, websocket, path):
-        """处理WebSocket连接"""
+        """处理WebSocket连接 - 消息接收与处理解耦，确保中断信号能被即时处理"""
         self.logger.info(f"新连接: {websocket.remote_address}, path: {path}")
         await self.ws_handler.register(websocket)
         try:
             async for message in websocket:
-                await self.ws_handler.handle_message(websocket, message)
+                # 【关键修复】用create_task异步处理消息，不await阻塞接收循环
+                # 这样当AI在后台生成响应时，interrupt消息仍能被立即接收和处理
+                task = asyncio.create_task(
+                    self.ws_handler.handle_message(websocket, message)
+                )
+                self.ws_handler._processing_tasks[id(websocket)] = task
+
+                def _cleanup_task(t, ws_id=id(websocket)):
+                    self.ws_handler._processing_tasks.pop(ws_id, None)
+                task.add_done_callback(_cleanup_task)
         except websockets.exceptions.ConnectionClosed as e:
             self.logger.info(f"连接关闭: {e}")
         except Exception as e:
             self.logger.error(f"处理错误: {e}")
         finally:
+            # 连接关闭时取消正在进行的处理任务
+            task = self.ws_handler._processing_tasks.pop(id(websocket), None)
+            if task and not task.done():
+                task.cancel()
             await self.ws_handler.unregister(websocket)
 
     async def websocket_server(self):

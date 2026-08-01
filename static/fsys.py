@@ -36,33 +36,35 @@ file_handler.setLevel(logging.INFO)
 logger.addHandler(file_handler)
 
 parser = argparse.ArgumentParser(description='File Server')
-parser.add_argument('--config', type=str, default='config.ini', help='Configuration file path')
 args = parser.parse_args()
 
 app = Flask(__name__)
 apply_security_headers(app)
 
-# ==================== 配置文件加载 ====================
-# 加载顺序：内置默认值 → confs 统一配置服务（static.ini）；
-# confs 不可用时 fail-safe 回退本地 config.ini
-CONFIG_FILE = args.config
-if not os.path.isabs(CONFIG_FILE):
-    CONFIG_FILE = os.path.join(BASE_DIR, CONFIG_FILE)
+# ==================== 配置加载（两层：confs 强依赖 → 环境变量覆盖） ====================
+# confs 是 static 启动的强依赖：必须成功从 confs 拉取 static.ini，否则直接退出。
+# 环境变量优先级最高（Docker 兼容），可覆盖 confs 中的配置值。
+# confs 自身的连接地址通过引导配置确定：环境变量 CONFS_HOST/CONFS_PORT 优先，
+# 缺省使用 127.0.0.1:8010（与其他服务一致的约定）。
 
+# 引导配置：confs 连接地址（不依赖 confs 本身）
+_confs_host = os.environ.get('CONFS_HOST', '127.0.0.1')
+_confs_port = int(os.environ.get('CONFS_PORT', '8010'))
+
+# 白名单结构：_merge_ini 仅覆盖此处列出的 section/key，防止意外字段
 file_config = {
-    'server': {'host': '0.0.0.0', 'port': '5000'},
-    'directory': {'root': './public'},
-    'ssl': {'enabled': 'false', 'cert_file': 'cert.pem', 'key_file': 'key.pem'},
-    # CORS 白名单（逗号分隔），生产环境默认值；localhost 仅限本地开发时显式写入 config.ini
-    'cors': {'allowed_origins': 'https://qsont.me,https://yhdet.top'},
+    'server': {'host': '', 'port': ''},
+    'directory': {'root': ''},
+    'ssl': {'enabled': '', 'cert_file': '', 'key_file': ''},
+    'cors': {'allowed_origins': ''},
 }
 
 
 def _merge_ini(text):
     """把 ini 文本合并进 file_config（仅覆盖已知的 section/key）。"""
-    ini = configparser.ConfigParser()
+    ini = configparser.ConfigParser(interpolation=None)
     ini.read_string(text)
-    for section in ['server', 'directory', 'ssl', 'cors']:
+    for section in file_config:
         if ini.has_section(section):
             for key, value in ini[section].items():
                 if key in file_config[section]:
@@ -70,28 +72,60 @@ def _merge_ini(text):
 
 
 def _fetch_from_confs():
-    """从 confs 统一配置服务拉取 static.ini 全文，失败返回 None（fail-safe）。"""
+    """从 confs 统一配置服务拉取 static.ini 全文。
+
+    使用 retry_on_refused=True：confs 未就绪时 pymsg 自动阻塞重试（每秒一次，
+    每 5 秒打印一次等待提示），直到 confs 启动后自动连接成功。
+    RpcError（如配置文件不存在）仍直接报错退出——这是配置错误而非启动时序问题。
+    """
+    from pymsg import RpcClient, RpcError  # noqa: E402
+    client = RpcClient(_confs_host, _confs_port, 'static', timeout=5,
+                       retry_on_refused=True)
     try:
-        from pymsg import RpcClient
-        host = os.environ.get('CONFS_HOST', '127.0.0.1')
-        port = int(os.environ.get('CONFS_PORT', '8010'))
-        data = RpcClient(host, port, 'static', timeout=3).call(
-            'get', {'name': 'static.ini'})
-        return data.get('content')
-    except Exception:
-        return None
+        data = client.call('get', {'name': 'static.ini'})
+    except RpcError as e:
+        print(f'[static] 致命错误: 从 confs 获取 static.ini 失败: {e}',
+              file=sys.stderr)
+        sys.exit(1)
+    return data.get('content')
 
 
 _confs_text = _fetch_from_confs()
-if _confs_text is not None:
-    _merge_ini(_confs_text)
-    logger.info("配置来源: confs 统一配置服务 (static.ini)")
-    logs.info("static", "配置来源: confs 统一配置服务 (static.ini)")
-elif os.path.exists(CONFIG_FILE):
-    with open(CONFIG_FILE, encoding='utf-8') as f:
-        _merge_ini(f.read())
-    logger.warning(f"confs 不可用，回退本地配置文件 {CONFIG_FILE}")
-    logs.warning("static", f"confs 不可用，回退本地配置文件 {CONFIG_FILE}")
+_merge_ini(_confs_text)
+
+# 环境变量覆盖（优先级最高，Docker 兼容）
+if os.environ.get('LISTEN_ADDR'):
+    file_config['server']['host'] = os.environ['LISTEN_ADDR']
+if os.environ.get('LISTEN_PORT'):
+    file_config['server']['port'] = os.environ['LISTEN_PORT']
+if os.environ.get('STATIC_ROOT'):
+    file_config['directory']['root'] = os.environ['STATIC_ROOT']
+
+# 配置完整性校验
+_required = {
+    'server': ['host', 'port'],
+    'directory': ['root'],
+    'cors': ['allowed_origins'],
+}
+for section, keys in _required.items():
+    for key in keys:
+        if not file_config[section][key]:
+            print(f'[static] 致命错误: 配置项 [{section}] {key} 缺失（static.ini 中未配置且无环境变量覆盖）',
+                  file=sys.stderr)
+            sys.exit(1)
+
+# ssl 段有合理默认（enabled=false，cert/key 有默认文件名），不强制要求配置
+if not file_config['ssl']['enabled']:
+    file_config['ssl']['enabled'] = 'false'
+if not file_config['ssl']['cert_file']:
+    file_config['ssl']['cert_file'] = 'cert.pem'
+if not file_config['ssl']['key_file']:
+    file_config['ssl']['key_file'] = 'key.pem'
+
+_config_source = f'confs (static.ini @ {_confs_host}:{_confs_port})'
+print(f'[static] 配置来源: {_config_source}')
+logger.info(f"配置来源: {_config_source}")
+logs.info("static", f"配置来源: {_config_source}")
 
 # ==================== CORS（配置加载完成后初始化） ====================
 _cors_origins = [o.strip() for o in file_config['cors']['allowed_origins'].split(',') if o.strip()]

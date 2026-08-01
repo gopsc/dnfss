@@ -1,48 +1,35 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <meta http-equiv="Content-Type" content="text/html;charset=UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="css/theme.css">
-    <style>
-        body {
-            align-items: normal;
-        }
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            width: 100%;
-        }
-        .right-group {
-            display: flex;
-            align-items: center;
-        }
-        .right-group > img,
-        .right-group > b,
-        .right-group > button {
-            margin-left: 5px;
-            margin-right: 5px;
-        }
-    </style>
+    <link rel="stylesheet" href="css/index.css">
     <title>DNFS 欢迎来到树状笔记</title>
 </head>
 <body>
     <header class="header">
         <h1 onclick="window.location.href='index.html'">DNFS 树状笔记</h1>
         <div class="right-group">
-            <img src="favicon.ico" alt="头像加载失败" id="avatar" width="70px" height="70px" style="border-radius: 100px;">
+            <img src="favicon.ico" alt="头像加载失败" id="avatar" width="70px" height="70px">
             <b id="name">DNFS</b>
-            <button onclick="window.location.href='login.html'">登录</button>
-            <button onclick="window.location.href='register.html'">注册</button>
+            <button id="enterBtn" onclick="window.location.href='dnfs.html'" style="display:none">进入笔记</button>
+            <button id="logoutBtn" style="display:none">退出</button>
+            <button id="loginBtn" onclick="window.location.href='login.html'">登录</button>
+            <button id="registerBtn" onclick="window.location.href='register.html'">注册</button>
         </div>
     </header>
     <div id="main-page">
-        <h2>推荐节点</h2>
-        <div id="recommended-node"></div>
+        <h2>关于本站</h2>
+        <p class="site-intro">
+            DNFS 树状笔记是一个以树状结构组织内容的笔记社区：每个节点都可以生长出子节点，
+            像树枝一样层层延展，让知识自然成体系。支持 Markdown 文本、链接卡片、图片与文件分享，
+            注册登录后即可创建属于你自己的知识树。
+        </p>
     </div>
     <footer class="footer">
 		<a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">蜀ICP备2024107064号-2</a>
 	</footer>
+	<script src="js/index.js"></script>
 </body>
 </html>

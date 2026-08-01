@@ -90,26 +90,52 @@ static :9200 (Flask + CORS)
 
 ## 配置
 
-`config.ini`：
+static 已接入 confs 统一配置服务，confs 是 static 启动的**强依赖**：
 
-```ini
-[server]
-host = 127.0.0.1
-port = 9200
+1. **confs 统一配置服务** — 必须成功从 confs 拉取 `static.ini`，否则 static 启动失败直接退出（exit code 1）
+2. **环境变量覆盖**（最高优先级）— Docker/部署环境通过环境变量覆盖 confs 中的值
 
-[directory]
-root = ./public
+### 配置文件
 
-[ssl]
-enabled = false
-cert_file = cert.pem
-key_file = key.pem
+集中托管在 [confs/configs/static.ini](../confs/configs/static.ini)，由 confs 服务分发：
 
-[cors]
-# 允许跨域的 Origin 白名单（逗号分隔）
-# 注意：生产环境请勿包含 localhost / 127.0.0.1 / 通配符 *
-allowed_origins = https://qsont.me,https://yhdet.top
-```
+| Section | Key | 说明 |
+|---------|-----|------|
+| `[server]` | `host` | 监听地址 |
+| `[server]` | `port` | 监听端口 |
+| `[directory]` | `root` | 静态文件根目录（相对 BASE_DIR） |
+| `[ssl]` | `enabled` | 是否启用 TLS（`true`/`false`，默认 `false`） |
+| `[ssl]` | `cert_file` | SSL 证书路径（默认 `cert.pem`） |
+| `[ssl]` | `key_file` | SSL 私钥路径（默认 `key.pem`） |
+| `[cors]` | `allowed_origins` | CORS 白名单，逗号分隔 |
+
+### 引导配置（confs 连接地址）
+
+confs 自身的连接地址不通过 confs 获取（避免循环依赖），通过以下方式确定（优先级从高到低）：
+- 环境变量 `CONFS_HOST` / `CONFS_PORT`
+- 默认值 `127.0.0.1:8010`
+
+### 环境变量（最高优先级，覆盖 confs 配置值）
+
+| 变量 | 说明 |
+|------|------|
+| `LISTEN_ADDR` | 监听地址（容器内需绑定 `0.0.0.0`） |
+| `LISTEN_PORT` | 监听端口 |
+| `STATIC_ROOT` | 静态文件根目录 |
+| `CONFS_HOST` | confs 服务主机名（引导配置，Docker 环境使用服务名） |
+| `CONFS_PORT` | confs 服务端口（引导配置） |
+
+### 启动顺序
+
+static 通过 pymsg `retry_on_refused=True` 自动阻塞等待 confs 就绪，**拉取配置阶段不严格要求启动顺序**：
+- confs 先启动 → static 立即拉取配置
+- static 先启动 → pymsg 自动重试（每秒一次，每 5 秒打印等待提示），confs 启动后自动连接成功
+- 配置完整性校验：若 static.ini 中缺少必需的 section/key（server.host/port、directory.root、cors.allowed_origins）且无对应环境变量覆盖，仍然报错退出
+- ssl 段为可选项，未配置时默认 `enabled=false`、cert/key 使用默认文件名
+
+### 历史遗留：本地 config.ini 已删除
+
+旧版本的 `static/config.ini` 本地回退逻辑已移除，配置统一由 confs 服务分发。
 
 ## 依赖
 

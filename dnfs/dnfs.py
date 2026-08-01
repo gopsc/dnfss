@@ -19,10 +19,10 @@ from waitress import serve
 import os
 import sys
 import json
-import base64
 import configparser
 import urllib.request
 import urllib.error
+import functools
 from typing import Dict, Any
 from security_middleware import apply_security_headers
 from log_client import logs
@@ -33,15 +33,22 @@ from log_client import logs
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from pymsg import RpcClient, RpcError  # noqa: E402
 
-# ==================== 配置加载（三层 fail-safe） ====================
-# 加载顺序：内置默认值 → confs 统一配置服务（dnfs.ini） → 环境变量覆盖
-# 环境变量优先级最高（Docker 环境使用服务名 db/ai_review 而非 127.0.0.1）
+# ==================== 配置加载（两层：confs 强依赖 → 环境变量覆盖） ====================
+# confs 是 dnfs 启动的强依赖：必须成功从 confs 拉取 dnfs.ini，否则直接退出。
+# 环境变量优先级最高（Docker 环境使用服务名 db/ai_review 而非 127.0.0.1）。
+# confs 自身的连接地址通过引导配置确定：环境变量 CONFS_HOST/CONFS_PORT 优先，
+# 缺省使用 127.0.0.1:8010（与其他服务一致的约定）。
 
+# 引导配置：confs 连接地址（不依赖 confs 本身）
+_confs_host = os.environ.get('CONFS_HOST', '127.0.0.1')
+_confs_port = int(os.environ.get('CONFS_PORT', '8010'))
+
+# 白名单结构：_merge_ini 仅覆盖此处列出的 section/key，防止意外字段
 _dnfs_config = {
-    'server': {'host': '127.0.0.1', 'port': '8006'},
-    'database': {'host': '127.0.0.1', 'port': '8005', 'timeout': '10'},
-    'ai_review': {'url': 'http://127.0.0.1:8007/review', 'timeout': '10'},
-    'confs': {'host': '127.0.0.1', 'port': '8010'},
+    'server': {'host': '', 'port': ''},
+    'database': {'host': '', 'port': '', 'timeout': ''},
+    'ai_review': {'url': '', 'timeout': ''},
+    'gateway': {'url': '', 'timeout': ''},
 }
 
 
@@ -57,23 +64,24 @@ def _merge_ini(text):
 
 
 def _fetch_from_confs():
-    """从 confs 统一配置服务拉取 dnfs.ini 全文，失败返回 None（fail-safe）。"""
+    """从 confs 统一配置服务拉取 dnfs.ini 全文。
+
+    使用 retry_on_refused=True：confs 未就绪时 pymsg 自动阻塞重试（每秒一次，
+    每 5 秒打印一次等待提示），直到 confs 启动后自动连接成功。
+    RpcError（如配置文件不存在）仍直接报错退出——这是配置错误而非启动时序问题。
+    """
     try:
-        host = os.environ.get('CONFS_HOST', _dnfs_config['confs']['host'])
-        port = int(os.environ.get('CONFS_PORT', _dnfs_config['confs']['port']))
-        data = RpcClient(host, port, 'dnfs', timeout=3).call(
-            'get', {'name': 'dnfs.ini'})
-        return data.get('content')
-    except Exception:
-        return None
+        data = RpcClient(_confs_host, _confs_port, 'dnfs', timeout=5,
+                         retry_on_refused=True).call('get', {'name': 'dnfs.ini'})
+    except RpcError as e:
+        print(f'[dnfs] 致命错误: 从 confs 获取 dnfs.ini 失败: {e}',
+              file=sys.stderr)
+        sys.exit(1)
+    return data.get('content')
 
 
 _confs_text = _fetch_from_confs()
-if _confs_text is not None:
-    _merge_ini(_confs_text)
-    logs.info("dnfs", "配置来源: confs 统一配置服务 (dnfs.ini)")
-else:
-    logs.warning("dnfs", "confs 不可用，使用内置默认值 + 环境变量")
+_merge_ini(_confs_text)
 
 # 环境变量覆盖（优先级最高，Docker 环境需要）
 if os.environ.get('LISTEN_ADDR'):
@@ -86,19 +94,37 @@ if os.environ.get('DB_PORT'):
     _dnfs_config['database']['port'] = os.environ['DB_PORT']
 if os.environ.get('REVIEW_URL'):
     _dnfs_config['ai_review']['url'] = os.environ['REVIEW_URL']
-if os.environ.get('CONFS_HOST'):
-    _dnfs_config['confs']['host'] = os.environ['CONFS_HOST']
-if os.environ.get('CONFS_PORT'):
-    _dnfs_config['confs']['port'] = os.environ['CONFS_PORT']
+if os.environ.get('GATEWAY_URL'):
+    _dnfs_config['gateway']['url'] = os.environ['GATEWAY_URL']
+
+# 配置完整性校验
+_required = {
+    'server': ['host', 'port'],
+    'database': ['host', 'port', 'timeout'],
+    'ai_review': ['url', 'timeout'],
+    'gateway': ['url', 'timeout'],
+}
+for section, keys in _required.items():
+    for key in keys:
+        if not _dnfs_config[section][key]:
+            print(f'[dnfs] 致命错误: 配置项 [{section}] {key} 缺失（dnfs.ini 中未配置且无环境变量覆盖）',
+                  file=sys.stderr)
+            sys.exit(1)
 
 # 提取配置常量
+_DB_TIMEOUT = int(_dnfs_config['database']['timeout'])
 _DBV2_ADDR = _dnfs_config['database']['host']
 _DBV2_PORT = int(_dnfs_config['database']['port'])
-_DB_TIMEOUT = int(_dnfs_config['database']['timeout'])
 _REVIEW_SERVER_URL = _dnfs_config['ai_review']['url']
 _REVIEW_TIMEOUT = int(_dnfs_config['ai_review']['timeout'])
+_GATEWAY_URL = _dnfs_config['gateway']['url']
+_GATEWAY_TIMEOUT = int(_dnfs_config['gateway']['timeout'])
 _ADDR = _dnfs_config['server']['host']
 _PORT = int(_dnfs_config['server']['port'])
+
+_config_source = f'confs (dnfs.ini @ {_confs_host}:{_confs_port})'
+print(f'[dnfs] 配置来源: {_config_source}')
+print(f'[dnfs] Token 验签: gateway {_GATEWAY_URL}')
 
 # 管理员判定已上移至 gateway：登录时命中 [Admin] users 白名单即在 Token payload
 # 写入 is_admin=true，本服务通过 info.get('is_admin') 读取，不再本地维护名单。
@@ -267,6 +293,7 @@ def _sp_review_text(title, sp):
 
 def _handle_exp(func):
     '''处理视图函数中抛出的异常，并在日志模块中进行记录'''
+    @functools.wraps(func)
     def wrapper():
         try: return func()
         except DnfsExp as e:
@@ -282,14 +309,46 @@ apply_security_headers(app)
 CORS(app)
 
 
-def decode_token(token:  str):
-    idx = token.find('_')
-    if idx != -1:
-        raw = token[:idx]
-        # FIXME: 验证数字签名
-        decoded = base64.b64decode(raw)
-        jj = decoded.decode('utf-8')
-        return json.loads(jj)
+def decode_token(token: str):
+    """通过 gateway /whoami 接口验证 Token 并返回用户信息。
+
+    gateway /whoami 内部完成 RSA 签名验证和过期检查，返回：
+      - 成功: {"login": true, "user": "...", "is_admin": true/false, ...}
+      - 失败: {"login": false}
+    网络异常（gateway 不可达）按 fail-closed 处理，抛 DnfsExp 拒绝请求。
+    """
+    if not token:
+        return None
+
+    req = urllib.request.Request(
+        _GATEWAY_URL,
+        data=b'{}',
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=_GATEWAY_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, OSError) as e:
+        # gateway 不可达或返回异常：fail-closed，拒绝请求
+        logs.warning('dnfs', f'Token 验签失败（gateway 异常）: {e}', extra={})
+        raise DnfsExp('认证服务暂时不可用', 503)
+    except Exception as e:
+        logs.warning('dnfs', f'Token 验签未知异常: {e}', extra={})
+        raise DnfsExp('认证失败', 401)
+
+    if not data.get('login'):
+        return None
+
+    # gateway 返回 login=true 时 user 字段必定存在
+    return {
+        'user': data.get('user', ''),
+        'is_admin': bool(data.get('is_admin', False)),
+    }
        
 
 @app.route('/add_note', methods=['POST'])
@@ -407,7 +466,7 @@ def get_notes():
 
 # eg: {"id": 1}
 @app.route('/delete_note', methods=['POST'])
-
+@_handle_exp
 def delete_note():
 
     data = request.get_json()
@@ -510,7 +569,7 @@ def delete_note():
 #    "content": "hello"
 #}
 @app.route('/update_note', methods=['POST'])
-
+@_handle_exp
 def update_note():
 
     data = request.get_json()

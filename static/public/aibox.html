@@ -20,10 +20,12 @@
 	<main id="chat"></main>
 	<div id="input-bar">
 		<button id="interrupt-btn" type="button" style="display:none" title="中断当前生成">⏸</button>
-		<textarea id="input" rows="1" placeholder="输入消息，/help 查看命令"></textarea>
+		<!-- enterkeyhint=send：移动端软键盘回车键显示"发送" -->
+		<textarea id="input" rows="1" enterkeyhint="send" placeholder="输入消息，/help 查看命令"></textarea>
 		<button id="send-btn" type="button">发送</button>
 	</div>
 </div>
+<!-- 任务面板：始终为抽屉式覆盖层（移动端唯一形态） -->
 <aside id="task-panel">
 	<header>任务面板<button id="task-close" type="button" aria-label="关闭">×</button></header>
 	<div id="task-list"></div>

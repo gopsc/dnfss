@@ -1,20 +1,21 @@
-/* ===== 全屏应用布局（覆盖 theme.css 的居中卡片页默认） ===== */
+/* ===== 移动端全屏应用布局（覆盖 theme.css 的居中卡片页默认） ===== */
 html, body { height: 100%; }
 body {
 	display: block;
 	padding: 0;
 	height: 100dvh;	/* 移动端动态视口高度，规避地址栏遮挡 */
 	overflow: hidden;
+	overscroll-behavior: none;	/* 禁止下拉刷新/回弹手势干扰聊天滚动 */
 }
 #app {
 	display: flex;
 	flex-direction: column;
 	height: 100dvh;
-	max-width: 900px;
-	margin: 0 auto;
 	background: var(--bg);
-	transition: margin-right 0.25s;
 }
+/* 移动端触控优化：去点击高亮、去双击缩放延迟 */
+button, textarea { -webkit-tap-highlight-color: transparent; }
+button { touch-action: manipulation; }
 
 /* ===== 顶栏 ===== */
 #topbar {
@@ -67,6 +68,7 @@ body {
 	overflow-y: auto;
 	padding: 14px 12px;
 	-webkit-overflow-scrolling: touch;
+	overscroll-behavior: contain;	/* 滚动到底不连带拉动 body */
 }
 .msg { margin-bottom: 12px; overflow-wrap: break-word; }
 .msg-user {
@@ -157,7 +159,7 @@ body {
 #interrupt-btn { flex: none; min-height: 44px; min-width: 44px; padding: 0.45rem 0.7rem; background: var(--error-bg); color: var(--error); }
 #send-btn:disabled, #interrupt-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* ===== 任务面板：移动端为抽屉式覆盖层 ===== */
+/* ===== 任务面板：抽屉式覆盖层 ===== */
 #task-panel {
 	position: fixed;
 	top: 0; right: 0; bottom: 0;
@@ -204,13 +206,3 @@ body {
 	z-index: 99;
 }
 #backdrop.show { opacity: 1; pointer-events: auto; }
-
-/* ===== 桌面端：任务面板固化为右侧栏 ===== */
-@media (min-width: 900px) {
-	#app { margin-right: 340px; max-width: none; }
-	#task-panel { transform: none; box-shadow: none; }
-	#task-toggle, #task-close, #backdrop { display: none; }
-
-	/* 桌面端所有对话一律左对齐（移动端保留用户右/AI 左的对话式布局） */
-	.msg-user, .msg-ai, .msg-reasoning { margin-left: 0; margin-right: 0; }
-}

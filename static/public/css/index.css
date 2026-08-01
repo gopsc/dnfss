@@ -1,0 +1,38 @@
+/* index.css — 社区首页专属样式（通用主题见 theme.css） */
+
+body {
+    align-items: normal;
+}
+
+/* ===== 头部 ===== */
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+}
+
+.right-group {
+    display: flex;
+    align-items: center;
+}
+
+.right-group > img,
+.right-group > b,
+.right-group > button {
+    margin-left: 5px;
+    margin-right: 5px;
+}
+
+#avatar {
+    border-radius: 50%;
+}
+
+/* ===== 网站简介 ===== */
+.site-intro {
+    max-width: 640px;
+    margin: 0 auto;
+    font-size: 0.95rem;
+    line-height: 1.9;
+    color: var(--fg-secondary);
+}

@@ -21,6 +21,7 @@
 - 📦 **对话压缩**：消息数或 Token 数达到阈值时自动压缩，保持上下文质量
 - 🛡️ **内存安全防护**：文件读取按需加载不全载、命令输出 1MB 限制、单行超长截断、工具结果多层防护防止 OOM
 - 🔒 **错误自动恢复**：API 请求失败自动回滚消息，工具结果安全清洗（控制字符过滤、非字符串转换）
+- 🛑 **可靠中断机制**：支持 Ctrl+C 实时中断，通过 `threading.Event` + HTTP 连接关闭 + 子进程 kill 三层取消，流式响应和长时间运行命令均可立即终止
 
 ## 🚀 快速开始
 
@@ -191,6 +192,15 @@ const ws = new WebSocket('ws://localhost:8765');
   "type": "ping"
 }
 ```
+
+#### 5. 中断（Ctrl+C）
+```json
+{
+  "type": "interrupt",
+  "content": "用户按下了 Ctrl+C 中断当前操作"
+}
+```
+服务端收到后立即回复 `interrupt_ack`，并通过三层取消机制（Event标志 + HTTP连接关闭 + 子进程kill）终止正在进行的AI思考和工具执行。
 
 ### 支持的命令
 
@@ -705,6 +715,19 @@ elif command == "/mycommand":
 3. 确认工具返回值为字符串且不含二进制/控制字符
 
 ## 📄 更新日志
+
+### v2.6
+- ✅ **修复 Ctrl+C 中断无法停止服务器的问题**：
+  - 新增 `interrupt` WebSocket 消息类型处理（BotOps 前端 Ctrl+C 发送此消息），立即回复 `interrupt_ack` 确认
+  - `DeepSeekChat` 新增 `cancel()` 方法和 `_cancel_event`（threading.Event），线程安全可跨线程调用
+  - **三层取消机制**：
+    1. 设置取消标志，流式响应循环每轮检查，发现取消立即 break
+    2. 关闭当前 HTTP response 对象，中断 `iter_lines()` 阻塞读取
+    3. 终止正在运行的子进程（`SubprocessCommandExecutor.cancel()` → `process.kill()`）
+  - 工具调用循环中每个工具执行前检查取消信号，中断后不再继续后续工具
+  - API 请求异常/JSON解析异常/未知异常中均检查取消标志，若因取消导致异常则按中断处理而非报错
+  - 中断后自动回滚本轮消息，防止污染对话历史
+  - 新增 `EnhancedAIManager.cancel()` 统一入口，同时终止 AI 和命令执行器
 
 ### v2.5
 - ✅ **新增 DeepSeek 思考模式支持**（Reasoning Mode）：
