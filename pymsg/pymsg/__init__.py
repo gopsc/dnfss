@@ -110,6 +110,8 @@ def recv(
                 )
             payload = _recv_exact(sock, length)
             return payload.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ConnectionError("invalid UTF-8 payload") from None
         except _socket.timeout:
             raise TimeoutError(
                 f"recv timed out after {timeout}s"
@@ -457,8 +459,10 @@ class MsgServer:
     def _handle_client(self, s, socketlist, on_message):
         try:
             text = recv(s, timeout=self._recv_timeout)
-        except (ConnectionError, ConnectionResetError, OSError, TimeoutError):
+        except (ConnectionError, ConnectionResetError, OSError,
+                TimeoutError, UnicodeDecodeError):
             # TimeoutError: 客户端在超时时间内未发送完整消息（Slowloris 防护），关闭连接
+            # UnicodeDecodeError: 防御性捕获，recv() 已包装为 ConnectionError，此处兜底
             self._remove_client(s, socketlist)
             return
         addr = self._clients.get(s, ("unknown", 0))
