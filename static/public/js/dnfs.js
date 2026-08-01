@@ -414,8 +414,17 @@ function renderMarkdown(element, content) {
 	/*
 	Markdown渲染
 	*/
-	const md = window.markdownit();
-	element.innerHTML = md.render(content, {html: false});
+	const md = window.markdownit({
+		html: false,
+		highlight: function(code, lang) {
+			if (lang && hljs.getLanguage(lang)) {
+				return `<pre><code class="hljs language-${lang}">${hljs.highlight(code, {language: lang}).value}</code></pre>`
+			} else {
+				return `<pre><code class="hljs">${md.utils.escapeHtml(code)}</code></pre>`
+			}
+		}
+	});
+	element.innerHTML = md.render(content);
 }
 
 /* ===== by qing — 特殊节点（管理员专属）=====
