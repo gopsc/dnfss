@@ -2,16 +2,16 @@
 
 服务端协议（aibox/aibox.py output_callback 原样透传 msg_type）：
   - chunk           增量片段（正式回答内容），直接 append 到 AI 消息
-  - reasoning_start 思考开始信号，创建思考区域（在AI回答之前）
-  - reasoning       思考内容增量片段，追加到思考区域
-  - reasoning_end   思考结束信号
+  - reasoning_start 思考开始信号，在当前末尾创建新的思考区域
+  - reasoning       思考内容增量片段，追加到当前活跃的思考区域
+  - reasoning_end   思考结束信号：更新标签后清除引用（widget保留显示），
+                    后续 reasoning_start 会创建新的思考区域
   - complete        收尾信号：chunk 流式是内容权威来源，complete 仅用于收尾；
                     仅当流式完全丢帧（未建 widget 且无内容）时，用 full_text 补建
 
 顺序保证：不预创建空AI widget，按消息到达顺序自然挂载。
-  - 先到 reasoning_start → 思考区域挂在最后
-  - 后到 chunk → AI回答挂在思考区域之后
-  - 无思考直接 chunk → AI回答挂在最后
+多轮工具调用场景：每轮思考（reasoning_start→reasoning_end）创建独立的思考区域，
+  按时间顺序分布在对话流中各自的AI回答之前，而非全部堆在顶部。
 """
 from textual.containers import VerticalScroll
 from textual.widgets import Markdown, Static
@@ -89,17 +89,22 @@ class ChatView(VerticalScroll):
         self.call_after_refresh(self.scroll_end, animate=False)
 
     async def end_reasoning(self):
-        """结束思考区域，更新提示文字。"""
+        """结束当前思考区域，更新标签后清除引用（widget保留在界面上显示）。
+
+        清除引用后，后续 reasoning_start 会在当前末尾位置创建新的思考区域，
+        实现多轮工具调用时思考区域按时间顺序分布，而非全部堆在顶部。
+        """
         if self._reasoning_widget is not None and self._reasoning_text:
-            # 思考结束后保持展示，更新标签为已完成
             display = self._reasoning_text
             if len(display) > 3000:
                 display = "...(前略)\n" + display[-3000:]
             self._reasoning_widget.update(f"💭 思考过程（{len(self._reasoning_text)}字符）\n{display}\n{'─' * 30}")
-        # 思考区域保留显示，不删除
+        # 清除引用但保留widget在DOM中显示——下一轮reasoning_start会创建新widget
+        self._reasoning_widget = None
+        self._reasoning_text = ""
 
     async def abort_reasoning(self):
-        """中断思考区域（用户Ctrl+C），更新提示文字为已中断。"""
+        """中断当前思考区域，更新提示文字后清除引用。"""
         if self._reasoning_widget is not None:
             if self._reasoning_text:
                 display = self._reasoning_text
@@ -108,6 +113,9 @@ class ChatView(VerticalScroll):
                 self._reasoning_widget.update(f"🛑 思考已中断（{len(self._reasoning_text)}字符）\n{display}")
             else:
                 self._reasoning_widget.update("🛑 思考已中断")
+            # 清除引用，已显示的widget保留
+            self._reasoning_widget = None
+            self._reasoning_text = ""
 
     async def _ensure_ai_widget(self):
         """确保AI widget存在（第一次chunk到来时创建）。"""
@@ -115,6 +123,17 @@ class ChatView(VerticalScroll):
             self._ai_widget = Markdown("", classes="msg-ai")
             await self.mount(self._ai_widget)
             self._anchor_bottom()
+
+    async def break_ai(self):
+        """分段当前AI回答：清除引用但保留widget在DOM中显示。
+
+        用于工具调用场景：工具调用前的AI文字（如"好的让我查一下"）保留显示，
+        后续chunk会创建新的AI widget，保证思考区域按时间顺序插入在两段AI文字之间。
+        与finish_ai不同：不设置_ai_finalized，对话继续中。
+        """
+        if self._ai_widget is not None:
+            self._ai_widget = None
+            self._ai_text = ""
 
     async def append_ai(self, delta: str):
         """追加增量片段（服务端 chunk 为增量语义，累积文本后 update 整个 Markdown）。

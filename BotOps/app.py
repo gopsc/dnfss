@@ -197,6 +197,9 @@ class BotOpsApp(App):
             else:
                 # 🔧 调用工具: xxx / 工具输出 / 用户中断提示等 → 任务侧栏
                 self.tasks.write(stripped)
+        elif t == "ai_break":
+            # 工具调用前分段：结束当前AI文本段（保留已显示内容），后续chunk创建新widget
+            await self.chat.break_ai()
         elif t == "complete":
             # complete 携带完整全文，用于对齐已显示内容
             await self.chat.finish_ai(content)

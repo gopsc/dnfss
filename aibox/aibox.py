@@ -7424,6 +7424,15 @@ class DeepSeekChat:
                 elif output_callback:
                     output_callback("line", i18n.get('calling_tools') + "\n")
                 
+                # 发送ai_break信号，通知前端分段当前AI文本段（保留已显示内容），
+                # 这样工具调用后新一轮的思考/回答会创建新的widget，按时间顺序排列
+                if output_callback and chunk_buffer:
+                    # 先flush剩余的chunk_buffer，确保最后片段不丢失
+                    output_callback("chunk", chunk_buffer)
+                    chunk_buffer = ""
+                if output_callback:
+                    output_callback("ai_break", "")
+                
                 # 【关键修复1】先添加助手消息，包含 tool_calls
                 assistant_msg = {
                     "role": "assistant",
