@@ -17,11 +17,14 @@
  */
 
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <arpa/inet.h>
@@ -57,6 +60,13 @@ public:
 class MsgConnectionException : public MsgException {
 public:
   explicit MsgConnectionException(const std::string &msg) : MsgException(msg) {}
+};
+
+/// 目标服务未启动（connect 返回 ECONNREFUSED），用于 retry_on_refused 重试机制
+class MsgConnectionRefusedException : public MsgConnectionException {
+public:
+  explicit MsgConnectionRefusedException(const std::string &msg)
+      : MsgConnectionException(msg) {}
 };
 
 // ============================================================================
@@ -155,10 +165,14 @@ inline int openConnection(const std::string& addr, int port, double timeout) {
 
   if (::connect(fd, reinterpret_cast<struct sockaddr *>(&serv_addr),
                 sizeof(serv_addr)) < 0) {
+    int saved_errno = errno;
     ::close(fd);
-    throw MsgConnectionException(
-        "could not connect to " + addr + ":" + std::to_string(port) +
-        " - " + ::strerror(errno));
+    std::string err_msg = "could not connect to " + addr + ":" +
+                          std::to_string(port) + " - " + ::strerror(saved_errno);
+    if (saved_errno == ECONNREFUSED) {
+      throw MsgConnectionRefusedException(err_msg);
+    }
+    throw MsgConnectionException(err_msg);
   }
 
   return fd;
@@ -242,19 +256,64 @@ public:
   ///
   /// 不会给消息添加 ``name:`` 前缀（适用于 RPC/API 调用）。
   ///
-  /// @param msg      要发送的原始字符串。
-  /// @param timeout  超时秒数，默认 10.0。
-  /// @returns        服务器返回的字符串。
-  std::string call(const std::string &msg, double timeout = 10.0) {
-    int fd = detail::openConnection(_addr, _port, timeout);
-    try {
-      pmsg_send(fd, msg);
-      std::string resp = pmsg_recv(fd);
-      ::close(fd);
-      return resp;
-    } catch (...) {
-      ::close(fd);
-      throw;
+  /// @param msg              要发送的原始字符串。
+  /// @param timeout          超时秒数，默认 10.0。
+  /// @param retry_on_refused 目标服务未启动（ECONNREFUSED）时是否阻塞重试，
+  ///                         直到连接成功。适用于启动顺序不确定的服务发现场景。
+  ///                         默认 false（连接拒绝立即抛异常）。
+  /// @param retry_interval   重试间隔秒数，默认 1.0。
+  /// @returns                服务器返回的字符串。
+  std::string call(const std::string &msg, double timeout = 10.0,
+                   bool retry_on_refused = false,
+                   double retry_interval = 1.0) {
+    if (!retry_on_refused) {
+      // 快速路径：不重试，直接执行一次，保持原有行为
+      int fd = detail::openConnection(_addr, _port, timeout);
+      try {
+        pmsg_send(fd, msg);
+        std::string resp = pmsg_recv(fd);
+        ::close(fd);
+        return resp;
+      } catch (...) {
+        ::close(fd);
+        throw;
+      }
+    }
+
+    // 重试路径：仅对 ECONNREFUSED 重试，其他错误立即抛出
+    constexpr double kLogEvery = 5.0;  // 重试期间打印等待提示的间隔（秒）
+    int attempt = 0;
+    auto last_log = std::chrono::steady_clock::now() -
+                    std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                        std::chrono::duration<double>(kLogEvery));
+
+    while (true) {
+      try {
+        int fd = detail::openConnection(_addr, _port, timeout);
+        try {
+          pmsg_send(fd, msg);
+          std::string resp = pmsg_recv(fd);
+          ::close(fd);
+          return resp;
+        } catch (...) {
+          ::close(fd);
+          throw;
+        }
+      } catch (const MsgConnectionRefusedException &) {
+        ++attempt;
+        auto now = std::chrono::steady_clock::now();
+        double elapsed = std::chrono::duration<double>(now - last_log).count();
+        if (elapsed >= kLogEvery || attempt == 1) {
+          std::fprintf(stderr,
+                       "[pymsg] 等待服务 %s:%d 就绪... (已重试 %d 次)\n",
+                       _addr.c_str(), _port, attempt);
+          std::fflush(stderr);
+          last_log = now;
+        }
+        std::this_thread::sleep_for(
+            std::chrono::duration<double>(retry_interval));
+      }
+      // 其他异常（MsgTimeoutException、普通MsgConnectionException等）不捕获，直接向上抛出
     }
   }
 

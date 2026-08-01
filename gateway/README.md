@@ -28,6 +28,29 @@ UniServe Framework 的应用层网关，C++20 实现。
 | CAPTCHA | 一次性、5 分钟过期，登录与注册均可选启用 |
 | 速率限制 | 内存计数器，自动清理超过 1 万条的老条目 |
 | TLS 可选 | `Server.tls = off` 时纯 HTTP（配合 WAF），`on` 时用 `full_chain.crt` / `server.key` |
+| 下游服务容错 | pymsg 客户端 `retry_on_refused` 机制：db 等强依赖服务未启动时自动阻塞重试，避免启动顺序问题；日志客户端 fail-safe 静默丢弃 |
+
+## pymsg 内部通信协议
+
+gateway 通过项目内的 [pymsg](../pymsg/)（长度前缀帧 TCP 协议）与内部微服务通信，C++ 实现在 `inc/Msg.hpp`，与 Python 端字节级兼容。
+
+**线协议**：`[4字节大端uint32长度][UTF-8载荷]`，最大 64 MiB。
+
+**JSON RPC 约定**：请求形如 `{"_route": "<路由名>", ...}`，响应形如 `{"success": true, "data": ...}` 或 `{"success": false, "error": "..."}`。
+
+**下游服务调用方式**：
+
+| 下游 | 端口 | `_route` | 调用位置 | 重试策略 |
+|------|------|----------|---------|---------|
+| db | 8005 | `execute` | `DbC::call_msg()`（所有数据库 CRUD） | `retry_on_refused=true`，db 未就绪时阻塞等待 |
+| db | 8005 | `execute` | `LogC::_send()`（日志异步批量推送） | `retry_on_refused=false`，fail-safe 静默丢弃 |
+| captcha | 8009 | `verify` / `image` | `verify_captcha_remote()`、`/captcha/image` 代理 | 默认不重试，连接失败 fail-closed 返回 502/false |
+| smtp | 8008 | `verify_email` / `send_email` | `verify_email_code_remote()`、`/register/send_code` | 默认不重试，连接失败 fail-closed 返回 502/false |
+
+**retry_on_refused 机制**（`MsgClient::call()`，对应 Python 端 `MsgClient.call(retry_on_refused=True)`）：
+- 仅对 `ECONNREFUSED`（目标端口无服务监听）重试，超时、连接重置、业务错误立即抛出
+- 固定 1 秒间隔重试；首次失败立即打印 stderr 提示，之后每 5 秒打印一次等待日志（节制日志，避免刷屏）
+- 用于解决微服务启动顺序不确定问题：gateway 启动时 db 未就绪，首次 db 调用自动阻塞等待直到 db 上线
 
 ## 接口
 
@@ -265,6 +288,9 @@ gateway/
 ├── src/
 │   └── main.cpp          # 全部实现：PBKDF2 / PasswordValidator / RateLimiter / 路由 / handler
 ├── inc/
+│   ├── Msg.hpp           # pymsg C++ 实现：长度前缀帧协议、MsgClient（含 retry_on_refused 重试）、MsgException 族
+│   ├── DbC.hpp           # db 服务客户端：通过 pymsg 调 dbv2 execute 路由（retry_on_refused=true）
+│   ├── LogC.hpp          # 统一日志客户端：异步批量队列 + pymsg INSERT（fail-safe，不重试）
 │   ├── Conf.hpp          # ConfIni：基于 boost::property_tree 的 ini 解析
 │   ├── ExpBase.hpp       # 异常基类（带 source_location）
 │   └── LocalTime.hpp     # 本地时间工具（getCurrent / parse）
@@ -276,14 +302,15 @@ gateway/
 
 ## 版本
 
-`0.6.0`（见 [src/main.cpp:31](src/main.cpp#L31)）。启动时打印：
+`0.6.1`（见 [src/main.cpp:31](src/main.cpp#L31)）。启动时打印：
 
 ```
-Gateway 0.6.0 started
+Gateway 0.6.1 started
 ```
 
 近期变更：
 
+- `0.6.1`：pymsg 客户端增加 `retry_on_refused` 重试机制，与 Python 端 `pymsg.MsgClient.call(retry_on_refused=True)` 行为对齐——新增 `MsgConnectionRefusedException` 异常类（区分 ECONNREFUSED 与其他连接错误）；`MsgClient::call()` 新增 `retry_on_refused`/`retry_interval` 参数，仅对连接拒绝重试，固定间隔 1s，节制日志（首次立即打印 + 每 5s 一次），其他异常（超时/连接重置/业务错误）立即抛出；`DbC::call_msg()` 启用 `retry_on_refused=true`（db 是硬依赖，启动顺序不确定时自动阻塞等待）；`LogC::_send()` 显式传 `retry_on_refused=false`（日志是 fail-safe，db 不可用时静默丢弃，绝不阻塞后台线程）；captcha/smtp 辅助服务保持默认不重试（fail-fast，请求线程中永久阻塞会耗尽线程池）。
 - `0.6.0`：WebSocket 反向代理（仅管理员）——新增 `[WsProxy]` 配置段，支持 `routes = /path=ws://host:port/target;...` 精确路径映射；握手阶段校验 Token 中 `is_admin=true`（基于 `Admin.users` 白名单），通过后双向透明桥接文本/二进制帧到后端，支持 `ws://` 和 `wss://`；后端连接错误/鉴权失败均优雅关闭。依赖 libhttp v3.1+ 的 `ws_proxy()` 接口。顺带修复 `LocalTime.hpp` 在 Apple clang 下 C++20 tzdb 不可用的编译问题（改用 `strftime`/`get_time`/`mktime`）。
 - `0.5.4`：修复邮件轰炸漏洞（审计报告 P0-1）——`/register/send_code` 强制 CAPTCHA 校验（经 captcha:8009，Token 一次性消费），新增邮箱级双窗口限流（3 次/小时 + 10 次/天）；smtp 层同步增加邮箱级长期限流兜底 + 全局熔断（`SMTP_HOURLY_LIMIT` 环境变量，默认 100 封/小时）；前端 `register.html`/`register.js` 同步接入图形验证码（复用 `/captcha/image` 代理路由，方案 A：仅在「获取验证码」时要求 CAPTCHA，注册提交不加）。
 - `0.5.3`：配合 smtp 同邮箱 60 秒发送冷却——`/register/send_code` 在 smtp 返回 `retry_after` 时按 429 透传其提示文案（其余发送失败仍用通用 500 文案，SMTP 内部错误细节不向外暴露）。

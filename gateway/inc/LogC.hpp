@@ -196,7 +196,8 @@ private:
 				payload["values"] = std::move(values);
 
 				const std::string resp = client.call(
-						json::serialize(payload), _TIMEOUT);
+						json::serialize(payload), _TIMEOUT,
+						/*retry_on_refused=*/false);  // 日志是 fail-safe，db 不可用时静默丢弃，绝不阻塞重试
 				auto obj = json::parse(resp).as_object();
 				if (!obj.at("success").as_bool()) {
 					std::string err = "unknown";

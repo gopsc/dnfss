@@ -25,18 +25,20 @@ namespace qing {
 			}
 
 			// 新版 pymsg 接口：通过 MsgClient（TCP 长度前缀帧协议）调用 dbv2。
-			// 自动添加 _route = "execute"，返回 dbv2 pymsg 完整 JSON 响应
-			//   {"success":..., "data":[...]}。
-			// 响应格式与 call_http 兼容，调用方可直接替换。
-			static json::value call_msg(const json::value& params,
-					double timeout = DEFAULT_TIMEOUT) {
-				json::value jv_route = params;
-				jv_route.as_object()["_route"] = "execute";
-				pmc::net::MsgClient client("127.0.0.1", 8005, "gateway");
-				std::string resp = client.call(
-					json::serialize(jv_route), timeout);
-				return json::parse(resp);
-			}
+		// 自动添加 _route = "execute"，返回 dbv2 pymsg 完整 JSON 响应
+		//   {"success":..., "data":[...]}。
+		// 响应格式与 call_http 兼容，调用方可直接替换。
+		// db 是强依赖，启用 retry_on_refused：db 未启动时阻塞等待，避免启动顺序问题。
+		static json::value call_msg(const json::value& params,
+				double timeout = DEFAULT_TIMEOUT) {
+			json::value jv_route = params;
+			jv_route.as_object()["_route"] = "execute";
+			pmc::net::MsgClient client("127.0.0.1", 8005, "gateway");
+			std::string resp = client.call(
+				json::serialize(jv_route), timeout,
+				/*retry_on_refused=*/true);
+			return json::parse(resp);
+		}
 
 		private:
 			static constexpr const char* _DBURL = "http://127.0.0.1:8005/execute";

@@ -28,7 +28,7 @@ using namespace qing;
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-constexpr const char *_VER = "0.6.0";
+constexpr const char *_VER = "0.6.1";
 
 //////////////////////////////////
 #include <sstream>
