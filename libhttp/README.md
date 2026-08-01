@@ -46,6 +46,23 @@ Two shared libraries are produced:
 
 `libus_http.so` does **not** depend on libcurl. Link against `libus_httpclient.so` only when you need the client, and link both when you need both server and client (e.g. a proxy/gateway).
 
+### Source Layout
+
+The server implementation is split into modular source files for faster incremental builds:
+
+| Source File | Responsibility |
+|---|---|
+| `src/HttpServer.cpp` | Core lifecycle (construct/destruct/start/stop/run), SSL init, session management, debug utilities |
+| `src/HttpServer_Listener.cpp` | TCP connection acceptor (`Listener` class) |
+| `src/HttpServer_Routes.cpp` | HTTP route registration, route matching, wildcard→regex conversion, query parameter parsing |
+| `src/HttpServer_Request.cpp` | Request dispatch pipeline, static file serving, CORS preflight, Session HTTP read/write |
+| `src/HttpServer_Ws.cpp` | WebSocket route registration, client registry, broadcast/send APIs |
+| `src/HttpServer_WsSession.cpp` | Session WebSocket handling (regular WS frames + bidirectional WS proxy bridging) |
+
+Internal shared definitions (exception classes, full `Session`/`Listener` declarations) live in `inc/us/detail/HttpServerImpl.hpp` (installed to `/usr/include/us/detail/`).
+
+Modifying one module only requires recompiling its corresponding `.o` file — no need to rebuild the entire 1400-line translation unit.
+
 ## Quick Start
 
 ### HTTP + WebSocket Server
@@ -260,6 +277,7 @@ using WebSocketClientBase = HttpClient;
 
 ## Version History
 
+- **v3.3.0**: Split HttpServer into 6 modular translation units by functional area (core/lifecycle, listener, routes, request dispatch, WS management, WS session/proxy) for dramatically faster incremental builds. Added internal detail header `inc/us/detail/HttpServerImpl.hpp` for shared definitions across TU boundaries.
 - **v3.2.0**: Split into two shared libraries — `libus_http.so` (server only, no curl) and `libus_httpclient.so` (HttpClient, depends on curl). HttpClient implementation moved to `src/HttpClient.cpp`; `HttpClient.hpp` is declaration-only.
 - **v3.1.0**: Added WebSocket reverse proxy (`ws_proxy()`) with bidirectional async bridging, ws:// and wss:// backend support, handshake-time authorization callback.
 - **v3.0.0**: Merged WebSocketServer into HttpServer and WebSocketClient into HttpClient. Single-port HTTP+WebSocket support.
