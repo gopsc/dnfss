@@ -189,12 +189,11 @@ gateway 不直连数据库（早期直连本地 sqlite 的代码已注释保留�
 
 gateway 配置采用**两层加载模式**，与其他 Python 服务（dnfs/db/static）保持一致：
 
-1. **confs 统一配置服务**（默认模式）：启动时从 confs（`127.0.0.1:8010`，可通过 `CONFS_HOST`/`CONFS_PORT` 环境变量覆盖）通过 pymsg `get` 路由拉取 `gateway.ini`，`retry_on_refused=true` 阻塞等待 confs 就绪。
-2. **本地文件覆盖**（开发/调试模式）：启动时传 `-i <path>` 则跳过 confs，直接读取本地 ini 文件。
-3. **环境变量覆盖**（最高优先级，Docker 兼容）：`LISTEN_ADDR`/`LISTEN_PORT`、`DB_HOST`/`DB_PORT`、`CAPTCHA_HOST`/`CAPTCHA_PORT`、`SMTP_HOST`/`SMTP_PORT` 覆盖 ini 中对应值。
-4. **完整性校验**：必需配置项缺失则启动失败。
+1. **confs 统一配置服务**：启动时从 confs（`127.0.0.1:8010`，可通过 `CONFS_HOST`/`CONFS_PORT` 环境变量覆盖）通过 pymsg `get` 路由拉取 `gateway.ini`，`retry_on_refused=true` 阻塞等待 confs 就绪。
+2. **环境变量覆盖**（最高优先级，Docker 兼容）：`LISTEN_ADDR`/`LISTEN_PORT`、`DB_HOST`/`DB_PORT`、`CAPTCHA_HOST`/`CAPTCHA_PORT`、`SMTP_HOST`/`SMTP_PORT` 覆盖 ini 中对应值。
+3. **完整性校验**：必需配置项缺失则启动失败。
 
-配置文件存放于 [confs/configs/gateway.ini](../confs/configs/gateway.ini)（[example.ini](example.ini) 为本地开发参考副本，内容一致，新增 `[Downstream]` 段）。
+配置文件统一存放于 [confs/configs/gateway.ini](../confs/configs/gateway.ini)，gateway 目录下不再保留本地配置文件。
 
 配置项说明：
 - `Server.address`/`port`/`tls`：监听地址、端口、TLS 开关；`address`/`port` 可被 `LISTEN_ADDR`/`LISTEN_PORT` 环境变量覆盖。
@@ -249,17 +248,17 @@ tls = on
 
 ```bash
 bash _set.sh   # make clean && make
-bash _run.sh   # 默认从 confs 拉取配置；开发模式可用 _run.sh -i example.ini
+bash _run.sh   # 从 confs 拉取配置启动
 ```
 
-默认无需传参（从 confs 拉取配置）；`-i <ini>` 为本地文件模式（开发/调试用）。其他参数：`-h/--help`、`-v/--version`。
+无需传参，配置统一由 confs 管理。命令行参数：`-h/--help`、`-v/--version`。
 
 ## 目录结构
 
 ```
 gateway/
 ├── src/
-│   └── main.cpp          # 全部实现：配置加载（confs/本地文件/环境变量）、PBKDF2、RateLimiter、路由/handler
+│   └── main.cpp          # 全部实现：配置加载（confs → 环境变量覆盖）、PBKDF2、RateLimiter、路由/handler
 ├── inc/
 │   ├── Msg.hpp           # pymsg C++ 实现：长度前缀帧协议、MsgClient（含 retry_on_refused）、MsgException 族
 │   ├── DbC.hpp           # db 服务客户端：通过 pymsg 调 dbv2（地址可配置，retry_on_refused=true）
@@ -267,11 +266,12 @@ gateway/
 │   ├── Conf.hpp          # ConfIni：boost::property_tree ini 解析，支持 fromString/env/env_int
 │   ├── ExpBase.hpp       # 异常基类（带 source_location）
 │   └── LocalTime.hpp     # 本地时间工具（getCurrent / parse）
-├── example.ini           # 本地开发配置参考副本（与 confs/configs/gateway.ini 一致）
 ├── Makefile
 ├── _set.sh / _run.sh
 └── README.md
 ```
+
+配置文件统一在 [confs/configs/gateway.ini](../confs/configs/gateway.ini)，gateway 目录无本地配置文件。
 
 ## 版本
 
@@ -283,7 +283,7 @@ Gateway 0.7.0 started
 
 近期变更：
 
-- `0.7.0`：配置体系迁移到 confs 统一配置服务——新增 `confs/configs/gateway.ini`（原 example.ini 内容 + `[Downstream]` 段配置下游服务地址）；启动时默认从 confs（`CONFS_HOST`/`CONFS_PORT`，默认 `127.0.0.1:8010`）通过 pymsg `get` 路由拉取配置（`retry_on_refused=true`），`-i <path>` 保留为本地文件开发模式；`ConfIni` 增加 `fromString()`（从 ini 文本解析）、`env()`/`env_int()`（环境变量读取）、公开默认构造函数；环境变量覆盖支持 `LISTEN_ADDR`/`LISTEN_PORT`/`DB_HOST`/`DB_PORT`/`CAPTCHA_HOST`/`CAPTCHA_PORT`/`SMTP_HOST`/`SMTP_PORT`；配置完整性校验（`Server.address`/`port`、`Proxy.default`、`Downstream.db_host`/`db_port` 缺失则启动失败）；`DbC` 增加 `init(host, port)` 支持可配置 db 地址（默认 127.0.0.1:8005），main.cpp 中所有硬编码 captcha/smtp 地址改为配置变量，`logs().set_endpoint()` 在启动时初始化；`_run.sh` 默认不传 `-i`，`--version/-v` 选项补全实现。
+- `0.7.0`：配置体系完全迁移到 confs 统一配置服务——配置文件统一存放于 `confs/configs/gateway.ini`（原 example.ini 内容 + `[Downstream]` 段），删除本地 example.ini，移除 `-i/--input` 命令行参数（不再支持本地 ini 文件回退，与 static 模块一致）；启动时从 confs（`CONFS_HOST`/`CONFS_PORT`，默认 `127.0.0.1:8010`）通过 pymsg `get` 路由拉取配置（`retry_on_refused=true`）；`ConfIni` 增加 `fromString()`/`env()`/`env_int()`；环境变量覆盖支持 `LISTEN_ADDR`/`LISTEN_PORT`/`DB_HOST`/`DB_PORT`/`CAPTCHA_HOST`/`CAPTCHA_PORT`/`SMTP_HOST`/`SMTP_PORT`；配置完整性校验；`DbC` 增加 `init(host, port)`，main.cpp 所有硬编码 captcha/smtp/db 地址改为配置变量，`logs().set_endpoint()` 启动时初始化；`--version/-v` 选项补全实现；版本升至 0.7.0。
 - `0.6.1`：pymsg 客户端增加 `retry_on_refused` 重试机制——新增 `MsgConnectionRefusedException`；`MsgClient::call()` 新增 `retry_on_refused`/`retry_interval` 参数；`DbC::call_msg()` 启用重试等待 db 就绪；`LogC::_send()` 显式不重试（fail-safe）。
 - `0.6.0`：WebSocket 反向代理（仅管理员）——新增 `[WsProxy]` 配置段，支持 `routes = /path=ws://host:port/target;...` 精确路径映射；握手阶段校验 Token 中 `is_admin=true`（基于 `Admin.users` 白名单），通过后双向透明桥接文本/二进制帧到后端，支持 `ws://` 和 `wss://`；后端连接错误/鉴权失败均优雅关闭。依赖 libhttp v3.1+ 的 `ws_proxy()` 接口。顺带修复 `LocalTime.hpp` 在 Apple clang 下 C++20 tzdb 不可用的编译问题（改用 `strftime`/`get_time`/`mktime`）。
 - `0.5.4`：修复邮件轰炸漏洞（审计报告 P0-1）——`/register/send_code` 强制 CAPTCHA 校验（经 captcha:8009，Token 一次性消费），新增邮箱级双窗口限流（3 次/小时 + 10 次/天）；smtp 层同步增加邮箱级长期限流兜底 + 全局熔断（`SMTP_HOURLY_LIMIT` 环境变量，默认 100 封/小时）；前端 `register.html`/`register.js` 同步接入图形验证码（复用 `/captcha/image` 代理路由，方案 A：仅在「获取验证码」时要求 CAPTCHA，注册提交不加）。

@@ -1,7 +1,7 @@
 #!/bin/bash
 # gateway 启动脚本
-# 默认从 confs 统一配置服务拉取配置（confs 需已启动）。
-# 若需使用本地 ini 文件（开发/调试），传入 -i <path>，例如：./_run.sh -i example.ini
+# 配置统一由 confs 服务管理（confs/configs/gateway.ini），
+# 启动时从 confs（CONFS_HOST:CONFS_PORT，默认 127.0.0.1:8010）拉取配置。
 cd "$(dirname "$0")" || exit
 
 # 等待依赖服务启动（confs/db）

@@ -486,7 +486,6 @@ int main(int argc, char **argv) {
 	desc.add_options()
 		("help,h",					"output help message")
 		("version,v",					"output version message")
-		("input,i", 	po::value<std::string>(),	"(可选) 指定本地 ini 配置文件路径，跳过 confs 拉取（开发/调试用）")
 	;
 
 
@@ -522,50 +521,42 @@ int main(int argc, char **argv) {
 	 * 与 Python 服务（dnfs/db/static）保持一致的加载模式：
 	 *   1. 引导配置：confs 地址从 CONFS_HOST/CONFS_PORT 环境变量读取，缺省 127.0.0.1:8010
 	 *   2. 从 confs 拉取 gateway.ini 全文（retry_on_refused=true 等待 confs 就绪）
-	 *      - 若指定了 -i 参数，则跳过 confs，直接读取本地 ini 文件（开发/调试模式）
 	 *   3. 用 boost::property_tree 解析 ini
 	 *   4. 环境变量覆盖（最高优先级，Docker 环境需要服务名而非 127.0.0.1）
 	 *   5. 配置完整性校验：必需字段缺失则启动失败
+	 * 不再支持本地 ini 文件回退（与 static 模块一致，配置统一由 confs 管理）。
 	 * ==================================================================================== */
 
 	{
-		ConfIni cf;  // 默认空构造，后续根据模式赋值
-
 		/* 1. 引导配置：confs 连接地址（不依赖 confs 本身，避免循环依赖） */
 		_CONFS_HOST = ConfIni::env("CONFS_HOST", "127.0.0.1");
 		_CONFS_PORT = ConfIni::env_int("CONFS_PORT", 8010);
 
+		ConfIni cf;
 		try {
-			if (vm.count("input")) {
-				/* 开发模式：-i 指定本地文件，跳过 confs */
-				std::string ini_path = vm["input"].as<std::string>();
-				cf = ConfIni(ini_path);
-				std::cout << "[gateway] 配置来源: 本地文件 " << ini_path << std::endl;
-			} else {
-				/* 生产模式：从 confs 拉取 gateway.ini */
-				std::cout << "[gateway] 从 confs (" << _CONFS_HOST << ":" << _CONFS_PORT
-				          << ") 拉取 gateway.ini ..." << std::endl;
-				pmc::net::MsgClient confs_client(_CONFS_HOST, _CONFS_PORT, "gateway");
-				json::object req;
-				req["_route"] = "get";
-				req["name"] = "gateway.ini";
-				std::string resp_str = confs_client.call(
-					json::serialize(req), /*timeout=*/5.0,
-					/*retry_on_refused=*/true);
-				auto resp = json::parse(resp_str).as_object();
-				if (!resp.at("success").as_bool()) {
-					std::string err = "unknown";
-					if (auto* ev = resp.if_contains("error")) {
-						if (ev->is_string()) err = ev->as_string().c_str();
-					}
-					std::cerr << "[gateway] 致命错误: 从 confs 获取 gateway.ini 失败: " << err << std::endl;
-					return 1;
+			/* 从 confs 拉取 gateway.ini */
+			std::cout << "[gateway] 从 confs (" << _CONFS_HOST << ":" << _CONFS_PORT
+			          << ") 拉取 gateway.ini ..." << std::endl;
+			pmc::net::MsgClient confs_client(_CONFS_HOST, _CONFS_PORT, "gateway");
+			json::object req;
+			req["_route"] = "get";
+			req["name"] = "gateway.ini";
+			std::string resp_str = confs_client.call(
+				json::serialize(req), /*timeout=*/5.0,
+				/*retry_on_refused=*/true);
+			auto resp = json::parse(resp_str).as_object();
+			if (!resp.at("success").as_bool()) {
+				std::string err = "unknown";
+				if (auto* ev = resp.if_contains("error")) {
+					if (ev->is_string()) err = ev->as_string().c_str();
 				}
-				std::string ini_content = resp.at("data").as_object().at("content").as_string().c_str();
-				cf = ConfIni::fromString(ini_content);
-				std::cout << "[gateway] 配置来源: confs (gateway.ini @ "
-				          << _CONFS_HOST << ":" << _CONFS_PORT << ")" << std::endl;
+				std::cerr << "[gateway] 致命错误: 从 confs 获取 gateway.ini 失败: " << err << std::endl;
+				return 1;
 			}
+			std::string ini_content = resp.at("data").as_object().at("content").as_string().c_str();
+			cf = ConfIni::fromString(ini_content);
+			std::cout << "[gateway] 配置来源: confs (gateway.ini @ "
+			          << _CONFS_HOST << ":" << _CONFS_PORT << ")" << std::endl;
 		}
 		catch (ConfIni::IniConfigureFileParseException &e) {
 			std::cerr << "ERROR: " << e.what() << std::endl;
