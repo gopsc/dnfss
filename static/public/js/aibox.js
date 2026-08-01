@@ -1,6 +1,6 @@
 'use strict';
 /* ============================================================
- * aibox Web 客户端（经 gateway WS 反向代理，仅管理员可用）
+ * aibox Web 客户端 · 移动端版（经 gateway WS 反向代理，仅管理员可用）
  * 协议与 BotOps/aibox client.py 完全兼容：
  *   发送：{"type":"message","content":...} / {"type":"command","command":"/..."} / {"type":"interrupt",...}
  *   接收：chunk(增量片段) / reasoning_start / reasoning / reasoning_end / complete /
@@ -12,19 +12,20 @@
 /* gateway [WsProxy] routes 中配置的路径（HttpOnly q4_token Cookie 随握手自动携带，JS 不经手 Token）。
  * 需与 gateway.ini 的 [WsProxy] routes 条目一致，如：routes = /ws/aibox=ws://127.0.0.1:8765; */
 const WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/aibox';
-const RECONNECT_MIN = 2000;		/* 指数退避起点（与 BotOps 一致：2s→30s 封顶） */
+const RECONNECT_MIN = 2000;		/* 指数退避起点（2s→30s 封顶） */
 const RECONNECT_MAX = 30000;
 const REASONING_TAIL = 3000;	/* 思考区域超长时仅显示末尾字符数 */
 
+/* ---------- Markdown 渲染（链接一律新标签打开且不带 referrer） ---------- */
 const md = window.markdownit({ html: false, linkify: true, breaks: true });
-/* 链接一律新标签打开且不带 referrer（CSP connect-src 'self' 允许 WS 同源） */
-const defaultLinkOpen = md.renderer.rules.link_open || function(tokens, idx, options, env, self) { return self.renderToken(tokens, idx, options); };
-md.renderer.rules.link_open = function(tokens, idx, options, env, self) {
+const defaultLinkOpen = md.renderer.rules.link_open || ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options));
+md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
 	tokens[idx].attrSet('target', '_blank');
 	tokens[idx].attrSet('rel', 'noopener noreferrer');
 	return defaultLinkOpen(tokens, idx, options, env, self);
 };
 
+/* ---------- DOM ---------- */
 const chatEl = document.getElementById('chat');
 const inputEl = document.getElementById('input');
 const sendBtn = document.getElementById('send-btn');
@@ -38,26 +39,26 @@ const taskToggle = document.getElementById('task-toggle');
 const taskBadge = document.getElementById('task-badge');
 const backdrop = document.getElementById('backdrop');
 
+/* ---------- 状态 ---------- */
 let ws = null;
 let manualClose = false;		/* 手动断开则抑制自动重连 */
 let reconnectDelay = RECONNECT_MIN;
 let reconnectTimer = null;
 
-/* 流式状态：不预创建空气泡，第一个 chunk 到来才挂载（保证思考区必然在正式回答之前，与 BotOps 同策略） */
+/* 流式状态：不预创建空气泡，第一个 chunk 到来才挂载（保证思考区必然在正式回答之前） */
 let aiBubble = null, aiText = '', aiActive = false;
 let reasoningBox = null, reasoningBody = null, reasoningHead = null, reasoningText = '';
-let streaming = false;
 let unreadTasks = 0;
 
-/* ---------- 工具 ---------- */
+/* ---------- 滚动（距底 80px 内才自动跟随，用户上翻阅读不打断） ---------- */
 function nearBottom() {
 	return chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight < 80;
 }
 function scrollToBottom(force) {
 	if (force || nearBottom()) chatEl.scrollTop = chatEl.scrollHeight;
 }
-function escapeText(s) { return String(s == null ? '' : s); }
 
+/* ---------- 系统消息 / 任务面板行 ---------- */
 function addSystem(text, isError) {
 	const div = document.createElement('div');
 	div.className = isError ? 'msg msg-error' : 'msg msg-system';
@@ -130,7 +131,7 @@ function startReasoning(hint) {
 	reasoningHead.textContent = '💭 ' + (hint || '思考中...');
 	reasoningBody = document.createElement('div');
 	reasoningBody.className = 'reasoning-body';
-	reasoningHead.addEventListener('click', function() { reasoningBody.classList.toggle('folded'); });
+	reasoningHead.addEventListener('click', () => reasoningBody.classList.toggle('folded'));
 	reasoningBox.appendChild(reasoningHead);
 	reasoningBox.appendChild(reasoningBody);
 	chatEl.appendChild(reasoningBox);
@@ -138,18 +139,28 @@ function startReasoning(hint) {
 }
 function appendReasoning(delta) {
 	if (!delta) return;
+	if (aiActive === false) return;	/* 已收尾（中断/完成），丢弃残留片段 */
 	if (!reasoningBox) startReasoning();
 	reasoningText += delta;
-	const display = reasoningText.length > REASONING_TAIL
+	reasoningBody.textContent = reasoningText.length > REASONING_TAIL
 		? '...(前略)\n' + reasoningText.slice(-REASONING_TAIL)
 		: reasoningText;
-	reasoningBody.textContent = display;
 	scrollToBottom();
 }
 function endReasoning() {
 	if (reasoningHead && reasoningText) {
 		reasoningHead.textContent = '💭 思考过程（' + reasoningText.length + ' 字符，点击折叠/展开）';
 		reasoningBody.classList.add('folded');	/* 结束后默认折叠，避免占屏 */
+	}
+}
+function abortReasoning() {
+	/* 用户中断：更新思考区域标签为已中断，保留已展示内容 */
+	if (reasoningHead) {
+		if (reasoningText) {
+			reasoningHead.textContent = '🛑 思考已中断（' + reasoningText.length + ' 字符）';
+		} else {
+			reasoningHead.textContent = '🛑 思考已中断';
+		}
 	}
 }
 
@@ -159,7 +170,6 @@ function setStatus(cls, text) {
 	statusText.textContent = text;
 }
 function setStreaming(on) {
-	streaming = on;
 	interruptBtn.style.display = on ? '' : 'none';
 	sendBtn.disabled = false;	/* 流式期间仍可发送（服务端排队），仅中断按钮显隐 */
 }
@@ -177,19 +187,19 @@ function connect() {
 		scheduleReconnect();
 		return;
 	}
-	ws.onopen = function() {
+	ws.onopen = () => {
 		reconnectDelay = RECONNECT_MIN;
 		setStatus('connected', '已连接');
 		connBtn.textContent = '断开';
 		connBtn.classList.add('on');
 	};
-	ws.onmessage = function(ev) {
+	ws.onmessage = (ev) => {
 		let data;
 		try { data = JSON.parse(ev.data); }
 		catch (e) { data = { type: 'chunk', content: ev.data }; }
 		routeMessage(data);
 	};
-	ws.onclose = function() {
+	ws.onclose = () => {
 		setStatus('disconnected', '已断开');
 		connBtn.textContent = '连接';
 		connBtn.classList.remove('on');
@@ -197,14 +207,14 @@ function connect() {
 		ws = null;
 		if (!manualClose) scheduleReconnect();
 	};
-	ws.onerror = function() { /* onclose 随后触发，统一在 onclose 处理 */ };
+	ws.onerror = () => { /* onclose 随后触发，统一在 onclose 处理 */ };
 }
 
 function scheduleReconnect() {
 	if (manualClose) return;
 	setStatus('connecting', Math.round(reconnectDelay / 1000) + 's 后重连');
 	clearTimeout(reconnectTimer);
-	reconnectTimer = setTimeout(function() {
+	reconnectTimer = setTimeout(() => {
 		reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX);
 		connect();
 	}, reconnectDelay);
@@ -219,7 +229,7 @@ function disconnect(manual) {
 	connBtn.classList.remove('on');
 }
 
-/* ---------- aibox 协议消息路由（对应 BotOps app.py 的 _on_ws_message） ---------- */
+/* ---------- aibox 协议消息路由 ---------- */
 function routeMessage(data) {
 	const t = data.type || '';
 	const content = typeof data.content === 'string' ? data.content : (data.content == null ? '' : String(data.content));
@@ -264,6 +274,9 @@ function routeMessage(data) {
 	} else if (t === 'task_error') {
 		addTaskLine('❌ [' + (data.task_id || '?') + '] ' + (data.task_title || '?') + ': ' + (data.error || '未知错误'));
 	} else if (t === 'interrupt_ack') {
+		/* 服务端确认中断：立即收尾前端状态 */
+		abortReasoning();
+		finishAi('');
 		addSystem('🛑 ' + (content || '已中断'));
 	} else if (t === 'error') {
 		addSystem('❌ ' + content, true);
@@ -291,38 +304,31 @@ function wsSend(obj) {
 	return true;
 }
 
-const LOCAL_COMMANDS = ['/clear', '/help', '/connect', '/disconnect', '/interrupt'];
-
-function handleLocalCommand(cmd) {
-	switch (cmd) {
-	case '/clear':
+/* 本地命令表：命中则本地处理，其余 / 命令透传服务器 */
+const LOCAL_COMMANDS = {
+	'/clear'() {
 		chatEl.replaceChildren();
 		finishAi('');
-		return true;
-	case '/help':
+	},
+	'/help'() {
 		addSystem('本地命令：/clear 清屏 · /connect 连接 · /disconnect 断开 · /interrupt 中断 · 其余 / 命令透传服务器');
-		return true;
-	case '/connect':
-		connect();
-		return true;
-	case '/disconnect':
-		disconnect(true);
-		return true;
-	case '/interrupt':
-		sendInterrupt();
-		return true;
-	default:
-		return false;
-	}
-}
+	},
+	'/connect'() { connect(); },
+	'/disconnect'() { disconnect(true); },
+	'/interrupt'() { sendInterrupt(); },
+};
 
 function sendCurrentInput() {
 	const text = inputEl.value.trim();
 	if (!text) return;
-	if (text.startsWith('/') && handleLocalCommand(text.split(/\s/)[0])) {
-		inputEl.value = '';
-		autoResize();
-		return;
+	if (text.startsWith('/')) {
+		const local = LOCAL_COMMANDS[text.split(/\s/)[0]];
+		if (local) {
+			local();
+			inputEl.value = '';
+			autoResize();
+			return;
+		}
 	}
 	/* 与 BotOps 一致：/ 开头按 command 发送，否则 message */
 	const data = text.startsWith('/')
@@ -347,18 +353,20 @@ function autoResize() {
 	inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
 }
 inputEl.addEventListener('input', autoResize);
-inputEl.addEventListener('keydown', function(e) {
-	/* Enter 发送，Shift+Enter 换行（移动端依赖发送按钮，不影响） */
+inputEl.addEventListener('keydown', (e) => {
+	/* Enter 发送，Shift+Enter 换行；isComposing 防中文输入法选词误发 */
 	if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
 		e.preventDefault();
 		sendCurrentInput();
 	}
 });
+/* 软键盘弹出动画结束后保持聊天区停留底部 */
+inputEl.addEventListener('focus', () => setTimeout(() => scrollToBottom(true), 300));
 sendBtn.addEventListener('click', sendCurrentInput);
 interruptBtn.addEventListener('click', sendInterrupt);
 
-/* ---------- 连接按钮与任务面板 ---------- */
-connBtn.addEventListener('click', function() {
+/* ---------- 连接按钮与任务面板（抽屉开关） ---------- */
+connBtn.addEventListener('click', () => {
 	if (ws && ws.readyState === WebSocket.OPEN) disconnect(true);
 	else connect();
 });
@@ -371,12 +379,12 @@ function openTaskPanel(open) {
 		taskBadge.style.display = 'none';
 	}
 }
-taskToggle.addEventListener('click', function() { openTaskPanel(!taskPanel.classList.contains('open')); });
-document.getElementById('task-close').addEventListener('click', function() { openTaskPanel(false); });
-backdrop.addEventListener('click', function() { openTaskPanel(false); });
+taskToggle.addEventListener('click', () => openTaskPanel(!taskPanel.classList.contains('open')));
+document.getElementById('task-close').addEventListener('click', () => openTaskPanel(false));
+backdrop.addEventListener('click', () => openTaskPanel(false));
 
 /* ---------- 启动：管理员预检（WS 握手由 gateway 强制 is_admin，此处仅提示） ---------- */
-(async function init() {
+(async () => {
 	try {
 		const res = await fetch('/whoami', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
 		const data = res.ok ? await res.json() : null;
