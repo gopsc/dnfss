@@ -19,7 +19,6 @@ from waitress import serve
 import os
 import sys
 import json
-import base64
 import configparser
 import urllib.request
 import urllib.error
@@ -48,6 +47,7 @@ _dnfs_config = {
     'server': {'host': '', 'port': ''},
     'database': {'host': '', 'port': '', 'timeout': ''},
     'ai_review': {'url': '', 'timeout': ''},
+    'gateway': {'url': '', 'timeout': ''},
 }
 
 
@@ -93,12 +93,15 @@ if os.environ.get('DB_PORT'):
     _dnfs_config['database']['port'] = os.environ['DB_PORT']
 if os.environ.get('REVIEW_URL'):
     _dnfs_config['ai_review']['url'] = os.environ['REVIEW_URL']
+if os.environ.get('GATEWAY_URL'):
+    _dnfs_config['gateway']['url'] = os.environ['GATEWAY_URL']
 
 # 配置完整性校验
 _required = {
     'server': ['host', 'port'],
     'database': ['host', 'port', 'timeout'],
     'ai_review': ['url', 'timeout'],
+    'gateway': ['url', 'timeout'],
 }
 for section, keys in _required.items():
     for key in keys:
@@ -113,11 +116,14 @@ _DBV2_ADDR = _dnfs_config['database']['host']
 _DBV2_PORT = int(_dnfs_config['database']['port'])
 _REVIEW_SERVER_URL = _dnfs_config['ai_review']['url']
 _REVIEW_TIMEOUT = int(_dnfs_config['ai_review']['timeout'])
+_GATEWAY_URL = _dnfs_config['gateway']['url']
+_GATEWAY_TIMEOUT = int(_dnfs_config['gateway']['timeout'])
 _ADDR = _dnfs_config['server']['host']
 _PORT = int(_dnfs_config['server']['port'])
 
 _config_source = f'confs (dnfs.ini @ {_confs_host}:{_confs_port})'
 print(f'[dnfs] 配置来源: {_config_source}')
+print(f'[dnfs] Token 验签: gateway {_GATEWAY_URL}')
 
 # 管理员判定已上移至 gateway：登录时命中 [Admin] users 白名单即在 Token payload
 # 写入 is_admin=true，本服务通过 info.get('is_admin') 读取，不再本地维护名单。
@@ -301,14 +307,46 @@ apply_security_headers(app)
 CORS(app)
 
 
-def decode_token(token:  str):
-    idx = token.find('_')
-    if idx != -1:
-        raw = token[:idx]
-        # FIXME: 验证数字签名
-        decoded = base64.b64decode(raw)
-        jj = decoded.decode('utf-8')
-        return json.loads(jj)
+def decode_token(token: str):
+    """通过 gateway /whoami 接口验证 Token 并返回用户信息。
+
+    gateway /whoami 内部完成 RSA 签名验证和过期检查，返回：
+      - 成功: {"login": true, "user": "...", "is_admin": true/false, ...}
+      - 失败: {"login": false}
+    网络异常（gateway 不可达）按 fail-closed 处理，抛 DnfsExp 拒绝请求。
+    """
+    if not token:
+        return None
+
+    req = urllib.request.Request(
+        _GATEWAY_URL,
+        data=b'{}',
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=_GATEWAY_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, OSError) as e:
+        # gateway 不可达或返回异常：fail-closed，拒绝请求
+        logs.warning('dnfs', f'Token 验签失败（gateway 异常）: {e}', extra={})
+        raise DnfsExp('认证服务暂时不可用', 503)
+    except Exception as e:
+        logs.warning('dnfs', f'Token 验签未知异常: {e}', extra={})
+        raise DnfsExp('认证失败', 401)
+
+    if not data.get('login'):
+        return None
+
+    # gateway 返回 login=true 时 user 字段必定存在
+    return {
+        'user': data.get('user', ''),
+        'is_admin': bool(data.get('is_admin', False)),
+    }
        
 
 @app.route('/add_note', methods=['POST'])
@@ -426,7 +464,7 @@ def get_notes():
 
 # eg: {"id": 1}
 @app.route('/delete_note', methods=['POST'])
-
+@_handle_exp
 def delete_note():
 
     data = request.get_json()
@@ -529,7 +567,7 @@ def delete_note():
 #    "content": "hello"
 #}
 @app.route('/update_note', methods=['POST'])
-
+@_handle_exp
 def update_note():
 
     data = request.get_json()

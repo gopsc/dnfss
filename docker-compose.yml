@@ -83,6 +83,11 @@ services:
       - DB_HOST=db
       - DB_PORT=8005
       - REVIEW_URL=http://ai_review:8007/review
+      - GATEWAY_URL=http://host.docker.internal:8443/whoami
+      - CONFS_HOST=host.docker.internal
+      - CONFS_PORT=8010
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
