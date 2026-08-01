@@ -7267,7 +7267,9 @@ class DeepSeekChat:
             payload["tool_choice"] = "auto"
         
         current_time = datetime.now().strftime("%H:%M:%S")
-        if output_callback:
+        if output_callback and not is_continuation:
+            # 工具调用后的递归继续（is_continuation=True）时不重复发送"思考中"提示，
+            # 因为前端已处于活跃AI状态，重复提示会导致冗余/重复输出
             output_callback("line", f"\n{i18n.get('thinking', current_time)}\n")
             if constants.REASONING_ENABLED:
                 output_callback("reasoning_start", "🤔 思考中...")
