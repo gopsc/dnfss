@@ -7068,7 +7068,9 @@ class DeepSeekChat:
             while not output_queue.empty():
                 try:
                     msg_type, content = output_queue.get_nowait()
-                    if output_callback and msg_type in ("line", "complete"):
+                    if output_callback and msg_type == "line":
+                        # 只转发"line"类型；"complete"是流式结束信号，不作为行输出
+                        # （之前complete也被转发导致工具结果在侧栏显示两次）
                         output_callback("line", str(content) if content is not None else "")
                         has_stream_output = True
                 except queue.Empty:
