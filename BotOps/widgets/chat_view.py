@@ -117,7 +117,12 @@ class ChatView(VerticalScroll):
             self._anchor_bottom()
 
     async def append_ai(self, delta: str):
-        """追加增量片段（服务端 chunk 为增量语义，直接拼接）。"""
+        """追加增量片段（服务端 chunk 为增量语义，累积文本后 update 整个 Markdown）。
+
+        使用 update() 而非 Markdown.append()：Textual 的 Markdown.append() 在
+        chunk 边界切断 Markdown 语法（如列表项、代码块）时可能导致重复解析渲染。
+        累积完整文本后 update() 确保每次都从完整文本重新解析，避免重复。
+        """
         if not delta:
             return
         if self._ai_finalized:
@@ -125,9 +130,9 @@ class ChatView(VerticalScroll):
             return
         # 第一次收到chunk时创建widget（此时思考widget如果存在已经在前面了）
         await self._ensure_ai_widget()
-        self._ai_widget.append(delta)
         self._ai_text += delta
-        # anchor 状态下容器会自动吸底；保险起见刷新后再滚一次
+        # 累积文本后整体update，而非增量append，避免Markdown增量解析导致的重复渲染
+        self._ai_widget.update(self._ai_text)
         self.call_after_refresh(self.scroll_end, animate=False)
 
     async def finish_ai(self, full_text: str = ""):
