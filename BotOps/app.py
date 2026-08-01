@@ -226,6 +226,9 @@ class BotOpsApp(App):
                 f"❌ [{data.get('task_id', '?')}] {data.get('task_title', '?')}: "
                 f"{data.get('error', '未知错误')}")
         elif t == "interrupt_ack":
+            # 服务端确认中断：立即收尾前端状态（更新思考区域为已中断、结束AI回复）
+            await self.chat.abort_reasoning()
+            await self.chat.finish_ai("")
             await self.notify_system(f"🛑 {content}")
         elif t == "error":
             await self.notify_system(f"❌ {content}", level="error")

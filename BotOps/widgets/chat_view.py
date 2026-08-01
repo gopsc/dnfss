@@ -75,6 +75,9 @@ class ChatView(VerticalScroll):
         """追加思考内容增量。"""
         if not delta:
             return
+        if self._ai_finalized:
+            # 已收尾（中断/完成），丢弃残留的思考片段
+            return
         if self._reasoning_widget is None:
             await self.start_reasoning()
         self._reasoning_text += delta
@@ -94,6 +97,17 @@ class ChatView(VerticalScroll):
                 display = "...(前略)\n" + display[-3000:]
             self._reasoning_widget.update(f"💭 思考过程（{len(self._reasoning_text)}字符）\n{display}\n{'─' * 30}")
         # 思考区域保留显示，不删除
+
+    async def abort_reasoning(self):
+        """中断思考区域（用户Ctrl+C），更新提示文字为已中断。"""
+        if self._reasoning_widget is not None:
+            if self._reasoning_text:
+                display = self._reasoning_text
+                if len(display) > 3000:
+                    display = "...(前略)\n" + display[-3000:]
+                self._reasoning_widget.update(f"🛑 思考已中断（{len(self._reasoning_text)}字符）\n{display}")
+            else:
+                self._reasoning_widget.update("🛑 思考已中断")
 
     async def _ensure_ai_widget(self):
         """确保AI widget存在（第一次chunk到来时创建）。"""
