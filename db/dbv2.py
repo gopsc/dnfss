@@ -27,6 +27,7 @@ dbv2 — 基于 pymsg 协议（MsgServer）的数据库服务。
     响应中的日期时间一律序列化为 ISO 8601（T 分隔）。
 """
 
+import configparser
 import json
 import os
 import threading
@@ -47,9 +48,70 @@ import sys as _sys
 _sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from pymsg import RpcServer  # noqa: E402
 
-# ── 数据库配置 ──────────────────────────────────────────────────────────
+# ── 配置加载（三层 fail-safe：内置默认值 → confs → 环境变量覆盖）──────
+# 加载顺序：内置默认值 → confs 统一配置服务（db.ini，优先）；
+# confs 不可用时 fail-safe 使用默认值；环境变量优先级最高（Docker 兼容）。
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///database.db")
+_db_config = {
+    'server': {'host': '0.0.0.0', 'port': '8005', 'workers': '4'},
+    'database': {'url': 'sqlite:///database.db'},
+    'logs': {
+        'retention_days': '30',
+        'max_records': '1000000',
+        'cleanup_interval': '3600',
+    },
+    'confs': {'host': '127.0.0.1', 'port': '8010'},
+}
+
+
+def _merge_ini(text):
+    """把 ini 文本合并进 _db_config（仅覆盖已知的 section/key）。"""
+    ini = configparser.ConfigParser(interpolation=None)
+    ini.read_string(text)
+    for section in _db_config:
+        if ini.has_section(section):
+            for key, value in ini[section].items():
+                if key in _db_config[section]:
+                    _db_config[section][key] = value
+
+
+def _fetch_from_confs():
+    """从 confs 统一配置服务拉取 db.ini 全文，失败返回 None（fail-safe）。"""
+    try:
+        from pymsg import RpcClient
+        host = os.environ.get('CONFS_HOST', _db_config['confs']['host'])
+        port = int(os.environ.get('CONFS_PORT', _db_config['confs']['port']))
+        data = RpcClient(host, port, 'db', timeout=3).call(
+            'get', {'name': 'db.ini'})
+        return data.get('content')
+    except Exception:
+        return None
+
+
+_confs_text = _fetch_from_confs()
+_config_source = 'built-in defaults'
+if _confs_text is not None:
+    _merge_ini(_confs_text)
+    _config_source = 'confs (db.ini)'
+    print(f'[dbv2] 配置来源: confs 统一配置服务 (db.ini)')
+else:
+    print(f'[dbv2] 警告: confs 不可用，使用内置默认值')
+
+# 环境变量覆盖（最高优先级，保持 Docker 兼容）
+if os.environ.get('LISTEN_ADDR'):
+    _db_config['server']['host'] = os.environ['LISTEN_ADDR']
+if os.environ.get('LISTEN_PORT'):
+    _db_config['server']['port'] = os.environ['LISTEN_PORT']
+if os.environ.get('WORKERS'):
+    _db_config['server']['workers'] = os.environ['WORKERS']
+if os.environ.get('DATABASE_URL'):
+    _db_config['database']['url'] = os.environ['DATABASE_URL']
+
+# 解析为最终常量
+DATABASE_URL = _db_config['database']['url']
+DEFAULT_RETENTION_DAYS = int(_db_config['logs']['retention_days'])
+DEFAULT_MAX_RECORDS = int(_db_config['logs']['max_records'])
+DEFAULT_CLEANUP_INTERVAL = int(_db_config['logs']['cleanup_interval'])
 
 # ── SQLite 连接配置（针对 Docker/多线程环境优化）──────────────────────
 
@@ -75,10 +137,6 @@ def _configure_sqlite(dbapi_connection, connection_record):
 
 MAX_MESSAGE_LEN = 8192   # message 上限 8KB
 MAX_EXTRA_LEN = 4096     # extra 上限 4KB
-
-DEFAULT_RETENTION_DAYS = 30
-DEFAULT_MAX_RECORDS = 1_000_000
-DEFAULT_CLEANUP_INTERVAL = 3600  # 秒
 
 #: where/values 中的哨兵值：服务端当前 UTC 时间
 NOW_SENTINEL = "$now"
@@ -456,17 +514,19 @@ class DBServer:
 if __name__ == "__main__":
     import argparse
 
-    default_addr = os.environ.get("LISTEN_ADDR", "0.0.0.0")
-    default_port = int(os.environ.get("LISTEN_PORT", "8005"))
+    default_addr = _db_config['server']['host']
+    default_port = int(_db_config['server']['port'])
+    default_workers = int(_db_config['server']['workers'])
 
     parser = argparse.ArgumentParser(description="dbv2 — pymsg 数据库服务")
     parser.add_argument("--addr", default=default_addr, help="监听地址")
     parser.add_argument("--port", type=int, default=default_port, help="监听端口")
-    parser.add_argument("--workers", type=int, default=4,
+    parser.add_argument("--workers", type=int, default=default_workers,
                         help="回调并发线程数（0=同步串行模式）")
     args = parser.parse_args()
 
     server = DBServer(args.addr, args.port, workers=args.workers)
+    print(f'[dbv2] 配置来源: {_config_source}')
     try:
         server.start()
     except KeyboardInterrupt:

@@ -25,9 +25,59 @@
 ./_run.sh     # venv 中执行 python3 dbv2.py
 ```
 
-服务监听 `tcp://127.0.0.1:8005`。生产环境由 core（Nidus）按 init.txt 统一拉起，守护靠 systemd。
+服务监听 `tcp://0.0.0.0:8005`（默认）。生产环境由 core（Nidus）按 init.txt 统一拉起，守护靠 systemd。
 
 **注意**：`execute` 路由依赖表已存在（通过反射获取结构）。建表见 `create_sqlite3.sql`（Users / Notes；Logs 表由服务启动时自建）。
+
+## 配置管理
+
+db 已接入 [confs](../confs/) 统一配置服务，采用三层 fail-safe 加载模式（与 static/dnfs 一致）：
+
+1. **内置默认值** — 硬编码在 `dbv2.py` 中，保证服务在任何环境都能启动
+2. **confs 统一配置服务**（优先）— 通过 pymsg RpcClient 从 `confs` 拉取 `db.ini`
+3. **环境变量覆盖**（最高优先级）— Docker/部署环境通过环境变量覆盖，保持向后兼容
+
+### confs 配置文件（db.ini）
+
+配置文件托管于 [confs/configs/db.ini](../confs/configs/db.ini)：
+
+```ini
+[server]
+host = 0.0.0.0
+port = 8005
+workers = 4
+
+[database]
+url = sqlite:///database.db
+
+[logs]
+retention_days = 30
+max_records = 1000000
+cleanup_interval = 3600
+
+[confs]
+host = 127.0.0.1
+port = 8010
+```
+
+### 环境变量（最高优先级）
+
+| 环境变量 | 说明 | 对应 confs 配置项 |
+|---------|------|------------------|
+| `LISTEN_ADDR` | 监听地址 | `[server] host` |
+| `LISTEN_PORT` | 监听端口 | `[server] port` |
+| `WORKERS` | 回调并发线程数 | `[server] workers` |
+| `DATABASE_URL` | 数据库连接 URL | `[database] url` |
+| `CONFS_HOST` | confs 服务地址 | `[confs] host` |
+| `CONFS_PORT` | confs 服务端口 | `[confs] port` |
+
+### 启动顺序注意
+
+根据 micro_servers 的启动顺序：**db → confs → ai_review/...**，db 先于 confs 启动。因此：
+- db 启动时若 confs 尚未就绪，`_fetch_from_confs()` 连接失败会静默 fail-safe，使用内置默认值 + 环境变量正常启动
+- 启动时控制台会打印配置来源：`配置来源: confs 统一配置服务 (db.ini)` 或 `警告: confs 不可用，使用内置默认值`，最后 `start()` 前会再次打印最终来源
+- 独立运维工具 `db_tools.py`（backup/export/import/vacuum 等）仍直接读 `DATABASE_URL` 环境变量，不依赖 confs 服务就绪
+- Docker 环境通过 `docker-entrypoint.sh` 传入环境变量（见 [Dockerfile](Dockerfile)），保持与之前完全兼容，无需额外配置
 
 ## 协议与 API
 
@@ -232,10 +282,10 @@ python3 _view_db.sqlite3.py -s "SELECT service, COUNT(*) FROM Logs GROUP BY serv
 
 ## 切换数据库
 
-只需修改环境变量 `DATABASE_URL`，并安装对应驱动：
+推荐方式：修改 confs 的 [db.ini](../confs/configs/db.ini) 中 `[database] url`，然后通过 confs `reload` 路由重载（或重启 db）。也可通过环境变量 `DATABASE_URL` 覆盖（Docker 部署时常用）：
 
-- SQLite（默认）：`sqlite:///database.db`
-- PostgreSQL：`postgresql://user:pass@localhost/dbname`（需 `pip install psycopg2`）
+- SQLite（默认）：`sqlite:///database.db`（相对路径）或 `sqlite:////app/data/database.db`（绝对路径，Docker 中使用）
+- PostgreSQL：`postgresql://user:pass@localhost/dbname`（需 `pip install psycopg2-binary`）
 - MySQL：`mysql+pymysql://user:pass@localhost/dbname`（需 `pip install pymysql`）
 
 SQLAlchemy 会自动生成适配各数据库的 SQL 方言，无需修改接口调用。
