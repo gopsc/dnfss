@@ -125,12 +125,12 @@ confs 自身的连接地址不通过 confs 获取（避免循环依赖），通�
 | `CONFS_HOST` | confs 服务主机名（引导配置，Docker 环境使用服务名） |
 | `CONFS_PORT` | confs 服务端口（引导配置） |
 
-### 启动顺序要求
+### 启动顺序
 
-**confs 必须先于 static 启动**。若 confs 不可用：
-- static 打印致命错误到 stderr（包含 confs 地址和具体错误原因），以 exit code 1 终止
-- 不会静默使用默认值或回退本地配置文件启动
-- 配置完整性校验：若 static.ini 中缺少必需的 section/key（server.host/port、directory.root、cors.allowed_origins）且无对应环境变量覆盖，同样报错退出
+static 通过 pymsg `retry_on_refused=True` 自动阻塞等待 confs 就绪，**拉取配置阶段不严格要求启动顺序**：
+- confs 先启动 → static 立即拉取配置
+- static 先启动 → pymsg 自动重试（每秒一次，每 5 秒打印等待提示），confs 启动后自动连接成功
+- 配置完整性校验：若 static.ini 中缺少必需的 section/key（server.host/port、directory.root、cors.allowed_origins）且无对应环境变量覆盖，仍然报错退出
 - ssl 段为可选项，未配置时默认 `enabled=false`、cert/key 使用默认文件名
 
 ### 历史遗留：本地 config.ini 已删除

@@ -110,6 +110,20 @@ resp = client.call('{"action": "select", "table": "Users"}', timeout=10.0)
 
 目标不可达时抛出 `ConnectionRefusedError`，超时无回复时抛出 `TimeoutError`。
 
+**启动等待模式（retry_on_refused）**：
+
+```python
+# 服务启动时阻塞等待下游服务就绪，连接被拒绝时自动重试
+resp = client.call('{"_route": "get", "name": "db.ini"}',
+                   timeout=5.0,
+                   retry_on_refused=True,   # 连接拒绝时阻塞重试
+                   retry_interval=1.0)      # 重试间隔 1 秒（默认）
+```
+
+`retry_on_refused=True` 时，`ConnectionRefusedError` 不会抛出，而是按 `retry_interval`（默认 1.0 秒）间隔不断重试，直到连接成功。重试期间每 5 秒向 stderr 打印一次等待提示（如 `[pymsg] 等待服务 127.0.0.1:8010 就绪... (已重试 N 次)`），避免日志刷屏。仅对 `ConnectionRefusedError` 重试；`TimeoutError`、`ConnectionError`、业务错误等仍立即抛出。
+
+适用场景：微服务启动顺序不确定时，服务进程可在不依赖外部进程管理器的情况下自动等待下游依赖就绪，无需手动 sys.exit + 外部重启。`log_client` 等 fail-safe 场景应保持默认 `retry_on_refused=False`，避免后台线程阻塞。
+
 **3. 长连接监听（回调模式）**
 
 ```python
@@ -226,7 +240,23 @@ except RpcError as e:
     ...  # 服务端业务错误（success=false）
 ```
 
-`call(route, payload=None, *, timeout=None)`：自动注入 `_route`、JSON 编解码、检查 `success`，返回 `data` 字段；业务错误抛 `RpcError`，网络故障仍抛 `ConnectionRefusedError` / `TimeoutError`（来自 `MsgClient`）。
+| 构造参数 | 含义 |
+|----------|------|
+| `addr` / `port` | 服务端地址与端口 |
+| `name` | 客户端标识（透传 `MsgClient`） |
+| `timeout` | 默认调用超时秒数（默认 `10.0`） |
+| `retry_on_refused` | 连接被拒绝时是否阻塞重试（关键字参数，默认 `False`） |
+| `retry_interval` | 重试间隔秒数（关键字参数，默认 `1.0`） |
+
+`call(route, payload=None, *, timeout=None, retry_on_refused=None, retry_interval=None)`：自动注入 `_route`、JSON 编解码、检查 `success`，返回 `data` 字段；业务错误抛 `RpcError`，网络故障仍抛 `ConnectionRefusedError` / `TimeoutError`（来自 `MsgClient`）。`retry_on_refused` 和 `retry_interval` 参数可在单次调用时覆盖构造时的设置。
+
+**启动等待示例**（解决微服务启动顺序问题）：
+
+```python
+# confs 客户端：启动时阻塞等待 confs 就绪，不依赖启动顺序
+rpc = RpcClient("127.0.0.1", 8010, "db", timeout=5, retry_on_refused=True)
+data = rpc.call("get", {"name": "db.ini"})  # confs 未启动时自动阻塞等待
+```
 
 ## 实际用例
 

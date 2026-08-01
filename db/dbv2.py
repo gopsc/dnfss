@@ -82,26 +82,22 @@ def _merge_ini(text):
 
 
 def _fetch_from_confs():
-    """从 confs 统一配置服务拉取 db.ini 全文，失败直接终止进程。"""
+    """从 confs 统一配置服务拉取 db.ini 全文。
+
+    使用 retry_on_refused=True：confs 未就绪时 pymsg 自动阻塞重试（每秒一次，
+    每 5 秒打印一次等待提示），直到 confs 启动后自动连接成功。
+    RpcError（如配置文件不存在）仍直接报错退出——这是配置错误而非启动时序问题。
+    """
     from pymsg import RpcClient, RpcError  # noqa: E402
+    client = RpcClient(_confs_host, _confs_port, 'db', timeout=5,
+                       retry_on_refused=True)
     try:
-        client = RpcClient(_confs_host, _confs_port, 'db', timeout=5)
         data = client.call('get', {'name': 'db.ini'})
-        return data.get('content')
-    except (ConnectionRefusedError, ConnectionError, OSError) as e:
-        print(f'[dbv2] 致命错误: 无法连接 confs 服务 ({_confs_host}:{_confs_port}): {e}',
-              file=_sys.stderr)
-        print(f'[dbv2] 请确认 confs 服务已启动并监听 {_confs_host}:{_confs_port}',
-              file=_sys.stderr)
-        _sys.exit(1)
     except RpcError as e:
         print(f'[dbv2] 致命错误: 从 confs 获取 db.ini 失败: {e}',
               file=_sys.stderr)
         _sys.exit(1)
-    except Exception as e:
-        print(f'[dbv2] 致命错误: confs 配置拉取异常: {e}',
-              file=_sys.stderr)
-        _sys.exit(1)
+    return data.get('content')
 
 
 _confs_text = _fetch_from_confs()

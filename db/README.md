@@ -72,13 +72,13 @@ confs 自身的连接地址不通过 confs 获取（避免循环依赖），通�
 | `CONFS_HOST` | confs 服务地址（引导配置） | — |
 | `CONFS_PORT` | confs 服务端口（引导配置） | — |
 
-### 启动顺序要求
+### 启动顺序
 
-**confs 必须先于 db 启动**（启动顺序调整为：confs → db → ai_review/...）。若 confs 不可用：
-- db 打印致命错误到 stderr（包含 confs 地址和具体错误原因），以 exit code 1 终止
-- 不会静默使用默认值启动
-- 配置完整性校验：若 db.ini 中缺少必需的 section/key 且无对应环境变量覆盖，同样报错退出
-- 启动成功时控制台打印：`配置来源: confs 统一配置服务 (db.ini @ host:port)`
+db 通过 pymsg `retry_on_refused=True` 自动阻塞等待 confs 就绪，**不严格要求启动顺序**：
+- confs 先启动 → db 立即拉取配置，正常启动
+- db 先启动 → pymsg 自动重试（每秒一次，每 5 秒打印等待提示），confs 启动后自动连接成功
+- 配置完整性校验：若 db.ini 中缺少必需的 section/key 且无对应环境变量覆盖，仍然报错退出
+- 启动成功时控制台打印：`配置来源: confs (db.ini @ host:port)`
 
 > 独立运维工具 `db_tools.py`（backup/export/import/vacuum 等）仍直接读 `DATABASE_URL` 环境变量，不依赖 confs 服务就绪。
 > Docker 环境通过 `docker-entrypoint.sh` 传入环境变量（见 [Dockerfile](Dockerfile)），需确保 `CONFS_HOST`/`CONFS_PORT` 指向 confs 服务地址。

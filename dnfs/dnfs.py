@@ -63,25 +63,20 @@ def _merge_ini(text):
 
 
 def _fetch_from_confs():
-    """从 confs 统一配置服务拉取 dnfs.ini 全文，失败直接终止进程。"""
+    """从 confs 统一配置服务拉取 dnfs.ini 全文。
+
+    使用 retry_on_refused=True：confs 未就绪时 pymsg 自动阻塞重试（每秒一次，
+    每 5 秒打印一次等待提示），直到 confs 启动后自动连接成功。
+    RpcError（如配置文件不存在）仍直接报错退出——这是配置错误而非启动时序问题。
+    """
     try:
-        data = RpcClient(_confs_host, _confs_port, 'dnfs', timeout=5).call(
-            'get', {'name': 'dnfs.ini'})
-        return data.get('content')
-    except (ConnectionRefusedError, ConnectionError, OSError) as e:
-        print(f'[dnfs] 致命错误: 无法连接 confs 服务 ({_confs_host}:{_confs_port}): {e}',
-              file=sys.stderr)
-        print(f'[dnfs] 请确认 confs 服务已启动并监听 {_confs_host}:{_confs_port}',
-              file=sys.stderr)
-        sys.exit(1)
+        data = RpcClient(_confs_host, _confs_port, 'dnfs', timeout=5,
+                         retry_on_refused=True).call('get', {'name': 'dnfs.ini'})
     except RpcError as e:
         print(f'[dnfs] 致命错误: 从 confs 获取 dnfs.ini 失败: {e}',
               file=sys.stderr)
         sys.exit(1)
-    except Exception as e:
-        print(f'[dnfs] 致命错误: confs 配置拉取异常: {e}',
-              file=sys.stderr)
-        sys.exit(1)
+    return data.get('content')
 
 
 _confs_text = _fetch_from_confs()

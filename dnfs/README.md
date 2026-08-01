@@ -254,13 +254,15 @@ confs 自身的连接地址不通过 confs 获取（避免循环依赖），通�
 | `CONFS_HOST` | `confs` | confs 服务主机名（引导配置） |
 | `CONFS_PORT` | `8010` | confs 服务端口（引导配置） |
 
-### 启动顺序要求
+### 启动顺序
 
-**confs 必须先于 dnfs 启动**（启动顺序：confs → db → dnfs → ai_review/...）。若 confs 不可用：
-- dnfs 打印致命错误到 stderr（包含 confs 地址和具体错误原因），以 exit code 1 终止
-- 不会静默使用默认值启动
-- 配置完整性校验：若 dnfs.ini 中缺少必需的 section/key 且无对应环境变量覆盖，同样报错退出
+dnfs 通过 pymsg `retry_on_refused=True` 自动阻塞等待 confs 就绪，**拉取配置阶段不严格要求启动顺序**：
+- confs 先启动 → dnfs 立即拉取配置
+- dnfs 先启动 → pymsg 自动重试（每秒一次，每 5 秒打印等待提示），confs 启动后自动连接成功
+- 配置完整性校验：若 dnfs.ini 中缺少必需的 section/key 且无对应环境变量覆盖，仍然报错退出
 - 启动成功时控制台打印：`配置来源: confs (dnfs.ini @ host:port)`
+
+> 注意：dnfs 对 db/ai_review 的 RPC 调用是运行时按需连接（首次请求时才建立 TCP），db/ai_review 未就绪时相关 API 返回 502 但进程不退出；待依赖服务启动后自动恢复。
 
 ## 前端
 

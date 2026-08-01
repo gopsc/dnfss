@@ -227,7 +227,7 @@ except RpcError as e:
 
 ## 集成关系
 
-- 由 `core`（`PMC`）通过 `init.txt` 中的 `bash /opt/micro_servers/confs/_run.sh` 拉起并守护（confs 最先启动，所有依赖 confs 的服务必须在 confs 就绪后启动；confs 日志推送 db 为异步 fail-safe，db 不可用时静默丢弃，不阻塞 confs 启动）
+- 由 `core`（`PMC`）通过 `init.txt` 中的 `bash /opt/micro_servers/confs/_run.sh` 拉起并守护（confs 最先启动即可；各业务服务通过 pymsg `retry_on_refused=True` 在拉取配置时自动阻塞等待 confs 就绪，不严格要求启动顺序；confs 日志推送 db 为异步 fail-safe，db 不可用时静默丢弃，不阻塞 confs 启动）
 - 各内部服务通过 pymsg `RpcClient` 调 `get` 路由按需获取配置，替代本地散落的 ini/json/yaml
 - 自身日志通过 `log_client.py` 异步推送至 `db:8005` 的 Logs 表（与其他服务一致）
 
@@ -235,33 +235,32 @@ except RpcError as e:
 
 | 服务 | 配置文件 | 接入方式 |
 |------|---------|---------|
-| [static](../static/) | [static.ini](configs/static.ini) | confs 强依赖（confs 不可用时 static 直接退出）→ 环境变量覆盖（最高优先级，Docker 兼容） |
-| [dnfs](../dnfs/) | [dnfs.ini](configs/dnfs.ini) | confs 强依赖（confs 不可用时 dnfs 直接退出）→ 环境变量覆盖（最高优先级，Docker 兼容） |
-| [db](../db/) | [db.ini](configs/db.ini) | confs 强依赖（confs 不可用时 db 直接退出）→ 环境变量覆盖（最高优先级，Docker 兼容） |
+| [static](../static/) | [static.ini](configs/static.ini) | confs 强依赖（pymsg 自动阻塞等待 confs 就绪）→ 环境变量覆盖（最高优先级，Docker 兼容） |
+| [dnfs](../dnfs/) | [dnfs.ini](configs/dnfs.ini) | confs 强依赖（pymsg 自动阻塞等待 confs 就绪）→ 环境变量覆盖（最高优先级，Docker 兼容） |
+| [db](../db/) | [db.ini](configs/db.ini) | confs 强依赖（pymsg 自动阻塞等待 confs 就绪）→ 环境变量覆盖（最高优先级，Docker 兼容） |
 
 static 的接入实现见 [static/fsys.py](../static/fsys.py)：
 - 两层加载顺序：confs（static.ini，强依赖）→ 环境变量覆盖（优先级最高）
-- confs 连接失败或 static.ini 缺失必需配置项时，static 直接 `sys.exit(1)` 终止，不使用默认值或回退本地文件
+- pymsg `retry_on_refused=True` 自动阻塞等待 confs 就绪（每秒重试，每 5 秒打印等待提示），不会因启动顺序导致进程退出
+- static.ini 缺失必需配置项时仍然报错退出（配置错误，非启动时序问题）
 - 配置项涵盖：`[server]` host/port、`[directory]` root、`[ssl]` enabled/cert_file/key_file（ssl 有默认值）、`[cors]` allowed_origins
 - confs 连接地址为引导配置：环境变量 `CONFS_HOST`/`CONFS_PORT` 优先，默认 `127.0.0.1:8010`
 - 支持的环境变量：`LISTEN_ADDR`/`LISTEN_PORT`/`STATIC_ROOT`/`CONFS_HOST`/`CONFS_PORT`
-- 启动顺序：confs 必须先于 static 启动；已删除 `--config` 命令行参数和本地 `config.ini` 回退逻辑
+- 已删除 `--config` 命令行参数和本地 `config.ini` 回退逻辑
 
 dnfs 的接入实现见 [dnfs/dnfs.py](../dnfs/dnfs.py)：
 - 两层加载顺序：confs（dnfs.ini，强依赖）→ 环境变量覆盖（优先级最高）
-- confs 连接失败或 dnfs.ini 缺失必需配置项时，dnfs 直接 `sys.exit(1)` 终止，不使用默认值
+- pymsg `retry_on_refused=True` 自动阻塞等待 confs 就绪，不严格要求启动顺序
 - 配置项涵盖：`[server]` host/port、`[database]` host/port/timeout、`[ai_review]` url/timeout
 - confs 连接地址为引导配置：环境变量 `CONFS_HOST`/`CONFS_PORT` 优先，默认 `127.0.0.1:8010`
 - 支持的环境变量：`LISTEN_ADDR`/`LISTEN_PORT`/`DB_HOST`/`DB_PORT`/`REVIEW_URL`/`CONFS_HOST`/`CONFS_PORT`
-- 启动顺序：confs → db → dnfs → ai_review/...（dnfs 同时依赖 confs 和 db）
 
 db 的接入实现见 [db/dbv2.py](../db/dbv2.py)：
 - 两层加载顺序：confs（db.ini，强依赖）→ 环境变量覆盖（优先级最高）
-- confs 连接失败或 db.ini 缺失必需配置项时，db 直接 `sys.exit(1)` 终止，不使用默认值
+- pymsg `retry_on_refused=True` 自动阻塞等待 confs 就绪，不严格要求启动顺序
 - 配置项涵盖：`[server]` host/port/workers、`[database]` url、`[logs]` retention_days/max_records/cleanup_interval
 - confs 连接地址为引导配置：环境变量 `CONFS_HOST`/`CONFS_PORT` 优先，默认 `127.0.0.1:8010`
 - 支持的环境变量：`LISTEN_ADDR`/`LISTEN_PORT`/`WORKERS`/`DATABASE_URL`/`CONFS_HOST`/`CONFS_PORT`
-- 启动顺序：confs 必须先于 db 启动（confs → db → ai_review/...）
 - 独立运维工具 `db_tools.py`（backup/export/import 等）仍直接读 `DATABASE_URL` 环境变量，不依赖 confs，避免运维脚本依赖服务就绪
 
 其他服务（gateway / waf / ai_review / smtp）尚未接入，仍读各自本地配置。

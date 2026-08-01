@@ -22,6 +22,7 @@ import select
 import socket as _socket
 import struct
 import threading
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
@@ -200,34 +201,56 @@ class MsgClient:
             )
 
     # ---- 请求-应答（短连接）------------------------------------------------
-    def call(self, msg: str, *, timeout: "float | None" = None) -> str:
+    def call(self, msg: str, *, timeout: "float | None" = None,
+             retry_on_refused: bool = False,
+             retry_interval: float = 1.0,
+             _log_every: float = 5.0) -> str:
         """发送一条消息并阻塞等待单条回复（短连接：connect → send → recv → close）。
 
         适合请求-应答模式，如 RPC 调用。不会给消息添加 name 前缀。
 
         Args:
-            msg:     要发送的原始字符串。
-            timeout: 超时秒数，默认 10 秒。
+            msg:             要发送的原始字符串。
+            timeout:         超时秒数，默认 10 秒。
+            retry_on_refused: 目标服务未启动（ConnectionRefusedError）时是否阻塞重试，
+                              直到连接成功。适用于启动顺序不确定的服务发现场景。
+                              默认 False（连接拒绝立即抛异常）。
+            retry_interval:  重试间隔秒数，默认 1.0。
+            _log_every:      重试期间打印等待提示的间隔（秒），默认每 5 秒打印一次，避免刷屏。
 
         Returns:
             str: 服务器返回的字符串。
 
         Raises:
-            ConnectionRefusedError: 目标服务不可达。
+            ConnectionRefusedError: 目标服务不可达且 ``retry_on_refused=False``。
             TimeoutError:           等待响应超时。
             ConnectionError:        连接在收全数据前断开。
         """
         _tout = timeout if timeout is not None else 10.0
-        try:
-            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
-                s.settimeout(_tout)
-                s.connect((self.addr, self.port))
-                send(s, msg)
-                return recv(s, timeout=_tout)
-        except ConnectionRefusedError:
-            raise ConnectionRefusedError(
-                f"Could not connect to {self.addr}:{self.port}"
-            )
+        _last_log = 0.0
+        _attempt = 0
+        while True:
+            try:
+                with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
+                    s.settimeout(_tout)
+                    s.connect((self.addr, self.port))
+                    send(s, msg)
+                    return recv(s, timeout=_tout)
+            except ConnectionRefusedError:
+                if not retry_on_refused:
+                    raise ConnectionRefusedError(
+                        f"Could not connect to {self.addr}:{self.port}"
+                    )
+                _attempt += 1
+                now = time.monotonic()
+                if now - _last_log >= _log_every or _attempt == 1:
+                    print(
+                        f"[pymsg] 等待服务 {self.addr}:{self.port} 就绪... "
+                        f"(已重试 {_attempt} 次)",
+                        file=__import__('sys').stderr,
+                    )
+                    _last_log = now
+                time.sleep(retry_interval)
 
     # ---- 持续监听（阻塞当前线程，回调模式）-------------------------------
     def listen(self, on_message: "callable") -> None:

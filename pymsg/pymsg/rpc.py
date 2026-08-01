@@ -36,21 +36,33 @@ class RpcClient:
 
         rpc = RpcClient("127.0.0.1", 8005, "dnfs")
         data = rpc.call("execute", {"action": "select", "table": "Users"})
+
+        # 启动时阻塞等待服务就绪（连接被拒绝时自动重试）
+        rpc = RpcClient("127.0.0.1", 8010, "static", retry_on_refused=True)
     """
 
     def __init__(self, addr: str, port: int, name: str = "rpc",
-                 timeout: float = 10.0) -> None:
+                 timeout: float = 10.0,
+                 *, retry_on_refused: bool = False,
+                 retry_interval: float = 1.0) -> None:
         self._client = MsgClient(addr, port, name)
         self._timeout = timeout
+        self._retry_on_refused = retry_on_refused
+        self._retry_interval = retry_interval
 
     def call(self, route: str, payload: "dict | None" = None, *,
-             timeout: "float | None" = None):
+             timeout: "float | None" = None,
+             retry_on_refused: "bool | None" = None,
+             retry_interval: "float | None" = None):
         """调用指定路由，返回响应中的 ``data`` 字段。
 
         Args:
             route:   路由名（注入为 ``_route`` 字段）。
             payload: 业务字段 dict（``_route`` 键会被覆盖）。
             timeout: 本次调用的超时秒数，缺省用构造时的值。
+            retry_on_refused: 本次调用是否在连接被拒绝时阻塞重试，
+                              None 表示使用构造时的值（默认 False）。
+            retry_interval:  本次调用的重试间隔，None 表示使用构造时的值。
 
         Returns:
             服务端返回的 ``data``（可能为 None）。
@@ -58,13 +70,17 @@ class RpcClient:
         Raises:
             RpcError:              服务端返回 success=false，或响应非法。
             pymsg.TimeoutError:    等待响应超时。
-            ConnectionRefusedError: 目标服务不可达。
+            ConnectionRefusedError: 目标服务不可达且未开启重试。
         """
         req = dict(payload or {})
         req["_route"] = route
+        _retry = self._retry_on_refused if retry_on_refused is None else retry_on_refused
+        _interval = self._retry_interval if retry_interval is None else retry_interval
         resp = self._client.call(
             json.dumps(req, ensure_ascii=False),
             timeout=self._timeout if timeout is None else timeout,
+            retry_on_refused=_retry,
+            retry_interval=_interval,
         )
         try:
             obj = json.loads(resp)
