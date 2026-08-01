@@ -40,12 +40,13 @@ gateway 通过项目内的 [pymsg](../pymsg/)（长度前缀帧 TCP 协议）与
 
 **下游服务调用方式**：
 
-| 下游 | 端口 | `_route` | 调用位置 | 重试策略 |
-|------|------|----------|---------|---------|
+| 下游 | 默认端口 | `_route` | 调用位置 | 重试策略 |
+|------|---------|----------|---------|---------|
 | db | 8005 | `execute` | `DbC::call_msg()`（所有数据库 CRUD） | `retry_on_refused=true`，db 未就绪时阻塞等待 |
 | db | 8005 | `execute` | `LogC::_send()`（日志异步批量推送） | `retry_on_refused=false`，fail-safe 静默丢弃 |
 | captcha | 8009 | `verify` / `image` | `verify_captcha_remote()`、`/captcha/image` 代理 | 默认不重试，连接失败 fail-closed 返回 502/false |
 | smtp | 8008 | `verify_email` / `send_email` | `verify_email_code_remote()`、`/register/send_code` | 默认不重试，连接失败 fail-closed 返回 502/false |
+| confs | 8010 | `get` | 启动时拉取 `gateway.ini` 配置 | `retry_on_refused=true`，confs 未就绪时阻塞等待 |
 
 **retry_on_refused 机制**（`MsgClient::call()`，对应 Python 端 `MsgClient.call(retry_on_refused=True)`）：
 - 仅对 `ECONNREFUSED`（目标端口无服务监听）重试，超时、连接重置、业务错误立即抛出
@@ -186,53 +187,25 @@ gateway 不直连数据库（早期直连本地 sqlite 的代码已注释保留�
 
 ## 配置
 
-[example.ini](example.ini)：
+gateway 配置采用**两层加载模式**，与其他 Python 服务（dnfs/db/static）保持一致：
 
-```ini
-[Server]
-# tls = off  HTTP 模式（配合 waf 模块）
-# tls = on   HTTPS 模式（独立部署，证书为 full_chain.crt / server.key）
-address = 127.0.0.1
-port = 8443
-tls = off
+1. **confs 统一配置服务**（默认模式）：启动时从 confs（`127.0.0.1:8010`，可通过 `CONFS_HOST`/`CONFS_PORT` 环境变量覆盖）通过 pymsg `get` 路由拉取 `gateway.ini`，`retry_on_refused=true` 阻塞等待 confs 就绪。
+2. **本地文件覆盖**（开发/调试模式）：启动时传 `-i <path>` 则跳过 confs，直接读取本地 ini 文件。
+3. **环境变量覆盖**（最高优先级，Docker 兼容）：`LISTEN_ADDR`/`LISTEN_PORT`、`DB_HOST`/`DB_PORT`、`CAPTCHA_HOST`/`CAPTCHA_PORT`、`SMTP_HOST`/`SMTP_PORT` 覆盖 ini 中对应值。
+4. **完整性校验**：必需配置项缺失则启动失败。
 
-[Proxy]
-default = http://127.0.0.1:9200
-closed  = http://127.0.0.1:8005;http://127.0.0.1:8007;
-opened  = http://127.0.0.1:9200;http://127.0.0.1:8006;
+配置文件存放于 [confs/configs/gateway.ini](../confs/configs/gateway.ini)（[example.ini](example.ini) 为本地开发参考副本，内容一致，新增 `[Downstream]` 段）。
 
-[Token]
-# Token 有效期（秒），默认 3600 = 1 小时
-keep_time = 3600
-
-[Admin]
-# 管理员白名单（分号分隔邮箱），登录命中时 Token payload 写入 is_admin=true
-# WebSocket 代理仅允许管理员访问，其他需管理员权限的下游同样凭此字段判断
-users = admin@example.com
-
-[CORS]
-# 允许跨域的 Origin 白名单（分号分隔）
-# 仅命中的 Origin 才会回填 Access-Control-Allow-Origin；缺省为空（不回填）
-allowed_origins = https://qsont.me;https://www.qsont.me;http://127.0.0.1:8443;http://localhost:8443
-
-[Database]
-path = sqlite3.db
-
-[WsProxy]
-# WebSocket 反向代理路由（仅管理员）
-# 格式：/path=ws://host:port/target;/path2=wss://host2/target2
-# 支持 ws:// 和 wss:// 后端，握手阶段校验管理员 Token
-# routes = /ws/aibox=ws://127.0.0.1:8765;/ws/log=wss://example.com/log
-routes =
-```
-
-- `Proxy.default`：未带 `Target-Url` header 时的默认转发地址（不需 Token，主要服务前端静态资源）。
+配置项说明：
+- `Server.address`/`port`/`tls`：监听地址、端口、TLS 开关；`address`/`port` 可被 `LISTEN_ADDR`/`LISTEN_PORT` 环境变量覆盖。
+- `Proxy.default`：未带 `Target-Url` header 时的默认转发地址（不需 Token）。
 - `Proxy.opened`：允许外部带 Token 访问的内部服务白名单（分号分隔）。
-- `Proxy.closed`：仅记录用途，实际靠"不在 opened 中即拒绝"实现隔离。
-- `Token.keep_time`：登录签发 Token 的有效期（秒），缺省 3600。
-- `Admin.users`：管理员白名单（分号分隔邮箱），登录时命中即在 Token 中写入 `is_admin=true`。
-- `CORS.allowed_origins`：OPTIONS 预检允许跨域的 Origin 白名单（分号分隔），缺省为空（不回填 ACAO）。
-- `WsProxy.routes`：WebSocket 代理路由映射，格式 `/path=ws://host:port/target`，多个用分号分隔；留空则不开启 WS 代理。
+- `Proxy.closed`：仅文档记录用途，实际靠"不在 opened 中即拒绝"实现隔离。
+- `Token.*`：Token 有效期（`keep_time`）、刷新宽限期倍数（`refresh_grace_multiplier`）、最大刷新次数（`max_refresh`）。
+- `Admin.users`：管理员白名单（分号分隔邮箱），登录命中时 Token payload 写入 `is_admin=true`。
+- `CORS.allowed_origins`：允许跨域的 Origin 白名单（分号分隔）。
+- `WsProxy.routes`：WebSocket 代理路由，格式 `/path=ws://host:port/target`，分号分隔。
+- `Downstream.*`：下游 pymsg 服务地址（db/captcha/smtp），可被 `DB_HOST`/`DB_PORT`、`CAPTCHA_HOST`/`CAPTCHA_PORT`、`SMTP_HOST`/`SMTP_PORT` 环境变量覆盖。
 
 ## 部署模式
 
@@ -275,42 +248,43 @@ tls = on
 - 项目内库：`libus_http`、`libus_crypt`（由 [libhttp](../libhttp/)、[libcrypt](../libcrypt/) 编译安装）
 
 ```bash
-bash _set.sh   # make clear && make
-bash _run.sh   # ./build/gateway.out -i example.ini
+bash _set.sh   # make clean && make
+bash _run.sh   # 默认从 confs 拉取配置；开发模式可用 _run.sh -i example.ini
 ```
 
-`gateway.out` 需以 `-i <ini>` 传配置文件路径。其他参数：`-h/--help`、`-v/--version`。
+默认无需传参（从 confs 拉取配置）；`-i <ini>` 为本地文件模式（开发/调试用）。其他参数：`-h/--help`、`-v/--version`。
 
 ## 目录结构
 
 ```
 gateway/
 ├── src/
-│   └── main.cpp          # 全部实现：PBKDF2 / PasswordValidator / RateLimiter / 路由 / handler
+│   └── main.cpp          # 全部实现：配置加载（confs/本地文件/环境变量）、PBKDF2、RateLimiter、路由/handler
 ├── inc/
-│   ├── Msg.hpp           # pymsg C++ 实现：长度前缀帧协议、MsgClient（含 retry_on_refused 重试）、MsgException 族
-│   ├── DbC.hpp           # db 服务客户端：通过 pymsg 调 dbv2 execute 路由（retry_on_refused=true）
-│   ├── LogC.hpp          # 统一日志客户端：异步批量队列 + pymsg INSERT（fail-safe，不重试）
-│   ├── Conf.hpp          # ConfIni：基于 boost::property_tree 的 ini 解析
+│   ├── Msg.hpp           # pymsg C++ 实现：长度前缀帧协议、MsgClient（含 retry_on_refused）、MsgException 族
+│   ├── DbC.hpp           # db 服务客户端：通过 pymsg 调 dbv2（地址可配置，retry_on_refused=true）
+│   ├── LogC.hpp          # 统一日志客户端：异步批量队列 + pymsg INSERT（fail-safe）
+│   ├── Conf.hpp          # ConfIni：boost::property_tree ini 解析，支持 fromString/env/env_int
 │   ├── ExpBase.hpp       # 异常基类（带 source_location）
 │   └── LocalTime.hpp     # 本地时间工具（getCurrent / parse）
+├── example.ini           # 本地开发配置参考副本（与 confs/configs/gateway.ini 一致）
 ├── Makefile
-├── example.ini
 ├── _set.sh / _run.sh
 └── README.md
 ```
 
 ## 版本
 
-`0.6.1`（见 [src/main.cpp:31](src/main.cpp#L31)）。启动时打印：
+`0.7.0`（见 [src/main.cpp:31](src/main.cpp#L31)）。启动时打印：
 
 ```
-Gateway 0.6.1 started
+Gateway 0.7.0 started
 ```
 
 近期变更：
 
-- `0.6.1`：pymsg 客户端增加 `retry_on_refused` 重试机制，与 Python 端 `pymsg.MsgClient.call(retry_on_refused=True)` 行为对齐——新增 `MsgConnectionRefusedException` 异常类（区分 ECONNREFUSED 与其他连接错误）；`MsgClient::call()` 新增 `retry_on_refused`/`retry_interval` 参数，仅对连接拒绝重试，固定间隔 1s，节制日志（首次立即打印 + 每 5s 一次），其他异常（超时/连接重置/业务错误）立即抛出；`DbC::call_msg()` 启用 `retry_on_refused=true`（db 是硬依赖，启动顺序不确定时自动阻塞等待）；`LogC::_send()` 显式传 `retry_on_refused=false`（日志是 fail-safe，db 不可用时静默丢弃，绝不阻塞后台线程）；captcha/smtp 辅助服务保持默认不重试（fail-fast，请求线程中永久阻塞会耗尽线程池）。
+- `0.7.0`：配置体系迁移到 confs 统一配置服务——新增 `confs/configs/gateway.ini`（原 example.ini 内容 + `[Downstream]` 段配置下游服务地址）；启动时默认从 confs（`CONFS_HOST`/`CONFS_PORT`，默认 `127.0.0.1:8010`）通过 pymsg `get` 路由拉取配置（`retry_on_refused=true`），`-i <path>` 保留为本地文件开发模式；`ConfIni` 增加 `fromString()`（从 ini 文本解析）、`env()`/`env_int()`（环境变量读取）、公开默认构造函数；环境变量覆盖支持 `LISTEN_ADDR`/`LISTEN_PORT`/`DB_HOST`/`DB_PORT`/`CAPTCHA_HOST`/`CAPTCHA_PORT`/`SMTP_HOST`/`SMTP_PORT`；配置完整性校验（`Server.address`/`port`、`Proxy.default`、`Downstream.db_host`/`db_port` 缺失则启动失败）；`DbC` 增加 `init(host, port)` 支持可配置 db 地址（默认 127.0.0.1:8005），main.cpp 中所有硬编码 captcha/smtp 地址改为配置变量，`logs().set_endpoint()` 在启动时初始化；`_run.sh` 默认不传 `-i`，`--version/-v` 选项补全实现。
+- `0.6.1`：pymsg 客户端增加 `retry_on_refused` 重试机制——新增 `MsgConnectionRefusedException`；`MsgClient::call()` 新增 `retry_on_refused`/`retry_interval` 参数；`DbC::call_msg()` 启用重试等待 db 就绪；`LogC::_send()` 显式不重试（fail-safe）。
 - `0.6.0`：WebSocket 反向代理（仅管理员）——新增 `[WsProxy]` 配置段，支持 `routes = /path=ws://host:port/target;...` 精确路径映射；握手阶段校验 Token 中 `is_admin=true`（基于 `Admin.users` 白名单），通过后双向透明桥接文本/二进制帧到后端，支持 `ws://` 和 `wss://`；后端连接错误/鉴权失败均优雅关闭。依赖 libhttp v3.1+ 的 `ws_proxy()` 接口。顺带修复 `LocalTime.hpp` 在 Apple clang 下 C++20 tzdb 不可用的编译问题（改用 `strftime`/`get_time`/`mktime`）。
 - `0.5.4`：修复邮件轰炸漏洞（审计报告 P0-1）——`/register/send_code` 强制 CAPTCHA 校验（经 captcha:8009，Token 一次性消费），新增邮箱级双窗口限流（3 次/小时 + 10 次/天）；smtp 层同步增加邮箱级长期限流兜底 + 全局熔断（`SMTP_HOURLY_LIMIT` 环境变量，默认 100 封/小时）；前端 `register.html`/`register.js` 同步接入图形验证码（复用 `/captcha/image` 代理路由，方案 A：仅在「获取验证码」时要求 CAPTCHA，注册提交不加）。
 - `0.5.3`：配合 smtp 同邮箱 60 秒发送冷却——`/register/send_code` 在 smtp 返回 `retry_after` 时按 429 透传其提示文案（其余发送失败仍用通用 500 文案，SMTP 内部错误细节不向外暴露）。

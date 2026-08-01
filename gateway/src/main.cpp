@@ -28,7 +28,7 @@ using namespace qing;
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-constexpr const char *_VER = "0.6.1";
+constexpr const char *_VER = "0.7.0";
 
 //////////////////////////////////
 #include <sstream>
@@ -339,6 +339,17 @@ static int			_TOKEN_MAX_REFRESH = 10;	// Token 生命周期内最大刷新次数
 static std::vector<std::string>	_CORS_ORIGINS;			// CORS 允许的 Origin 白名单，可由 [CORS] allowed_origins 配置
 static std::vector<std::string>	_ADMIN_USERS;			// 管理员账号白名单，可由 [Admin] users 配置（分号分隔），登录时写入 Token payload 的 is_admin
 
+/* 下游 pymsg 服务地址（从 confs [Downstream] 段加载，可被环境变量覆盖） */
+static std::string		_DB_HOST = "127.0.0.1";
+static int			_DB_PORT = 8005;
+static std::string		_CAPTCHA_HOST = "127.0.0.1";
+static int			_CAPTCHA_PORT = 8009;
+static std::string		_SMTP_HOST = "127.0.0.1";
+static int			_SMTP_PORT = 8008;
+/* confs 引导配置（不依赖 confs 本身，环境变量 CONFS_HOST/CONFS_PORT 覆盖，默认 127.0.0.1:8010） */
+static std::string		_CONFS_HOST = "127.0.0.1";
+static int			_CONFS_PORT = 8010;
+
 /* WebSocket 代理路由：path -> ws://backend-host:port/target
  * 仅管理员用户可访问，握手阶段由 ws_proxy 回调验签 Token 中的 is_admin */
 static std::unordered_map<std::string, std::string> _WS_PROXY_ROUTES;
@@ -414,7 +425,7 @@ bool verify_captcha(const std::string& token, const std::string& answer) {
  * 与内置 verify_captcha 并存：登录/注册可任选其一接入。 */
 bool verify_captcha_remote(const std::string& token, const std::string& answer) {
 	try {
-		pmc::net::MsgClient client("127.0.0.1", 8009, "gateway");
+		pmc::net::MsgClient client(_CAPTCHA_HOST, _CAPTCHA_PORT, "gateway");
 		json::value jv_req = {
 			{"_route", "verify"},
 			{"token", token},
@@ -430,11 +441,11 @@ bool verify_captcha_remote(const std::string& token, const std::string& answer) 
 	}
 }
 
-/* 调用 smtp 服务（pymsg/TCP :8008）校验邮箱验证码。
+/* 调用 smtp 服务（pymsg/TCP）校验邮箱验证码。
  * 验证码一次性消费；服务不可用或响应异常一律视为校验失败（fail-closed）。 */
 bool verify_email_code_remote(const std::string& email, const std::string& code) {
 	try {
-		pmc::net::MsgClient client("127.0.0.1", 8008, "gateway");
+		pmc::net::MsgClient client(_SMTP_HOST, _SMTP_PORT, "gateway");
 		json::value jv_req = {
 			{"_route", "verify_email"},
 			{"email", email},
@@ -475,7 +486,7 @@ int main(int argc, char **argv) {
 	desc.add_options()
 		("help,h",					"output help message")
 		("version,v",					"output version message")
-		("input,i", 	po::value<std::string>(),	"input a configure text file")
+		("input,i", 	po::value<std::string>(),	"(可选) 指定本地 ini 配置文件路径，跳过 confs 拉取（开发/调试用）")
 	;
 
 
@@ -501,21 +512,75 @@ int main(int argc, char **argv) {
 		return 0;
 	}
 
-
-
-	/* 异常：没输入配置文件 */
-	if (!vm.count("input")) {
-		std::cerr << "Please input configure file via -i"  << std::endl;
-		return 1;
+	/* 分支：输出版本号 */
+	if (vm.count("version")) {
+		std::cout << "Gateway " << _VER << std::endl;
+		return 0;
 	}
 
-	{
-		try {
+	/* ==================== 配置加载（两层：confs 强依赖 → 环境变量覆盖） ====================
+	 * 与 Python 服务（dnfs/db/static）保持一致的加载模式：
+	 *   1. 引导配置：confs 地址从 CONFS_HOST/CONFS_PORT 环境变量读取，缺省 127.0.0.1:8010
+	 *   2. 从 confs 拉取 gateway.ini 全文（retry_on_refused=true 等待 confs 就绪）
+	 *      - 若指定了 -i 参数，则跳过 confs，直接读取本地 ini 文件（开发/调试模式）
+	 *   3. 用 boost::property_tree 解析 ini
+	 *   4. 环境变量覆盖（最高优先级，Docker 环境需要服务名而非 127.0.0.1）
+	 *   5. 配置完整性校验：必需字段缺失则启动失败
+	 * ==================================================================================== */
 
-		ConfIni cf(vm["input"].as<std::string>());
+	{
+		ConfIni cf;  // 默认空构造，后续根据模式赋值
+
+		/* 1. 引导配置：confs 连接地址（不依赖 confs 本身，避免循环依赖） */
+		_CONFS_HOST = ConfIni::env("CONFS_HOST", "127.0.0.1");
+		_CONFS_PORT = ConfIni::env_int("CONFS_PORT", 8010);
+
+		try {
+			if (vm.count("input")) {
+				/* 开发模式：-i 指定本地文件，跳过 confs */
+				std::string ini_path = vm["input"].as<std::string>();
+				cf = ConfIni(ini_path);
+				std::cout << "[gateway] 配置来源: 本地文件 " << ini_path << std::endl;
+			} else {
+				/* 生产模式：从 confs 拉取 gateway.ini */
+				std::cout << "[gateway] 从 confs (" << _CONFS_HOST << ":" << _CONFS_PORT
+				          << ") 拉取 gateway.ini ..." << std::endl;
+				pmc::net::MsgClient confs_client(_CONFS_HOST, _CONFS_PORT, "gateway");
+				json::object req;
+				req["_route"] = "get";
+				req["name"] = "gateway.ini";
+				std::string resp_str = confs_client.call(
+					json::serialize(req), /*timeout=*/5.0,
+					/*retry_on_refused=*/true);
+				auto resp = json::parse(resp_str).as_object();
+				if (!resp.at("success").as_bool()) {
+					std::string err = "unknown";
+					if (auto* ev = resp.if_contains("error")) {
+						if (ev->is_string()) err = ev->as_string().c_str();
+					}
+					std::cerr << "[gateway] 致命错误: 从 confs 获取 gateway.ini 失败: " << err << std::endl;
+					return 1;
+				}
+				std::string ini_content = resp.at("data").as_object().at("content").as_string().c_str();
+				cf = ConfIni::fromString(ini_content);
+				std::cout << "[gateway] 配置来源: confs (gateway.ini @ "
+				          << _CONFS_HOST << ":" << _CONFS_PORT << ")" << std::endl;
+			}
+		}
+		catch (ConfIni::IniConfigureFileParseException &e) {
+			std::cerr << "ERROR: " << e.what() << std::endl;
+			std::cerr << "ini parse error" << std::endl;
+			return 1;
+		}
+		catch (const std::exception &e) {
+			std::cerr << "[gateway] 致命错误: 配置加载失败: " << e.what() << std::endl;
+			return 1;
+		}
+
+		/* 2. 从 ini 读取配置 */
 		_ADDR = cf.get<std::string>("Server.address", "");
-		_PORT = cf.get<int> ("Server.port", -1);
-		_TLS = cf.get<bool>     ("Server.tls", false);
+		_PORT = cf.get<int>("Server.port", -1);
+		_TLS = cf.get<bool>("Server.tls", false);
 		_DEFT_URL = cf.get<std::string>("Proxy.default", "");
 		_OPEN_URL = split(cf.get<std::string>("Proxy.opened", ""), ';');
 		_DB_PATH = cf.get<std::string>("Database.path", "");
@@ -525,8 +590,15 @@ int main(int argc, char **argv) {
 		_CORS_ORIGINS = split(cf.get<std::string>("CORS.allowed_origins", ""), ';');
 		_ADMIN_USERS = split(cf.get<std::string>("Admin.users", ""), ';');
 
-		/* [WsProxy] WebSocket 代理路由：格式 /path=ws://host:port/target;...
-		 * 仅管理员（Token 中 is_admin=true）可访问，用于 aibox 等内部 WS 服务的网关暴露 */
+		/* 下游服务地址 */
+		_DB_HOST = cf.get<std::string>("Downstream.db_host", "127.0.0.1");
+		_DB_PORT = cf.get<int>("Downstream.db_port", 8005);
+		_CAPTCHA_HOST = cf.get<std::string>("Downstream.captcha_host", "127.0.0.1");
+		_CAPTCHA_PORT = cf.get<int>("Downstream.captcha_port", 8009);
+		_SMTP_HOST = cf.get<std::string>("Downstream.smtp_host", "127.0.0.1");
+		_SMTP_PORT = cf.get<int>("Downstream.smtp_port", 8008);
+
+		/* [WsProxy] WebSocket 代理路由：格式 /path=ws://host:port/target;... */
 		{
 			std::string ws_cfg = cf.get<std::string>("WsProxy.routes", "");
 			if (!ws_cfg.empty()) {
@@ -536,7 +608,6 @@ int main(int argc, char **argv) {
 					if (eq != std::string::npos) {
 						std::string path = entry.substr(0, eq);
 						std::string url  = entry.substr(eq + 1);
-						// 去除首尾空白
 						auto trim = [](std::string& s) {
 							while (!s.empty() && std::isspace((unsigned char)s.front())) s.erase(s.begin());
 							while (!s.empty() && std::isspace((unsigned char)s.back())) s.pop_back();
@@ -549,22 +620,53 @@ int main(int argc, char **argv) {
 				}
 			}
 		}
+
+		/* 3. 环境变量覆盖（优先级最高，Docker 环境使用服务名而非 127.0.0.1） */
+		std::string env_listen_addr = ConfIni::env("LISTEN_ADDR");
+		if (!env_listen_addr.empty()) _ADDR = env_listen_addr;
+		int env_listen_port = ConfIni::env_int("LISTEN_PORT", -1);
+		if (env_listen_port > 0) _PORT = env_listen_port;
+
+		std::string env_db_host = ConfIni::env("DB_HOST");
+		if (!env_db_host.empty()) _DB_HOST = env_db_host;
+		int env_db_port = ConfIni::env_int("DB_PORT", -1);
+		if (env_db_port > 0) _DB_PORT = env_db_port;
+
+		std::string env_captcha_host = ConfIni::env("CAPTCHA_HOST");
+		if (!env_captcha_host.empty()) _CAPTCHA_HOST = env_captcha_host;
+		int env_captcha_port = ConfIni::env_int("CAPTCHA_PORT", -1);
+		if (env_captcha_port > 0) _CAPTCHA_PORT = env_captcha_port;
+
+		std::string env_smtp_host = ConfIni::env("SMTP_HOST");
+		if (!env_smtp_host.empty()) _SMTP_HOST = env_smtp_host;
+		int env_smtp_port = ConfIni::env_int("SMTP_PORT", -1);
+		if (env_smtp_port > 0) _SMTP_PORT = env_smtp_port;
+
+		/* 4. 配置完整性校验 */
+		if (_ADDR.empty() || _PORT == -1) {
+			std::cerr << "[gateway] 致命错误: 配置项 [Server] address/port 缺失"
+			             "（ini 中未配置且无 LISTEN_ADDR/LISTEN_PORT 环境变量覆盖）" << std::endl;
+			return 1;
 		}
-
-
-		/* 常规输出 */
-		catch (ConfIni::IniConfigureFileParseException &e) {
-			std::cerr << "ERROR: "  << e.what() << std::endl;
-			std::cerr << "ini format input file error" << std::endl;
+		if (_DEFT_URL.empty()) {
+			std::cerr << "[gateway] 致命错误: 配置项 [Proxy] default 缺失" << std::endl;
+			return 1;
+		}
+		if (_DB_HOST.empty() || _DB_PORT <= 0) {
+			std::cerr << "[gateway] 致命错误: 配置项 [Downstream] db_host/db_port 缺失" << std::endl;
 			return 1;
 		}
 	}
 
-	if (_ADDR == "" || _PORT == -1) {
-		std::cerr << "Please setup addree and port in Serve section in configure file";
-		std::cerr << std::endl;
-		return 0;
-	}
+	/* 初始化下游客户端地址 */
+	DbC::init(_DB_HOST, _DB_PORT);
+	logs().set_endpoint(_DB_HOST, _DB_PORT);
+
+	std::cout << "[gateway] 监听: " << _ADDR << ":" << _PORT
+	          << " (TLS: " << (_TLS ? "on" : "off") << ")" << std::endl;
+	std::cout << "[gateway] 下游服务: db=" << _DB_HOST << ":" << _DB_PORT
+	          << ", captcha=" << _CAPTCHA_HOST << ":" << _CAPTCHA_PORT
+	          << ", smtp=" << _SMTP_HOST << ":" << _SMTP_PORT << std::endl;
 
 	// 根据 Server.tls 选择 HTTPS（带证书）或 HTTP（无证书）构造函数
 	// HTTP 模式用于 WAF 终止 TLS 后的内部转发链路
@@ -1373,7 +1475,7 @@ http::response<http::string_body> handleCaptchaImage(
 	res.version(req.version());
 
 	/* 调 captcha 服务（pymsg/TCP），连接失败/超时视为 502 */
-	pmc::net::MsgClient client("127.0.0.1", 8009, "gateway");
+	pmc::net::MsgClient client(_CAPTCHA_HOST, _CAPTCHA_PORT, "gateway");
 	std::string resp;
 	try {
 		resp = client.call(R"({"_route":"image"})", _TIMEOUT_CAPTCHA);
@@ -1571,7 +1673,7 @@ http::response<http::string_body> handleSendEmailCode(
 	int retry_after = 0;   // smtp 同邮箱发送冷却的剩余秒数，0 表示非冷却拒绝
 	std::string smtp_err;  // 冷却拒绝时 smtp 返回的提示文案（仅冷却场景透传客户端）
 	try {
-		pmc::net::MsgClient client("127.0.0.1", 8008, "gateway");
+		pmc::net::MsgClient client(_SMTP_HOST, _SMTP_PORT, "gateway");
 		json::value jv_req = {
 			{"_route", "send_email"},
 			{"email", email}
