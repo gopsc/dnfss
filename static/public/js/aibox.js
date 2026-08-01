@@ -3,8 +3,8 @@
  * aibox Web 客户端 · 移动端版（经 gateway WS 反向代理，仅管理员可用）
  * 协议与 BotOps/aibox client.py 完全兼容：
  *   发送：{"type":"message","content":...} / {"type":"command","command":"/..."} / {"type":"interrupt",...}
- *   接收：chunk(增量片段) / reasoning_start / reasoning / reasoning_end / complete /
- *         line(过程行) / task_process / task_status / task_error / task_added /
+ *   接收：chunk(增量片段) / reasoning_start / reasoning / reasoning_end / ai_break /
+ *         complete / line(过程行) / task_process / task_status / task_error / task_added /
  *         dialogue_ended / dialogue_reset / interrupt_ack / error / info /
  *         command_result / connection_ack / notification / pong
  * ============================================================ */
@@ -152,6 +152,8 @@ function endReasoning() {
 		reasoningHead.textContent = '💭 思考过程（' + reasoningText.length + ' 字符，点击折叠/展开）';
 		reasoningBody.classList.add('folded');	/* 结束后默认折叠，避免占屏 */
 	}
+	/* 清除引用（DOM元素保留显示），下一轮 reasoning_start 创建新的思考区域 */
+	reasoningBox = null; reasoningHead = null; reasoningBody = null; reasoningText = '';
 }
 function abortReasoning() {
 	/* 用户中断：更新思考区域标签为已中断，保留已展示内容 */
@@ -161,6 +163,16 @@ function abortReasoning() {
 		} else {
 			reasoningHead.textContent = '🛑 思考已中断';
 		}
+	}
+	/* 清除引用，DOM元素保留显示 */
+	reasoningBox = null; reasoningHead = null; reasoningBody = null; reasoningText = '';
+}
+
+/* ---------- AI 文本分段（工具调用时 breakAi，后续 chunk 创建新气泡） ---------- */
+function breakAi() {
+	if (aiBubble) {
+		aiBubble.classList.remove('streaming');
+		aiBubble = null; aiText = '';
 	}
 }
 
@@ -242,11 +254,14 @@ function routeMessage(data) {
 		appendReasoning(content);
 	} else if (t === 'reasoning_end') {
 		endReasoning();
+	} else if (t === 'ai_break') {
+		/* 工具调用前分段：结束当前AI文本段（保留已显示内容），后续chunk创建新气泡 */
+		breakAi();
 	} else if (t === 'line') {
-		/* 过程行：工具调用提示 / 工具输出 → 任务面板；助手前缀 / 思考提示聊天区已有承载，跳过 */
+		/* 过程行：工具调用提示 / 工具输出 → 任务面板；助手前缀 / 思考提示等聊天区已有承载，跳过 */
 		const stripped = content.trim();
 		if (!stripped) return;
-		if (/^(💬 助手|💬 Assistant|🤔 思考中|🤔 Thinking|🤔 深度思考中)/.test(stripped)) return;
+		if (/^(💬 助手|💬 Assistant|🤔 思考中|🤔 Thinking|🤔 深度思考中|🤔 分析工具结果|🤔 Analyzing|🔧 需要调用工具|🔧 Need to call)/.test(stripped)) return;
 		addTaskLine(stripped);
 	} else if (t === 'complete') {
 		finishAi(content);
@@ -290,7 +305,8 @@ function routeMessage(data) {
 	} else if (t === 'notification') {
 		addSystem('🔔 ' + content);
 	} else if (content) {
-		appendAi(content);	/* 未知类型兜底：按 AI 增量处理（与 BotOps 一致） */
+		/* 未知消息类型不追加到AI聊天区（避免非AI内容污染回复），记入任务面板 */
+		addTaskLine('[未知消息 type=' + t + '] ' + content.slice(0, 200));
 	}
 }
 
