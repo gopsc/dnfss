@@ -14,6 +14,9 @@ from dotenv import load_dotenv
 import hashlib
 import os
 import sys
+import threading
+import time
+from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
@@ -27,6 +30,53 @@ CORS(app)
 
 review_agent = ReviewAgent()
 
+# ── 内容大小限制（10KB，审核文本不应超过此值）──
+MAX_CONTENT_LENGTH = 10 * 1024
+
+# ── 简易滑动窗口限流器 ──────────────────────────────────────────────
+# /review: 30次/分钟/IP（正常审核请求）
+# /rag/feedback: 5次/分钟/IP（人工纠偏低频操作）
+
+_RATE_LIMIT_WINDOW = 60          # 窗口秒数
+_RATE_LIMIT_REVIEW = 30          # /review 每分钟上限
+_RATE_LIMIT_FEEDBACK = 5         # /rag/feedback 每分钟上限
+_RATE_LIMIT_LOCK = threading.Lock()
+_RATE_LIMIT_BUCKETS: "dict[str, list[float]]" = defaultdict(list)
+
+
+def _cleanup_buckets():
+    """惰性清理过期时间戳，在线程锁内完成。"""
+    now = time.monotonic()
+    cutoff = now - _RATE_LIMIT_WINDOW
+    stale_keys = []
+    for key, timestamps in _RATE_LIMIT_BUCKETS.items():
+        timestamps[:] = [t for t in timestamps if t > cutoff]
+        if not timestamps:
+            stale_keys.append(key)
+    for key in stale_keys:
+        del _RATE_LIMIT_BUCKETS[key]
+
+
+def _check_rate_limit(key: str, limit: int) -> bool:
+    """检查是否超出限流，返回 True 表示放行，False 表示拒绝。"""
+    now = time.monotonic()
+    cutoff = now - _RATE_LIMIT_WINDOW
+    with _RATE_LIMIT_LOCK:
+        bucket = _RATE_LIMIT_BUCKETS[key]
+        bucket[:] = [t for t in bucket if t > cutoff]
+        if len(bucket) >= limit:
+            return False
+        bucket.append(now)
+        return True
+
+
+def _client_ip() -> str:
+    """获取客户端真实 IP（优先 X-Forwarded-For）。"""
+    xff = request.headers.get("X-Forwarded-For", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.remote_addr or "127.0.0.1"
+
 
 @app.route('/review', methods=['POST'])
 def review():
@@ -35,6 +85,11 @@ def review():
     Request:  {"content": "待审核的字符串"}
     Response: {"invalid": "true"}  或  {"invalid": "false"}
     """
+    # 频率限制
+    ip = _client_ip()
+    if not _check_rate_limit(f"review:{ip}", _RATE_LIMIT_REVIEW):
+        return jsonify({"error": "rate limit exceeded", "retry_after": _RATE_LIMIT_WINDOW}), 429
+
     data = request.get_json()
 
     if not data or 'content' not in data:
@@ -44,6 +99,10 @@ def review():
 
     if not content:
         return jsonify({"error": "content cannot be empty"}), 400
+
+    # 内容大小限制
+    if len(content) > MAX_CONTENT_LENGTH:
+        return jsonify({"error": f"content too large, max {MAX_CONTENT_LENGTH} bytes"}), 413
 
     result = review_agent.review(content)
     return jsonify(result), 200
@@ -61,6 +120,11 @@ def rag_feedback():
     Response: {"added": true, "id": "v_xxx", "md5": "xxx"}
               {"added": false, "reason": "duplicate"}
     """
+    # 频率限制（人工纠偏低频操作，严格限制）
+    ip = _client_ip()
+    if not _check_rate_limit(f"feedback:{ip}", _RATE_LIMIT_FEEDBACK):
+        return jsonify({"error": "rate limit exceeded", "retry_after": _RATE_LIMIT_WINDOW}), 429
+
     data = request.get_json()
 
     if not data or 'content' not in data:
