@@ -3532,10 +3532,27 @@ class CommandExecutor(ABC):
 
 
 class SubprocessCommandExecutor(CommandExecutor):
-    """基于subprocess的命令执行器 - 支持超时、工作目录和输出大小限制"""
+    """基于subprocess的命令执行器 - 支持超时、工作目录、输出大小限制和取消"""
     
     # 命令输出最大字节数（1MB），超出截断
     MAX_OUTPUT_BYTES = 1 * 1024 * 1024
+    
+    def __init__(self, logger=None):
+        super().__init__(logger)
+        self._current_process = None
+        self._process_lock = threading.Lock()
+    
+    def cancel(self):
+        """取消当前正在运行的命令（kill子进程）。线程安全。"""
+        with self._process_lock:
+            proc = self._current_process
+        if proc is not None:
+            try:
+                if proc.poll() is None:
+                    proc.kill()
+                    self.logger.info("已终止正在运行的子进程")
+            except Exception:
+                pass
     
     def _read_with_limit(self, process, timeout: int, start_time: float, output_queue=None) -> Tuple[str, bool, bool]:
         """从进程读取输出，限制总大小和超时。
@@ -3612,6 +3629,9 @@ class SubprocessCommandExecutor(CommandExecutor):
                 env=exec_env,
                 cwd=os.path.expanduser(work_dir)
             )
+            # 保存进程引用以便cancel()可以kill它
+            with self._process_lock:
+                self._current_process = process
             
             start_time = time.time()
             output_str, timeout_occurred, truncated = self._read_with_limit(process, timeout, start_time)
@@ -3654,6 +3674,9 @@ class SubprocessCommandExecutor(CommandExecutor):
         finally:
             if process and process.poll() is None:
                 process.kill()
+            # 清除当前进程引用
+            with self._process_lock:
+                self._current_process = None
     
     def execute_streaming(self, command: str, output_queue: queue.Queue, timeout: int = 30, 
                           work_dir: str = None, env: Dict = None, **kwargs):
@@ -3694,6 +3717,9 @@ class SubprocessCommandExecutor(CommandExecutor):
                 cwd=os.path.expanduser(work_dir)
             )
             self.process = process
+            # 保存进程引用以便cancel()可以kill它
+            with self._process_lock:
+                self._current_process = process
             
             start_time = time.time()
             output_lines = []
@@ -3788,6 +3814,8 @@ class SubprocessCommandExecutor(CommandExecutor):
                 except:
                     process.kill()
             self.process = None
+            with self._process_lock:
+                self._current_process = None
 
 # ==================== 工具基类 ====================
 
@@ -6750,10 +6778,41 @@ class DeepSeekChat:
         self.preserve_system = constants.PRESERVE_SYSTEM_PROMPTS
         self.stats = {"api_calls": 0, "tool_calls": 0, "errors": []}
         
+        # 取消机制：threading.Event 用于跨线程信号，_current_response 用于中断HTTP请求
+        self._cancel_event = threading.Event()
+        self._current_response = None
+        self._command_executor = command_executor  # 保存命令执行器引用，用于取消时kill子进程
+        
         self._init_system_prompts(system_prompt)
         
         self.tool_registry = ToolRegistry(self.logger)
         self._register_tools(exit_callback, command_executor)
+    
+    def cancel(self):
+        """中断当前正在进行的AI思考/工具执行。线程安全，可从任意线程调用。"""
+        self.logger.info("收到中断信号，正在取消当前操作...")
+        self._cancel_event.set()
+        # 关闭当前HTTP响应，中断 iter_lines() 阻塞
+        if self._current_response is not None:
+            try:
+                self._current_response.close()
+            except Exception:
+                pass
+        # 终止正在运行的子进程
+        if self._command_executor is not None and hasattr(self._command_executor, 'cancel'):
+            try:
+                self._command_executor.cancel()
+            except Exception:
+                pass
+    
+    def _is_cancelled(self) -> bool:
+        """检查是否已被取消。"""
+        return self._cancel_event.is_set()
+    
+    def _check_cancelled(self):
+        """如果已取消，抛出异常中断当前流程。"""
+        if self._cancel_event.is_set():
+            raise InterruptedError(i18n.get('user_interrupted', '用户中断'))
     
     def _init_system_prompts(self, system_prompt: str = None):
         """初始化系统提示词 - 从 PromptManager 加载（按 identity → 技能 → soul → status 顺序）"""
@@ -6965,6 +7024,11 @@ class DeepSeekChat:
         MAX_RESULT_LENGTH = constants.TOOL_MAX_RESULT_LENGTH
         
         for tool_call in tool_calls:
+            # 每个工具调用前检查取消信号
+            if self._is_cancelled():
+                self.logger.info("工具调用被用户中断")
+                break
+            
             function = tool_call.get("function", {})
             tool_name = function.get("name", "unknown")
             arguments = function.get("arguments", "{}")
@@ -7076,6 +7140,13 @@ class DeepSeekChat:
             is_continuation: 是否为工具调用后的递归继续；为 True 时不注入冗长的工作流指令，
                             因为 system prompt 中已有完整行为规范，继续时只需传递工具结果
         """
+        # 首轮开始时清除取消标志
+        if not is_continuation:
+            self._cancel_event.clear()
+        
+        # 立即检查是否已被取消
+        self._check_cancelled()
+        
         if not self.conversation_active:
             self.logger.info("对话已结束，重置状态")
             self.conversation_active = True
@@ -7217,6 +7288,7 @@ class DeepSeekChat:
                 stream=True,
                 proxies=proxies   # 动态代理
             )
+            self._current_response = response  # 保存引用以便cancel()关闭连接
             
             if response.status_code != 200:
                 error_msg = f"\n错误状态码: {response.status_code}\n错误响应: {response.text}"
@@ -7225,6 +7297,9 @@ class DeepSeekChat:
                 response.raise_for_status()
             
             for line in response.iter_lines():
+                # 流式循环中检查取消信号
+                if self._is_cancelled():
+                    break
                 if line:
                     line = line.decode('utf-8')
                     if line.startswith('data: '):
@@ -7315,6 +7390,16 @@ class DeepSeekChat:
                             self.logger.error(f"JSON解析错误: {e}, 数据: {data}")
                             continue
             
+            # 流式循环结束，检查是否被取消
+            if self._is_cancelled():
+                self._rollback_messages(msgs_before_turn)
+                interrupt_msg = i18n.get('user_interrupted', '用户中断')
+                if output_callback:
+                    output_callback("line", "\n" + interrupt_msg + "\n")
+                    output_callback("complete", interrupt_msg)
+                self.logger.info("AI响应被用户中断")
+                return interrupt_msg
+            
             # 处理工具调用
             if current_tool_calls:
                 tool_calls_buffer = list(current_tool_calls.values())
@@ -7382,7 +7467,24 @@ class DeepSeekChat:
             
             return full_response if full_response else ""
                 
+        except InterruptedError:
+            # 用户主动中断：回滚消息，通知前端
+            self._rollback_messages(msgs_before_turn)
+            interrupt_msg = i18n.get('user_interrupted', '用户中断')
+            if output_callback:
+                output_callback("line", "\n" + interrupt_msg + "\n")
+                output_callback("complete", interrupt_msg)
+            self.logger.info("AI响应被用户中断")
+            return interrupt_msg
         except requests.exceptions.RequestException as e:
+            # 如果是因为取消导致的连接关闭，按中断处理
+            if self._is_cancelled():
+                self._rollback_messages(msgs_before_turn)
+                interrupt_msg = i18n.get('user_interrupted', '用户中断')
+                if output_callback:
+                    output_callback("line", "\n" + interrupt_msg + "\n")
+                    output_callback("complete", interrupt_msg)
+                return interrupt_msg
             # 网络/HTTP 错误：回滚本轮添加的消息（user 消息 + 可能的 assistant/tool 消息），
             # 防止格式错误的消息污染历史导致后续请求持续失败
             self._rollback_messages(msgs_before_turn)
@@ -7402,6 +7504,14 @@ class DeepSeekChat:
             self.logger.error(f"API响应解析失败，已回滚消息到位置 {msgs_before_turn}: {e}")
             return error_msg
         except Exception as e:
+            # 如果是因为取消导致的异常，按中断处理
+            if self._is_cancelled():
+                self._rollback_messages(msgs_before_turn)
+                interrupt_msg = i18n.get('user_interrupted', '用户中断')
+                if output_callback:
+                    output_callback("line", "\n" + interrupt_msg + "\n")
+                    output_callback("complete", interrupt_msg)
+                return interrupt_msg
             # 未知错误：回滚消息，防止对话状态被破坏
             self._rollback_messages(msgs_before_turn)
             error_msg = f"\n{i18n.get('error_prefix')}{str(e)}"
@@ -7410,6 +7520,9 @@ class DeepSeekChat:
             self.stats["errors"].append(str(e))
             self.logger.error(f"未知错误，已回滚消息到位置 {msgs_before_turn}: {e}")
             return error_msg
+        finally:
+            # 清除当前响应引用
+            self._current_response = None
     
     def _rollback_messages(self, to_length: int):
         """回滚 self.messages 到指定长度，用于 API 失败时恢复对话状态。"""
@@ -7623,6 +7736,8 @@ class WebSocketHandler:
                 await self.handle_command(websocket, data)
             elif msg_type == "message":
                 await self.handle_user_message(websocket, data)
+            elif msg_type == "interrupt":
+                await self.handle_interrupt(websocket, data)
             elif msg_type == "task":
                 await self.handle_task_message(websocket, data)
             elif msg_type == "ping":
@@ -7647,6 +7762,18 @@ class WebSocketHandler:
                 "type": "error",
                 "content": f"处理失败: {str(e)}"
             })
+    
+    async def handle_interrupt(self, websocket, data):
+        """处理中断信号：取消正在进行的AI思考和工具执行"""
+        self.logger.info("收到客户端中断信号")
+        # 先发送确认，让前端立即得到反馈
+        await self.send_message(websocket, {
+            "type": "interrupt_ack",
+            "content": "已收到中断信号，正在停止..."
+        })
+        # 在事件循环线程外执行cancel（cancel是线程安全的，会设置Event并关闭response/kill进程）
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.ai_manager.cancel)
     
     async def handle_task_message(self, websocket, data):
         """处理任务相关消息 - 简化版，所有任务都是对话任务"""
@@ -8108,6 +8235,17 @@ class EnhancedAIManager:
         self.ai = ai
         self.logger.info("AI已初始化")
         return ai
+    
+    def cancel(self):
+        """中断当前AI操作（线程安全，可从任意线程调用）"""
+        if self.ai:
+            self.ai.cancel()
+        # 同时确保命令执行器中的进程也被终止
+        if self.command_executor and hasattr(self.command_executor, 'cancel'):
+            try:
+                self.command_executor.cancel()
+            except Exception:
+                pass
     
     def show_welcome_message(self):
         """显示欢迎信息"""
