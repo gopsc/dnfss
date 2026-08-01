@@ -6792,10 +6792,19 @@ class DeepSeekChat:
         """中断当前正在进行的AI思考/工具执行。线程安全，可从任意线程调用。"""
         self.logger.info("收到中断信号，正在取消当前操作...")
         self._cancel_event.set()
-        # 关闭当前HTTP响应，中断 iter_lines() 阻塞
+        # 强制关闭当前HTTP响应，立即中断 iter_lines() 的阻塞读取
+        # 仅调用 response.close() 可能无法中断底层socket recv()，需要先关闭raw连接
         if self._current_response is not None:
             try:
-                self._current_response.close()
+                resp = self._current_response
+                self._current_response = None
+                # 先关闭底层raw socket连接，强制阻塞的recv()立即抛出异常
+                if hasattr(resp, 'raw') and resp.raw is not None:
+                    try:
+                        resp.raw.close()
+                    except Exception:
+                        pass
+                resp.close()
             except Exception:
                 pass
         # 终止正在运行的子进程
@@ -7584,6 +7593,8 @@ class WebSocketHandler:
         self.logger = Logger("WebSocket")
         self.connected_clients = set()
         self.client_sessions = {}
+        self._processing_tasks = {}  # websocket id -> 当前正在处理的asyncio Task
+        self._is_processing_message = False  # 是否正在处理用户消息（防止并发）
         
     async def register(self, websocket):
         """注册新客户端"""
@@ -7771,9 +7782,9 @@ class WebSocketHandler:
             "type": "interrupt_ack",
             "content": "已收到中断信号，正在停止..."
         })
-        # 在事件循环线程外执行cancel（cancel是线程安全的，会设置Event并关闭response/kill进程）
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self.ai_manager.cancel)
+        # 直接同步调用cancel()：cancel是线程安全的（只set Event + close连接 + kill进程），执行极快
+        # 无需通过run_in_executor提交到线程池，避免额外调度延迟
+        self.ai_manager.cancel()
     
     async def handle_task_message(self, websocket, data):
         """处理任务相关消息 - 简化版，所有任务都是对话任务"""
@@ -8074,6 +8085,16 @@ class WebSocketHandler:
         if not content:
             return
         
+        # 防止并发处理用户消息：如果正在处理中，提示用户先中断
+        if self._is_processing_message:
+            await self.send_message(websocket, {
+                "type": "info",
+                "content": "⏳ AI正在响应中，请等待完成或发送中断信号（Ctrl+C）"
+            })
+            return
+        
+        self._is_processing_message = True
+        
         self.logger.info(f"收到用户消息: {content[:50]}...")
         
         # 确保AI已初始化
@@ -8115,7 +8136,6 @@ class WebSocketHandler:
             # 提交到事件循环
             asyncio.run_coroutine_threadsafe(send_msg(), loop)
         
-        # 让AI思考并回应 - 不等待完整响应，通过回调实时发送
         try:
             self.logger.info("开始AI思考...")
             
@@ -8155,6 +8175,9 @@ class WebSocketHandler:
                 }, ensure_ascii=False))
             except:
                 pass
+        finally:
+            # 无论成功、失败还是被中断，都清除处理标志
+            self._is_processing_message = False
 
 
 # ==================== 对话管理器（修改版：添加重置对话功能） ====================
@@ -8319,17 +8342,30 @@ class EnhancedAIManager:
         print(i18n.get('websocket_started', host, port))
     
     async def handle_connection(self, websocket, path):
-        """处理WebSocket连接"""
+        """处理WebSocket连接 - 消息接收与处理解耦，确保中断信号能被即时处理"""
         self.logger.info(f"新连接: {websocket.remote_address}, path: {path}")
         await self.ws_handler.register(websocket)
         try:
             async for message in websocket:
-                await self.ws_handler.handle_message(websocket, message)
+                # 【关键修复】用create_task异步处理消息，不await阻塞接收循环
+                # 这样当AI在后台生成响应时，interrupt消息仍能被立即接收和处理
+                task = asyncio.create_task(
+                    self.ws_handler.handle_message(websocket, message)
+                )
+                self.ws_handler._processing_tasks[id(websocket)] = task
+
+                def _cleanup_task(t, ws_id=id(websocket)):
+                    self.ws_handler._processing_tasks.pop(ws_id, None)
+                task.add_done_callback(_cleanup_task)
         except websockets.exceptions.ConnectionClosed as e:
             self.logger.info(f"连接关闭: {e}")
         except Exception as e:
             self.logger.error(f"处理错误: {e}")
         finally:
+            # 连接关闭时取消正在进行的处理任务
+            task = self.ws_handler._processing_tasks.pop(id(websocket), None)
+            if task and not task.done():
+                task.cancel()
             await self.ws_handler.unregister(websocket)
 
     async def websocket_server(self):
