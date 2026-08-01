@@ -31,11 +31,10 @@
 
 ## 配置管理
 
-db 已接入 [confs](../confs/) 统一配置服务，采用三层 fail-safe 加载模式（与 static/dnfs 一致）：
+db 已接入 [confs](../confs/) 统一配置服务，confs 是 db 启动的**强依赖**：
 
-1. **内置默认值** — 硬编码在 `dbv2.py` 中，保证服务在任何环境都能启动
-2. **confs 统一配置服务**（优先）— 通过 pymsg RpcClient 从 `confs` 拉取 `db.ini`
-3. **环境变量覆盖**（最高优先级）— Docker/部署环境通过环境变量覆盖，保持向后兼容
+1. **confs 统一配置服务** — 必须成功从 confs 拉取 `db.ini`，否则 db 启动失败直接退出（exit code 1）
+2. **环境变量覆盖**（最高优先级）— Docker/部署环境通过环境变量覆盖 confs 中的值
 
 ### confs 配置文件（db.ini）
 
@@ -54,13 +53,15 @@ url = sqlite:///database.db
 retention_days = 30
 max_records = 1000000
 cleanup_interval = 3600
-
-[confs]
-host = 127.0.0.1
-port = 8010
 ```
 
-### 环境变量（最高优先级）
+### 引导配置（confs 连接地址）
+
+confs 自身的连接地址不通过 confs 获取（避免循环依赖），通过以下方式确定（优先级从高到低）：
+- 环境变量 `CONFS_HOST` / `CONFS_PORT`
+- 默认值 `127.0.0.1:8010`
+
+### 环境变量（最高优先级，覆盖 confs 配置值）
 
 | 环境变量 | 说明 | 对应 confs 配置项 |
 |---------|------|------------------|
@@ -68,16 +69,19 @@ port = 8010
 | `LISTEN_PORT` | 监听端口 | `[server] port` |
 | `WORKERS` | 回调并发线程数 | `[server] workers` |
 | `DATABASE_URL` | 数据库连接 URL | `[database] url` |
-| `CONFS_HOST` | confs 服务地址 | `[confs] host` |
-| `CONFS_PORT` | confs 服务端口 | `[confs] port` |
+| `CONFS_HOST` | confs 服务地址（引导配置） | — |
+| `CONFS_PORT` | confs 服务端口（引导配置） | — |
 
-### 启动顺序注意
+### 启动顺序要求
 
-根据 micro_servers 的启动顺序：**db → confs → ai_review/...**，db 先于 confs 启动。因此：
-- db 启动时若 confs 尚未就绪，`_fetch_from_confs()` 连接失败会静默 fail-safe，使用内置默认值 + 环境变量正常启动
-- 启动时控制台会打印配置来源：`配置来源: confs 统一配置服务 (db.ini)` 或 `警告: confs 不可用，使用内置默认值`，最后 `start()` 前会再次打印最终来源
-- 独立运维工具 `db_tools.py`（backup/export/import/vacuum 等）仍直接读 `DATABASE_URL` 环境变量，不依赖 confs 服务就绪
-- Docker 环境通过 `docker-entrypoint.sh` 传入环境变量（见 [Dockerfile](Dockerfile)），保持与之前完全兼容，无需额外配置
+**confs 必须先于 db 启动**（启动顺序调整为：confs → db → ai_review/...）。若 confs 不可用：
+- db 打印致命错误到 stderr（包含 confs 地址和具体错误原因），以 exit code 1 终止
+- 不会静默使用默认值启动
+- 配置完整性校验：若 db.ini 中缺少必需的 section/key 且无对应环境变量覆盖，同样报错退出
+- 启动成功时控制台打印：`配置来源: confs 统一配置服务 (db.ini @ host:port)`
+
+> 独立运维工具 `db_tools.py`（backup/export/import/vacuum 等）仍直接读 `DATABASE_URL` 环境变量，不依赖 confs 服务就绪。
+> Docker 环境通过 `docker-entrypoint.sh` 传入环境变量（见 [Dockerfile](Dockerfile)），需确保 `CONFS_HOST`/`CONFS_PORT` 指向 confs 服务地址。
 
 ## 协议与 API
 

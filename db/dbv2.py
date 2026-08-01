@@ -48,19 +48,25 @@ import sys as _sys
 _sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from pymsg import RpcServer  # noqa: E402
 
-# ── 配置加载（三层 fail-safe：内置默认值 → confs → 环境变量覆盖）──────
-# 加载顺序：内置默认值 → confs 统一配置服务（db.ini，优先）；
-# confs 不可用时 fail-safe 使用默认值；环境变量优先级最高（Docker 兼容）。
+# ── 配置加载（两层：confs 强依赖 → 环境变量覆盖）──────────────────────
+# confs 是 db 启动的强依赖：必须成功从 confs 拉取 db.ini，否则直接退出。
+# 环境变量优先级最高（Docker 兼容），可覆盖 confs 中的配置值。
+# confs 自身的连接地址（host/port）通过引导配置确定：环境变量 CONFS_HOST/CONFS_PORT
+# 优先，缺省使用 127.0.0.1:8010（与其他服务一致的约定）。
 
+# 引导配置：confs 连接地址（不依赖 confs 本身，可通过环境变量覆盖）
+_confs_host = os.environ.get('CONFS_HOST', '127.0.0.1')
+_confs_port = int(os.environ.get('CONFS_PORT', '8010'))
+
+# 白名单结构：_merge_ini 仅覆盖此处列出的 section/key，防止意外字段
 _db_config = {
-    'server': {'host': '0.0.0.0', 'port': '8005', 'workers': '4'},
-    'database': {'url': 'sqlite:///database.db'},
+    'server': {'host': '', 'port': '', 'workers': ''},
+    'database': {'url': ''},
     'logs': {
-        'retention_days': '30',
-        'max_records': '1000000',
-        'cleanup_interval': '3600',
+        'retention_days': '',
+        'max_records': '',
+        'cleanup_interval': '',
     },
-    'confs': {'host': '127.0.0.1', 'port': '8010'},
 }
 
 
@@ -76,26 +82,32 @@ def _merge_ini(text):
 
 
 def _fetch_from_confs():
-    """从 confs 统一配置服务拉取 db.ini 全文，失败返回 None（fail-safe）。"""
+    """从 confs 统一配置服务拉取 db.ini 全文，失败直接终止进程。"""
+    from pymsg import RpcClient, RpcError  # noqa: E402
     try:
-        from pymsg import RpcClient
-        host = os.environ.get('CONFS_HOST', _db_config['confs']['host'])
-        port = int(os.environ.get('CONFS_PORT', _db_config['confs']['port']))
-        data = RpcClient(host, port, 'db', timeout=3).call(
-            'get', {'name': 'db.ini'})
+        client = RpcClient(_confs_host, _confs_port, 'db', timeout=5)
+        data = client.call('get', {'name': 'db.ini'})
         return data.get('content')
-    except Exception:
-        return None
+    except (ConnectionRefusedError, ConnectionError, OSError) as e:
+        print(f'[dbv2] 致命错误: 无法连接 confs 服务 ({_confs_host}:{_confs_port}): {e}',
+              file=_sys.stderr)
+        print(f'[dbv2] 请确认 confs 服务已启动并监听 {_confs_host}:{_confs_port}',
+              file=_sys.stderr)
+        _sys.exit(1)
+    except RpcError as e:
+        print(f'[dbv2] 致命错误: 从 confs 获取 db.ini 失败: {e}',
+              file=_sys.stderr)
+        _sys.exit(1)
+    except Exception as e:
+        print(f'[dbv2] 致命错误: confs 配置拉取异常: {e}',
+              file=_sys.stderr)
+        _sys.exit(1)
 
 
 _confs_text = _fetch_from_confs()
-_config_source = 'built-in defaults'
-if _confs_text is not None:
-    _merge_ini(_confs_text)
-    _config_source = 'confs (db.ini)'
-    print(f'[dbv2] 配置来源: confs 统一配置服务 (db.ini)')
-else:
-    print(f'[dbv2] 警告: confs 不可用，使用内置默认值')
+_merge_ini(_confs_text)
+_config_source = 'confs (db.ini)'
+print(f'[dbv2] 配置来源: confs 统一配置服务 (db.ini @ {_confs_host}:{_confs_port})')
 
 # 环境变量覆盖（最高优先级，保持 Docker 兼容）
 if os.environ.get('LISTEN_ADDR'):
@@ -106,6 +118,19 @@ if os.environ.get('WORKERS'):
     _db_config['server']['workers'] = os.environ['WORKERS']
 if os.environ.get('DATABASE_URL'):
     _db_config['database']['url'] = os.environ['DATABASE_URL']
+
+# 配置完整性校验
+_required = {
+    'server': ['host', 'port', 'workers'],
+    'database': ['url'],
+    'logs': ['retention_days', 'max_records', 'cleanup_interval'],
+}
+for section, keys in _required.items():
+    for key in keys:
+        if not _db_config[section][key]:
+            print(f'[dbv2] 致命错误: 配置项 [{section}] {key} 缺失（db.ini 中未配置且无环境变量覆盖）',
+                  file=_sys.stderr)
+            _sys.exit(1)
 
 # 解析为最终常量
 DATABASE_URL = _db_config['database']['url']

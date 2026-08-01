@@ -227,7 +227,7 @@ except RpcError as e:
 
 ## 集成关系
 
-- 由 `core`（`PMC`）通过 `init.txt` 中的 `bash /opt/micro_servers/confs/_run.sh` 拉起并守护（在 db 之后、ai_review 之前启动）
+- 由 `core`（`PMC`）通过 `init.txt` 中的 `bash /opt/micro_servers/confs/_run.sh` 拉起并守护（需先于 db 启动，db 对 confs 有强依赖）
 - 各内部服务通过 pymsg `RpcClient` 调 `get` 路由按需获取配置，替代本地散落的 ini/json/yaml
 - 自身日志通过 `log_client.py` 异步推送至 `db:8005` 的 Logs 表（与其他服务一致）
 
@@ -237,7 +237,7 @@ except RpcError as e:
 |------|---------|---------|
 | [static](../static/) | [static.ini](configs/static.ini) | 三层 fail-safe：内置默认值 → confs（优先）→ 本地 `config.ini` 回退 |
 | [dnfs](../dnfs/) | [dnfs.ini](configs/dnfs.ini) | 三层 fail-safe：内置默认值 → confs（优先）→ 环境变量覆盖 |
-| [db](../db/) | [db.ini](configs/db.ini) | 三层 fail-safe：内置默认值 → confs（优先）→ 环境变量覆盖（最高优先级，Docker 兼容） |
+| [db](../db/) | [db.ini](configs/db.ini) | confs 强依赖（confs 不可用时 db 直接退出）→ 环境变量覆盖（最高优先级，Docker 兼容） |
 
 static 的接入实现见 [static/fsys.py](../static/fsys.py)：
 - `_fetch_from_confs()` 通过 `RpcClient` 调 `get` 路由取 `static.ini`，3 秒超时
@@ -251,10 +251,12 @@ dnfs 的接入实现见 [dnfs/dnfs.py](../dnfs/dnfs.py)：
 - Docker 环境通过环境变量传入服务名（db/ai_review），覆盖 confs 中的 127.0.0.1 默认值
 
 db 的接入实现见 [db/dbv2.py](../db/dbv2.py)：
-- 三层加载顺序：内置默认值 → confs（db.ini）→ 环境变量覆盖（优先级最高）
-- 配置项涵盖：`[server]` host/port/workers、`[database]` url、`[logs]` retention_days/max_records/cleanup_interval、`[confs]` host/port
+- 两层加载顺序：confs（db.ini，强依赖）→ 环境变量覆盖（优先级最高）
+- confs 连接失败或 db.ini 缺失必需配置项时，db 直接 `sys.exit(1)` 终止，不使用默认值
+- 配置项涵盖：`[server]` host/port/workers、`[database]` url、`[logs]` retention_days/max_records/cleanup_interval
+- confs 连接地址为引导配置：环境变量 `CONFS_HOST`/`CONFS_PORT` 优先，默认 `127.0.0.1:8010`
 - 支持的环境变量：`LISTEN_ADDR`/`LISTEN_PORT`/`WORKERS`/`DATABASE_URL`/`CONFS_HOST`/`CONFS_PORT`
-- 注意：db 先于 confs 启动（启动顺序 db → confs → ai_review/...），db 启动时若 confs 不可用会静默 fail-safe 使用默认值，配置来源会打印到控制台
+- 启动顺序：confs 必须先于 db 启动（confs → db → ai_review/...）
 - 独立运维工具 `db_tools.py`（backup/export/import 等）仍直接读 `DATABASE_URL` 环境变量，不依赖 confs，避免运维脚本依赖服务就绪
 
 其他服务（gateway / waf / ai_review / smtp）尚未接入，仍读各自本地配置。
