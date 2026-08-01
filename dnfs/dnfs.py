@@ -22,6 +22,7 @@ import json
 import configparser
 import urllib.request
 import urllib.error
+import functools
 from typing import Dict, Any
 from security_middleware import apply_security_headers
 from log_client import logs
@@ -292,6 +293,7 @@ def _sp_review_text(title, sp):
 
 def _handle_exp(func):
     '''处理视图函数中抛出的异常，并在日志模块中进行记录'''
+    @functools.wraps(func)
     def wrapper():
         try: return func()
         except DnfsExp as e:
