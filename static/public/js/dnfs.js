@@ -6,8 +6,8 @@
  */
 async function getNode(id) {
 	try {
-		obj = { "pid": id }
-		jsonBody = JSON.stringify(obj)
+		const obj = { "pid": id }
+		const jsonBody = JSON.stringify(obj)
 		console.log(jsonBody)
 		const res = await fetch('/get_notes', {
 			method: 'POST',
@@ -19,7 +19,7 @@ async function getNode(id) {
 		});
 
 		const responseText = await res.text();
-		// WAF 拦截：弹提示并中止，不能落入 catch（其会误跳登录页）
+		// WAF 拦截：弹提示并中止，不能落入 catch（其会向上抛出）
 		if (window.WafTip && WafTip.isBlocked(res, responseText)) {
 			alert(WafTip.MESSAGE);
 			return;
@@ -34,7 +34,7 @@ async function getNode(id) {
 		}
 
 		if (res.status === 401) {
-			// 凭证失效（过期或网关重启），跳转重新登录
+			// 凭证失效（过期或网关重启），仅此一种情况跳转重新登录
 			location.href = '/login.html';
 			return;
 		}
@@ -53,10 +53,12 @@ async function getNode(id) {
 		//}
 
 	} catch (err) {
-		// 获取节点失败（非 JSON 响应 / HTTP 错误 / 网络异常），统一跳转登录页
+		// 非 401 失败（网络异常 / 5xx / 非 JSON 响应）：提示真实原因并向上抛出，
+		// 调用方 .then(load_notes/loadMap) 不再执行，当前页面内容保持不变；
+		// 不再把任意错误误判为凭证失效而跳登录页
 		console.error('获取节点请求异常：', err);
-		location.href = '/login.html';
-	} finally {
+		alert(err.message || '获取节点失败，请检查网络后重试');
+		throw err;
 	}
 }
 
@@ -414,8 +416,17 @@ function renderMarkdown(element, content) {
 	/*
 	Markdown渲染
 	*/
-	const md = window.markdownit();
-	element.innerHTML = md.render(content, {html: false});
+	const md = window.markdownit({
+		html: false,
+		highlight: function(code, lang) {
+			if (lang && hljs.getLanguage(lang)) {
+				return `<pre><code class="hljs language-${lang}">${hljs.highlight(code, {language: lang}).value}</code></pre>`
+			} else {
+				return `<pre><code class="hljs">${md.utils.escapeHtml(code)}</code></pre>`
+			}
+		}
+	});
+	element.innerHTML = md.render(content);
 }
 
 /* ===== by qing — 特殊节点（管理员专属）=====
@@ -981,6 +992,14 @@ function renderUserPanel() {
 	});
 	userpanel.appendChild(fold);
 	if (!userpanel_expand || !current_user.login) return;
+
+	let back_to_index = document.createElement("div");
+	back_to_index.className = "tag";
+	back_to_index.textContent = "回到主页";
+	back_to_index.addEventListener("click", () => {
+		window.location.href = "/";
+	})
+	userpanel.appendChild(back_to_index);
 
 	let name_tag = document.createElement("div");
 	name_tag.className = "tag no-hover";

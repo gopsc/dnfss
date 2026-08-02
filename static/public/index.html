@@ -1,35 +1,92 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta http-equiv="Content-Type" content="text/html;charset=UTF-8">
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="DNFS 树状笔记：以树状结构组织知识的笔记社区，支持 Markdown、链接卡片、图片与文件分享。">
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fdf6ee">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1e1712">
+    <link rel="icon" href="favicon.ico">
     <link rel="stylesheet" href="css/theme.css">
     <link rel="stylesheet" href="css/index.css">
-    <title>DNFS 欢迎来到树状笔记</title>
+    <title>DNFS 树状笔记 — 让知识自然成体系</title>
 </head>
 <body>
     <header class="header">
-        <h1 onclick="window.location.href='index.html'">DNFS 树状笔记</h1>
-        <div class="right-group">
-            <img src="favicon.ico" alt="头像加载失败" id="avatar" width="70px" height="70px">
-            <b id="name">DNFS</b>
-            <button id="enterBtn" onclick="window.location.href='dnfs.html'" style="display:none">进入笔记</button>
-            <button id="logoutBtn" style="display:none">退出</button>
-            <button id="loginBtn" onclick="window.location.href='login.html'">登录</button>
-            <button id="registerBtn" onclick="window.location.href='register.html'">注册</button>
-        </div>
+        <h1 id="logo">DNFS 树状笔记</h1>
+        <nav class="right-group" aria-label="用户操作">
+            <img src="favicon.ico" alt="用户头像" id="avatar" style="display:none">
+            <b id="name" style="display:none"></b>
+            <button id="enterBtn" class="btn btn-primary" style="display:none">进入笔记</button>
+            <button id="logoutBtn" class="btn btn-ghost" style="display:none">退出</button>
+            <button id="loginBtn" class="btn btn-primary">登录</button>
+            <button id="registerBtn" class="btn btn-ghost">注册</button>
+        </nav>
     </header>
-    <div id="main-page">
-        <h2>关于本站</h2>
-        <p class="site-intro">
-            DNFS 树状笔记是一个以树状结构组织内容的笔记社区：每个节点都可以生长出子节点，
-            像树枝一样层层延展，让知识自然成体系。支持 Markdown 文本、链接卡片、图片与文件分享，
-            注册登录后即可创建属于你自己的知识树。
-        </p>
-    </div>
+
+    <main id="main-page">
+        <section class="hero">
+            <h2 class="hero-title">让知识像树一样<br><span class="accent-text">自然生长</span></h2>
+            <p class="hero-sub">每个节点都可以生长出子节点，像树枝一样层层延展</p>
+            <div class="hero-actions">
+                <button id="ctaBtn" class="btn btn-primary btn-lg">开始记录</button>
+                <a class="btn btn-ghost btn-lg" href="#features">了解更多</a>
+            </div>
+        </section>
+
+        <section id="features">
+            <h2 class="section-title">为什么选择树状笔记</h2>
+            <div class="features">
+                <div class="feature-card">
+                    <div class="feature-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="10.51" x2="15.42" y2="6.51"/><line x1="8.59" y1="13.49" x2="15.42" y2="17.49"/></svg>
+                    </div>
+                    <h3>树状结构组织</h3>
+                    <p>每个节点都能生长出子节点，像树枝般层层延展，让零散的想法自然汇聚成体系。</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                    </div>
+                    <h3>Markdown 写作</h3>
+                    <p>原生支持 Markdown 渲染，代码块、引用、列表一应俱全，专注内容本身。</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                    </div>
+                    <h3>多媒体分享</h3>
+                    <p>链接卡片、图片直显、文件下载，多种内容形态一站承载，分享更自由。</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                    </div>
+                    <h3>深色模式</h3>
+                    <p>跟随系统偏好自动切换明暗主题，日夜皆宜的舒适阅读体验。</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="about">
+            <h2 class="section-title">关于本站</h2>
+            <p class="site-intro">
+                DNFS 树状笔记是一个以树状结构组织内容的笔记社区：每个节点都可以生长出子节点，
+                像树枝一样层层延展，让知识自然成体系。支持 Markdown 文本、链接卡片、图片与文件分享，
+                注册登录后即可创建属于你自己的知识树。
+            </p>
+            <div class="quick-links">
+                <a href="allcolor.html">调色板</a>
+                <a href="games/">小游戏</a>
+                <a href="LICENSE.html">用户使用条例</a>
+            </div>
+        </section>
+    </main>
+
     <footer class="footer">
-		<a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">蜀ICP备2024107064号-2</a>
-	</footer>
-	<script src="js/index.js"></script>
+        <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">蜀ICP备2024107064号-2</a>
+    </footer>
+    <script src="js/token_manager.js"></script>
+    <script src="js/index.js"></script>
 </body>
 </html>

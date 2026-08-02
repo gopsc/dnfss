@@ -26,8 +26,9 @@ async function estimateExpiry() {
         const data = await res.json();
         if (!data.login) return false;
 
-        // 优先 iat（首次签发时间，刷新不变），回退 created_at（兼容旧 Token）
-        const issueStr = data.iat || data.created_at;
+        // 优先 created_at（刷新时更新），回退 iat（兼容旧 Token）
+        // 网关以 created_at + keep_time 判定令牌有效性，iat 刷新后不变，不能用于估算过期
+        const issueStr = data.created_at || data.iat;
         const keepTime = data.keep_time;
         if (!issueStr || !keepTime) return false;
 

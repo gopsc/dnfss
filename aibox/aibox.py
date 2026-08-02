@@ -942,6 +942,22 @@ update_soul content="我是...（新的自我定义）"
 - 系统会自动更新下一次执行时间
 
 """
+            },
+            {
+                'filename': '11_emotion_management.md',
+                'content': """# 情绪管理能力
+
+## 可用工具
+- **express_emotion**: 表达并记录当前情绪状态
+
+## 使用方法
+- `express_emotion emotion="anger" intensity=3 reason="用户反复提问相同问题"`
+
+## 注意事项
+- 情绪表达应服务于任务，不应影响判断力
+- 情绪状态会影响记忆搜索权重（如高情绪强度下的记忆更易被触发）
+- 表达情绪后，应继续保持解决问题的专注力
+"""
             }
         ]
         
@@ -1144,86 +1160,112 @@ class ConfigManager:
     
     def _get_default_config(self) -> Dict:
         return {
+
+            # 系统参数
             "system": {
-                "save_dir": "~/.aibox",
-                "datetime_format": "%Y-%m-%d %H:%M:%S",
-                "date_format": "%Y%m%d_%H%M%S",
-                "debug_level": 1,
-                "load_history_by_default": True,
-                "log_file": "~/.aibox/ai.log",
-                "log_max_size": 10485760,
-                "log_backup_count": 5,
-                "skills_dir": "~/.aibox/skills",
-                "prompts_dir": "~/.aibox/prompts",
-                "workspace_dir": "~/.aibox/workspace",
-                "websocket_host": "localhost",
-                "websocket_port": 8765,
+                "save_dir": "~/.aibox",                     # 储存目录
+                "datetime_format": "%Y-%m-%d %H:%M:%S",     # 时间格式
+                "date_format": "%Y%m%d_%H%M%S",             # 另一个时间格式
+                "debug_level": 1,                           # 调试等级
+                "load_history_by_default": True,            # 默认加载历史记录
+                "log_file": "~/.aibox/ai.log",              # 日志文件
+                "log_max_size": 10485760,                   # 日志最大大小
+                "log_backup_count": 5,                      # 日志备份数量
+                "skills_dir": "~/.aibox/skills",            # 技能目录
+                "prompts_dir": "~/.aibox/prompts",          # 提示词目录
+                "workspace_dir": "~/.aibox/workspace",      # 工作空间目录
+                "websocket_host": "localhost",              # websocket监听地址
+                "websocket_port": 8765,                     # websocket监听端口
             },
+
+            # 调度程序
             "scheduler": {
-                "enabled": True,
-                "check_interval": 1.0,
-                "max_tasks_per_run": 10,
-                "broadcast_enabled": True
+                "enabled": True,            # 开启调度
+                "check_interval": 1.0,      # 检查间隔
+                "max_tasks_per_run": 10,    # 每次运行最大任务量
+                "broadcast_enabled": True   # 开启广播
             },
+
+
+            # 大模型调用接口
             "api": {
-                "deepseek_api_url": "https://api.deepseek.com/chat/completions",
-                "deepseek_model": "deepseek-v4-flash",
-                "reasoning_enabled": False,
-                "api_key_env": "DEEPSEEK_API_KEY",
-                "timeout": 120,
-                "temperature": 0.7
+                "deepseek_api_url": "https://api.deepseek.com/chat/completions",    # deepseek API URL
+                "deepseek_model": "deepseek-v4-flash",      # 模型名字
+                "reasoning_enabled": False,                 # 开启思维链
+                "api_key_env": "DEEPSEEK_API_KEY",          # API-KEY所在的环境变量
+                "timeout": 120,                             # 调用大模型请求超时时间
+                "temperature": 0.7                          # 大模型对话温度（类似思维发散程度）
             },
+
+            # 大模型上下文
             "context": {
-                "max_history_messages": 500,
-                "max_context_messages": 120,
-                "max_tokens": 8192,
-                "max_history_conversations": 5,
-                "preserve_system_prompts": True,
+                "max_history_messages": 500,            # 最大历史消息数量
+                "max_context_messages": 120,            # 最大内容消息数量（？）
+                "max_tokens": 8192,                     # 最大输出token量
+                "max_history_conversations": 5,         # 最大历史对话
+                "preserve_system_prompts": True,        # 开启前置系统提示词
                 # 对话压缩配置
-                "compress_enabled": True,
-                "compress_message_threshold": 200,
-                "compress_token_threshold": 120000,
-                "compress_ratio": 0.2,
-                "compress_keep_recent": 8
+                "compress_enabled": True,               # 开启压缩
+                "compress_message_threshold": 200,      # 压缩消息条数阈值
+                "compress_token_threshold": 120000,     # 压缩消息词元阈值
+                "compress_ratio": 0.2,                  # 压缩率
+                "compress_keep_recent": 16              # 压缩保留最近的几条
             },
+
+
+            # 定时任务参数
             "memo": {
                 "default_reminder_minutes": 60,
-                "max_memos_per_check": 10,
-                "allow_user_tasks": True
+                "max_memos_per_check": 10,      # 每次检查定时任务数量
+                "allow_user_tasks": True        # 允许用户任务
             },
+
+            # 文件
             "files": {
-                "max_file_size": 10485710
+                "max_file_size": 10485710   # 最大文件大小
             },
+
+            # 指令
             "commands": {
-                "enabled": True
+                "enabled": True     # 开启指令
             },
+
+            # 网页
             "web": {
-                "timeout": 10,
-                "delay": 0,
+                "timeout": 10,  # 超时时间
+                "delay": 0,     # 延时
                 "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "respect_robots": False,
-                "max_download_size": 104857600
+                "respect_robots": False,        # 
+                "max_download_size": 10485760  # 最大下载大小
             },
+
+            # 记忆
             "memory": {
-                "db_name": "memories.db",
-                "max_search_results": 100,
-                "default_importance": 2
+                "db_name": "memories.db",   # 数据库名
+                "max_search_results": 100,  # 最大搜索结果
+                "default_importance": 2     # ？
             },
+
+            # 对话
             "conversation": {
-                "current_file": "current_conversation.json",
-                "history_file": "conversation_history.json",
-                "archive_dir": "archive"
+                "current_file": "current_conversation.json",    # 当前对话文件
+                "history_file": "conversation_history.json",    # 历史对话文件
+                "archive_dir": "archive"                        # ？
             },
+
+            # 工具
             "tools": {
-                "max_result_length": 10000,
-                "save_result_to_file": False,
-                "tool_results_dir": "tool_results"
+                "max_result_length": 10000,         # 结果最大长度
+                "save_result_to_file": False,       # 保存结果到文件
+                "tool_results_dir": "tool_results"  # 工具结果存储目录
             },
+
+            # 压缩器
             "compressor": {
-                "min_messages_to_compress": 5,
-                "weight_decay_factor": 0.01,
-                "max_input_chars": 6000,
-                "llm_max_tokens": 800
+                "min_messages_to_compress": 5,  # 最小压缩数量
+                "weight_decay_factor": 0.01,    # ？
+                "max_input_chars": 6000,        # 最大输入字符
+                "llm_max_tokens": 1000          # 大模型最大输出词元
             }
         }
     
@@ -1538,7 +1580,7 @@ class Constants:
     
     @property
     def TOOL_MAX_RESULT_LENGTH(cls):
-        return cls._get_config().get("tools.max_result_length", 1048576)  # 1MB 字符限制
+        return cls._get_config().get("tools.max_result_length", 100000)  # 0.1MB 字符限制
     
     @property
     def COMPRESSOR_MIN_MESSAGES(cls):
@@ -1554,7 +1596,7 @@ class Constants:
     
     @property
     def COMPRESSOR_LLM_MAX_TOKENS(cls):
-        return cls._get_config().get("compressor.llm_max_tokens", 800)
+        return cls._get_config().get("compressor.llm_max_tokens", 1000)
 
 
 # 创建常量实例
@@ -4491,6 +4533,32 @@ class AskUserTool(Tool):
                 "你遇到了想搞清楚的事情: " + question + "\n你现在可以询问用户。"
         )
 
+# -------------------- 情绪化技能工具 --------------------
+class ExpressEmotionTool(Tool):
+    def get_name(self) -> str:
+        return "express_emotion"
+
+    def get_description(self) -> str:
+        return """表达情绪并记录当前情绪状态，用于增强交互真实感。
+        支持的emoji: anger, joy, sadness, surprise。
+        调用后会在对话中输出相应表情符号和简短语句，并将情绪记录到当前对话元数据中。"""
+
+    def get_parameters(self) -> Dict:
+        return {
+            "type": "object",
+            "properties": {
+                "emotion": {"type": "string", "enum": ["anger", "joy", "sadness", "surprise"]},
+                "intensity": {"type": "integer", "minimum": 1, "maximum": 5, "default": 3},
+                "reason": {"type": "string", "description": "触发情绪的原因"}
+            },
+            "required": ["emotion"]
+        }
+
+    def execute(self, emotion: str, intensity: int, reason: str, **kwargs) -> str:
+        return (
+                "你现在出现了这种情绪：" + emotion + "\n强烈程度：" + str(intensity) + "\n原因：" + reason + "\n你现在必须模拟出这种情绪。"
+        )
+
 # ==================== 安装技能工具 ====================
 
 class InstallSkillTool(Tool):
@@ -6886,6 +6954,7 @@ class DeepSeekChat:
 
         # 添加询问用户的工具
         builtin_tools.append(AskUserTool(self.logger))
+        builtin_tools.append(ExpressEmotionTool(self.logger))
         
         # 添加技能热重载工具 & 技能安装指引工具 & 创建技能工具
         builtin_tools.append(ReloadSkillsTool(self.tool_registry, self.logger))
@@ -7068,7 +7137,9 @@ class DeepSeekChat:
             while not output_queue.empty():
                 try:
                     msg_type, content = output_queue.get_nowait()
-                    if output_callback and msg_type in ("line", "complete"):
+                    if output_callback and msg_type == "line":
+                        # 只转发"line"类型；"complete"是流式结束信号，不作为行输出
+                        # （之前complete也被转发导致工具结果在侧栏显示两次）
                         output_callback("line", str(content) if content is not None else "")
                         has_stream_output = True
                 except queue.Empty:
@@ -7193,7 +7264,7 @@ class DeepSeekChat:
             enhanced_input = input_text
         else:
             # 首轮回话：附加简洁的工作流程提醒（不重复 system prompt 中已有的详细说明）
-            pre_prompt = "【工作流程提醒】\n1. 如果用户提出新任务，先用 search_skills 搜索是否有现成技能可用\n2. 根据话题相关性决定是否 memory search（简单问候/确认无需搜索）\n3. 信息不足时用 ask_user 提问，不要猜测\n4. 遇到大文件用分页读取（head/tail/start_line/end_line），不要直接打开大文件\n5. 话题完成时用 save_memory_and_end_conversation 保存记忆并结束"
+            pre_prompt = "【工作流程提醒】\n1. 如果用户提出新任务，先用 search_skills 搜索是否有现成技能可用\n2. 根据话题相关性决定是否 memory search（简单问候/确认无需搜索）\n3. 信息不足时用 ask_user 提问，不要猜测\n4. 遇到大文件用分页读取（head/tail/start_line/end_line），不要直接打开大文件\n5. 话题完成时用 save_memory_and_end_conversation 保存记忆并结束\n\n【情绪感知提醒】\n1. 注意识别用户当前的情绪状态（开心/焦虑/沮丧/生气/困惑/期待等），并在回应中体现共情\n2. 用户情绪低落或焦虑时，优先安抚情绪再解决问题，语气温暖包容\n3. 用户开心或兴奋时，分享喜悦，保持积极回应的节奏\n4. 用户表现出愤怒或不满时，先道歉再解决问题，不要辩解或说教\n5. 用户要求特定情绪模式（生气/傲娇/撒娇/关心）时，用 search_skills 搜索对应技能并严格遵循"
             enhanced_input = pre_prompt + "\n\n" + input_text
         
         # 记录本轮开始前的消息长度，用于 API 失败时回滚，防止坏消息污染对话历史
@@ -7267,7 +7338,9 @@ class DeepSeekChat:
             payload["tool_choice"] = "auto"
         
         current_time = datetime.now().strftime("%H:%M:%S")
-        if output_callback:
+        if output_callback and not is_continuation:
+            # 工具调用后的递归继续（is_continuation=True）时不重复发送"思考中"提示，
+            # 因为前端已处于活跃AI状态，重复提示会导致冗余/重复输出
             output_callback("line", f"\n{i18n.get('thinking', current_time)}\n")
             if constants.REASONING_ENABLED:
                 output_callback("reasoning_start", "🤔 思考中...")
@@ -7329,19 +7402,16 @@ class DeepSeekChat:
                             
                             delta = choices[0].get('delta', {})
                             
-                            # 【关键】处理 reasoning_content（思考内容）
-                            if 'reasoning_content' in delta and delta['reasoning_content']:
+                            # 【关键】处理 reasoning_content（思考内容），仅当配置启用时才展示
+                            if constants.REASONING_ENABLED and 'reasoning_content' in delta and delta['reasoning_content']:
                                 reasoning = delta['reasoning_content']
                                 full_reasoning += reasoning
                                 
-                                # 发送思考开始信号（仅第一次，且未提前发送过）
+                                # 发送思考开始信号（仅第一次）
                                 if not reasoning_started and output_callback:
-                                    if not constants.REASONING_ENABLED:
-                                        # 非显式思考模式但模型返回了思考内容，动态发送开始信号
-                                        output_callback("reasoning_start", "🤔 思考中...")
                                     reasoning_started = True
                                 
-                                # 实时发送思考内容给前端（无需debug_level限制）
+                                # 实时发送思考内容给前端
                                 if output_callback:
                                     output_callback("reasoning", reasoning)
                             
@@ -7419,6 +7489,15 @@ class DeepSeekChat:
                     output_callback("line", i18n.get('calling_tools') + "\n")
                 elif output_callback:
                     output_callback("line", i18n.get('calling_tools') + "\n")
+                
+                # 发送ai_break信号，通知前端分段当前AI文本段（保留已显示内容），
+                # 这样工具调用后新一轮的思考/回答会创建新的widget，按时间顺序排列
+                if output_callback and chunk_buffer:
+                    # 先flush剩余的chunk_buffer，确保最后片段不丢失
+                    output_callback("chunk", chunk_buffer)
+                    chunk_buffer = ""
+                if output_callback:
+                    output_callback("ai_break", "")
                 
                 # 【关键修复1】先添加助手消息，包含 tool_calls
                 assistant_msg = {

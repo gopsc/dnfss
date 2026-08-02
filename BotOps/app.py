@@ -186,11 +186,20 @@ class BotOpsApp(App):
             stripped = content.strip()
             if not stripped:
                 pass
-            elif stripped.startswith(("💬 助手", "💬 Assistant", "🤔 思考中", "🤔 Thinking", "🤔 深度思考中")):
-                pass  # 助手前缀 / 思考提示：聊天区已有对应区域，无需展示
+            elif stripped.startswith((
+                "💬 助手", "💬 Assistant",          # 助手前缀（聊天区已有对应区域）
+                "🤔 思考中", "🤔 Thinking",           # 思考提示（聊天区已有思考区域）
+                "🤔 深度思考中",
+                "🤔 分析工具结果", "🤔 Analyzing",    # 工具分析提示（后续有具体工具输出，此为冗余）
+                "🔧 需要调用工具", "🔧 Need to call",# 工具调用前置提示（后续有"调用工具: xxx"具体提示）
+            )):
+                pass  # 冗余/有替代展示的提示行，过滤避免重复
             else:
-                # 🔧 调用工具 / 工具输出 / 🤔 分析工具结果 等 → 任务侧栏
+                # 🔧 调用工具: xxx / 工具输出 / 用户中断提示等 → 任务侧栏
                 self.tasks.write(stripped)
+        elif t == "ai_break":
+            # 工具调用前分段：结束当前AI文本段（保留已显示内容），后续chunk创建新widget
+            await self.chat.break_ai()
         elif t == "complete":
             # complete 携带完整全文，用于对齐已显示内容
             await self.chat.finish_ai(content)
@@ -244,7 +253,8 @@ class BotOpsApp(App):
         elif t == "notification":
             await self.notify_system(f"🔔 {content}")
         elif content:
-            await self.chat.append_ai(content)
+            # 未知消息类型不追加到AI聊天区（避免非AI内容污染回复），仅记入侧栏日志
+            self.tasks.write(f"[未知消息 type={t}] {str(content)[:200]}")
 
     # ── 连接状态回调 ──────────────────────────────────────────────────────
     async def _on_ws_state(self, state: str, detail: str):
