@@ -7340,19 +7340,16 @@ class DeepSeekChat:
                             
                             delta = choices[0].get('delta', {})
                             
-                            # 【关键】处理 reasoning_content（思考内容）
-                            if 'reasoning_content' in delta and delta['reasoning_content']:
+                            # 【关键】处理 reasoning_content（思考内容），仅当配置启用时才展示
+                            if constants.REASONING_ENABLED and 'reasoning_content' in delta and delta['reasoning_content']:
                                 reasoning = delta['reasoning_content']
                                 full_reasoning += reasoning
                                 
-                                # 发送思考开始信号（仅第一次，且未提前发送过）
+                                # 发送思考开始信号（仅第一次）
                                 if not reasoning_started and output_callback:
-                                    if not constants.REASONING_ENABLED:
-                                        # 非显式思考模式但模型返回了思考内容，动态发送开始信号
-                                        output_callback("reasoning_start", "🤔 思考中...")
                                     reasoning_started = True
                                 
-                                # 实时发送思考内容给前端（无需debug_level限制）
+                                # 实时发送思考内容给前端
                                 if output_callback:
                                     output_callback("reasoning", reasoning)
                             
