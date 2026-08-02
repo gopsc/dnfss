@@ -42,7 +42,8 @@ _confs_client = RpcClient(
     _confs_host, _confs_port, "redirect80",
     retry_on_refused=True, timeout=5,
 )
-_ini_text = _confs_client.call("get", {"name": "redirect80.ini"})
+_data = _confs_client.call("get", {"name": "redirect80.ini"})
+_ini_text = _data.get("content", "")
 _ini = configparser.ConfigParser(interpolation=None)
 _ini.read_string(_ini_text)
 
