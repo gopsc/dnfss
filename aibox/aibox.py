@@ -7264,7 +7264,7 @@ class DeepSeekChat:
             enhanced_input = input_text
         else:
             # 首轮回话：附加简洁的工作流程提醒（不重复 system prompt 中已有的详细说明）
-            pre_prompt = "【工作流程提醒】\n1. 如果用户提出新任务，先用 search_skills 搜索是否有现成技能可用\n2. 根据话题相关性决定是否 memory search（简单问候/确认无需搜索）\n3. 信息不足时用 ask_user 提问，不要猜测\n4. 遇到大文件用分页读取（head/tail/start_line/end_line），不要直接打开大文件\n5. 话题完成时用 save_memory_and_end_conversation 保存记忆并结束"
+            pre_prompt = "【工作流程提醒】\n1. 如果用户提出新任务，先用 search_skills 搜索是否有现成技能可用\n2. 根据话题相关性决定是否 memory search（简单问候/确认无需搜索）\n3. 信息不足时用 ask_user 提问，不要猜测\n4. 遇到大文件用分页读取（head/tail/start_line/end_line），不要直接打开大文件\n5. 话题完成时用 save_memory_and_end_conversation 保存记忆并结束\n\n【情绪感知提醒】\n1. 注意识别用户当前的情绪状态（开心/焦虑/沮丧/生气/困惑/期待等），并在回应中体现共情\n2. 用户情绪低落或焦虑时，优先安抚情绪再解决问题，语气温暖包容\n3. 用户开心或兴奋时，分享喜悦，保持积极回应的节奏\n4. 用户表现出愤怒或不满时，先道歉再解决问题，不要辩解或说教\n5. 用户要求特定情绪模式（生气/傲娇/撒娇/关心）时，用 search_skills 搜索对应技能并严格遵循"
             enhanced_input = pre_prompt + "\n\n" + input_text
         
         # 记录本轮开始前的消息长度，用于 API 失败时回滚，防止坏消息污染对话历史
