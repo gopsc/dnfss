@@ -18,6 +18,75 @@ users用户可以在目录下创建子模块，extra下面还有一些额外的�
 请留意模块的README文件
 
 
+## LCI 帧缓冲图形界面
+
+LCI（Linux Chinese Interface）是基于 Linux 帧缓冲设备（`/dev/fb0`）的图形界面系统，无需 X11 或 Wayland，直接操作显存，专为树莓派等嵌入式环境设计。
+
+### 图形架构
+
+```
+FrameBuf          -- 帧缓冲设备封装，支持旋转(0~3)和字号设置
+  └─ PoolArea     -- 容器区域，管理子区域树，支持 add() 嵌套和 flush() 刷新
+       ├─ ShapeArea   -- 形状区域，支持单个字符绘制
+       │    └─ CharShape -- 字符形状，指定宽高和位置，Draw() 绘制到 ShapeArea
+       └─ PoolArea    -- 递归嵌套，形成布局树
+```
+
+### 布局体系
+
+界面采用三层布局：
+
+```
+┌─────────────────────────────────────┐
+│  topArea         标题栏              │  ← 绘制 "CPU" 红色大字
+│    └─ ShapeArea: CharShape 'C','P','U' │
+├─────────────────────────────────────┤
+│  mainArea        主体区域            │  ← 绿色坐标轴 + 实时折线图
+│    └─ tableArea                     │
+│       蓝色折线: 内存使用率            │
+│       红色折线: CPU 使用率            │
+├─────────────────────────────────────┤
+│  bottomArea      底部状态栏（预留）    │
+└─────────────────────────────────────┘
+```
+
+### 绘制原语
+
+| 操作 | 用途 |
+|------|------|
+| `rectangle_fill(x, y, w, h, color)` | 矩形填充（清屏/背景） |
+| `line(x0, y0, x1, y1, color)` | 画线（折线图、坐标轴） |
+| `CharShape(w, h, x, y, ch).Draw(area, color)` | 字符绘制 |
+| `flush(area, bool)` | 刷新区域到屏幕 |
+
+### 实时数据可视化
+
+每秒采集一次系统数据并绘制折线图：
+- 通过 `/proc/stat` 读取 CPU 使用率（红色折线）
+- 通过 `sysinfo()` 读取内存使用率（蓝色折线）
+- 保留最近 40 个数据点，平滑滚动
+
+### 构建
+
+```bash
+make lci
+```
+
+构建依赖 `-ljpeg -lpng`，需要帧缓冲设备和 I2C/摄像头等硬件支持。
+
+### 运行
+
+```bash
+./lci --lci --rotate=0 --fontsize=18
+```
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--rotate` | 屏幕旋转角度 (0~3) | 0 |
+| `--fontsize` | 字号大小 | 18 |
+
+> **注意**: `include/lci/` 和 `src/lci/` 目录下的图形核心文件（FrameBuf, Drawable, PoolArea, ShapeArea, CharShape, Color 等）当前处于开发中，尚未提交到仓库。
+
 ## 如何托管外部模块
 
 编辑启动列表程序，常为init.txt
