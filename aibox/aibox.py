@@ -4554,6 +4554,11 @@ class ExpressEmotionTool(Tool):
             "required": ["emotion"]
         }
 
+    def execute(self, emotion: str, intensity: int, reason: str, **kwargs) -> str:
+        return (
+                "你现在出现了这种情绪：" + emotion + "\n强烈程度：" + str(intensity) + "\n原因：" + reason + "\n你现在必须模拟出这种情绪。"
+        )
+
 # ==================== 安装技能工具 ====================
 
 class InstallSkillTool(Tool):
