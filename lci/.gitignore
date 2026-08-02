@@ -4,10 +4,6 @@ users/
 *.pem
 build/
 build_*/
-nn
-camera
-lci
-pmc
 
 # ide
 .vscode/
