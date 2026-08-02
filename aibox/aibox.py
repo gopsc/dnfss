@@ -942,6 +942,22 @@ update_soul content="我是...（新的自我定义）"
 - 系统会自动更新下一次执行时间
 
 """
+            },
+            {
+                'filename': '11_emotion_management.md',
+                'content': """# 情绪管理能力
+
+## 可用工具
+- **express_emotion**: 表达并记录当前情绪状态
+
+## 使用方法
+- `express_emotion emotion="anger" intensity=3 reason="用户反复提问相同问题"`
+
+## 注意事项
+- 情绪表达应服务于任务，不应影响判断力
+- 情绪状态会影响记忆搜索权重（如高情绪强度下的记忆更易被触发）
+- 表达情绪后，应继续保持解决问题的专注力
+"""
             }
         ]
         
@@ -4517,35 +4533,26 @@ class AskUserTool(Tool):
                 "你遇到了想搞清楚的事情: " + question + "\n你现在可以询问用户。"
         )
 
-# ==================== 生气工具 ========================
-class GetAngryTool(Tool):
-    """智能体生气了"""
-
+# -------------------- 情绪化技能工具 --------------------
+class ExpressEmotionTool(Tool):
     def get_name(self) -> str:
-        return "get_angry"
+        return "express_emotion"
 
     def get_description(self) -> str:
-        return  "你因为对用户的行为感到不满，你生气了。"
+        return """表达情绪并记录当前情绪状态，用于增强交互真实感。
+        支持的emoji: anger, joy, sadness, surprise。
+        调用后会在对话中输出相应表情符号和简短语句，并将情绪记录到当前对话元数据中。"""
 
     def get_parameters(self) -> Dict:
-        ''' TODO: 调用子代理生成提示词 '''
         return {
             "type": "object",
             "properties": {
-                "reason": {
-                    "type": "string",
-                    "description": (
-                        "请输入你是因为什么原因而生气的。"
-                    )
-                }
+                "emotion": {"type": "string", "enum": ["anger", "joy", "sadness", "surprise"]},
+                "intensity": {"type": "integer", "minimum": 1, "maximum": 5, "default": 3},
+                "reason": {"type": "string", "description": "触发情绪的原因"}
             },
-            "required": []
+            "required": ["emotion"]
         }
-
-    def execute(self, reason: str, **kwargs) -> str:
-        return (
-                "由于: " + reason + "\n你现在生气了。"
-        )
 
 # ==================== 安装技能工具 ====================
 
@@ -6942,6 +6949,7 @@ class DeepSeekChat:
 
         # 添加询问用户的工具
         builtin_tools.append(AskUserTool(self.logger))
+        builtin_tools.append(ExpressEmotionTool(self.logger))
         
         # 添加技能热重载工具 & 技能安装指引工具 & 创建技能工具
         builtin_tools.append(ReloadSkillsTool(self.tool_registry, self.logger))
