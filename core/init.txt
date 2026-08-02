@@ -8,6 +8,8 @@ bash /opt/micro_servers/waf/_run.sh
 bash /opt/micro_servers/gateway/_run.sh
 bash /opt/micro_servers/captcha/_run.sh
 bash /opt/micro_servers/aibox/_run.sh
+bash /opt/micro_servers/redirect80/_run.sh
+
 #
 #ssh-copy-id user@your-server
 #ssh -D 1080 -N  user@your-server
