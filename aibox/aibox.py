@@ -1144,31 +1144,38 @@ class ConfigManager:
     
     def _get_default_config(self) -> Dict:
         return {
+
+            # 系统参数
             "system": {
-                "save_dir": "~/.aibox",
-                "datetime_format": "%Y-%m-%d %H:%M:%S",
-                "date_format": "%Y%m%d_%H%M%S",
-                "debug_level": 1,
-                "load_history_by_default": True,
-                "log_file": "~/.aibox/ai.log",
-                "log_max_size": 10485760,
-                "log_backup_count": 5,
-                "skills_dir": "~/.aibox/skills",
-                "prompts_dir": "~/.aibox/prompts",
-                "workspace_dir": "~/.aibox/workspace",
-                "websocket_host": "localhost",
-                "websocket_port": 8765,
+                "save_dir": "~/.aibox",                     # 储存目录
+                "datetime_format": "%Y-%m-%d %H:%M:%S",     # 时间格式
+                "date_format": "%Y%m%d_%H%M%S",             # 另一个时间格式
+                "debug_level": 1,                           # 调试等级
+                "load_history_by_default": True,            # 默认加载历史记录
+                "log_file": "~/.aibox/ai.log",              # 日志文件
+                "log_max_size": 10485760,                   # 日志最大大小
+                "log_backup_count": 5,                      # 日志备份数量
+                "skills_dir": "~/.aibox/skills",            # 技能目录
+                "prompts_dir": "~/.aibox/prompts",          # 提示词目录
+                "workspace_dir": "~/.aibox/workspace",      # 工作空间目录
+                "websocket_host": "localhost",              # websocket监听地址
+                "websocket_port": 8765,                     # websocket监听端口
             },
+
+            # 调度程序
             "scheduler": {
-                "enabled": True,
-                "check_interval": 1.0,
-                "max_tasks_per_run": 10,
-                "broadcast_enabled": True
+                "enabled": True,            # 开启调度
+                "check_interval": 1.0,      # 检查间隔
+                "max_tasks_per_run": 10,    # 每次运行最大任务量
+                "broadcast_enabled": True   # 开启广播
             },
+
+
+            # 大模型调用接口
             "api": {
-                "deepseek_api_url": "https://api.deepseek.com/chat/completions",
-                "deepseek_model": "deepseek-v4-flash",
-                "reasoning_enabled": False,
+                "deepseek_api_url": "https://api.deepseek.com/chat/completions",    # deepseek API URL
+                "deepseek_model": "deepseek-v4-flash",      # 模型名字
+                "reasoning_enabled": False,                 # 开启思维链
                 "api_key_env": "DEEPSEEK_API_KEY",
                 "timeout": 120,
                 "temperature": 0.7
