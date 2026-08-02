@@ -976,6 +976,14 @@ function renderUserPanel() {
 	userpanel.appendChild(fold);
 	if (!userpanel_expand || !current_user.login) return;
 
+	let back_to_index = document.createElement("div");
+	back_to_index.className = "tag";
+	back_to_index.textContent = "回到主页";
+	back_to_index.addEventListener("click", () => {
+		window.location.href = "/";
+	})
+	userpanel.appendChild(back_to_index);
+
 	let name_tag = document.createElement("div");
 	name_tag.className = "tag no-hover";
 	name_tag.textContent = current_user.user;
