@@ -2,6 +2,7 @@ gateway/shufeng.ini
 core/Nidus.service.shufeng
 ai_review/.env
 confs/__pycache__/
+.workbuddy/
 libhttp/test_server
 *.pyc
 __pycache__/
