@@ -1,5 +1,7 @@
 #prjs
 *.db
+*.db-shm
+*.db-wal
 *.bin
 *.build
 *.dist
