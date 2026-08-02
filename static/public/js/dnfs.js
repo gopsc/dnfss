@@ -781,6 +781,18 @@ function cancelEdit() {
 	resetTextareaHeight();	/* 恢复初始高度 */
 }
 
+/* 导航守卫：表单有未提交内容时先 confirm；确认放弃则清空表单放行，否则本次导航不执行。
+ * 必须在调用方修改 stack 之前调用（点卡片 push 前 / 返回上一层 pop 前），
+ * 否则用户选择"不放弃"时 stack 已被改动，后续导航与新增节点的 pid 全部错位 */
+function confirmLeaveIfDirty() {
+	if (input_note_title.value == "" && input_note_content.value == "") return true;
+	if (confirm("是否放弃当前输入的内容？") == false) return false;
+	input_note_title.value = "";
+	input_note_content.value = "";
+	cancelEdit();
+	return true;
+}
+
 function load_notes(main_node) {
 
 	/* 这个不能设置为空的 */
@@ -811,6 +823,7 @@ function load_notes(main_node) {
 		let card = document.createElement('div');
 		card.className = "card";
 		card.addEventListener('click', function(event) {
+			if (!confirmLeaveIfDirty()) return;	/* 未放弃输入则不跳转，stack 保持原样 */
 			var id = Number(item.id)
 			stack.push(id)
 			getNode(id).then(load_notes)
@@ -913,8 +926,10 @@ function loadMap(children_json) {
         back.className = "tag back";
         back.textContent = "← 返回上一层";
         back.addEventListener("click", () => {
+            if (!confirmLeaveIfDirty()) return;	/* 未放弃输入则不返回，stack 保持原样 */
             stack.pop();
-            var id = (stack.length >= 0) ? stack[stack.length - 1] : 0;
+            /* 栈空（回到根）时取 0：原判断 stack.length >= 0 恒真，空栈取 stack[-1] 得 undefined */
+            var id = (stack.length > 0) ? stack[stack.length - 1] : 0;
             getNode(id).then(load_notes);
             getNode(id).then(loadMap);
         });
