@@ -1176,61 +1176,80 @@ class ConfigManager:
                 "deepseek_api_url": "https://api.deepseek.com/chat/completions",    # deepseek API URL
                 "deepseek_model": "deepseek-v4-flash",      # 模型名字
                 "reasoning_enabled": False,                 # 开启思维链
-                "api_key_env": "DEEPSEEK_API_KEY",
-                "timeout": 120,
-                "temperature": 0.7
+                "api_key_env": "DEEPSEEK_API_KEY",          # API-KEY所在的环境变量
+                "timeout": 120,                             # 调用大模型请求超时时间
+                "temperature": 0.7                          # 大模型对话温度（类似思维发散程度）
             },
+
+            # 大模型上下文
             "context": {
-                "max_history_messages": 500,
-                "max_context_messages": 120,
-                "max_tokens": 8192,
-                "max_history_conversations": 5,
-                "preserve_system_prompts": True,
+                "max_history_messages": 500,            # 最大历史消息数量
+                "max_context_messages": 120,            # 最大内容消息数量（？）
+                "max_tokens": 8192,                     # 最大输出token量
+                "max_history_conversations": 5,         # 最大历史对话
+                "preserve_system_prompts": True,        # 开启前置系统提示词
                 # 对话压缩配置
-                "compress_enabled": True,
-                "compress_message_threshold": 200,
-                "compress_token_threshold": 120000,
-                "compress_ratio": 0.2,
-                "compress_keep_recent": 8
+                "compress_enabled": True,               # 开启压缩
+                "compress_message_threshold": 200,      # 压缩消息条数阈值
+                "compress_token_threshold": 120000,     # 压缩消息词元阈值
+                "compress_ratio": 0.2,                  # 压缩率
+                "compress_keep_recent": 16              # 压缩保留最近的几条
             },
+
+
+            # 定时任务参数
             "memo": {
                 "default_reminder_minutes": 60,
-                "max_memos_per_check": 10,
-                "allow_user_tasks": True
+                "max_memos_per_check": 10,      # 每次检查定时任务数量
+                "allow_user_tasks": True        # 允许用户任务
             },
+
+            # 文件
             "files": {
-                "max_file_size": 10485710
+                "max_file_size": 10485710   # 最大文件大小
             },
+
+            # 指令
             "commands": {
-                "enabled": True
+                "enabled": True     # 开启指令
             },
+
+            # 网页
             "web": {
-                "timeout": 10,
-                "delay": 0,
+                "timeout": 10,  # 超时时间
+                "delay": 0,     # 延时
                 "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "respect_robots": False,
-                "max_download_size": 104857600
+                "respect_robots": False,        # 
+                "max_download_size": 10485760  # 最大下载大小
             },
+
+            # 记忆
             "memory": {
-                "db_name": "memories.db",
-                "max_search_results": 100,
-                "default_importance": 2
+                "db_name": "memories.db",   # 数据库名
+                "max_search_results": 100,  # 最大搜索结果
+                "default_importance": 2     # ？
             },
+
+            # 对话
             "conversation": {
-                "current_file": "current_conversation.json",
-                "history_file": "conversation_history.json",
-                "archive_dir": "archive"
+                "current_file": "current_conversation.json",    # 当前对话文件
+                "history_file": "conversation_history.json",    # 历史对话文件
+                "archive_dir": "archive"                        # ？
             },
+
+            # 工具
             "tools": {
-                "max_result_length": 10000,
-                "save_result_to_file": False,
-                "tool_results_dir": "tool_results"
+                "max_result_length": 10000,         # 结果最大长度
+                "save_result_to_file": False,       # 保存结果到文件
+                "tool_results_dir": "tool_results"  # 工具结果存储目录
             },
+
+            # 压缩器
             "compressor": {
-                "min_messages_to_compress": 5,
-                "weight_decay_factor": 0.01,
-                "max_input_chars": 6000,
-                "llm_max_tokens": 800
+                "min_messages_to_compress": 5,  # 最小压缩数量
+                "weight_decay_factor": 0.01,    # ？
+                "max_input_chars": 6000,        # 最大输入字符
+                "llm_max_tokens": 1000          # 大模型最大输出词元
             }
         }
     
@@ -1545,7 +1564,7 @@ class Constants:
     
     @property
     def TOOL_MAX_RESULT_LENGTH(cls):
-        return cls._get_config().get("tools.max_result_length", 1048576)  # 1MB 字符限制
+        return cls._get_config().get("tools.max_result_length", 100000)  # 0.1MB 字符限制
     
     @property
     def COMPRESSOR_MIN_MESSAGES(cls):
@@ -1561,7 +1580,7 @@ class Constants:
     
     @property
     def COMPRESSOR_LLM_MAX_TOKENS(cls):
-        return cls._get_config().get("compressor.llm_max_tokens", 800)
+        return cls._get_config().get("compressor.llm_max_tokens", 1000)
 
 
 # 创建常量实例
@@ -4496,6 +4515,36 @@ class AskUserTool(Tool):
     def execute(self, question: str, **kwargs) -> str:
         return (
                 "你遇到了想搞清楚的事情: " + question + "\n你现在可以询问用户。"
+        )
+
+# ==================== 生气工具 ========================
+class GetAngryTool(Tool):
+    """智能体生气了"""
+
+    def get_name(self) -> str:
+        return "get_angry"
+
+    def get_description(self) -> str:
+        return  "你因为对用户的行为感到不满，你生气了。"
+
+    def get_parameters(self) -> Dict:
+        ''' TODO: 调用子代理生成提示词 '''
+        return {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "请输入你是因为什么原因而生气的。"
+                    )
+                }
+            },
+            "required": []
+        }
+
+    def execute(self, reason: str, **kwargs) -> str:
+        return (
+                "由于: " + reason + "\n你现在生气了。"
         )
 
 # ==================== 安装技能工具 ====================
