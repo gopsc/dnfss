@@ -437,6 +437,7 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
     "broadcast_enabled": true
   },
   "api": {
+    "provider": "deepseek",
     "deepseek_api_url": "https://api.deepseek.com/chat/completions",
     "deepseek_model": "deepseek-v4-flash",
     "reasoning_enabled": false,
@@ -508,6 +509,8 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
 > 默认模型为 `deepseek-v4-flash`（通过 `api.deepseek_model` 修改）。设置 `api.reasoning_enabled: true` 可启用思考模式，此时会在请求中添加 `thinking: {type: "enabled"}` 参数，模型会先进行思考再回答，实时展示思考过程（灰色斜体区域），回答质量更高且**支持工具调用**（文件操作、命令执行、记忆搜索等工具均可在思考模式下正常使用）。
 > 
 > API Key 从环境变量 `DEEPSEEK_API_KEY` 读取（亦支持 `~/.cert/deepseek.key` 文件）。
+> 
+> **多厂商切换**：大模型调用已通过 `aibox/llm_client.py` 抽象层解耦，业务层不再直接依赖具体厂商。配置 `api.provider`（默认 `deepseek`）即可切换厂商，当前内置 `DeepSeekClient`（兼容 OpenAI Chat Completions 协议，Kimi / Qwen / GLM / Doubao 等绝大多数厂商均可复用）。新增厂商只需在此文件新增一个 `LLMClient` 子类并在 `create_llm_client` 工厂中注册，无需改动业务代码，为后续子代理/多模型共发预留了扩展点。
 
 ## 🛠️ 命令行参数
 

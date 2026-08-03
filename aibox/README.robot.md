@@ -507,6 +507,7 @@ CREATE TABLE memos (
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
+| `provider` | str | `deepseek` | 模型厂商，用于 `llm_client` 工厂路由 |
 | `deepseek_api_url` | str | `https://api.deepseek.com/chat/completions` | API URL |
 | `deepseek_model` | str | `deepseek-v4-flash` | 模型名 |
 | `api_key_env` | str | `DEEPSEEK_API_KEY` | API Key 环境变量名 |

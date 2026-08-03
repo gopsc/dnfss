@@ -35,6 +35,9 @@ from logging.handlers import RotatingFileHandler
 
 import requests
 
+# 大模型客户端抽象层（支持多厂商切换）
+from llm_client import create_llm_client
+
 # ==================== 语言检测和多语言支持 ====================
 
 
@@ -2013,7 +2016,7 @@ class ConversationCompressor:
         return content
     
     def _compress_via_llm(self, messages: List[Dict]) -> Optional[str]:
-        """通过语言模型压缩消息"""
+        """通过语言模型压缩消息（经由客户端抽象层调用，支持多厂商）"""
         if not messages:
             return None
         
@@ -2022,36 +2025,15 @@ class ConversationCompressor:
         print(f"📦 {i18n.get('conversation_compress')}: 正在压缩 {len(messages)} 条消息...")
         
         try:
-            headers = {
-                "Authorization": f"Bearer {self.ai.api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            payload = {
-                "model": constants.DEEPSEEK_MODEL,
-                "messages": [
+            summary = self.ai.client.chat_completion(
+                [
                     {"role": "system", "content": "你是一个专业的对话摘要助手，擅长提取对话核心信息并进行结构化总结。请保留工具调用的关键结果。"},
                     {"role": "user", "content": prompt}
                 ],
-                "temperature": 0.3,
-                "max_tokens": constants.COMPRESSOR_LLM_MAX_TOKENS
-            }
-            
-            response = requests.post(
-                constants.DEEPSEEK_API_URL,
-                headers=headers,
-                json=payload,
-                timeout=30
+                temperature=0.3,
+                max_tokens=constants.COMPRESSOR_LLM_MAX_TOKENS
             )
-            
-            if response.status_code == 200:
-                result = response.json()
-                summary = result["choices"][0]["message"]["content"].strip()
-                return summary
-            else:
-                print(f"   ❌ 语言模型压缩失败: HTTP {response.status_code}")
-                return None
-                
+            return summary
         except Exception as e:
             self.logger.error(f"语言模型压缩异常: {e}")
             return None
@@ -6580,10 +6562,13 @@ class DeepSeekChat:
                  history_manager: ConversationHistory = None, memory_db: MemoryDatabase = None,
                  memo_db: MemoDatabase = None, command_executor: CommandExecutor = None,
                  prompt_manager: PromptManager = None):
-        self.name = "DeepSeek"
-        self.debug_level = debug_level if debug_level is not None else Logger("").level
-        self.logger = Logger(self.name, self.debug_level)
         self.config = ConfigManager()
+        self.logger = Logger("DeepSeek", debug_level if debug_level is not None else Logger("").level)
+        self.debug_level = self.logger.level
+        # 大模型客户端（抽象层，支持多厂商切换）
+        self.client = create_llm_client(self.config, api_key=api_key, logger=self.logger)
+        self.api_key = self.client.api_key
+        self.name = self.client.name
         self.history_manager = history_manager
         self.memory_db = memory_db
         self.memo_db = memo_db
@@ -6595,24 +6580,12 @@ class DeepSeekChat:
         # 添加对话压缩器
         self.compressor = ConversationCompressor(self, self.logger)
         
-        api_key_env = self.config.get("api.api_key_env")
-        self.api_key = api_key or os.environ.get(api_key_env)
-        if not self.api_key:
-            try:
-                home = os.environ.get("HOME", os.environ["USERPROFILE"])
-                key_path = os.path.join(home, ".cert", "deepseek.key")
-                with open(f"{key_path}", "r") as f:
-                    self.api_key = f.read().strip()
-            except Exception as e:
-                raise RuntimeError(f"请设置环境变量 {api_key_env} 或在配置文件中设置API Key")
-        
         self.max_history = max_history or constants.DEFAULT_MAX_HISTORY
         self.preserve_system = constants.PRESERVE_SYSTEM_PROMPTS
         self.stats = {"api_calls": 0, "tool_calls": 0, "errors": []}
         
-        # 取消机制：threading.Event 用于跨线程信号，_current_response 用于中断HTTP请求
+        # 取消机制：threading.Event 用于跨线程信号，HTTP 中断由客户端抽象层负责
         self._cancel_event = threading.Event()
-        self._current_response = None
         self._command_executor = command_executor  # 保存命令执行器引用，用于取消时kill子进程
         
         self._init_system_prompts(system_prompt)
@@ -6624,19 +6597,10 @@ class DeepSeekChat:
         """中断当前正在进行的AI思考/工具执行。线程安全，可从任意线程调用。"""
         self.logger.info("收到中断信号，正在取消当前操作...")
         self._cancel_event.set()
-        # 强制关闭当前HTTP响应，立即中断 iter_lines() 的阻塞读取
-        # 仅调用 response.close() 可能无法中断底层socket recv()，需要先关闭raw连接
-        if self._current_response is not None:
+        # 关闭当前流式HTTP响应，立即中断阻塞读取（由客户端抽象层负责）
+        if self.client is not None:
             try:
-                resp = self._current_response
-                self._current_response = None
-                # 先关闭底层raw socket连接，强制阻塞的recv()立即抛出异常
-                if hasattr(resp, 'raw') and resp.raw is not None:
-                    try:
-                        resp.raw.close()
-                    except Exception:
-                        pass
-                resp.close()
+                self.client.cancel()
             except Exception:
                 pass
         # 终止正在运行的子进程
@@ -7039,11 +7003,6 @@ class DeepSeekChat:
         if self.history_manager:
             self.history_manager.add_message("user", enhanced_input, "用户")
         
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        
         # 构建消息列表，确保包含 reasoning_content
         enhanced_messages = []
         
@@ -7081,25 +7040,8 @@ class DeepSeekChat:
                 else:
                     enhanced_messages.append(msg)
         
-        payload = {
-            "model": constants.DEEPSEEK_MODEL,
-            "messages": enhanced_messages,
-            "temperature": constants.DEFAULT_TEMPERATURE,
-            "max_tokens": constants.DEFAULT_MAX_TOKENS,
-            "stream": True
-        }
-        
-        # 思考模式：启用 thinking 参数
-        if constants.REASONING_ENABLED:
-            payload["thinking"] = {
-                "type": "enabled"
-            }
-        
         # 工具调用（v4-flash 支持思考+工具调用）
-        tools = self.tool_registry.get_tools_schemas()
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
+        tools = self.tool_registry.get_tools_schemas() or None
         
         current_time = datetime.now().strftime("%H:%M:%S")
         if output_callback and not is_continuation:
@@ -7125,113 +7067,81 @@ class DeepSeekChat:
         MAX_CHUNK_DELAY = 0.1
         
         try:
-            proxies = self.config.get_proxy()
-            response = requests.post(
-                constants.DEEPSEEK_API_URL,
-                headers=headers,
-                json=payload,
-                timeout=constants.DEFAULT_TIMEOUT,
-                stream=True,
-                proxies=proxies   # 动态代理
-            )
-            self._current_response = response  # 保存引用以便cancel()关闭连接
-            
-            if response.status_code != 200:
-                error_msg = f"\n错误状态码: {response.status_code}\n错误响应: {response.text}"
-                if output_callback:
-                    output_callback("error", error_msg)
-                response.raise_for_status()
-            
-            for line in response.iter_lines():
+            # 通过客户端抽象层发起流式请求（统一事件格式，支持多厂商切换）
+            for event in self.client.stream_chat(
+                enhanced_messages,
+                temperature=constants.DEFAULT_TEMPERATURE,
+                max_tokens=constants.DEFAULT_MAX_TOKENS,
+                tools=tools,
+                reasoning_enabled=constants.REASONING_ENABLED,
+            ):
                 # 流式循环中检查取消信号
                 if self._is_cancelled():
                     break
-                if line:
-                    line = line.decode('utf-8')
-                    if line.startswith('data: '):
-                        data = line[6:]
-                        if data == '[DONE]':
-                            if chunk_buffer and output_callback:
-                                output_callback("chunk", chunk_buffer)
-                                chunk_buffer = ""
-                            if output_callback:
-                                output_callback("line", "\n")
-                            break
-                        
-                        try:
-                            chunk = json.loads(data)
-                            choices = chunk.get('choices', [])
-                            if not choices:
-                                continue
-                            
-                            delta = choices[0].get('delta', {})
-                            
-                            # 【关键】处理 reasoning_content（思考内容），仅当配置启用时才展示
-                            if constants.REASONING_ENABLED and 'reasoning_content' in delta and delta['reasoning_content']:
-                                reasoning = delta['reasoning_content']
-                                full_reasoning += reasoning
-                                
-                                # 发送思考开始信号（仅第一次）
-                                if not reasoning_started and output_callback:
-                                    reasoning_started = True
-                                
-                                # 实时发送思考内容给前端
-                                if output_callback:
-                                    output_callback("reasoning", reasoning)
-                            
-                            # 思考结束：当开始收到content且之前有reasoning时，发送结束信号
-                            if 'content' in delta and delta['content'] and reasoning_started and not reasoning_ended:
-                                reasoning_ended = True
-                                if output_callback:
-                                    output_callback("reasoning_end", "")
-                                    output_callback("line", i18n.get('assistant_prefix'))
-                            
-                            # 处理正常内容
-                            if 'content' in delta and delta['content']:
-                                content = delta['content']
-                                chunk_buffer += content
-                                full_response += content
-                                
-                                if (len(chunk_buffer) >= MIN_CHUNK_SIZE or 
-                                    time.time() - last_send_time >= MAX_CHUNK_DELAY):
-                                    if output_callback:
-                                        output_callback("chunk", chunk_buffer)
-                                    chunk_buffer = ""
-                                    last_send_time = time.time()
-                            
-                            # 处理工具调用
-                            if 'tool_calls' in delta:
-                                tool_calls = delta['tool_calls']
-                                for tc in tool_calls:
-                                    index = tc.get('index', 0)
-                                    
-                                    if index not in current_tool_calls:
-                                        # 确保 tool_call id 非空，空 id 会导致 API 400 错误污染对话历史
-                                        tc_id = tc.get('id', '') or f"call_{self.stats['tool_calls']}_{index}_{int(time.time()*1000)}"
-                                        current_tool_calls[index] = {
-                                            'id': tc_id,
-                                            'type': 'function',
-                                            'function': {
-                                                'name': '',
-                                                'arguments': ''
-                                            }
-                                        }
-                                    else:
-                                        # 流式传输中 id 可能分片到达，后续补充
-                                        existing_id = current_tool_calls[index].get('id', '')
-                                        new_id = tc.get('id', '')
-                                        if new_id and (not existing_id or existing_id.startswith('call_')):
-                                            current_tool_calls[index]['id'] = new_id
-                                    
-                                    if 'function' in tc:
-                                        if 'name' in tc['function']:
-                                            current_tool_calls[index]['function']['name'] = tc['function']['name']
-                                        if 'arguments' in tc['function']:
-                                            current_tool_calls[index]['function']['arguments'] += tc['function']['arguments']
-                        
-                        except json.JSONDecodeError as e:
-                            self.logger.error(f"JSON解析错误: {e}, 数据: {data}")
-                            continue
+                
+                etype = event.get("type")
+                
+                if etype == "reasoning":
+                    # 处理思考内容（仅当配置启用时才会收到该事件）
+                    reasoning = event.get("text", "")
+                    full_reasoning += reasoning
+                    if not reasoning_started and output_callback:
+                        reasoning_started = True
+                    if output_callback:
+                        output_callback("reasoning", reasoning)
+                
+                elif etype == "content":
+                    # 思考结束：当开始收到content且之前有reasoning时，发送结束信号
+                    if reasoning_started and not reasoning_ended:
+                        reasoning_ended = True
+                        if output_callback:
+                            output_callback("reasoning_end", "")
+                            output_callback("line", i18n.get('assistant_prefix'))
+                    content = event.get("text", "")
+                    chunk_buffer += content
+                    full_response += content
+                    
+                    if (len(chunk_buffer) >= MIN_CHUNK_SIZE or 
+                        time.time() - last_send_time >= MAX_CHUNK_DELAY):
+                        if output_callback:
+                            output_callback("chunk", chunk_buffer)
+                        chunk_buffer = ""
+                        last_send_time = time.time()
+                
+                elif etype == "tool_call":
+                    # 处理工具调用（流式增量）
+                    index = event.get("index", 0)
+                    if index not in current_tool_calls:
+                        # 确保 tool_call id 非空，空 id 会导致 API 400 错误污染对话历史
+                        tc_id = event.get("id") or f"call_{self.stats['tool_calls']}_{index}_{int(time.time()*1000)}"
+                        current_tool_calls[index] = {
+                            'id': tc_id,
+                            'type': 'function',
+                            'function': {
+                                'name': '',
+                                'arguments': ''
+                            }
+                        }
+                    else:
+                        # 流式传输中 id 可能分片到达，后续补充
+                        existing_id = current_tool_calls[index].get('id', '')
+                        new_id = event.get("id", "")
+                        if new_id and (not existing_id or existing_id.startswith('call_')):
+                            current_tool_calls[index]['id'] = new_id
+                    
+                    if event.get("name"):
+                        current_tool_calls[index]['function']['name'] = event["name"]
+                    if event.get("arguments"):
+                        current_tool_calls[index]['function']['arguments'] += event["arguments"]
+                
+                elif etype == "done":
+                    # 流结束：flush 剩余缓冲
+                    if chunk_buffer and output_callback:
+                        output_callback("chunk", chunk_buffer)
+                        chunk_buffer = ""
+                    if output_callback:
+                        output_callback("line", "\n")
+                    break
             
             # 流式循环结束，检查是否被取消
             if self._is_cancelled():
@@ -7373,8 +7283,8 @@ class DeepSeekChat:
             self.logger.error(f"未知错误，已回滚消息到位置 {msgs_before_turn}: {e}")
             return error_msg
         finally:
-            # 清除当前响应引用
-            self._current_response = None
+            # 客户端抽象层在流结束时已自行清理响应引用
+            pass
     
     def _rollback_messages(self, to_length: int):
         """回滚 self.messages 到指定长度，用于 API 失败时恢复对话状态。"""
