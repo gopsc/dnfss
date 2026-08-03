@@ -18,6 +18,8 @@
 
 ## 阶段一：文件操作命令行化
 
+> **实现说明（已落地）**：阶段一采用「工具返回 markdown 提示词」的方式而非工具内部调子进程。`read_file` / `write_file` / `list_files` 三个工具的 `execute()` 不再执行 Python 文件 I/O，而是返回一段 markdown 提示词，指导智能体改用 `run_command` 工具执行对应的命令行命令（`head`/`tail`/`sed`/`wc`/`file`/`cut`/`cat`/`ls`/`du`/`find`）。工具接口（名称与参数）保持不变，安全限制（500 行、10KB/行、10MB 文件、路径 `shlex.quote` 转义）在提示词中注明。
+
 ### 1.1 ReadFileTool 重构
 
 用以下命令行工具替代 Python 文件 I/O：
@@ -71,6 +73,8 @@
 
 ## 阶段二：网络操作命令行化
 
+> **实现说明（已落地）**：阶段二沿用阶段一的方式，`web` 工具（`SimpleWebCrawlerTool`）的 `execute()` 不再使用 `requests`/`BeautifulSoup`，而是返回 markdown 提示词，指导智能体改用 `run_command` 执行 `curl` 命令完成各 action（`get`/`text`/`title`/`links`/`search`）。`WebPage`、`SimpleWebClient` 类已删除；`urljoin`/`urlparse`/`BeautifulSoup` 导入已清理。代理通过 `get_proxy()` 读取配置并拼出 `--socks5` 参数。注意 `requests` 仍在 `aibox.py` 其他位置（API 调用、DeepSeek 请求）使用，故保留其依赖。
+
 ### 2.1 SimpleWebClient → curl
 
 | 原功能 | 命令行实现 |
@@ -110,6 +114,13 @@
 - 配置项 `web.max_download_size`（默认 100MB）
 
 ## 阶段三：清理与收尾
+
+> **实现说明（已落地）**：
+> - 3.1 `requirements.txt` 已移除 `beautifulsoup4`；**`requests` 保留**（仍在 `aibox.py` 的 DeepSeek API 调用 `ConversationCompressor` 与 `DeepSeekChat` 中使用，属核心功能，无法移除）。
+> - 3.2 已统一：文件/网页工具改为返回 markdown 提示词，实际 I/O 全部委托给 `run_command`（`SubprocessCommandExecutor`），天然复用其 1MB 输出上限、超时与中断取消。
+> - 3.3 中断支持已随 `SubprocessCommandExecutor.cancel()` 覆盖。
+> - 3.4 默认提示词 `3_file_operations.md`、`4_web_access.md` 已更新为命令行走指导（`head`/`sed`/`cat`/`ls`/`curl` 等）。
+> - 3.5 `README.md` 工具表与安全说明已更新。
 
 ### 3.1 移除 Python 依赖
 

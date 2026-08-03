@@ -127,10 +127,10 @@ AI 智能体可以调用以下工具来完成任务（由 `Tool` 基类派生，
 
 | 工具名称 | 功能描述 |
 |---------|---------|
-| `read_file` | 读取文件内容（支持分页、head/tail） |
-| `write_file` | 写入或追加文件 |
-| `list_files` | 列出目录内容 |
-| `web` | 访问网页、获取标题/文本/链接 |
+| `read_file` | 读取文件内容（返回 markdown 指引，改用 `head`/`tail`/`sed`/`wc` 等命令行读取） |
+| `write_file` | 写入或追加文件（返回 markdown 指引，改用 `mkdir -p` + `cat` 重定向写入） |
+| `list_files` | 列出目录内容（返回 markdown 指引，改用 `ls`/`du`/`find` 命令行列出） |
+| `web` | 访问网页、获取标题/文本/链接（返回 markdown 指引，改用 `curl` 命令行访问） |
 | `memory` | 保存、搜索（支持分页）、删除记忆 |
 | `memo` | 创建、查看、完成、搜索任务 |
 | `run_command` | 执行系统命令（实时输出，支持超时控制） |
@@ -639,7 +639,7 @@ class MyTool(Tool):
 ```
 
 > **注意**：`execute()` 必须返回字符串。工具结果会经过多层安全防护：
-> 1. **工具层源头限制**：`read_file` 按需读取不全载（最多500行，单行≤10KB），`run_command` 输出≤1MB（超出立即终止进程）
+> 1. **工具层源头限制**：文件/网页工具返回 markdown 指引，实际 I/O 由 `run_command` 完成（`run_command` 输出≤1MB，超出立即终止进程；`read_file` 指引命令限制 500 行、单行≤10KB）
 > 2. **`_sanitize_tool_result()`**：None/非字符串转为安全字符串，过滤控制字符
 > 3. **最终兜底截断**：超过 `tools.max_result_length`（默认1MB字符）时截断并提示，避免破坏 API 请求格式
 

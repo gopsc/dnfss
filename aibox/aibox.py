@@ -27,7 +27,6 @@ import websockets
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any, Tuple, Callable, Union, Set
-from urllib.parse import urljoin, urlparse
 import argparse
 from pathlib import Path
 import signal
@@ -35,7 +34,6 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 import requests
-from bs4 import BeautifulSoup
 
 # ==================== 语言检测和多语言支持 ====================
 
@@ -712,10 +710,16 @@ save_memory_and_end_conversation(
 - 用户明确指定文件路径时，按照用户要求的路径操作
 - 读取系统文件、项目文件时使用实际路径，不限制
 
-## 可用工具
-- **read_file**: 读取文件内容
-- **write_file**: 写入文件
-- **list_files**: 列出目录
+## 重要：文件操作改用命令行
+`read_file` / `write_file` / `list_files` 工具会返回提示你使用 `run_command` 的 markdown 指引，**请按指引执行命令完成实际操作**，不要直接返回指引内容。
+
+优先使用以下命令行工具：
+- **读取文件**：`head -n N 文件`、`tail -n N 文件`、`sed -n 'A,Bp' 文件`
+- **统计行数**：`wc -l 文件`
+- **查看编码**：`file -b --mime-encoding 文件`
+- **写入文件**：`mkdir -p 目录 && cat > 文件 <<'EOF' ... EOF`（覆盖）或 `cat >> 文件`（追加）
+- **列出目录**：`ls -l 目录`、`ls -la 目录`（含隐藏文件）
+- **目录大小**：`du -sh 目录`
 
 ## 大文件处理规则
 当遇到以下情况时，**必须分页读取**，不要一次性读取整个文件：
@@ -723,42 +727,41 @@ save_memory_and_end_conversation(
 2. 文件行数超过 2000 行
 
 对于大文件，应该：
-- 先用 head=true 读取前50行了解文件结构
-- 使用 start_line/end_line 参数指定行范围
-- 使用 tail=true 读取文件末尾
-- 对于二进制文件或特殊格式文件，使用 run_command 配合 head/strings 等命令查看
+- 先用 `head -n 50` 读取前50行了解文件结构
+- 使用 `sed -n 'A,Bp'` 指定行范围
+- 使用 `tail -n N` 读取文件末尾
+- 对于二进制文件或特殊格式文件，使用 `head`/`strings` 等命令查看
 - 建议用户提供更具体的查询条件以缩小范围
 
-## 示例
-```
-read_file filepath="/path/to/file.txt" head=true max_lines=50
-read_file filepath="/path/to/file.txt" start_line=100 end_line=200
-read_file filepath="/path/to/file.txt" tail=true max_lines=50
-```
+## 安全限制
+- 单次最多读取 500 行，单行最长 10000 字符（超长用 `cut -c 1-10000` 截断）
+- 文件大小上限 10MB，路径参数需用引号包裹
 """
             },
             {
                 'filename': '4_web_access.md',
                 'content': """# 网页访问能力
 
-## 可用工具
-- **web**: 访问网页获取内容
+## 重要：网页访问改用 curl
+`web` 工具会返回提示你使用 `run_command` 执行 `curl` 命令的 markdown 指引，**请按指引执行命令完成实际访问**，不要直接返回指引内容。
 
-## 使用方法
-- web action="get" url="https://example.com"  # 获取网页信息
-- web action="text" url="https://example.com"  # 获取纯文本
-- web action="title" url="https://example.com"  # 获取标题
-- web action="links" url="https://example.com"  # 获取所有链接
+## 常用 curl 命令
+- **获取网页**：`curl -sL --max-time 10 URL`
+- **查看状态码**：`curl -sL -o /dev/null -w '%{http_code}' URL`
+- **提取纯文本**：`curl -sL URL | sed -r 's/<[^>]+>//g'`（有 lynx 时用 `lynx -dump -stdin` 更准）
+- **提取标题**：`curl -sL URL | grep -oP '<title>\\K[^<]+'`
+- **提取链接**：`curl -sL URL | grep -oP 'href="\\K[^"]+'`
+- **搜索关键词**：`curl -sL URL | grep -c 关键词`
+- **下载文件**：`curl -sL URL -o 文件名`
 
 ## 推荐搜索引擎
 - 百度：https://www.baidu.com
 - 必应：https://cn.bing.com
 - 搜狗：https://www.sogou.com
 
-## 示例
-```
-web action="get" url="https://www.baidu.com/s?wd=人工智能"
-```
+## 注意
+- 下载大小默认上限 100MB，可用 `| head -c 100M` 限制
+- 如需代理，先调用 `set_proxy` 工具配置，`curl` 会自动附带 `--socks5`
 """
             },
             {
@@ -5804,100 +5807,11 @@ class MemoryTool(Tool):
 
 # ==================== 网页工具（修改版，支持流式输出） ====================
 
-class WebPage:
-    """网页对象"""
-    
-    def __init__(self, url: str, response: requests.Response = None):
-        self.url = url
-        self.status_code = None
-        self.headers = {}
-        self.html = ""
-        self.soup = None
-        self.error = None
-        self.fetch_time = None
-        
-        if response:
-            self.status_code = response.status_code
-            self.headers = dict(response.headers)
-            self.html = response.text
-            self.fetch_time = datetime.now()
-            try:
-                self.soup = BeautifulSoup(self.html, 'html.parser')
-            except:
-                pass
-    
-    @property
-    def title(self) -> Optional[str]:
-        if self.soup and self.soup.find('title'):
-            return self.soup.find('title').get_text(strip=True)
-        return None
-    
-    @property
-    def text(self) -> str:
-        if self.soup:
-            return self.soup.get_text(separator='\n', strip=True)
-        return ""
-    
-    @property
-    def links(self) -> List[str]:
-        links = []
-        if self.soup:
-            for a in self.soup.find_all('a', href=True):
-                href = a['href'].strip()
-                if href and not href.startswith('#') and not href.startswith('javascript:'):
-                    links.append(urljoin(self.url, href))
-        return list(set(links))
-
-
-class SimpleWebClient:
-    """简单网页访问客户端"""
-    
-    def __init__(self, timeout: int = None, delay: float = None, user_agent: str = None):
-        self.timeout = timeout or constants.WEB_TIMEOUT
-        self.delay = delay if delay is not None else constants.WEB_DELAY
-        
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': user_agent or constants.WEB_USER_AGENT
-        })
-        
-        self.last_request_time = 0
-    
-    def _wait_if_needed(self):
-        if self.delay > 0:
-            elapsed = time.time() - self.last_request_time
-            if elapsed < self.delay:
-                time.sleep(self.delay - elapsed)
-    
-    def get(self, url: str, **kwargs) -> WebPage:
-        self._wait_if_needed()
-        # 每次都从 ConfigManager 获取最新代理
-        proxies = ConfigManager().get_proxy()
-        try:
-            response = self.session.get(
-                url,
-                timeout=kwargs.get('timeout', self.timeout),
-                proxies=proxies,   # 传入最新代理
-                **kwargs
-            )
-            response.raise_for_status()
-            
-            page = WebPage(url, response)
-            self.last_request_time = time.time()
-            return page
-            
-        except Exception as e:
-            page = WebPage(url)
-            page.error = str(e)
-            return page
-
-
 class SimpleWebCrawlerTool(Tool):
-    """简化版网页爬虫工具（支持流式输出）"""
+    """简化版网页爬虫工具（返回 markdown 提示词，指导改用 curl 命令行）"""
     
     def __init__(self, logger=None):
         super().__init__(logger)
-        self.client = SimpleWebClient()
     
     def get_name(self) -> str:
         return "web"
@@ -5920,36 +5834,57 @@ class SimpleWebCrawlerTool(Tool):
             "required": ["action", "url"]
         }
     
+    def _proxy_curl_args(self) -> str:
+        """根据当前代理配置构造 curl --socks5 参数"""
+        proxies = ConfigManager().get_proxy()
+        if not proxies:
+            return ""
+        proxy_url = proxies.get("https") or proxies.get("http") or ""
+        host_port = proxy_url.split("://", 1)[-1]
+        if "@" in host_port:
+            host_port = host_port.split("@", 1)[-1]
+        return f"--socks5 {shlex.quote(host_port)}"
+    
     def execute(self, action: str, url: str, **kwargs) -> str:
-        try:
-            if action == "get":
-                page = self.client.get(url)
-                return self._format_page_info(page)
-            elif action == "text":
-                text = self.client.get(url).text
-                return f"📄 网页文本内容:\n\n{text[:1000]}{'...' if len(text)>1000 else ''}"
-            elif action == "title":
-                title = self.client.get(url).title
-                return f"📌 网页标题: {title}" if title else "❌ 未找到标题"
-            elif action == "links":
-                links = self.client.get(url).links
-                result = [f"🔗 找到 {len(links)} 个链接:"]
-                for i, link in enumerate(links[:20]):
-                    result.append(f"  {i+1}. {link}")
-                return "\n".join(result)
-            elif action == "search":
-                keyword = kwargs.get("keyword")
-                if not keyword:
-                    return "❌ 需要提供 keyword 参数"
-                page = self.client.get(url)
-                if keyword.lower() in page.text.lower():
-                    return f"🔎 在网页中找到关键词 '{keyword}'"
-                else:
-                    return f"❌ 未找到关键词 '{keyword}'"
-            else:
-                return f"❌ 未知操作: {action}"
-        except Exception as e:
-            return f"❌ 执行错误: {str(e)}"
+        if action not in ("get", "text", "title", "links", "search"):
+            return f"❌ 未知操作: {action}"
+        
+        quoted_url = shlex.quote(url)
+        timeout = constants.WEB_TIMEOUT
+        user_agent = shlex.quote(constants.WEB_USER_AGENT)
+        proxy = self._proxy_curl_args()
+        base = f"curl -sL --max-time {timeout} -A {user_agent} {proxy}".strip()
+        
+        if action == "get":
+            cmd = f"{base} -w '\\nHTTP_CODE:%{{http_code}}' {quoted_url}"
+            extra = "如需查看响应头：`curl -sIL ...`；如需保存到文件：`curl -sL ... -o 文件名`"
+        elif action == "text":
+            cmd = f"{base} {quoted_url} | sed -r 's/<[^>]+>//g'"
+            extra = "若系统装有 lynx，可用 `lynx -dump -stdin` 提取纯文本更准确"
+        elif action == "title":
+            cmd = f"{base} {quoted_url} | grep -oP '<title>\\K[^<]+'"
+            extra = "无输出则表示未找到标题"
+        elif action == "links":
+            cmd = f"{base} {quoted_url} | grep -oP 'href=\"\\K[^\"]+'"
+            extra = "输出所有链接 URL，可配合 `head` 限制数量"
+        else:  # search
+            keyword = kwargs.get("keyword")
+            if not keyword:
+                return "❌ 需要提供 keyword 参数"
+            cmd = f"{base} {quoted_url} | grep -c {shlex.quote(keyword)}"
+            extra = f"返回匹配行数，大于 0 即表示找到关键词 '{keyword}'"
+        
+        # 返回 markdown 提示词，指导智能体用 curl 完成网页访问
+        prompt = f"""请使用 `run_command` 工具执行以下命令来完成网页操作，不要直接返回网页内容：
+
+```bash
+{cmd}
+```
+
+{extra}
+- 下载大小限制 {constants.WEB_MAX_DOWNLOAD_SIZE} 字节，可在命令后追加 `| head -c {constants.WEB_MAX_DOWNLOAD_SIZE}` 限制
+- 当前已按配置自动附带代理：{proxy or '无（如需代理请先调用 set_proxy 工具）'}"""
+        return prompt
     
     def execute_streaming(self, output_queue: queue.Queue, **kwargs):
         """流式执行网页操作"""
@@ -5966,23 +5901,6 @@ class SimpleWebCrawlerTool(Tool):
         # 发送结果
         output_queue.put(("line", result + "\n"))
         output_queue.put(("complete", result))
-    
-    def _format_page_info(self, page: WebPage) -> str:
-        if page.error:
-            return f"❌ 获取失败: {page.error}"
-        
-        lines = [
-            f"🌐 URL: {page.url}",
-            f"📊 状态码: {page.status_code}",
-            f"📌 标题: {page.title or '无标题'}",
-            f"🔗 链接数: {len(page.links)}",
-        ]
-        
-        if page.text:
-            preview = page.text[:200].replace('\n', ' ')
-            lines.append(f"📄 预览: {preview}...")
-        
-        return "\n".join(lines)
 
 
 # ==================== 文件操作工具（修改版，支持流式输出） ====================
@@ -6041,88 +5959,6 @@ class ReadFileTool(FileToolBase):
             "required": ["filepath"]
         }
     
-    def _calculate_line_range(self, line_count: int, start_line: int, end_line: int, 
-                             max_lines: int, head: bool, tail: bool) -> Tuple[int, int, str]:
-        if head:
-            start = 0
-            end = min(max_lines, line_count)
-            desc = f"开头 {end} 行"
-        elif tail:
-            start = max(0, line_count - max_lines)
-            end = line_count
-            desc = f"结尾 {line_count - start} 行"
-        elif end_line > 0:
-            start = max(0, start_line - 1)
-            end = min(end_line, line_count)
-            desc = f"第 {start_line} 行到第 {end_line} 行"
-        else:
-            start = max(0, start_line - 1)
-            if max_lines > 0:
-                end = min(start + max_lines, line_count)
-                desc = f"从第 {start_line} 行开始，最多 {max_lines} 行"
-            else:
-                end = line_count
-                desc = f"从第 {start_line} 行到文件末尾"
-        
-        return start, end, desc
-    
-    @staticmethod
-    def _count_lines(filepath: str, encoding: str) -> int:
-        """高效统计文件行数，不存储内容"""
-        line_count = 0
-        with open(filepath, 'r', encoding=encoding) as f:
-            for _ in f:
-                line_count += 1
-        return line_count
-    
-    @staticmethod
-    def _read_lines_range(filepath: str, encoding: str, start: int, end: int) -> List[str]:
-        """读取指定行范围 [start, end)（0-indexed），只读取需要的行"""
-        lines = []
-        with open(filepath, 'r', encoding=encoding) as f:
-            for i, line in enumerate(f):
-                if i >= end:
-                    break
-                if i >= start:
-                    lines.append(line)
-        return lines
-    
-    @staticmethod
-    def _read_tail_lines(filepath: str, encoding: str, num_lines: int) -> Tuple[List[str], int]:
-        """高效读取文件末尾N行，无需遍历整个文件。返回 (lines, total_line_count)"""
-        # 对于小文件直接读全部
-        file_size = os.path.getsize(filepath)
-        if file_size < 1024 * 1024:  # < 1MB 直接读
-            with open(filepath, 'r', encoding=encoding) as f:
-                all_lines = f.readlines()
-            return all_lines[-num_lines:] if num_lines > 0 else [], len(all_lines)
-        
-        # 大文件：从后向前找换行符
-        with open(filepath, 'rb') as f:
-            block_size = 8192
-            blocks = []
-            lines_found = 0
-            position = file_size
-            
-            while position > 0 and lines_found <= num_lines:
-                read_size = min(block_size, position)
-                position -= read_size
-                f.seek(position)
-                block = f.read(read_size)
-                blocks.append(block)
-                lines_found += block.count(b'\n')
-            
-            # 拼接并解码
-            data = b''.join(reversed(blocks))
-            text = data.decode(encoding, errors='replace')
-            all_lines = text.splitlines()
-            
-            # 统计总行数
-            f.seek(0)
-            total_lines = sum(1 for _ in f)
-            
-            return all_lines[-num_lines:], total_lines
-    
     def execute(self, filepath: str, encoding: str = "utf-8", 
                 start_line: int = 1, end_line: int = 0, 
                 max_lines: int = 100, head: bool = False, 
@@ -6136,65 +5972,33 @@ class ReadFileTool(FileToolBase):
         
         # 限制max_lines上限，防止请求超大范围
         max_lines = min(max_lines, 500)
+        quoted = shlex.quote(abs_path)
         
-        try:
-            file_size = os.path.getsize(abs_path)
-            modified_time = datetime.fromtimestamp(os.path.getmtime(abs_path))
-            
-            # 高效读取：先统计行数
-            line_count = self._count_lines(abs_path, encoding)
-            
-            start, end, range_desc = self._calculate_line_range(
-                line_count, start_line, end_line, max_lines, head, tail
-            )
-            
-            if end <= start:
-                return f"❌ 无效的行范围"
-            
-            lines_to_read = end - start
-            
-            # 对于tail模式，用高效的尾部读取
-            if tail and line_count > 200:
-                display_lines_raw, _ = self._read_tail_lines(abs_path, encoding, lines_to_read)
-            else:
-                display_lines_raw = self._read_lines_range(abs_path, encoding, start, end)
-            
-            # 限制单行大小（防止单行超大导致内存问题）
-            MAX_LINE_LENGTH = 10000
-            content_lines = []
-            truncated_lines = 0
-            for i, line in enumerate(display_lines_raw):
-                line_num = start + i + 1
-                content = line.rstrip('\n\r')
-                if len(content) > MAX_LINE_LENGTH:
-                    content = content[:MAX_LINE_LENGTH] + f"... (行超长，已截断，原始长度 {len(content)})"
-                    truncated_lines += 1
-                content_lines.append(f"   {line_num:4d} | {content}")
-            
-            data = {
-                "路径": abs_path,
-                "大小": f"{file_size} 字节 ({file_size/1024:.1f}KB)",
-                "最后修改": modified_time.strftime(constants.DATETIME_FORMAT),
-                "总行数": line_count,
-                "显示范围": f"{range_desc} (行 {start+1}-{end})"
-            }
-            
-            if content_lines:
-                data["内容"] = "\n" + "\n".join(content_lines)
-                
-                if end < line_count:
-                    data["提示"] = f"还有 {line_count - end} 行未显示"
-                    if truncated_lines > 0:
-                        data["提示"] += f"，{truncated_lines} 行因超长被截断"
-            
-            return self.format_result(True, "文件读取成功", data)
-            
-        except UnicodeDecodeError:
-            return f"❌ 文件编码错误：无法使用 {encoding} 编码读取文件"
-        except PermissionError:
-            return f"❌ 权限错误：无法读取文件 {abs_path}"
-        except Exception as e:
-            return f"❌ 文件读取错误: {str(e)}"
+        # 构造等价的命令行读取命令
+        if head:
+            cmd = f"head -n {max_lines} {quoted}"
+        elif tail:
+            cmd = f"tail -n {max_lines} {quoted}"
+        elif end_line > 0:
+            cmd = f"sed -n '{start_line},{end_line}p' {quoted}"
+        elif max_lines > 0:
+            end = start_line + max_lines - 1
+            cmd = f"sed -n '{start_line},{end}p' {quoted}"
+        else:
+            cmd = f"sed -n '{start_line},$p' {quoted}"
+        
+        # 返回 markdown 提示词，指导智能体用命令行工具读取文件
+        prompt = f"""请使用 `run_command` 工具执行以下命令来读取文件内容，不要直接返回文件内容：
+
+```bash
+{cmd}
+```
+
+- 若需统计总行数：`wc -l {quoted}`
+- 若需查看文件编码：`file -b --mime-encoding {quoted}`
+- 若单行超长，可在命令后追加 `| cut -c 1-10000` 截断到 10000 字符
+- 文件大小上限 {constants.MAX_FILE_SIZE} 字节，单次最多读取 500 行"""
+        return prompt
     
     def execute_streaming(self, output_queue: queue.Queue, **kwargs):
         """流式执行文件读取"""
@@ -6242,36 +6046,27 @@ class WriteFileTool(FileToolBase):
         if not is_safe:
             return error
         
-        try:
-            directory = os.path.dirname(abs_path)
-            if directory and not os.path.exists(directory):
-                os.makedirs(directory, exist_ok=True)
-            
-            file_exists = os.path.exists(abs_path)
-            old_size = os.path.getsize(abs_path) if file_exists else 0
-            
-            with open(abs_path, mode, encoding=encoding) as f:
-                f.write(content)
-            
-            new_size = len(content.encode(encoding))
-            action = "覆盖写入" if mode == "w" else "追加写入"
-            
-            data = {
-                "路径": abs_path,
-                "大小": f"{new_size} 字节",
-            }
-            
-            if file_exists:
-                data["变化"] = f"{old_size} -> {new_size} 字节"
-            else:
-                data["状态"] = "新文件已创建"
-            
-            return self.format_result(True, f"文件{action}成功", data)
-            
-        except PermissionError:
-            return f"❌ 权限错误：无法写入文件"
-        except Exception as e:
-            return f"❌ 文件写入错误: {str(e)}"
+        quoted = shlex.quote(abs_path)
+        directory = os.path.dirname(abs_path)
+        dir_cmd = f"mkdir -p {shlex.quote(directory)}" if directory else ""
+        
+        # 内容写入使用 heredoc，避免引号/特殊字符转义问题
+        redirect = ">" if mode == "w" else ">>"
+        write_cmd = f"cat {redirect} {quoted} <<'AIBOX_EOF'\n{content}\nAIBOX_EOF"
+        if dir_cmd:
+            write_cmd = f"{dir_cmd} && {write_cmd}"
+        
+        # 返回 markdown 提示词，指导智能体用命令行工具写入文件
+        prompt = f"""请使用 `run_command` 工具执行以下命令来写入文件，不要在此工具中直接写入：
+
+```bash
+{write_cmd}
+```
+
+- 如遇 heredoc 内容含特殊字符导致解析失败，可用 `printf '%s' '内容' > {quoted}` 覆盖写入
+- 若需检查文件大小：`wc -c {quoted}`
+- 文件大小上限 {constants.MAX_FILE_SIZE} 字节"""
+        return prompt
     
     def execute_streaming(self, output_queue: queue.Queue, **kwargs):
         """流式执行文件写入"""
@@ -6318,52 +6113,21 @@ class ListFilesTool(FileToolBase):
         if not os.path.isdir(abs_path):
             return f"❌ 路径不是目录: {abs_path}"
         
-        try:
-            items = []
-            total_size = 0
-            file_count = 0
-            dir_count = 0
-            
-            for item in sorted(os.listdir(abs_path)):
-                if not show_hidden and item.startswith('.'):
-                    continue
-                
-                item_path = os.path.join(abs_path, item)
-                
-                if os.path.isdir(item_path):
-                    items.append(f"📁 {item}/")
-                    dir_count += 1
-                else:
-                    size = os.path.getsize(item_path)
-                    total_size += size
-                    file_count += 1
-                    
-                    if size < 1024:
-                        size_str = f"{size}B"
-                    elif size < 1024*1024:
-                        size_str = f"{size/1024:.1f}KB"
-                    else:
-                        size_str = f"{size/1024/1024:.1f}MB"
-                    
-                    items.append(f"📄 {item} ({size_str})")
-            
-            data = {
-                "目录": abs_path,
-                "统计": f"{file_count} 个文件, {dir_count} 个目录",
-                "总大小": f"{total_size/1024:.1f}KB" if file_count > 0 else "0KB"
-            }
-            
-            if items:
-                data["内容"] = "\n" + "\n".join(items[:50])
-                if len(items) > 50:
-                    data["提示"] = f"还有 {len(items)-50} 个项目未显示"
-            else:
-                data["内容"] = "\n📭 目录为空"
-            
-            return self.format_result(True, "目录列表成功", data)
-            
-        except Exception as e:
-            return f"❌ 列出目录错误: {str(e)}"
+        quoted = shlex.quote(abs_path)
+        flag = "-la" if show_hidden else "-l"
+        
+        # 返回 markdown 提示词，指导智能体用命令行工具列目录
+        prompt = f"""请使用 `run_command` 工具执行以下命令来列出目录内容，不要直接在此工具中列出：
+
+```bash
+ls {flag} {quoted}
+```
+
+- 若需区分目录/文件并显示大小：`ls -lhF {quoted}`
+- 若需统计目录总大小：`du -sh {quoted}`
+- 若需递归列出：`find {quoted} -maxdepth 2`
+- 若需了解文件类型：`file {quoted}/*`"""
+        return prompt
     
     def execute_streaming(self, output_queue: queue.Queue, **kwargs):
         """流式执行列出目录"""
