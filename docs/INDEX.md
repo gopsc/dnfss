@@ -32,7 +32,7 @@ docs/
 | [SECURITY_AUDIT_20260801.md](security/SECURITY_AUDIT_20260801.md) | **全局总览** — 全模块安全审计汇总（问题等级定义、各模块问题汇总、修复跟踪） |
 | [DEPLOY_SECURITY_AUDIT_20260801.md](security/DEPLOY_SECURITY_AUDIT_20260801.md) | 部署配置安全审计（docker-compose、systemd、防火墙、TLS 等） |
 | [DEPS_SECURITY_AUDIT_20260801.md](security/DEPS_SECURITY_AUDIT_20260801.md) | 依赖安全审计（第三方库版本、已知漏洞、许可证） |
-| [SECURITY_HARDENING_PLAN.md](security/SECURITY_HARDENING_PLAN.md) | 安全加固计划（后续加固任务清单） |
+| [SECURITY_HARDENING_PLAN_20260803.md](security/SECURITY_HARDENING_PLAN_20260803.md) | 安全加固计划（内网通信安全加固开发计划） |
 
 ### 各模块安全审计报告
 
@@ -50,7 +50,7 @@ docs/
 | captcha | [captcha_SECURITY_AUDIT_20260801.md](security/captcha_SECURITY_AUDIT_20260801.md) | Python 验证码服务 |
 | confs | [confs_SECURITY_AUDIT_20260801.md](security/confs_SECURITY_AUDIT_20260801.md) | Python 统一配置服务 |
 | aibox | [aibox_SECURITY_AUDIT_20260801.md](security/aibox_SECURITY_AUDIT_20260801.md) | Python AI 智能体系统（WebSocket） |
-| aibox (历史) | [aibox_SECURITY_AUDIT.md](security/aibox_SECURITY_AUDIT.md) | aibox 早期安全审计 |
+| aibox (详版) | [aibox_SECURITY_AUDIT_full_20260801.md](security/aibox_SECURITY_AUDIT_full_20260801.md) | aibox 详细安全审计（含具体漏洞位置与修复建议） |
 | BotOps | [BotOps_SECURITY_AUDIT_20260801.md](security/BotOps_SECURITY_AUDIT_20260801.md) | BotOps 运维控制面板 |
 
 ---
