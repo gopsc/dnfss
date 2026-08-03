@@ -167,6 +167,7 @@ private:
     std::mutex sessions_mutex_;
 
     std::unordered_map<std::string, std::string> parseQueryParams(const std::string& query);
+    bool isSafeStaticPath(const std::string& path) const;
     std::regex wildcardToRegex(const std::string& pattern);
     bool matchPath(const std::string& path, const std::regex& pattern);
     http::response<http::string_body> handleRequest(const http::request<http::string_body>& req);

@@ -1,4 +1,5 @@
 #include "us/detail/HttpServerImpl.hpp"
+#include <cctype>
 
 namespace pmc {
 namespace net {
@@ -91,7 +92,7 @@ http::response<http::string_body> HttpServer::handleRequest(const http::request<
 
     auto handler = findRoute(method, target_path);
 
-    if (!handler && !static_directory_.empty()) {
+    if (!handler && !static_directory_.empty() && isSafeStaticPath(target_path)) {
         std::string file_path = static_directory_ + target_path;
         std::ifstream file(file_path, std::ios::binary);
         if (file.is_open()) {
@@ -134,6 +135,25 @@ http::response<http::string_body> HttpServer::handleRequest(const http::request<
     res.body() = "404 Not Found\n";
     res.prepare_payload();
     return res;
+}
+
+// ---- 静态文件路径安全校验（P1-5）----
+bool HttpServer::isSafeStaticPath(const std::string& path) const {
+    // 防御：路径遍历、空字节、绝对 URI 形式、URL 编码遍历
+    if (path.empty()) return false;
+    if (path[0] != '/') return false;                    // 拒绝 "http://..."/相对形式
+    if (path.find('\0') != std::string::npos) return false; // 拒绝空字节截断
+    if (path.find("..") != std::string::npos) return false; // 拒绝明文 ".."
+
+    // 拒绝 URL 编码遍历/斜杠变体（%2e/./%2f/%5c）
+    std::string lower;
+    lower.reserve(path.size());
+    for (char c : path)
+        lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    if (lower.find("%2e") != std::string::npos) return false;
+    if (lower.find("%2f") != std::string::npos) return false;
+    if (lower.find("%5c") != std::string::npos) return false;
+    return true;
 }
 
 // ---- Session HTTP 处理 ----

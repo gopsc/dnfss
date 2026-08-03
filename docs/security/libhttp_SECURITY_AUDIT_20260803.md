@@ -11,9 +11,9 @@
 | 优先级 | 总数 | 已修复 | 部分修复 | 未修复 |
 |--------|------|--------|----------|--------|
 | P0 | 0 | 0 | 0 | 0 |
-| P1 | 6 | 1 | 0 | 5 |
+| P1 | 6 | 2 | 0 | 4 |
 | P2 | 4 | 0 | 0 | 4 |
-| **合计** | **10** | **3** | **0** | **7** |
+| **合计** | **10** | **4** | **0** | **6** |
 
 ---
 
@@ -25,7 +25,7 @@
 | P1-2 | HttpClient 响应无大小限制 | ❌ 未修复 | `HttpClient::write_callback`（`HttpClient.cpp` L329-334）把下游响应 `append` 进 `full_response` 无上限，超大响应可导致 OOM（`request_stream_sync` L63-81） |
 | P1-3 | WebSocket 消息无大小限制 | ❌ 未修复 | `Session::onWsRead`（`HttpServer_WsSession.cpp` L88-111）把整条 WS 消息读入内存，依赖 Beast 默认 `read_message_max`（16MB）不可配置；超大消息可被恶意客户端推送导致 OOM |
 | P1-4 | 服务器无读写超时（Slowloris） | ❌ 未修复 | 入站 `stream_`（`beast::tcp_stream`）**从未设置 `expires_after`**（仅代理后端设了超时）。攻击者建立连接后缓慢发送 HTTP 头，可无限占用连接与线程，Slowloris/连接耗尽（对应全局审计 P2-4） |
-| P1-5 | 静态文件目录路径遍历 | ❌ 未修复 | `handleRequest`（`HttpServer_Request.cpp` L94-119）直接 `static_directory_ + target_path` 拼接文件路径，未校验 `..`/空字节/编码遍历。设置 `setStaticDirectory` 的服务可被 `GET /../../etc/passwd` 越权读取 |
+| P1-5 | 静态文件目录路径遍历 | ✅ 已修复 | 新增 `isSafeStaticPath()`（`HttpServer_Request.cpp` L139-156），静态文件服务前校验 target_path（拒绝 `..`、空字节、非 `/` 开头、URL 编码 `%2e`/`%2f`/`%5c`），逻辑与 gateway `is_safe_target()` 对齐（`HttpServer.cpp` L94） |
 | P1-6 | 发送队列无界（慢消费者 OOM） | ❌ 未修复 | `ws_send_queue_`、`proxy_to_backend_queue_`、`proxy_to_client_queue_`（`HttpServer_WsSession.cpp` L8-16/L362-367/L438-443）均为无界 `std::deque`。若客户端消费慢，服务端持续入队可导致内存耗尽 |
 
 ---
@@ -73,7 +73,7 @@
 
 ### 短期（72小时）
 - [ ] P1-3 WS 消息大小限制：设置 `read_message_max`（可配置）
-- [ ] P1-5 静态文件路径遍历：拼接前校验 `target_path` 拒绝 `..`/空字节/编码遍历
+- [x] P1-5 静态文件路径遍历：新增 `isSafeStaticPath()` 拼接前校验 `target_path`，拒绝 `..`/空字节/编码遍历 → ✅ 已实现（`HttpServer_Request.cpp` L139-157）
 - [ ] P1-6 发送队列上限：`ws_send_queue_`/代理队列设最大值，超限断开慢消费者
 - [ ] P2-1 CORS 白名单：origin 白名单校验，替代反射任意 Origin
 
