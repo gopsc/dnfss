@@ -15,17 +15,17 @@
 
 | 等级 | 总数 | 已修复 | 部分修复 | 未修复 | 修复率 |
 |------|------|--------|----------|--------|--------|
-| P0 | 3 | 1 | 0 | 2 | 33% |
+| P0 | 3 | 2 | 0 | 1 | 67% |
 | P1 | 5 | 0 | 0 | 5 | 0% |
 | P2 | 4 | 0 | 0 | 4 | 0% |
 | P3 | 4 | 0 | 0 | 4 | 0% |
-| **合计** | **16** | **1** | **0** | **15** | **6.25%** |
+| **合计** | **16** | **2** | **0** | **14** | **12.5%** |
 
 ### 逐条验证
 
 | 编号 | 状态 | 代码位置 | 验证说明 |
 |------|------|----------|----------|
-| P0-1 | ❌ 未修复 | `__init__.py` L103, L140-156 | `_recv_exact` 仍使用 `sock.settimeout()` 单次系统调用超时，非 deadline 模式；攻击者可逐字节发送维持连接 |
+| P0-1 | ✅ 已修复 | `__init__.py` L103-120, L140-170 | `recv()` 改为 deadline 模式：`_recv_exact` 接收 `time.monotonic()+timeout` 作为总截止时刻，每次 `recv_into` 前按剩余时间收紧 socket 超时；header 与 payload 共享同一总超时，逐字节发送无法刷新 deadline，半开连接被及时关闭（已实测：0.6s 超时 0.60s 即抛 TimeoutError） |
 | P0-2 | ✅ 已修复 | `__init__.py` L113-114, L462-463 | 双重防护：`recv()` 将 `UnicodeDecodeError` 包装为 `ConnectionError`；`_handle_client` 防御性捕获 `UnicodeDecodeError` |
 | P0-3 | ❌ 未修复 | `rpc.py` L80-171 | 无认证机制，仅依赖 127.0.0.1 网络层隔离 |
 | P1-1 | ❌ 未修复 | `__init__.py` L359 | `listen(10)` 仅限制 SYN 队列，不限制已建立连接数 |
@@ -59,7 +59,7 @@
 
 | 优先级 | 总数 | 已修复 | 待修复 |
 |--------|------|--------|--------|
-| P0 | 3 | 1 | 2 |
+| P0 | 3 | 2 | 1 |
 | P1 | 5 | 0 | 5 |
 | P2 | 4 | 0 | 4 |
 | P3 | 4 | 0 | 4 |
@@ -68,22 +68,17 @@
 
 ## 🔴 P0 — 严重问题
 
-### P0-1: recv 超时可被绕过（Slowloris 变种 DoS）
-- **位置**: `__init__.py:102-153` (`recv` / `_recv_exact`)
-- **问题**: `sock.settimeout()` 设置的是**单次系统调用**超时，不是整个消息接收总超时。攻击者可每次在快超时时发送 1 字节：
+### P0-1: recv 超时可被绕过（Slowloris 变种 DoS）✅ 已修复
+- **位置**: `__init__.py:103-120`（`recv`）、`__init__.py:140-170`（`_recv_exact`）
+- **原问题**: `sock.settimeout()` 设置的是**单次系统调用**超时，不是整个消息接收总超时。攻击者可每次在快超时时发送 1 字节：
   - 4 字节长度头最长可占用 `4 * recv_timeout = 40秒`
   - 载荷部分按字节发送可使连接存活任意长时间
 - **影响**: 少量攻击者即可耗尽连接/线程资源，造成所有依赖 pymsg 的服务拒绝服务
-- **修复建议**: 使用 deadline 模式：
-  ```python
-  deadline = time.monotonic() + self._recv_timeout
-  while got < n:
-      remaining = deadline - time.monotonic()
-      if remaining <= 0:
-          raise TimeoutError("Message receive timeout")
-      sock.settimeout(remaining)
-      chunk = sock.recv_into(view[got:], n - got)
-  ```
+- **修复方案（deadline 模式）**:
+  - `recv()` 在开头计算 `deadline = time.monotonic() + timeout`，header 与 payload 共享**同一总截止时刻**
+  - `_recv_exact` 每次 `recv_into` 前按 `deadline - now` 设置剩余 socket 超时，剩余时间耗尽即抛 `TimeoutError`
+  - 逐字节发送会不断刷新单次 `sock.settimeout()`，但**无法刷新总 deadline**，半开连接会被及时关闭
+  - 实测验证：超时 0.6s 时，逐字节攻击在 0.60s 即被 TimeoutError 终止（旧实现需等到完整消息 1.4s）
 
 ---
 
@@ -169,7 +164,7 @@
 ## 修复路线图
 
 ### 立即（24小时）
-- [ ] 修复 P0-1: recv 总超时（deadline 模式）
+- [x] 修复 P0-1: recv 总超时（deadline 模式）✅ 已完成
 - [x] 修复 P0-2: 捕获 UnicodeDecodeError/JSONDecodeError ✅ 已完成
 
 ### 短期（72小时）

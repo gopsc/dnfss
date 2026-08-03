@@ -100,22 +100,24 @@ def recv(
             message is received.
         TimeoutError: If the operation exceeds the timeout.
     """
-    with _timeout(sock, timeout):
-        try:
-            header = _recv_exact(sock, _HEADER.size)
-            (length,) = _HEADER.unpack(header)
-            if length > _MAX_MSG_SIZE:
-                raise ConnectionError(
-                    f"message too large: {length} bytes (max {_MAX_MSG_SIZE})"
-                )
-            payload = _recv_exact(sock, length)
-            return payload.decode("utf-8")
-        except UnicodeDecodeError:
-            raise ConnectionError("invalid UTF-8 payload") from None
-        except _socket.timeout:
-            raise TimeoutError(
-                f"recv timed out after {timeout}s"
-            ) from None
+    deadline = None
+    if timeout is not None:
+        deadline = time.monotonic() + timeout
+    try:
+        header = _recv_exact(sock, _HEADER.size, deadline)
+        (length,) = _HEADER.unpack(header)
+        if length > _MAX_MSG_SIZE:
+            raise ConnectionError(
+                f"message too large: {length} bytes (max {_MAX_MSG_SIZE})"
+            )
+        payload = _recv_exact(sock, length, deadline)
+        return payload.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ConnectionError("invalid UTF-8 payload") from None
+    except (TimeoutError, _socket.timeout):
+        raise TimeoutError(
+            f"recv timed out after {timeout}s"
+        ) from None
 
 
 def _send_all(sock: "_socket.socket", header: bytes, payload: bytes) -> None:
@@ -137,16 +139,30 @@ def _send_all(sock: "_socket.socket", header: bytes, payload: bytes) -> None:
             sent += sock.sendmsg([memoryview(payload)[offset:]])
 
 
-def _recv_exact(sock: "_socket.socket", n: int) -> bytearray:
+def _recv_exact(
+    sock: "_socket.socket",
+    n: int,
+    deadline: "float | None" = None,
+) -> bytearray:
     """Read exactly n bytes from sock, raising on premature close.
 
     使用 recv_into 直接写入预分配 buffer，避免 bytearray 逐步增长和
     最终 bytes() 转换的额外拷贝。
+
+    deadline 模式：传入 ``time.monotonic() + 超时`` 作为接收的**总截止时刻**，
+    每次 recv_into 前按剩余时间收紧 socket 超时。若剩余时间耗尽则抛
+    ``TimeoutError``。这防止 Slowloris 型攻击：逐字节发送会不断刷新单次
+    ``sock.settimeout()``，但无法刷新总 deadline，半开连接会被及时关闭。
     """
     buf = bytearray(n)
     view = memoryview(buf)
     got = 0
     while got < n:
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("recv timed out")
+            sock.settimeout(remaining)
         chunk = sock.recv_into(view[got:], n - got)
         if chunk == 0:
             raise ConnectionError(
