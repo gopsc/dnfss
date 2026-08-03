@@ -309,21 +309,22 @@ def api_hash():
     return jsonify({"hash": h})
 
 
-@app.route('/api/reset_password', methods=['POST'])
-def api_reset_password():
-    from flask import request, jsonify
-    import sqlite3 as _sql
-    data = request.get_json(force=True)
-    email = data.get('email', '').strip()
-    new_hash = data.get('password_hash', '').strip()
-    if not email or not new_hash:
-        return jsonify({"success": False, "error": "missing params"}), 400
-    conn = _sql.connect(GATEWAY_DB)
-    conn.execute("UPDATE Users SET password_hash=? WHERE email=?", (new_hash, email))
-    conn.commit()
-    conn.close()
-    logs.info("static", "密码重置", extra={"email": email[:3] + "***"})
-    return jsonify({"success": True})
+# DISABLED: P0 security issue - no authentication, allows arbitrary password reset
+# @app.route('/api/reset_password', methods=['POST'])
+# def api_reset_password():
+#     from flask import request, jsonify
+#     import sqlite3 as _sql
+#     data = request.get_json(force=True)
+#     email = data.get('email', '').strip()
+#     new_hash = data.get('password_hash', '').strip()
+#     if not email or not new_hash:
+#         return jsonify({"success": False, "error": "missing params"}), 400
+#     conn = _sql.connect(GATEWAY_DB)
+#     conn.execute("UPDATE Users SET password_hash=? WHERE email=?", (new_hash, email))
+#     conn.commit()
+#     conn.close()
+#     logs.info("static", "密码重置", extra={"email": email[:3] + "***"})
+#     return jsonify({"success": True})
 
 
 @app.route('/api/check_user', methods=['POST'])
