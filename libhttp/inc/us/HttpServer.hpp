@@ -115,6 +115,10 @@ public:
 
     void setPrivateKeyPassword(const std::string& password);
 
+    // 请求体大小上限（字节）。默认 10MB，与 WAF 对齐；超限返回 413。
+    void setMaxBodySize(std::size_t bytes) { max_body_size_ = bytes; }
+    std::size_t getMaxBodySize() const { return max_body_size_; }
+
     class debug {
     public:
         static void print_all_header_fields(const http::request<http::string_body>& req);
@@ -128,6 +132,8 @@ private:
     unsigned short port_;
     unsigned int threads_;
     std::atomic<bool> running_{false};
+
+    std::size_t max_body_size_ = 10 * 1024 * 1024; // 默认 10MB,与 WAF 对齐
 
     bool ssl_enabled_{false};
     std::string cert_file_;

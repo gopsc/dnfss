@@ -169,16 +169,19 @@ void HttpServer::Session::doRead() {
     request_ = {};
     buffer_.consume(buffer_.size());
 
+    // 使用 request_parser 并设置可配置的请求体上限（默认 10MB，超限返回 413）
+    parser_.emplace();
+    parser_->body_limit(server_->max_body_size_);
+
+    auto on_read = [self](beast::error_code ec, std::size_t) {
+        if (!ec) self->request_ = self->parser_->release();
+        self->handleRead(ec);
+    };
+
     if (ssl_enabled_ && ssl_stream_) {
-        http::async_read(*ssl_stream_, buffer_, request_,
-            [self](beast::error_code ec, std::size_t) {
-                self->handleRead(ec);
-            });
+        http::async_read(*ssl_stream_, buffer_, *parser_, on_read);
     } else {
-        http::async_read(stream_, buffer_, request_,
-            [self](beast::error_code ec, std::size_t) {
-                self->handleRead(ec);
-            });
+        http::async_read(stream_, buffer_, *parser_, on_read);
     }
 }
 
@@ -250,6 +253,16 @@ void HttpServer::Session::handleRead(beast::error_code ec) {
 
         auto req_copy = std::move(request_);
         processRequest(std::move(req_copy));
+    } else if (ec == http::error::body_limit) {
+        // 请求体超过上限 → 返回 413 并关闭连接
+        auto resp = std::make_shared<http::response<http::string_body>>();
+        resp->version(11); // request_ 在超限时未成功解析，固定 HTTP/1.1
+        resp->result(http::status::payload_too_large);
+        resp->set(http::field::content_type, "text/plain");
+        resp->set(http::field::connection, "close");
+        resp->body() = "413 Payload Too Large\n";
+        resp->prepare_payload();
+        doWrite(resp);
     } else if (ec != http::error::end_of_stream) {
         std::cerr << "[Read] Error from " << remote_ip_ << ":" << remote_port_
                   << ": " << ec.message() << std::endl;

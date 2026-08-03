@@ -11,9 +11,9 @@
 | 优先级 | 总数 | 已修复 | 部分修复 | 未修复 |
 |--------|------|--------|----------|--------|
 | P0 | 0 | 0 | 0 | 0 |
-| P1 | 6 | 0 | 0 | 6 |
+| P1 | 6 | 1 | 0 | 5 |
 | P2 | 4 | 0 | 0 | 4 |
-| **合计** | **10** | **2** | **0** | **8** |
+| **合计** | **10** | **3** | **0** | **7** |
 
 ---
 
@@ -21,7 +21,7 @@
 
 | # | 问题 | 状态 | 说明 |
 |---|------|------|------|
-| P1-1 | 请求体大小限制不可配置 + 超限无 413 | ❌ 未修复 | `Session::doRead`（`HttpServer_Request.cpp` L167-183）用 `http::async_read(stream, buffer_, request_, ...)` 直接把整个请求体读入 `http::request<http::string_body>`。依赖 Beast 默认 `body_limit`（1MB，硬编码不可配置），与 WAF 的 10MB 不一致；**超限时 `http::error::body_limit` 走错误分支直接断开连接，不返回 413**（对应全局审计 P1-5） |
+| P1-1 | 请求体大小限制不可配置 + 超限无 413 | ✅ 已修复 | `Session::doRead`（`HttpServer_Request.cpp` L167-186）改用 `http::request_parser` + `body_limit()`（默认 10MB，与 WAF 对齐）；`HttpServer` 新增 `setMaxBodySize()`/`getMaxBodySize()`（`HttpServer.hpp` L118-120）。超限时 `handleRead` 返回 **413 Payload Too Large** 并关闭连接（L256-265），而非静默断连 |
 | P1-2 | HttpClient 响应无大小限制 | ❌ 未修复 | `HttpClient::write_callback`（`HttpClient.cpp` L329-334）把下游响应 `append` 进 `full_response` 无上限，超大响应可导致 OOM（`request_stream_sync` L63-81） |
 | P1-3 | WebSocket 消息无大小限制 | ❌ 未修复 | `Session::onWsRead`（`HttpServer_WsSession.cpp` L88-111）把整条 WS 消息读入内存，依赖 Beast 默认 `read_message_max`（16MB）不可配置；超大消息可被恶意客户端推送导致 OOM |
 | P1-4 | 服务器无读写超时（Slowloris） | ❌ 未修复 | 入站 `stream_`（`beast::tcp_stream`）**从未设置 `expires_after`**（仅代理后端设了超时）。攻击者建立连接后缓慢发送 HTTP 头，可无限占用连接与线程，Slowloris/连接耗尽（对应全局审计 P2-4） |
@@ -67,7 +67,7 @@
 ## 修复路线图
 
 ### 立即（24小时）
-- [ ] P1-1 请求体大小限制：`doRead` 改用 `http::request_parser` + `body_limit()`，`HttpServer` 增加 `setMaxBodySize()`（对齐 WAF 10MB），超限返回 413 而非断开
+- [x] P1-1 请求体大小限制：`doRead` 改用 `http::request_parser` + `body_limit()`，`HttpServer` 增加 `setMaxBodySize()`（对齐 WAF 10MB），超限返回 413 而非断开 → ✅ 已实现（默认 10MB，`setMaxBodySize()` 可覆盖）
 - [ ] P1-2 HttpClient 响应上限：`write_callback` 累计超过上限即失败，返回错误
 - [ ] P1-4 服务器读超时：入站 `stream_` 设置 `expires_after`（首字节/头+体超时），防 Slowloris
 
@@ -92,7 +92,9 @@
 
 | 功能 | 文件 | 行号 |
 |------|------|------|
-| 请求读入（无体限制） | `src/HttpServer_Request.cpp` | L167-183 |
+| 请求读入（body_limit 可配置） | `src/HttpServer_Request.cpp` | L167-186 |
+| 请求体超限返回 413 | `src/HttpServer_Request.cpp` | L256-265 |
+| setMaxBodySize/getMaxBodySize | `inc/us/HttpServer.hpp` | L118-120 |
 | 请求处理/静态文件 | `src/HttpServer_Request.cpp` | L7-137, L94-119 |
 | CORS 反射 Origin | `src/HttpServer_Request.cpp` | L73-74 |
 | WS 读消息（无大小限制） | `src/HttpServer_WsSession.cpp` | L88-111 |
