@@ -7003,6 +7003,10 @@ class DeepSeekChat:
         if self.history_manager:
             self.history_manager.add_message("user", enhanced_input, "用户")
         
+        # 修复工具调用配对：确保每个 assistant 的 tool_calls 都有对应 tool 响应，
+        # 防止因工具被中断/压缩导致 "insufficient tool messages" 报 400
+        self._repair_tool_pairs()
+        
         # 构建消息列表，确保包含 reasoning_content
         enhanced_messages = []
         
@@ -7295,6 +7299,48 @@ class DeepSeekChat:
                 self.logger.info(f"消息已回滚，从 {current_len} 条回滚到 {len(self.messages)} 条")
         except Exception as e:
             self.logger.error(f"消息回滚失败: {e}")
+    
+    def _repair_tool_pairs(self):
+        """修复消息历史中的工具调用配对，保证 API 消息结构合法。
+
+        场景：assistant 消息携带 tool_calls，但对应的 tool 响应缺失（工具被中断、
+        压缩算法丢弃、端对话提前 break 等），下一次请求会因
+        "insufficient tool messages following tool_calls" 返回 400。
+        修复策略：为每个缺失响应的 tool_call_id 补一条占位 tool 消息，使其配对完整。
+        """
+        if not self.messages:
+            return
+        repaired = []
+        i = 0
+        n = len(self.messages)
+        while i < n:
+            msg = self.messages[i]
+            role = msg.get("role")
+            tool_calls = msg.get("tool_calls") if role == "assistant" else None
+            if not tool_calls:
+                repaired.append(msg)
+                i += 1
+                continue
+            # 收集紧随其后的 tool 消息
+            needed = [tc.get("id") for tc in tool_calls if tc.get("id")]
+            j = i + 1
+            tool_msgs = []
+            while j < n and self.messages[j].get("role") == "tool":
+                tool_msgs.append(self.messages[j])
+                j += 1
+            have = {tm.get("tool_call_id") for tm in tool_msgs if tm.get("tool_call_id")}
+            # 补齐缺失的 tool 响应
+            for tid in needed:
+                if tid not in have:
+                    tool_msgs.append({
+                        "role": "tool",
+                        "tool_call_id": tid,
+                        "content": "⚠️ 该工具调用未返回结果（可能被中断）。",
+                    })
+            repaired.append(msg)  # 保留 assistant 消息本身
+            repaired.extend(tool_msgs)
+            i = j
+        self.messages = repaired
     
     def reset_conversation(self, reload_prompts: bool = True):
         """
