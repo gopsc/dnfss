@@ -16,10 +16,10 @@
 | 等级 | 总数 | 已修复 | 部分修复 | 未修复 | 修复率 |
 |------|------|--------|----------|--------|--------|
 | P0 | 3 | 2 | 0 | 1 | 67% |
-| P1 | 5 | 0 | 0 | 5 | 0% |
+| P1 | 5 | 2 | 0 | 3 | 40% |
 | P2 | 4 | 0 | 0 | 4 | 0% |
 | P3 | 4 | 0 | 0 | 4 | 0% |
-| **合计** | **16** | **2** | **0** | **14** | **12.5%** |
+| **合计** | **16** | **4** | **0** | **12** | **25%** |
 
 ### 逐条验证
 
@@ -28,8 +28,8 @@
 | P0-1 | ✅ 已修复 | `__init__.py` L103-120, L140-170 | `recv()` 改为 deadline 模式：`_recv_exact` 接收 `time.monotonic()+timeout` 作为总截止时刻，每次 `recv_into` 前按剩余时间收紧 socket 超时；header 与 payload 共享同一总超时，逐字节发送无法刷新 deadline，半开连接被及时关闭（已实测：0.6s 超时 0.60s 即抛 TimeoutError） |
 | P0-2 | ✅ 已修复 | `__init__.py` L113-114, L462-463 | 双重防护：`recv()` 将 `UnicodeDecodeError` 包装为 `ConnectionError`；`_handle_client` 防御性捕获 `UnicodeDecodeError` |
 | P0-3 | ❌ 未修复 | `rpc.py` L80-171 | 无认证机制，仅依赖 127.0.0.1 网络层隔离 |
-| P1-1 | ❌ 未修复 | `__init__.py` L359 | `listen(10)` 仅限制 SYN 队列，不限制已建立连接数 |
-| P1-2 | ❌ 未修复 | `__init__.py` L362-365 | `ThreadPoolExecutor` 使用默认无界队列 |
+| P1-1 | ✅ 已修复 | `__init__.py` L342-350, L467-484 | `MsgServer` 新增 `max_connections` 参数（默认 1000），`_accept_client` 在 `len(_clients) >= max_connections` 时直接拒绝并关闭新连接；已实测 max_connections=3 时第 4 个连接被关闭（ConnectionResetError），handler 只处理前 3 条 |
+| P1-2 | ✅ 已修复 | `__init__.py` L316-333, L369, L405-410, L530-540 | 新增 `_BoundedThreadPoolExecutor`（`submit` 时检查 `_work_queue.qsize()`，超限抛 `queue.Full`）；`MsgServer` 新增 `max_queue_size` 参数（默认 1000），`_handle_client` 捕获 `queue.Full` 后拒绝并断开该连接；已实测 workers=1 + max_queue_size=1 时，慢 handler 阻塞下第 3 个连接被拒绝关闭，handler 只处理前 2 个任务 |
 | P1-3 | ❌ 未修复 | `rpc.py` L160, L178 | `_dispatch` 将 `str(e)` 和 `f"JSON 解析失败: {e}"` 直接返回客户端 |
 | P1-4 | ❌ 未修复 | 全模块 | 明文 TCP，无 TLS 支持 |
 | P1-5 | ❌ 未修复 | `rpc.py` L158 | `json.loads(text)` 无深度限制 |
@@ -60,7 +60,7 @@
 | 优先级 | 总数 | 已修复 | 待修复 |
 |--------|------|--------|--------|
 | P0 | 3 | 2 | 1 |
-| P1 | 5 | 0 | 5 |
+| P1 | 5 | 2 | 3 |
 | P2 | 4 | 0 | 4 |
 | P3 | 4 | 0 | 4 |
 
@@ -105,13 +105,13 @@
 
 ## 🟠 P1 — 高危问题
 
-| # | 问题 | 位置 |
-|---|------|------|
-| P1-1 | 无连接数限制，连接耗尽攻击 | `__init__.py:334` `listen(10)` 不限制已建立连接数 |
-| P1-2 | 线程池无队列限制，慢 handler 耗尽内存 | `__init__.py:337-340` ThreadPoolExecutor 默认无界队列 |
-| P1-3 | 异常信息直接返回客户端，泄露内部细节 | `rpc.py:144,162` 直接将 `str(e)` 返回调用方 |
-| P1-4 | 无 TLS/加密传输，内网流量可被窃听 | 全模块明文 TCP |
-| P1-5 | JSON 解析无深度限制，深度嵌套导致栈溢出/CPU 100% | `recv()` 后 `json.loads()` 无限制 |
+| # | 问题 | 位置 | 状态 |
+|---|------|------|------|
+| P1-1 | 无连接数限制，连接耗尽攻击 | `__init__.py:342-350,467-484` | ✅ 已修复（`max_connections` 默认 1000） |
+| P1-2 | 线程池无队列限制，慢 handler 耗尽内存 | `__init__.py:316-333,369,405-410,530-540` | ✅ 已修复（`_BoundedThreadPoolExecutor` + `max_queue_size` 默认 1000） |
+| P1-3 | 异常信息直接返回客户端，泄露内部细节 | `rpc.py:144,162` 直接将 `str(e)` 返回调用方 | ❌ 未修复 |
+| P1-4 | 无 TLS/加密传输，内网流量可被窃听 | 全模块明文 TCP | ❌ 未修复 |
+| P1-5 | JSON 解析无深度限制，深度嵌套导致栈溢出/CPU 100% | `recv()` 后 `json.loads()` 无限制 | ❌ 未修复 |
 
 ---
 
@@ -168,8 +168,8 @@
 - [x] 修复 P0-2: 捕获 UnicodeDecodeError/JSONDecodeError ✅ 已完成
 
 ### 短期（72小时）
-- [ ] 添加最大连接数限制
-- [ ] 线程池改用有界队列
+- [x] 添加最大连接数限制 ✅ 已完成
+- [x] 线程池改用有界队列 ✅ 已完成
 - [ ] 异常信息脱敏
 - [ ] JSON 解析深度限制
 

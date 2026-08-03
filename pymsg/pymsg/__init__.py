@@ -18,6 +18,7 @@ Usage:
 """
 
 import contextlib
+import queue as _queue
 import select
 import socket as _socket
 import struct
@@ -312,6 +313,26 @@ class MsgClient:
             self._sock = None
 
 
+class _BoundedThreadPoolExecutor(ThreadPoolExecutor):
+    """有界线程池：提交队列有上限，满时抛 ``queue.Full``。
+
+    标准 ``ThreadPoolExecutor`` 使用无界队列，慢 handler 时新任务会无限
+    堆积在内存中直至 OOM。此子类在 ``submit`` 时检查排队深度，超限即抛
+    ``queue.Full``，由调用方拒绝并断开该连接，防止内存无限增长。
+    """
+
+    def __init__(self, max_workers: int, max_queue_size: int,
+                 thread_name_prefix: str) -> None:
+        super().__init__(max_workers=max_workers,
+                         thread_name_prefix=thread_name_prefix)
+        self._max_queue_size = max_queue_size
+
+    def submit(self, fn, *args, **kwargs):
+        if self._work_queue.qsize() >= self._max_queue_size:
+            raise _queue.Full("thread pool task queue is full")
+        return super().submit(fn, *args, **kwargs)
+
+
 class MsgServer:
     """基于 pymsg 长度前缀协议的多客户端 TCP 服务器。
 
@@ -335,16 +356,26 @@ class MsgServer:
     ``workers > 0`` 时回调提交到线程池并发执行（I/O 密集回调可获得真实
     并行度）。同一连接上的消息仍严格串行处理；``reply()`` / ``broadcast()``
     经每连接发送锁串行化，不会发生帧交错。
+
+    ``max_connections`` 限制同时建立的活跃连接数，超过上限的新连接被直接
+    拒绝并关闭，防止连接耗尽攻击。
+
+    ``max_queue_size`` 限制线程池待办队列深度（``workers > 0`` 时），慢
+    handler 导致任务排队超限时拒绝并断开该连接，防止内存无限增长。
     """
 
     _RECV_TIMEOUT = 10.0  # 服务端接收单条消息的超时（秒），防止 Slowloris 式半开连接卡死主线程
 
     def __init__(self, addr: str, port: int, *, workers: int = 0,
-                 recv_timeout: float = _RECV_TIMEOUT) -> None:
+                 recv_timeout: float = _RECV_TIMEOUT,
+                 max_connections: int = 1000,
+                 max_queue_size: int = 1000) -> None:
         self.addr = addr
         self.port = port
         self._workers = workers
         self._recv_timeout = recv_timeout
+        self._max_connections = max_connections
+        self._max_queue_size = max_queue_size
         self._running = False
         self._server_sock: "_socket.socket | None" = None
         self._clients: "dict" = {}          # socket -> (ip, port)
@@ -375,8 +406,9 @@ class MsgServer:
         servsock.listen(10)
         self._server_sock = servsock
         if self._workers > 0:
-            self._pool = ThreadPoolExecutor(
+            self._pool = _BoundedThreadPoolExecutor(
                 max_workers=self._workers,
+                max_queue_size=self._max_queue_size,
                 thread_name_prefix=f"pymsg-{self.port}",
             )
 
@@ -465,10 +497,19 @@ class MsgServer:
     def _accept_client(self, servsock, socketlist):
         try:
             client_sock, client_addr = servsock.accept()
-            if client_sock.fileno() != -1:
-                socketlist.append(client_sock)
-                self._clients[client_sock] = client_addr
-                self._send_locks[client_sock] = threading.Lock()
+            if client_sock.fileno() == -1:
+                return
+            # 活跃连接数上限控制：超过 max_connections 直接拒绝，
+            # 防止连接耗尽攻击（listen backlog 只限制 SYN 队列，不限制已建立连接数）
+            if len(self._clients) >= self._max_connections:
+                try:
+                    client_sock.close()
+                except OSError:
+                    pass
+                return
+            socketlist.append(client_sock)
+            self._clients[client_sock] = client_addr
+            self._send_locks[client_sock] = threading.Lock()
         except OSError:
             pass
 
@@ -493,7 +534,13 @@ class MsgServer:
         # 再把回调提交到线程池执行
         with self._lock:
             self._busy.add(s)
-        self._pool.submit(self._run_task, s, addr, text, on_message)
+        try:
+            self._pool.submit(self._run_task, s, addr, text, on_message)
+        except _queue.Full:
+            # 有界队列已满：慢 handler 时任务不应无限堆积，拒绝并断开该连接
+            with self._lock:
+                self._busy.discard(s)
+            self._remove_client(s, socketlist)
 
     def _run_task(self, s, addr, text, on_message):
         """工作线程：执行用户回调。
