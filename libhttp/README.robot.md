@@ -30,13 +30,15 @@ libhttp/
 ├── inc/us/
 │   ├── HttpClient.hpp          # HTTP 客户端 (header-only)
 │   ├── HttpServer.hpp          # HTTP/HTTPS 服务器声明
-│   ├── WebSocketClient.hpp     # WebSocket 客户端声明
-│   ├── WebSocketClientBase.hpp # WebSocket 客户端抽象基类
-│   └── WebSocketServer.hpp     # WebSocket 服务器声明
+│   └── detail/
+│       └── HttpServerImpl.hpp  # Session/Listener 内部共享定义
 └── src/
-    ├── HttpServer.cpp          # HTTP/HTTPS 服务器实现
-    ├── WebSocketClient.cpp     # WebSocket 客户端实现
-    └── WebSocketServer.cpp     # WebSocket 服务器实现
+    ├── HttpServer.cpp          # 核心生命周期/SSL 初始化
+    ├── HttpServer_Listener.cpp # TCP 连接接受器
+    ├── HttpServer_Routes.cpp   # 路由注册/匹配/通配符
+    ├── HttpServer_Request.cpp  # 请求分发/静态文件/CORS/HTTP 读写
+    ├── HttpServer_Ws.cpp       # WebSocket 路由注册/客户端管理
+    └── HttpServer_WsSession.cpp# WebSocket 会话/代理桥接
 ```
 
 ---
@@ -71,7 +73,7 @@ make install
 make uninstall
 ```
 
-> **注意**：Makefile 第 17 行默认只链接 `HttpServer.o`。如需 WebSocket 支持，需取消注释 `WebSocketServer.o` 和 `WebSocketClient.o`。
+> **注意**：HttpServer 拆分为 6 个 TU，统一编译进 `libus_http.so`；WebSocket 能力已内置于 HttpServer（单端口同时服务 HTTP + WebSocket），客户端通过 `HttpClient` 提供，无独立 WebSocketServer/WebSocketClient 类。
 
 ### 4.2 CMake
 
@@ -82,7 +84,7 @@ cmake --build .
 cmake --install . --prefix /usr/local
 ```
 
-CMake 会同时产出 `libus_http.so` (动态) 和 `libus_http_static.a` (静态)。
+CMake 会同时产出 `libus_http.so` (服务端) 和 `libus_httpclient.so` (客户端)。
 
 ### 4.3 一键脚本
 
@@ -257,130 +259,9 @@ void delete_stream_sync(const std::string& url, std::function<void(const std::st
 
 ---
 
-### 5.3 WebSocketServer — WebSocket 服务器
+### 5.3 WebSocket 支持
 
-**头文件**: `<us/WebSocketServer.hpp>`  
-**实现**: `src/WebSocketServer.cpp`
-
-#### 5.3.1 回调类型
-
-```cpp
-using WebSocketMessageHandler = std::function<void(
-    const std::string& clientId,
-    const std::string& message,
-    std::function<void(const std::string&)> sendCallback)>;
-
-using WebSocketConnectHandler = std::function<void(
-    const std::string& clientId, const std::string& remoteAddress)>;
-
-using WebSocketDisconnectHandler = std::function<void(
-    const std::string& clientId)>;
-```
-
-#### 5.3.2 公共接口
-
-```cpp
-WebSocketServer(unsigned short port, unsigned int threads = 2);
-~WebSocketServer();
-
-void start();
-void stop();
-bool isRunning() const;
-unsigned short getPort() const;
-
-// 事件注册
-void onMessage(const std::string& path, WebSocketMessageHandler handler);
-void onConnect(WebSocketConnectHandler handler);
-void onDisconnect(WebSocketDisconnectHandler handler);
-
-// 消息/客户端管理
-bool sendToClient(const std::string& clientId, const std::string& message);
-size_t broadcast(const std::string& message);
-void disconnectClient(const std::string& clientId);
-size_t getClientCount() const;
-```
-
-**特点**：
-- PIMPL 模式：内部实现封装于 `Impl` 结构体
-- 每个 `Session` 包含一个发送队列 (`std::deque<std::string>`)，保证消息顺序
-- 客户端 ID 由全局原子计数器自动生成，格式 `"client_N"`
-- 线程安全：客户端列表受 `clientsMutex_` 保护
-- 消息处理器支持路径路由（按 `path` 键索引）
-
-**内部架构**：
-
-```
-WebSocketServer
-├── Impl
-│   ├── io_context
-│   ├── Listener (内部类) → tcp::acceptor
-│   └── threads_
-└── Session (内部类，enable_shared_from_this)
-    ├── websocket::stream<beast::tcp_stream>
-    ├── sendQueue_ (std::deque)
-    └── 读取循环 → onMessage 回调 → sendCallback 写回
-```
-
----
-
-### 5.4 WebSocketClient — WebSocket 客户端
-
-**头文件**: `<us/WebSocketClient.hpp>`, `<us/WebSocketClientBase.hpp>`  
-**实现**: `src/WebSocketClient.cpp`
-
-#### 5.4.1 抽象基类 `WebSocketClientBase`
-
-定义统一接口：
-
-```cpp
-using MessageCallback = std::function<void(const std::string&)>;
-using ErrorCallback   = std::function<void(const std::string&)>;
-using ConnectCallback = std::function<void(bool)>;
-using CloseCallback   = std::function<void()>;
-
-// 回调设置
-virtual void setMessageCallback(MessageCallback) = 0;
-virtual void setErrorCallback(ErrorCallback) = 0;
-virtual void setConnectCallback(ConnectCallback) = 0;
-virtual void setCloseCallback(CloseCallback) = 0;
-
-// 连接管理
-virtual bool connect(int timeout_ms = 5000) = 0;
-virtual void disconnect() = 0;
-virtual bool isConnected() const = 0;
-
-// 消息发送
-virtual bool send(const std::string& message) = 0;
-virtual bool sendBinary(const void* data, size_t size) = 0;
-
-// 配置
-virtual void setAutoReconnect(bool enable, int interval_ms = 3000) = 0;
-virtual void setHeartbeatInterval(int interval_ms = 30000) = 0;
-
-// SSL 相关（纯虚函数，非 SSL 版本忽略参数）
-virtual bool isSecure() const = 0;
-virtual void setVerifyCertificate(bool verify) = 0;
-virtual void setCertificateFile(const std::string& cert_file) = 0;
-virtual void setPrivateKeyFile(const std::string& key_file) = 0;
-virtual void setCertificateAuthorityFile(const std::string& ca_file) = 0;
-```
-
-#### 5.4.2 公共接口
-
-```cpp
-WebSocketClient(const std::string& host, const std::string& port,
-                const std::string& path = "/");
-~WebSocketClient();
-```
-
-**特点**：
-- PIMPL 模式：`Impl` 结构体封装所有 Boost 对象和状态
-- 构造时自动启动 IO 线程
-- 异步连接流程：`resolve → connect → WebSocket handshake`
-- 发送队列受 `std::mutex` 和 `std::condition_variable` 保护
-- 自动重连：`onError` 或 `onClose` 中若 `auto_reconnect=true` 则自动发起重连
-- 非 SSL 版本：`isSecure()` 返回 `false`，SSL 配置方法为空实现
-- `sendBinary` 将二进制数据包装为 `std::string` 后调用 `send`
+WebSocket 能力已内置于 `HttpServer`（单端口同时服务 HTTP + WebSocket），通过 `ws()`/`ws_proxy()` 注册路由；客户端通过 `HttpClient` 的 `ws_*` 方法提供（`using WebSocketClient = HttpClient`）。原独立 `WebSocketServer`/`WebSocketClient` 类已删除（未构建的历史遗留，见安全审计 P3-1）。
 
 ---
 
@@ -476,45 +357,36 @@ auto& headers = client.get_response_headers();
 ### 6.5 WebSocket 服务器
 
 ```cpp
-pmc::net::WebSocketServer ws_server(9000, 2);
+pmc::net::HttpServer server("0.0.0.0", 9000, 4);
 
-ws_server.onConnect([](const std::string& clientId, const std::string& addr) {
+server.onWsConnect([](const std::string& clientId, const std::string& addr) {
     std::cout << "Client connected: " << clientId << " from " << addr << std::endl;
 });
 
-ws_server.onMessage("/chat", [&ws_server](const std::string& clientId,
-                                           const std::string& message,
-                                           auto sendCallback) {
+server.ws("/chat", [](const std::string& clientId,
+                      const std::string& message,
+                      auto sendCallback) {
     std::cout << "[" << clientId << "]: " << message << std::endl;
-    ws_server.broadcast(clientId + ": " + message);
+    sendCallback("echo: " + message);
 });
 
-ws_server.onDisconnect([](const std::string& clientId) {
+server.onWsDisconnect([](const std::string& clientId) {
     std::cout << "Client disconnected: " << clientId << std::endl;
 });
 
-ws_server.start();
+server.start();
 ```
 
 ### 6.6 WebSocket 客户端
 
 ```cpp
-pmc::net::WebSocketClient ws_client("localhost", "9000", "/chat");
+pmc::net::HttpClient ws_client;
 
-ws_client.setConnectCallback([](bool success) {
-    std::cout << (success ? "Connected!" : "Failed!") << std::endl;
-});
-
-ws_client.setMessageCallback([](const std::string& msg) {
-    std::cout << "Received: " << msg << std::endl;
-});
-
-ws_client.setAutoReconnect(true, 3000);
-ws_client.connect();
-
-// 阻塞主线程保持连接
-while (ws_client.isConnected()) {
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+if (ws_client.ws_connect("ws://localhost:9000/chat")) {
+    ws_client.ws_send("hello");
+    std::string reply = ws_client.ws_recv();
+    std::cout << "Received: " << reply << std::endl;
+    ws_client.ws_close();
 }
 ```
 
@@ -548,22 +420,15 @@ while (ws_client.isConnected()) {
 ### 8.1 线程模型
 
 - **HttpServer**: 每个工作线程独立运行 `io_context::run()`，所有异步操作通过 `strand` 序列化，同一 Session 的读写不会并发冲突
-- **WebSocketServer**: 同 HttpServer，工作线程池跑 `io_context`
-- **WebSocketClient**: 单 IO 线程，所有异步回调在该线程中执行
-- **HttpClient**: 同步阻塞，无额外线程
+- **HttpClient**: 同步阻塞，无额外线程（HTTP 经 libcurl；WebSocket 经 Beast）
 
-### 8.2 PIMPL 模式
-
-`WebSocketClient` 和 `WebSocketServer` 使用 PIMPL 隐藏 Boost 依赖，保持头文件轻量。
-
-### 8.3 会话管理
+### 8.2 会话管理
 
 - `HttpServer` 通过 `weak_ptr<Session>` 跟踪所有活跃会话，`stop()` 时遍历清理
-- `WebSocketServer` 通过 `unordered_map<string, shared_ptr<Session>>` + mutex 管理
 
-### 8.4 发送队列
+### 8.3 发送队列
 
-`WebSocketServer::Session` 和 `WebSocketClient::Impl` 均采用 `std::deque` 消息队列，确保消息按序发送且不会因并发写入冲突。
+`HttpServer::Session` 的 `ws_send_queue_` 与代理队列 (`proxy_to_backend_queue_`/`proxy_to_client_queue_`) 采用 `std::deque` 消息队列，确保消息按序发送且不会因并发写入冲突。
 
 ---
 
@@ -596,11 +461,9 @@ micro_servers/
 
 ## 11. 已知限制
 
-1. **Makefile 默认不编译 WebSocket**：第 17 行仅链接 `HttpServer.o`，需手动启用
-2. **WebSocketClient 无 SSL 实现**：当前仅有非加密版本；SSL 接口已声明但为空实现
-3. **无 HTTP/2 支持**：仅 HTTP/1.1
-4. **静态文件 MIME 有限**：仅支持 6 种常见类型
-5. **无请求体大小限制**：依赖 Boost.Beast 默认配置
-6. **HttpClient 仅同步**：无异步 HTTP 客户端实现
+1. **无 HTTP/2 支持**：仅 HTTP/1.1
+2. **静态文件 MIME 有限**：仅支持 6 种常见类型
+3. **无请求体大小限制**：依赖 Boost.Beast 默认配置（见安全审计 P1-1）
+4. **HttpClient 仅同步**：无异步 HTTP 客户端实现
 ```
 

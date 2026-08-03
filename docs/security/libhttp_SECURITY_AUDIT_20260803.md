@@ -13,7 +13,7 @@
 | P0 | 0 | 0 | 0 | 0 |
 | P1 | 6 | 0 | 0 | 6 |
 | P2 | 4 | 0 | 0 | 4 |
-| **合计** | **10** | **0** | **0** | **10** |
+| **合计** | **10** | **2** | **0** | **8** |
 
 ---
 
@@ -47,8 +47,8 @@
 
 | # | 问题 | 状态 | 说明 |
 |---|------|------|------|
-| P3-1 | 遗留 WebSocketServer/WebSocketClient 未构建 | ❌ 未修复 | `WebSocketServer.cpp`/`WebSocketClient.cpp` 仅被 CMakeLists.txt 引用，**Makefile 未编译**，与 `HttpClient` 混用。其实现存在缺陷（无超时、`disconnectClient` 不真正关闭连接 L344-352、`onRead` 对错误路径未关闭），建议删除或维护 |
-| P3-2 | CMakeLists.txt 过时 | ❌ 未修复 | CMakeLists 仍引用旧文件路径（`inc/us/HttpServer.hpp` 等）与旧拆分前源码，与 Makefile 实际构建不一致，易误导 |
+| P3-1 | 遗留 WebSocketServer/WebSocketClient 未构建 | ✅ 已修复 | 已删除 `WebSocketServer.cpp`/`WebSocketClient.cpp`/`WebSocketServer.hpp`/`WebSocketClient.hpp`/`WebSocketClientBase.hpp`（未构建、与 `HttpClient` 别名同名冲突、有缺陷），并清理 Makefile/README 引用。WebSocket 能力由 `HttpServer` + `HttpClient` 提供 |
+| P3-2 | CMakeLists.txt 过时 | ✅ 已修复 | CMakeLists 已重写对齐 Makefile：`libus_http.so`（6 个服务端 TU）+ `libus_httpclient.so`（HttpClient），移除遗留文件引用与错误库名 |
 
 ---
 
@@ -83,8 +83,8 @@
 - [ ] P2-5 代理后端读写超时 + 空闲保活
 - [ ] P2-6 最大连接数限制
 - [ ] P2-2 TLS 校验可配置（至少提供 `verify_peer` 选项）
-- [ ] P3-1 删除或维护遗留 WebSocketServer/WebSocketClient
-- [ ] P3-2 同步 CMakeLists.txt 与 Makefile
+- [x] P3-1 删除或维护遗留 WebSocketServer/WebSocketClient → ✅ 已删除
+- [x] P3-2 同步 CMakeLists.txt 与 Makefile → ✅ 已重写对齐
 
 ---
 
