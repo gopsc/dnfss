@@ -16,10 +16,10 @@
 | 等级 | 总数 | 已修复 | 部分修复 | 未修复 | 修复率 |
 |------|------|--------|----------|--------|--------|
 | P0 | 3 | 2 | 0 | 1 | 67% |
-| P1 | 5 | 2 | 0 | 3 | 40% |
+| P1 | 5 | 4 | 0 | 1 | 80% |
 | P2 | 4 | 0 | 0 | 4 | 0% |
 | P3 | 4 | 0 | 0 | 4 | 0% |
-| **合计** | **16** | **4** | **0** | **12** | **25%** |
+| **合计** | **16** | **6** | **0** | **10** | **37.5%** |
 
 ### 逐条验证
 
@@ -30,9 +30,9 @@
 | P0-3 | ❌ 未修复 | `rpc.py` L80-171 | 无认证机制，仅依赖 127.0.0.1 网络层隔离 |
 | P1-1 | ✅ 已修复 | `__init__.py` L342-350, L467-484 | `MsgServer` 新增 `max_connections` 参数（默认 1000），`_accept_client` 在 `len(_clients) >= max_connections` 时直接拒绝并关闭新连接；已实测 max_connections=3 时第 4 个连接被关闭（ConnectionResetError），handler 只处理前 3 条 |
 | P1-2 | ✅ 已修复 | `__init__.py` L316-333, L369, L405-410, L530-540 | 新增 `_BoundedThreadPoolExecutor`（`submit` 时检查 `_work_queue.qsize()`，超限抛 `queue.Full`）；`MsgServer` 新增 `max_queue_size` 参数（默认 1000），`_handle_client` 捕获 `queue.Full` 后拒绝并断开该连接；已实测 workers=1 + max_queue_size=1 时，慢 handler 阻塞下第 3 个连接被拒绝关闭，handler 只处理前 2 个任务 |
-| P1-3 | ❌ 未修复 | `rpc.py` L160, L178 | `_dispatch` 将 `str(e)` 和 `f"JSON 解析失败: {e}"` 直接返回客户端 |
+| P1-3 | ✅ 已修复 | `rpc.py` L49-57, L160-178 | 新增 `_sanitize_error()`：用 `_PATH_RE` 正则将异常信息中的绝对路径（如 `/opt/micro_servers/db/xxx.py`）替换为 `<redacted>`，保留业务错误语义；`_dispatch` 返回给客户端前统一调用；已实测异常信息含绝对路径时返回体仅含 `<redacted>`，不透传 `/opt/...` |
 | P1-4 | ❌ 未修复 | 全模块 | 明文 TCP，无 TLS 支持 |
-| P1-5 | ❌ 未修复 | `rpc.py` L158 | `json.loads(text)` 无深度限制 |
+| P1-5 | ✅ 已修复 | `rpc.py` L28-46, L158-166 | `json.loads` 增加 `parse_int=_checked_int` / `parse_float=_checked_float` 钩子，数字位数超 `_MAX_NUM_DIGITS=100` 抛 `ValueError`；`except` 捕获 `RecursionError` 防止深度嵌套导致栈溢出；解析失败统一返回 `"invalid JSON request"` 不透传输入片段；已实测超大整数（10000 位）与深度 200000 嵌套均被拒绝，服务存活 |
 | P2-1 | ❌ 未修复 | `__init__.py` L106-111 | length=0 空消息无特殊处理 |
 | P2-2 | ❌ 未修复 | `__init__.py` L395-418 | `broadcast()` 无频率/权限控制 |
 | P2-3 | ❌ 未修复 | `__init__.py` L377-378 | `except (ValueError, OSError): break` 仍捕获所有 OSError（含 EINTR） |
@@ -109,9 +109,9 @@
 |---|------|------|------|
 | P1-1 | 无连接数限制，连接耗尽攻击 | `__init__.py:342-350,467-484` | ✅ 已修复（`max_connections` 默认 1000） |
 | P1-2 | 线程池无队列限制，慢 handler 耗尽内存 | `__init__.py:316-333,369,405-410,530-540` | ✅ 已修复（`_BoundedThreadPoolExecutor` + `max_queue_size` 默认 1000） |
-| P1-3 | 异常信息直接返回客户端，泄露内部细节 | `rpc.py:144,162` 直接将 `str(e)` 返回调用方 | ❌ 未修复 |
+| P1-3 | 异常信息直接返回客户端，泄露内部细节 | `rpc.py:49-57,160-178` 新增 `_sanitize_error()` 脱敏绝对路径 | ✅ 已修复 |
 | P1-4 | 无 TLS/加密传输，内网流量可被窃听 | 全模块明文 TCP | ❌ 未修复 |
-| P1-5 | JSON 解析无深度限制，深度嵌套导致栈溢出/CPU 100% | `recv()` 后 `json.loads()` 无限制 | ❌ 未修复 |
+| P1-5 | JSON 解析无深度限制，深度嵌套导致栈溢出/CPU 100% | `rpc.py:28-46,158-166` `parse_int/parse_float` 钩子 + 捕获 `RecursionError` | ✅ 已修复 |
 
 ---
 
@@ -170,8 +170,8 @@
 ### 短期（72小时）
 - [x] 添加最大连接数限制 ✅ 已完成
 - [x] 线程池改用有界队列 ✅ 已完成
-- [ ] 异常信息脱敏
-- [ ] JSON 解析深度限制
+- [x] 异常信息脱敏 ✅ 已完成
+- [x] JSON 解析深度限制 ✅ 已完成
 
 ### 中期
 - [ ] 统一认证机制

@@ -19,10 +19,42 @@ JSON 编解码客户端逻辑，收敛为 ``RpcServer`` / ``RpcClient`` 两个�
 """
 
 import json
+import re
 
 from . import MsgClient, MsgServer
 
 __all__ = ["RpcClient", "RpcServer", "RpcError"]
+
+# 超大数字位数上限：防止超大整数/浮点（如 10^100000）消耗大量 CPU 与内存
+_MAX_NUM_DIGITS = 100
+
+# 匹配绝对路径（如 /opt/micro_servers/db/xxx.py），用于脱敏异常信息
+_PATH_RE = re.compile(r"(?<![\w])/[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)*")
+
+
+def _checked_int(value: str) -> int:
+    """parse_int 钩子：限制超大整数，防止 CPU/内存 DoS。"""
+    if len(value) > _MAX_NUM_DIGITS:
+        raise ValueError("integer too large")
+    return int(value)
+
+
+def _checked_float(value: str) -> float:
+    """parse_float 钩子：限制超大浮点，防止 CPU/内存 DoS。"""
+    if len(value) > _MAX_NUM_DIGITS:
+        raise ValueError("number too large")
+    return float(value)
+
+
+def _sanitize_error(msg: str) -> str:
+    """脱敏异常信息中的绝对路径等内部细节，保留业务错误语义。
+
+    不返回函数堆栈、SQL 等内部细节给客户端；完整异常由 ``on_error``
+    钩子记录到服务端日志。
+    """
+    if not msg:
+        return msg
+    return _PATH_RE.sub("<redacted>", msg)
 
 
 class RpcError(Exception):
@@ -155,9 +187,12 @@ class RpcServer:
     # ── 分发与响应包装 --------------------------------------------------
     def _dispatch(self, sock, addr, text):
         try:
-            req = json.loads(text)
-        except json.JSONDecodeError as e:
-            self._reply(sock, False, error=f"JSON 解析失败: {e}")
+            # parse_int/parse_float 限制超大数字；RecursionError 防护深度嵌套
+            req = json.loads(text, parse_int=_checked_int,
+                             parse_float=_checked_float)
+        except (json.JSONDecodeError, ValueError, RecursionError):
+            # 不向客户端回显解析细节（可能含输入片段），统一脱敏文案
+            self._reply(sock, False, error="invalid JSON request")
             return
 
         route = req.pop("_route", "")
@@ -175,7 +210,8 @@ class RpcServer:
                     self._on_error(route, e)
                 except Exception:
                     pass
-            self._reply(sock, False, error=str(e))
+            # 脱敏后返回：保留业务错误语义，但过滤绝对路径等内部细节
+            self._reply(sock, False, error=_sanitize_error(str(e)))
 
     def _reply(self, sock, success, data=None, error=None):
         resp = {"success": success}
