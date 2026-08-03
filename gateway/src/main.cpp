@@ -294,6 +294,16 @@ http::response<http::string_body> handleSendEmailCode(
 		const http::request<http::string_body>& req,
 		const std::unordered_map<std::string, std::string>& params);
 
+/* 发送重置密码邮箱验证码：pymsg 调 smtp 服务 send_email 路由（定制重置文案） */
+http::response<http::string_body> handleResetSendCode(
+		const http::request<http::string_body>& req,
+		const std::unordered_map<std::string, std::string>& params);
+
+/* 重置密码：与注册流程一致，但最后一步由创建用户改为更新密码 */
+http::response<http::string_body> handleResetPassword(
+		const http::request<http::string_body>& req,
+		const std::unordered_map<std::string, std::string>& params);
+
 http::response<http::string_body> handleCaptcha(
 		const http::request<http::string_body>& req,
 		const std::unordered_map<std::string, std::string>& params);
@@ -362,6 +372,8 @@ static RateLimiter				_LOGIN_RATE;
 static RateLimiter				_REGISTER_RATE;
 static RateLimiter				_EMAIL_CODE_RATE;	// 发送邮箱验证码 IP 级限流
 static RateLimiter				_REFRESH_TOKEN_RATE;	// Token 刷新限流
+static RateLimiter				_RESET_PASSWORD_RATE;	// 重置密码 IP 级限流
+static RateLimiter				_RESET_CODE_RATE;	// 发送重置密码验证码 IP 级限流
 // 邮箱级双窗口限流:同一邮箱在 gateway 层的发送配额。
 // 配合 IP 限流(IP 可被代理池绕过)与 smtp 同邮箱 60s 冷却(仅防短期重复)。
 // 双窗口设计:小时窗限制短期轰炸,天窗限制长期骚扰。
@@ -830,6 +842,18 @@ void registerRoutes(HttpServer &server) {
 	server.post("/register/send_code", [](const auto& req, const auto& params) -> http::response<http::string_body> {
 		return wrapperHttp(req, params,
 			[](const auto& req, const auto& params) { return handleSendEmailCode(req, params); });
+	});
+
+	/* 发送重置密码邮箱验证码（须在 post("*") 通配符之前注册） */
+	server.post("/reset/send_code", [](const auto& req, const auto& params) -> http::response<http::string_body> {
+		return wrapperHttp(req, params,
+			[](const auto& req, const auto& params) { return handleResetSendCode(req, params); });
+	});
+
+	/* 重置密码（须在 post("*") 通配符之前注册） */
+	server.post("/reset_password", [](const auto& req, const auto& params) -> http::response<http::string_body> {
+		return wrapperHttp(req, params,
+			[](const auto& req, const auto& params) { return handleResetPassword(req, params); });
 	});
 
 	server.post("/logout", [](const auto& req, const auto& params) -> http::response<http::string_body> {
@@ -1704,6 +1728,217 @@ http::response<http::string_body> handleSendEmailCode(
 	auto jv_r = json::value{{"success", true}};
 	res.result(http::status::ok);
 	res.set(http::field::content_type, "application/json");
+	res.body() = json::serialize(jv_r);
+	res.prepare_payload();
+	return res;
+}
+
+/* 发送重置密码邮箱验证码 /reset/send_code
+ *
+ * 与注册发码（/register/send_code）结构一致，区别在定制"重置密码"主题与文案：
+ * 经 pymsg 调 smtp 服务 send_email 路由（subject/content 字段覆盖默认注册文案）。
+ * 限流 5 次/10 分钟/IP；CAPTCHA 强制校验；smtp 不可用返回 502（fail-closed）。 */
+http::response<http::string_body> handleResetSendCode(
+	const http::request<http::string_body>& req,
+	const std::unordered_map<std::string, std::string>& params)
+{
+	http::response<http::string_body> res;
+	res.version(req.version());
+
+	// IP rate limit check
+	std::string client_ip = "direct";
+	auto it_host = req.base().find("X-Forwarded-For");
+	if (it_host != req.base().end())
+		client_ip = std::string(it_host->value());
+	if (!_RESET_CODE_RATE.check_and_record(client_ip, 5, 600))
+		THROW_EX_CUSTOM(HttpException, 3201, "Too many code requests. Please try again later.",
+			429, "/reset/send_code");
+
+	// parse the req body
+	json::value jv;
+	try { jv = json::parse(req.body()); }
+	catch (const std::exception&) {
+		THROW_EX_CUSTOM(HttpException, 3002, "Invalid Argument", 401, "/reset/send_code");
+	}
+
+	if (!jv.is_object())
+		THROW_EX_CUSTOM(HttpException, 3002, "Invalid Argument", 401, "/reset/send_code");
+
+	auto& obj = jv.as_object();
+	auto email_it = obj.find("email");
+	if (email_it == obj.end())
+		THROW_EX_CUSTOM(HttpException, 3002, "Invalid Argument", 401, "/reset/send_code");
+	auto email = std::string(email_it->value().as_string());
+
+	// Email format check
+	std::regex email_regex(R"(^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$)");
+	if (!std::regex_match(email, email_regex))
+		THROW_EX_CUSTOM(HttpException, 3004, "Invalid email format", 400, "/reset/send_code");
+
+	// CAPTCHA 强制校验（防邮件轰炸，与 /register/send_code 一致）
+	// 经 captcha:8009 pymsg 校验，Token 一次性消费；fail-closed。
+	auto captcha_token_it = obj.find("captcha_token");
+	auto captcha_answer_it = obj.find("captcha_answer");
+	if (captcha_token_it == obj.end() || captcha_answer_it == obj.end())
+		THROW_EX_CUSTOM(HttpException, 3007, "CAPTCHA required", 400, "/reset/send_code");
+	if (!verify_captcha_remote(std::string(captcha_token_it->value().as_string()),
+	                          std::string(captcha_answer_it->value().as_string())))
+		THROW_EX_CUSTOM(HttpException, 2201, "Invalid CAPTCHA", 400, "/reset/send_code");
+
+	// 邮箱级双窗口限流（CAPTCHA 通过后才计入配额,避免无效请求消耗限流额度）
+	// 与注册发码共用同一配额，防止重置/注册双通道叠加绕过邮箱轰炸防护
+	if (!_EMAIL_ADDR_RATE_HOUR.check_and_record(email, 3, 3600))
+		THROW_EX_CUSTOM(HttpException, 3104,
+			"Too many code requests for this email. Please try again later.",
+			429, "/reset/send_code");
+	if (!_EMAIL_ADDR_RATE_DAY.check_and_record(email, 10, 86400))
+		THROW_EX_CUSTOM(HttpException, 3105,
+			"Daily email limit exceeded. Please try again tomorrow.",
+			429, "/reset/send_code");
+
+	// 调 smtp 服务（pymsg/TCP :8008）发送重置密码验证码（定制文案）
+	bool sent = false;
+	int retry_after = 0;   // smtp 同邮箱发送冷却的剩余秒数，0 表示非冷却拒绝
+	std::string smtp_err;  // 冷却拒绝时 smtp 返回的提示文案（仅冷却场景透传客户端）
+	try {
+		pmc::net::MsgClient client(_SMTP_HOST, _SMTP_PORT, "gateway");
+		json::value jv_req = {
+			{"_route", "send_email"},
+			{"email", email},
+			{"subject", "QSONT.me - Password Reset"},
+			{"content", "您正在重置 QSONT.me 账号密码，验证码为 {code}，10 分钟内有效。如非本人操作，请忽略本邮件。"}
+		};
+		std::string resp = client.call(json::serialize(jv_req), _TIMEOUT_SMTP_SEND);
+		auto jv_r = json::parse(resp);
+		auto& obj_r = jv_r.as_object();
+		if (obj_r.at("success").as_bool()) {
+			auto& data = obj_r.at("data").as_object();
+			sent = data.at("sent").as_bool();
+			if (!sent) {
+				auto it_ra = data.find("retry_after");
+				if (it_ra != data.end() && it_ra->value().is_int64())
+					retry_after = static_cast<int>(it_ra->value().as_int64());
+				auto it_err = data.find("error");
+				if (it_err != data.end() && it_err->value().is_string())
+					smtp_err = std::string(it_err->value().as_string());
+			}
+		}
+	} catch (const std::exception&) {
+		THROW_EX_CUSTOM(HttpException, 3102, "Mail service unavailable", 502, "/reset/send_code");
+	}
+
+	if (!sent) {
+		// 同邮箱发送冷却：按限流语义返回 429 并透传 smtp 提示文案；
+		// 其余发送失败（含 SMTP 内部错误细节）仍用通用文案，不向外暴露
+		if (retry_after > 0)
+			THROW_EX_CUSTOM(HttpException, 3103,
+				smtp_err.empty() ? "Too many code requests. Please try again later." : smtp_err,
+				429, "/reset/send_code");
+		THROW_EX_CUSTOM(HttpException, 3103, "Failed to send verification code", 500, "/reset/send_code");
+	}
+
+	logs().info("gateway", "重置密码验证码邮件发送成功: " + email, std::nullopt,
+		json::serialize(json::value{{"ip", client_ip}}));
+
+	auto jv_r = json::value{{"success", true}};
+	res.result(http::status::ok);
+	res.set(http::field::content_type, "application/json");
+	res.body() = json::serialize(jv_r);
+	res.prepare_payload();
+	return res;
+}
+
+/* 处理重置密码 /reset_password
+ *
+ * 与注册流程一致，最后一步由"创建用户"改为"更新密码"：
+ *   校验顺序：密码强度 → 邮箱格式 → CAPTCHA（可选）→ 邮箱验证码（smtp verify_email，一次性）
+ *   → 生成 PBKDF2 哈希 → UPDATE Users SET password_hash WHERE username
+ * 防枚举：用户不存在（update 匹配 0 行）时仍统一返回成功，不泄露邮箱是否已注册。
+ * CAPTCHA 走 captcha:8009 远端校验（与前端 /captcha/image 的 token 匹配）。
+ */
+http::response<http::string_body> handleResetPassword(
+	const http::request<http::string_body>& req,
+	const std::unordered_map<std::string, std::string>& params)
+{
+	http::response<http::string_body> res;
+	res.version(req.version());
+
+	// IP rate limit check
+	std::string client_ip = "direct";
+	auto it_host = req.base().find("X-Forwarded-For");
+	if (it_host != req.base().end())
+		client_ip = std::string(it_host->value());
+	if (!_RESET_PASSWORD_RATE.check_and_record(client_ip, 5, 600))
+		THROW_EX_CUSTOM(HttpException, 3301, "Too many reset attempts. Please try again later.",
+			429, "/reset_password");
+
+	// parse the req body
+	json::value jv;
+	try { jv = json::parse(req.body()); }
+	catch (const std::exception&) {
+		THROW_EX_CUSTOM(HttpException, 3002, "Invalid Argument", 401, "/reset_password");
+	}
+
+	if (!jv.is_object())
+		THROW_EX_CUSTOM(HttpException, 3002, "Invalid Argument", 401, "/reset_password");
+
+	auto& obj = jv.as_object();
+	auto username = std::string(obj.at("username").as_string());
+	auto password = std::string(obj.at("password").as_string());
+
+	// Strong password check
+	auto pw_result = PasswordValidator::validate(password);
+	if (!pw_result.valid)
+		THROW_EX_CUSTOM(HttpException, 3003, pw_result.message, 401, "/reset_password");
+
+	// Email format check
+	std::regex email_regex(R"(^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$)");
+	if (!std::regex_match(username, email_regex))
+		THROW_EX_CUSTOM(HttpException, 3004, "Invalid email format", 400, "/reset_password");
+
+	// CAPTCHA verification（可选，与注册一致；走 captcha 服务远端校验）
+	auto captcha_it = obj.find("captcha_token");
+	auto captcha_ans_it = obj.find("captcha_answer");
+	if (captcha_it != obj.end() && captcha_ans_it != obj.end()) {
+		std::string ct = std::string(captcha_it->value().as_string());
+		std::string ca = std::string(captcha_ans_it->value().as_string());
+		if (!verify_captcha_remote(ct, ca))
+			THROW_EX_CUSTOM(HttpException, 2201, "Invalid CAPTCHA", 400, "/reset_password");
+	}
+
+	// 邮箱验证码校验（smtp 服务，一次性消费；须放在所有本地校验通过之后、写库之前）
+	auto ecode_it = obj.find("email_code");
+	if (ecode_it == obj.end())
+		THROW_EX_CUSTOM(HttpException, 3005, "Email verification code required", 400, "/reset_password");
+	std::string email_code = std::string(ecode_it->value().as_string());
+	if (!verify_email_code_remote(username, email_code))
+		THROW_EX_CUSTOM(HttpException, 3006, "Invalid or expired email verification code", 400, "/reset_password");
+
+	// generate the hash of password
+	auto password_hash = PBKDF2Hasher::hash_password(password);
+
+	// 更新密码：UPDATE Users SET password_hash=? WHERE username=?（经 db 服务 pymsg execute）
+	json::value jv_update = {
+		{"action", "update"},
+		{"table", "Users"},
+		{"values", json::object{
+			{"password_hash", password_hash}
+		}},
+		{"where", json::object{
+			{"username", username}
+		}}
+	};
+	auto jv_result = DbC::call_msg(jv_update);
+	auto obj_r = jv_result.as_object();
+	if (!obj_r["success"].as_bool())
+		THROW_EX_CUSTOM(HttpException, 2202, "Reset Failed", 500, "/reset_password");
+
+	// 防枚举：用户不存在（rowcount=0）时仍统一返回成功，不泄露邮箱是否已注册
+	logs().info("gateway", "重置密码成功: " + username, std::nullopt,
+		json::serialize(json::value{{"ip", client_ip}}));
+
+	auto jv_r = json::value{{"success", true}};
+	res.result(http::status::ok);
 	res.body() = json::serialize(jv_r);
 	res.prepare_payload();
 	return res;
