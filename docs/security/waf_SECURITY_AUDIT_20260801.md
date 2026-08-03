@@ -329,3 +329,42 @@ ServeHTTP 中 defer 只关闭了 WAF 事务 `tx`，但没有显式关闭/耗尽 
 
 **中期改进（P2）**:
 8. 规则文件大小限制、logclient 配置化等
+
+---
+
+## 代码验证记录
+
+**验证日期**: 2026-08-03  
+**验证方式**: 逐条对照审计报告与当前代码
+
+### 验证结果汇总
+
+| 等级 | 总数 | 已修复 | 未修复 | 修复率 |
+|------|------|--------|--------|--------|
+| P0 | 3 | 2 | 1 | 67% |
+| P1 | 5 | 1 | 4 | 20% |
+| P2 | 6 | 3 | 3 | 50% |
+| P3 | 3 | 0 | 3 | 0% |
+| **合计** | **17** | **6** | **11** | **35%** |
+
+### 逐条验证
+
+| 编号 | 状态 | 代码位置 |
+|------|------|----------|
+| P0-1 | ✅ 已修复 | `proxy.go` L22-23 `maxRequestBodySize`，L128-151 `io.LimitReader` + 413 |
+| P0-2 | ✅ 已修复 | `main.go` L111-122 五项超时/大小限制已设置 |
+| **P0-3** | ❌ 未修复 | `custom.conf` 全部 6 条规则仍被 `#` 注释 |
+| **P1-1** | ❌ 未修复 | `proxy.go` L47-48 仍用 `LastIndexByte(':')`，未用 `net.SplitHostPort` |
+| **P1-2** | ❌ 未修复 | `proxy.go` L194 `ProcessResponseHeaders` 返回值被丢弃 |
+| P1-3 | ✅ 已修复 | `proxy.go` L130-135 读取错误已记录日志并返回 |
+| **P1-4** | ❌ 未修复 | `main.go` L99-109 只处理 SIGHUP，无 SIGINT/SIGTERM |
+| **P1-5** | ❌ 未修复 | `main.go` L89 `log.SetOutput(io.Discard)` 仍在 |
+| **P2-1** | ❌ 未修复 | `engine.go` L157 `os.ReadFile` 无前置大小检查 |
+| **P2-2** | ❌ 未修复 | `logclient.go` L24 `const dbAddr = "127.0.0.1:8005"` 硬编码 |
+| P2-3 | ✅ 已修复 | `proxy.go` L194 改为 `r.Proto` |
+| P2-4 | ✅ 已修复 | `proxy.go` L254-269 完整实现 `Hijack()` |
+| **P2-5** | ❌ 未修复 | `logclient.go` L223 `fmt.Printf` 到 stdout |
+| P2-6 | ✅ 已修复 | `proxy.go` L93-97 defer 中 drain + close |
+| P3-1 | ❌ 未修复 | `logclient.go` L229 每条日志 `net.DialTimeout` 短连接 |
+| P3-2 | ❌ 未修复 | `main.go` L119-121 仅设置 MinVersion，未限定 CipherSuites |
+| P3-3 | ❌ 未修复 | `engine.go` L103-129 CheckInput 编码逻辑未变 |

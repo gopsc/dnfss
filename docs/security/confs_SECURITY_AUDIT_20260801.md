@@ -6,6 +6,51 @@
 
 ---
 
+## 代码验证记录
+
+**验证日期**: 2026-08-03  
+**验证方式**: 逐条对照审计报告与当前代码（`confs.py`、`log_client.py`、`_run.sh`、`_set.sh`、`requirements.txt`）
+
+### 验证结果汇总
+
+| 等级 | 总数 | 已修复 | 未修复 | 修复率 |
+|------|------|--------|--------|--------|
+| P0 | 1 | 1 | 0 | 100% |
+| P1 | 7 | 7 | 0 | 100% |
+| P2 | 4 | 2 | 2 | 50% |
+| P3 | 6 | 1 | 5 | 17% |
+| **合计** | **18** | **11** | **7** | **61%** |
+
+### 逐条验证（已修复）
+
+| 编号 | 代码位置 | 验证说明 |
+|------|----------|----------|
+| P0 Slowloris | `confs.py` L262 | 使用 `RpcServer`，recv_timeout 默认 10s |
+| P1 文件大小限制 | `confs.py` L48, L137-139 | `MAX_CONFIG_SIZE = 1 MiB`，读取前校验 |
+| P1 log_client 线程异常 | `log_client.py` L150-153 | `_on_error` 捕获异常，线程不崩溃 |
+| P1 TOCTOU | `confs.py` L104-115, L117-150 | `_resolve_locked` 在锁内完成 realpath→stat→open |
+| P1 reload falsy值 | `confs.py` L319-331 | None/非字符串/空字符串分别处理 |
+| P1 get() 浅拷贝 | `confs.py` L136, L150 | 返回 `dict(entry)` 防缓存污染 |
+| P1 list() realpath | `confs.py` L167-171 | 符号链接解析后校验前缀 |
+| P1 key 类型校验 | `confs.py` L300-303 | 非字符串明确报错 |
+| P2 interpolation | `confs.py` L221 | `interpolation=None` 禁用 `%(key)s` |
+| P2 argparse | `confs.py` L347 | 描述已更新为 "pymsg RpcServer/TCP" |
+| P3-1 sleep 2 | `_run.sh` L5 | 已移除，直接 `exec python3 confs.py` |
+
+### 逐条验证（未修复）
+
+| 编号 | 状态 | 代码位置 | 验证说明 |
+|------|------|----------|----------|
+| P2-3 | ❌ 未修复 | `confs.py` L149, L296, L306 | 配置名/key 直接拼入日志，未过滤 `\n`/ANSI 控制字符 |
+| P2-4 | ❌ 未修复 | `confs.py` L159-181 | `list()` 持锁期间遍历目录+stat，但文件数极少可接受 |
+| P3-2 | ❌ 未修复 | `_set.sh` L5 | 仍硬编码清华 pip 镜像源 |
+| P3-3 | ❌ 未修复 | `_set.sh` | 缺少 `set -e`，pip install 失败后继续执行 |
+| P3-4 | ❌ 未修复 | `requirements.txt` L2 | 仍包含运行时不需要的 `nuitka` 编译工具 |
+| P3-5 | ❌ 未修复 | `confs.py` L206-247 | ConfigParser section 大小写敏感/option 不敏感的隐式行为未文档化 |
+| P3-6 | ❌ 未修复 | `confs.py` L144 | 底层 IO 异常信息原样返回给调用方 |
+
+---
+
 ## 一、模块概述
 
 `confs` 是微服务架构中的统一配置分发服务，基于 `pymsg RpcServer` 在 `127.0.0.1:8010` 提供 TCP RPC 接口，集中管理各微服务的配置文件，通过内存缓存 + 文件 mtime 自动重载机制向内部服务分发配置。
