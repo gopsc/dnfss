@@ -648,6 +648,10 @@ var sp_type = document.getElementById('sp-type');
 var sp_file = document.getElementById('sp-file');
 var sp_file_tip = document.getElementById('sp-file-tip');
 var sp_edit_original = null;	/* 编辑图片/文件节点时的原信封字符串：未选新文件则原样提交 */
+/* 搜索框：当前层卡片标题/内容关键词过滤 */
+var searchtext = document.getElementById('searchtext');
+var searchsubmit = document.getElementById('searchsubmit');
+var current_children = [];		/* 当前层子节点列表（load_notes 时更新，搜索据此过滤） */
 /* 面板默认展开的最小视口宽度（px）：窄屏下面板展开会遮挡内容，默认折叠；宽屏默认展开 */
 var PANEL_EXPAND_MIN_WIDTH = 768;
 var is_expand = window.innerWidth >= PANEL_EXPAND_MIN_WIDTH;
@@ -853,15 +857,22 @@ function load_notes(main_node) {
 			cancelEdit();
 	}
 
-
-	recommend_list.replaceChildren();
-	/* 进入新节点：先清除上一节点的特效，再渲染当前节点（新节点含特效时自动加载） */
+	/* 切换到新节点：清空搜索关键词，清除上一节点特效，再渲染当前层 */
+	current_children = Array.isArray(main_node) ? main_node : [];
+	if (searchtext) searchtext.value = "";
 	clearAllEffects();
-	for (let i in main_node) {
-		let item = main_node[i]
+	renderCards(current_children);
+};
+
+/* 把卡片列表渲染到 recommend_list（从 load_notes/搜索过滤复用） */
+function renderCards(list) {
+	recommend_list.replaceChildren();
+	for (let i in list) {
+		let item = list[i]
 		console.log(item)
 		let card = document.createElement('div');
 		card.className = "card";
+		card.__item = item;		/* 供搜索过滤时读取原始数据 */
 		card.addEventListener('click', function(event) {
 			if (!confirmLeaveIfDirty()) return;	/* 未放弃输入则不跳转，stack 保持原样 */
 			var id = Number(item.id)
@@ -935,6 +946,60 @@ function load_notes(main_node) {
 		recommend_list.appendChild(document.createElement('br'))
 	}
 };
+
+/* ===== 当前层搜索：从 item 中提取可搜索文本（title + 内容文本；信封类排除 base64 数据） ===== */
+function itemSearchText(item) {
+	var parts = [];
+	if (item.title) parts.push(item.title);
+	if (item.owner) parts.push(item.owner);
+	var c = item.content;
+	if (typeof c === 'string') {
+		var sp = parseSp(c);
+		if (!sp) {
+			parts.push(c);
+		} else if (sp._sp === 'link') {
+			if (sp.url) parts.push(sp.url);
+			if (sp.note) parts.push(sp.note);
+		} else if (sp._sp === 'js') {
+			if (sp.code) parts.push(sp.code);
+			if (sp.note) parts.push(sp.note);
+		} else {	/* image / file：不把 base64 数据纳入搜索 */
+			if (sp.name) parts.push(sp.name);
+			if (sp.note) parts.push(sp.note);
+		}
+	}
+	return parts.join(' ').toLowerCase();
+}
+
+function applySearch() {
+	var kw = (searchtext && searchtext.value || '').trim().toLowerCase();
+	var cards = recommend_list.querySelectorAll('.card');
+	var anyMatch = false;
+	for (var i = 0; i < cards.length; i++) {
+		var card = cards[i];
+		var item = card.__item;
+		var matched = !kw || (item && itemSearchText(item).indexOf(kw) !== -1);
+		card.style.display = matched ? '' : 'none';
+		if (matched) anyMatch = true;
+	}
+	/* 无匹配结果提示（避免空列表看不出是已过滤） */
+	var noMatchTip = document.getElementById('search-no-match');
+	if (kw && !anyMatch) {
+		if (!noMatchTip) {
+			noMatchTip = document.createElement('div');
+			noMatchTip.id = 'search-no-match';
+			noMatchTip.className = 'card';
+			noMatchTip.style.textAlign = 'center';
+			noMatchTip.style.color = 'var(--fg-secondary)';
+			noMatchTip.style.cursor = 'default';
+			recommend_list.appendChild(noMatchTip);
+		}
+		noMatchTip.textContent = '未找到匹配「' + searchtext.value + '」的节点';
+		noMatchTip.style.display = '';
+	} else if (noMatchTip) {
+		noMatchTip.style.display = 'none';
+	}
+}
 
 function loadMap(children_json) {
 	let need_return = false;
@@ -1090,3 +1155,15 @@ function renderUserPanel() {
 getNode(0).then(load_notes);
 getNode(0).then(loadMap)
 loadUserPanel();
+
+/* ===== 搜索框事件绑定：实时过滤当前层卡片；ESC 清空；回车不提交 ===== */
+if (searchtext) {
+	searchtext.addEventListener('input', applySearch);
+	searchtext.addEventListener('keydown', function(e) {
+		if (e.key === 'Enter') { e.preventDefault(); applySearch(); }
+		if (e.key === 'Escape') { searchtext.value = ''; applySearch(); }
+	});
+}
+if (searchsubmit) {
+	searchsubmit.addEventListener('click', function(e) { e.preventDefault(); applySearch(); });
+}
