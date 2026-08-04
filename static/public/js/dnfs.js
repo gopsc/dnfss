@@ -1022,7 +1022,7 @@ function renderUserPanel() {
 	if (userpanel_expand) {
 		fold.textContent = "v 折叠";
 	} else {
-		fold.textContent = "> " + (current_user.login ? current_user.user : "未登录");
+		fold.textContent = "> 展开";
 	}
 	fold.addEventListener("click", () => {
 		userpanel_expand = !userpanel_expand;
