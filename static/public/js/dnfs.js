@@ -1117,11 +1117,11 @@ function renderUserPanel() {
 	/* 无特效模式开关（所有用户）：关闭后特效节点不再自动执行 */
 	let effect_btn = document.createElement("div");
 	effect_btn.className = "tag";
-	effect_btn.textContent = sp_effects_disabled ? "✨ 无特效模式" : "✨ 特效模式";
+	effect_btn.textContent = sp_effects_disabled ? "无特效模式" : "特效模式";
 	effect_btn.addEventListener("click", () => {
 		sp_effects_disabled = !sp_effects_disabled;
 		try { localStorage.setItem('sp_effects_disabled', sp_effects_disabled ? '1' : '0'); } catch (e) {}
-		effect_btn.textContent = sp_effects_disabled ? "✨ 无特效模式" : "✨ 特效模式";
+		effect_btn.textContent = sp_effects_disabled ? "无特效模式" : "特效模式";
 		/* 关闭时移除当前已运行的全部特效沙箱 */
 		if (sp_effects_disabled) clearAllEffects();
 	});
@@ -1131,13 +1131,13 @@ function renderUserPanel() {
 	if (current_user.is_admin) {
 		let ops_btn = document.createElement("div");
 		ops_btn.className = "tag";
-		ops_btn.textContent = "🤖 运维机器人";
+		ops_btn.textContent = "运维机器人";
 		ops_btn.addEventListener("click", () => { window.location.href = "/aibox.html"; });
 		userpanel.appendChild(ops_btn);
 
 		let mgmt_btn = document.createElement("div");
 		mgmt_btn.className = "tag";
-		mgmt_btn.textContent = "🛠 进程管理器";
+		mgmt_btn.textContent = "进程管理器";
 		mgmt_btn.addEventListener("click", () => { window.location.href = "/mgmt/mgmt.html"; });
 		userpanel.appendChild(mgmt_btn);
 	}
