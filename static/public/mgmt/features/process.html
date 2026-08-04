@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+    <link rel="icon" href="data:;base64,=">
+    <link rel="stylesheet" href="process.css">
+</head>
+
+<body>
+    <!-- stop, new flush -->
+    <button class="newBtn" onclick="newBtn()">新建</button>
+    <button class="flushBtn" onclick="flushBtn()">刷新</button>
+    <table border="1">
+        <thead>
+            <tr>
+                <th class="title">PID</th>
+                <th class="title">状态</th>
+                <th class="title">命令</th>
+                <th class="title">操作</th>
+            </tr>
+        </thead>
+        <tbody id="tBody"></tbody>
+    </table>
+    <div id="inProgressText"></div>
+
+    <div class="modal-con" id="modal-con">
+        <div class="window">
+            <div class="top-bar">
+                <div class="close-btn" onclick="closeModal()">X</div>
+            </div>
+
+            <div class="input">
+                <div class="prompt">输入模块名:</div>
+                <input id="input-area" class="input-area" type="text">
+            </div>
+            <button class="create-btn" onclick="createProcess()">创建</button>
+        </div>
+    </div>
+
+    <script>
+        function newBtn() {
+            const modal = document.getElementById("modal-con")
+            modal.style.display = "flex"
+        }
+
+        function createProcess() {
+            const moduleName = document.getElementById("input-area").value
+            alert("注意：这是静态页面 - 创建进程需要后端 API 支持，请通过 mgmt Flask 后端访问");
+        }
+
+        function flushBtn() {
+            window.location.reload()
+        }
+
+        function stopBtn(pid) {
+            if (!confirm("确认停止该服务?")) {
+                return
+            }
+            alert("注意：这是静态页面 - 停止进程需要后端 API 支持，请通过 mgmt Flask 后端访问");
+        }
+
+        function closeModal() {
+            const modal = document.getElementById("modal-con")
+            const input = document.getElementById("input-area")
+
+            input.value = ""
+            modal.style.display = "none"
+        }
+    </script>
+</body>
+
+</html>

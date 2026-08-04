@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+    <link rel="icon" href="data:;base64,=">
+    <link rel="stylesheet" href="user.css">
+</head>
+
+<body>
+    <div class="top-bar-con">
+        <button class="addUserBtn" onclick="addUser()">添加用户</button>
+        <button class="flushBtn" onclick="flush()">刷新</button>
+    </div>
+
+    <p>用户列表需 mgmt Flask 后端 API 提供，静态页面不展示。</p>
+
+    <script>
+        function addUser() {
+            alert("注意：这是静态页面 - 添加用户需要后端 API 支持，请通过 mgmt Flask 后端访问");
+        }
+
+        function changePasswd(id) {
+            alert("注意：这是静态页面 - 修改密码需要后端 API 支持，请通过 mgmt Flask 后端访问");
+        }
+
+        function deleteUser(id) {
+            alert("注意：这是静态页面 - 删除用户需要后端 API 支持，请通过 mgmt Flask 后端访问");
+        }
+
+        function flush() {
+            window.location.reload()
+        }
+    </script>
+</body>
+
+</html>
