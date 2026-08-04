@@ -7669,15 +7669,47 @@ class WebSocketHandler:
         self.connected_clients = set()
         self.client_sessions = {}
         self._processing_tasks = {}  # websocket id -> 当前正在处理的asyncio Task
-        self._is_processing_message = False  # 是否正在处理用户消息（防止并发）
-        
+        self._shared_skill_manager = None  # 共享技能管理器（懒加载，供所有连接复用）
+    
+    def _get_shared_skill_manager(self):
+        """获取共享技能管理器（懒加载一次，供所有连接实例复用，避免重复扫描技能）"""
+        if self._shared_skill_manager is None:
+            self._shared_skill_manager = SkillManager(self.logger)
+        return self._shared_skill_manager
+    
+    def _create_session_ai(self):
+        """为一个WebSocket连接创建独立的AI实例，实现不同用户间上下文隔离。
+
+        每个连接拥有独立的 messages / 工具注册表 / 消息锁，可与其他用户并发对话，
+        互不干扰。共享只读资源（记忆库、备忘录、提示词、技能管理器）复用。
+        """
+        return DeepSeekChat(
+            api_key=None,
+            max_history=constants.DEFAULT_MAX_HISTORY,
+            debug_level=self.logger.level,
+            exit_callback=None,  # 会话级对话结束由连接内处理，不触发全局状态
+            history_manager=None,  # 不加载共享历史上下文，避免多用户历史相互污染
+            memory_db=self.ai_manager.memory_db,
+            memo_db=self.ai_manager.memo_db,
+            command_executor=self.ai_manager.command_executor,
+            prompt_manager=self.ai_manager.prompt_manager,
+            skill_manager=self._get_shared_skill_manager()
+        )
+    
+    def _get_session(self, websocket) -> dict:
+        """获取指定连接对应的会话状态（不存在则创建空会话）"""
+        return self.client_sessions.get(websocket)
+    
     async def register(self, websocket):
         """注册新客户端"""
         self.connected_clients.add(websocket)
         self.client_sessions[websocket] = {
             "connected_at": datetime.now(),
             "message_count": 0,
-            "current_conversation": None
+            "current_conversation": None,
+            "ai": None,                    # 每个连接独立的AI实例
+            "dialogue_in_progress": False, # 每个连接独立的对话状态
+            "is_processing": False         # 每个连接独立的并发处理标志
         }
         self.logger.info(i18n.get('client_connected', websocket.remote_address))
         
@@ -7695,7 +7727,14 @@ class WebSocketHandler:
         """注销客户端"""
         self.connected_clients.remove(websocket)
         if websocket in self.client_sessions:
-            del self.client_sessions[websocket]
+            session = self.client_sessions.pop(websocket)
+            # 释放该连接独立的AI实例资源
+            ai = session.get("ai")
+            if ai:
+                try:
+                    ai.cancel()
+                except Exception:
+                    pass
         self.logger.info(i18n.get('client_disconnected', websocket.remote_address))
     
     async def send_welcome_info(self, websocket):
@@ -7850,16 +7889,24 @@ class WebSocketHandler:
             })
     
     async def handle_interrupt(self, websocket, data):
-        """处理中断信号：取消正在进行的AI思考和工具执行"""
+        """处理中断信号：取消当前连接正在进行的AI思考和工具执行"""
         self.logger.info("收到客户端中断信号")
         # 先发送确认，让前端立即得到反馈
         await self.send_message(websocket, {
             "type": "interrupt_ack",
             "content": "已收到中断信号，正在停止..."
         })
-        # 直接同步调用cancel()：cancel是线程安全的（只set Event + close连接 + kill进程），执行极快
-        # 无需通过run_in_executor提交到线程池，避免额外调度延迟
-        self.ai_manager.cancel()
+        # 取消当前连接独立AI实例的对话（线程安全，只set Event + close连接 + kill进程）
+        session = self._get_session(websocket)
+        ai = session.get("ai") if session else None
+        if ai:
+            ai.cancel()
+        # 同时确保命令执行器中的进程也被终止
+        if self.ai_manager.command_executor and hasattr(self.ai_manager.command_executor, 'cancel'):
+            try:
+                self.ai_manager.command_executor.cancel()
+            except Exception:
+                pass
     
     async def handle_task_message(self, websocket, data):
         """处理任务相关消息 - 简化版，所有任务都是对话任务"""
@@ -7967,11 +8014,11 @@ class WebSocketHandler:
             await websocket.close()
             
         elif command == "/new":
-            # 【新增】开始新对话：保存当前对话，重置AI状态，重新加载系统提示词
-            self.ai_manager.history_manager.archive_current_conversation()
-            if self.ai_manager.ai:
-                ai = self.ai_manager.ai
-                # 如果AI正在处理（可能是调度器在跑定时任务），先取消
+            # 【新增】开始新对话：重置当前连接的AI状态，重新加载系统提示词
+            session = self._get_session(websocket)
+            ai = session.get("ai") if session else None
+            if ai:
+                # 如果该连接AI正在处理，先取消
                 if ai.is_busy():
                     self.logger.info("/new: AI正在处理中，先取消当前对话...")
                     ai.cancel()
@@ -7981,8 +8028,9 @@ class WebSocketHandler:
                             break
                 # 重置对话状态，重新加载系统提示词
                 ai.reset_conversation(reload_prompts=True)
-                # 重置对话进行中标记
-                self.ai_manager.dialogue_in_progress = False
+                # 重置该连接对话进行中标记
+                if session:
+                    session["dialogue_in_progress"] = False
                 # 重新初始化提示词管理器（确保最新）
                 self.ai_manager.prompt_manager.reload()
                 self.logger.info(i18n.get('new_conversation_reset'))
@@ -8077,8 +8125,10 @@ class WebSocketHandler:
             })
             
         elif command == "/reload_prompts":
-            if self.ai_manager.ai:
-                new_count = self.ai_manager.ai.reload_prompts()
+            session = self._get_session(websocket)
+            ai = session.get("ai") if session else None
+            if ai:
+                new_count = ai.reload_prompts()
             else:
                 new_count = self.ai_manager.prompt_manager.reload()
             await self.send_message(websocket, {
@@ -8163,34 +8213,40 @@ class WebSocketHandler:
             await self.handle_user_message(websocket, {"type": "message", "content": command})
 
     async def handle_user_message(self, websocket, data):
-        """处理用户消息 - 实时流式输出"""
+        """处理用户消息 - 实时流式输出（每个连接使用独立的AI实例，支持多用户并发）"""
         content = data.get("content", "").strip()
         
         if not content:
             return
         
-        # 防止并发处理用户消息：如果正在处理中，提示用户先中断
-        if self._is_processing_message:
+        # 获取当前连接的会话状态
+        session = self._get_session(websocket)
+        if session is None:
+            return
+        
+        # 防止并发处理用户消息（按连接独立）：如果正在处理中，提示用户先中断
+        if session.get("is_processing"):
             await self.send_message(websocket, {
                 "type": "info",
                 "content": "⏳ AI正在响应中，请等待完成或发送中断信号（Ctrl+C）"
             })
             return
         
-        self._is_processing_message = True
+        session["is_processing"] = True
         
         self.logger.info(f"收到用户消息: {content[:50]}...")
         
-        # 确保AI已初始化
-        if not self.ai_manager.ai:
-            self.logger.info("初始化AI...")
-            self.ai_manager.add_ai()
+        # 获取该连接独立的AI实例（懒创建）
+        ai = session.get("ai")
+        if ai is None:
+            self.logger.info("初始化独立AI实例...")
+            ai = self._create_session_ai()
+            session["ai"] = ai
         
-        # 如果还没有活跃对话，开始新对话
-        if not self.ai_manager.dialogue_in_progress:
-            self.logger.info("开始新对话")
-            self.ai_manager.dialogue_in_progress = True
-            self.ai_manager.history_manager.start_new_conversation(content[:50] + "...")
+        # 如果还没有活跃对话，开始新对话（对话状态按连接独立）
+        if not session.get("dialogue_in_progress"):
+            self.logger.info(f"开始新对话（连接 {id(websocket)}）")
+            session["dialogue_in_progress"] = True
             
             # 发送对话开始消息
             await self.send_message(websocket, {
@@ -8226,18 +8282,17 @@ class WebSocketHandler:
             # 在线程池中运行AI思考，通过回调实时发送消息
             response = await loop.run_in_executor(
                 None,
-                self.ai_manager.ai.think_and_respond,
+                ai.think_and_respond,
                 content,
                 output_callback  # 传递回调函数，AI会在生成每个chunk时调用
             )
             
             self.logger.info(f"AI思考完成，完整响应长度: {len(response) if response else 0}")
             
-            # 检查对话是否结束
-            if not self.ai_manager.ai.conversation_active:
+            # 检查对话是否结束（按连接独立）
+            if not ai.conversation_active:
                 self.logger.info("对话结束")
-                self.ai_manager.dialogue_in_progress = False
-                self.ai_manager.history_manager.end_current_conversation()
+                session["dialogue_in_progress"] = False
                 await self.send_message(websocket, {
                     "type": "info",
                     "content": i18n.get('conversation_ended')
@@ -8260,8 +8315,8 @@ class WebSocketHandler:
             except:
                 pass
         finally:
-            # 无论成功、失败还是被中断，都清除处理标志
-            self._is_processing_message = False
+            # 无论成功、失败还是被中断，都清除该连接的处理标志
+            session["is_processing"] = False
 
 
 # ==================== 对话管理器（修改版：添加重置对话功能） ====================
