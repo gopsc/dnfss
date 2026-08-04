@@ -53,7 +53,9 @@ namespace qing {
 
 		/* start callback 唤醒事件 */
 		this->th->set_wake(  [this](Thread& th) -> void {
-			this->server = std::make_unique<pmc::net::HttpServer> ("127.0.0.1", port, "server.crt", "server.key", 4);
+			// core 的 HTTP 服务仅供 gateway 内部代理转发（WAF 已终止 TLS）
+			// 使用无证书的纯 HTTP 构造，不启用 TLS
+			this->server = std::make_unique<pmc::net::HttpServer> ("127.0.0.1", port, 4);
 			handler(*this->server);
 			th.run();
 
