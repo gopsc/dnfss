@@ -492,7 +492,7 @@ function renderSpLink(container, sp, appendNote) {
 	appendNote();
 }
 
-/* 前端代码节点：审计（展开源码，textContent 防注入）+ 运行（在隔离 iframe 沙箱中执行完整 HTML/CSS/JS）。
+/* 前端代码节点：含前端内容的节点在渲染到当前页面时自动执行（隔离 iframe 沙箱）。
  * 采用 iframe 沙箱而非注入父页面全局作用域，原因：
  *   - 特效脚本运行在独立 iframe 内，无法访问父页面 DOM/JS，任何报错、死循环、变量覆盖
  *     都不会污染父页面，从而保证"运行特效后卡片点击/节点导航依然正常"；
@@ -505,9 +505,9 @@ function renderSpJs(container, sp, appendNote) {
 	var audit_btn = document.createElement('button');
 	audit_btn.className = 'act-btn act-edit';
 	audit_btn.textContent = '审计源码';
-	var run_btn = document.createElement('button');
-	run_btn.className = 'act-btn act-move';
-	run_btn.textContent = '运行';
+	var toggle_btn = document.createElement('button');
+	toggle_btn.className = 'act-btn act-move';
+	toggle_btn.textContent = '停止特效';
 	var pre = document.createElement('pre');
 	pre.className = 'sp-code';
 	pre.style.display = 'none';
@@ -522,34 +522,37 @@ function renderSpJs(container, sp, appendNote) {
 		pre.style.display = hidden ? 'block' : 'none';
 		audit_btn.textContent = hidden ? '收起源码' : '审计源码';
 	});
-	run_btn.addEventListener('click', function(e) {
-		e.stopPropagation();
-		/* 已运行：停止并移除特效沙箱 */
-		if (frame) {
-			frame.remove();
-			frame = null;
-			run_btn.textContent = '运行';
-			out.style.display = 'none';
-			return;
-		}
-		/* 创建隔离 iframe 沙箱：完整前端代码（含 <style>/<script>/<body>）由此 srcdoc 承载，
-		 * 脚本在独立上下文执行，无法影响父页面导航；pointer-events:none 保证不拦截父页面点击。 */
+	/* 启动特效：创建隔离 iframe 沙箱，完整前端代码（含 <style>/<script>/<body>）由 srcdoc 承载，
+	 * 脚本在独立上下文执行，无法影响父页面导航；pointer-events:none 保证不拦截父页面点击。 */
+	function startEffect() {
+		if (frame) return;
 		frame = document.createElement('iframe');
 		frame.className = 'sp-effect-frame';
 		frame.setAttribute('sandbox', 'allow-scripts');
 		frame.srcdoc = sp.code;
 		frame.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;border:0;pointer-events:none;z-index:9999;';
 		document.body.appendChild(frame);
-		run_btn.textContent = '停止特效';
+		toggle_btn.textContent = '停止特效';
 		out.style.display = 'block';
 		out.textContent = '特效已启动（运行于隔离沙箱，不影响页面导航）';
+	}
+	function stopEffect() {
+		if (frame) { frame.remove(); frame = null; }
+		toggle_btn.textContent = '重新运行';
+		out.style.display = 'none';
+	}
+	toggle_btn.addEventListener('click', function(e) {
+		e.stopPropagation();
+		if (frame) stopEffect(); else startEffect();
 	});
 	bar.appendChild(audit_btn);
-	bar.appendChild(run_btn);
+	bar.appendChild(toggle_btn);
 	container.appendChild(bar);
 	container.appendChild(pre);
 	container.appendChild(out);
 	appendNote();
+	/* 含前端内容的节点渲染到当前页面时自动执行 */
+	startEffect();
 }
 
 /* 图片节点：DataURL 直接显示（CSP img-src 允许 data:） */
