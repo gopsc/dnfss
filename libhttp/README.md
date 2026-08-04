@@ -13,6 +13,7 @@ C++20 network library for the UniServe microservice framework, providing unified
 - **Static Files**: `setStaticDirectory()` for serving static files
 - **Thread Pool**: Multi-threaded I/O with `asio::strand` for thread safety
 - **Client Management**: WebSocket client tracking, broadcast, and targeted send
+- **WS Message Size Limit**: `setMaxWsMessageSize()` caps single WebSocket message (default 16MB, aligned with Beast; applies to server and proxy streams) to prevent OOM
 
 ### HttpClient
 - **HTTP Client**: Synchronous HTTP requests via libcurl (GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS)
@@ -167,6 +168,10 @@ void use(MiddlewareHandler middleware);
 void setStaticDirectory(const std::string& path);
 ```
 
+// WebSocket 单条消息大小上限（字节）。默认 16MB，与 Beast 默认一致；超限由 Beast 拒绝并关闭连接（防 OOM）。
+void setMaxWsMessageSize(std::size_t bytes);
+std::size_t getMaxWsMessageSize() const;
+
 **WebSocket Routes**
 ```cpp
 void ws(const std::string& path, WebSocketMessageHandler handler);
@@ -283,6 +288,7 @@ using WebSocketClientBase = HttpClient;
 
 ## Version History
 
+- **v3.4.1**: WebSocket 单条消息大小限制（P1-3）。新增 `setMaxWsMessageSize()`/`getMaxWsMessageSize()`（默认 16MB，与 Beast 默认一致），服务端 `doWsUpgrade`/`doWssUpgrade` 与代理 `onProxyConnect`/`onProxySslHandshake` 创建流后调用 `read_message_max()`，超限消息由 Beast 在分配内存前拒绝并关闭连接，防 OOM。
 - **v3.4.0**: HttpClient 响应大小限制（防 OOM）。`request_stream_sync` 改为真流式（按块回调，不二次缓冲）；新增 `set_max_response_size()`/`get_max_response_size()`（默认 10MB，对齐 WAF，0 表示不限制），超限时 `write_callback` 返回 0 中止传输并抛异常。
 - **v3.3.0**: Split HttpServer into 6 modular translation units by functional area (core/lifecycle, listener, routes, request dispatch, WS management, WS session/proxy) for dramatically faster incremental builds. Added internal detail header `inc/us/detail/HttpServerImpl.hpp` for shared definitions across TU boundaries.
 - **v3.2.0**: Split into two shared libraries — `libus_http.so` (server only, no curl) and `libus_httpclient.so` (HttpClient, depends on curl). HttpClient implementation moved to `src/HttpClient.cpp`; `HttpClient.hpp` is declaration-only.

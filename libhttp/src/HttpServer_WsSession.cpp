@@ -19,6 +19,8 @@ void HttpServer::Session::doWsUpgrade() {
     auto self = shared_from_this();
     ws_stream_ = std::make_unique<ws_stream>(stream_);
     ws_stream_->text(true);
+    // P1-3：限制单条 WS 消息大小，超限由 Beast 拒绝并关闭连接（防 OOM）
+    ws_stream_->read_message_max(server_->getMaxWsMessageSize());
 
     ws_stream_->async_accept(
         request_,
@@ -31,6 +33,8 @@ void HttpServer::Session::doWssUpgrade() {
     auto self = shared_from_this();
     wss_stream_ = std::make_unique<wss_stream>(*ssl_stream_);
     wss_stream_->text(true);
+    // P1-3：限制单条 WS 消息大小，超限由 Beast 拒绝并关闭连接（防 OOM）
+    wss_stream_->read_message_max(server_->getMaxWsMessageSize());
 
     wss_stream_->async_accept(
         request_,
@@ -261,6 +265,9 @@ void HttpServer::Session::onProxyConnect(beast::error_code ec, tcp::endpoint /*e
         proxy_ws_stream_ = std::make_unique<proxy_ws_stream>(proxy_tcp_stream_->socket());
         proxy_tcp_stream_->expires_never();
 
+        // P1-3：限制代理方向单条 WS 消息大小（防 OOM）
+        proxy_ws_stream_->read_message_max(server_->getMaxWsMessageSize());
+
         proxy_ws_stream_->set_option(websocket::stream_base::decorator(
             [](websocket::request_type& req) {
                 req.set(http::field::user_agent, "UniServe-WsProxy");
@@ -285,6 +292,9 @@ void HttpServer::Session::onProxySslHandshake(beast::error_code ec) {
     auto self = shared_from_this();
     proxy_wss_stream_ = std::make_unique<proxy_wss_stream>(*proxy_ssl_stream_);
     proxy_tcp_stream_->expires_never();
+
+    // P1-3：限制代理方向单条 WS 消息大小（防 OOM）
+    proxy_wss_stream_->read_message_max(server_->getMaxWsMessageSize());
 
     proxy_wss_stream_->set_option(websocket::stream_base::decorator(
         [](websocket::request_type& req) {

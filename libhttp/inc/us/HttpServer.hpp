@@ -119,6 +119,11 @@ public:
     void setMaxBodySize(std::size_t bytes) { max_body_size_ = bytes; }
     std::size_t getMaxBodySize() const { return max_body_size_; }
 
+    // WebSocket 单条消息大小上限（字节）。默认 16MB，与 Beast 默认一致（防 OOM）。
+    // 超限时 Beast 拒绝该消息并关闭连接（P1-3）。
+    void setMaxWsMessageSize(std::size_t bytes) { max_ws_message_size_ = bytes; }
+    std::size_t getMaxWsMessageSize() const { return max_ws_message_size_; }
+
     class debug {
     public:
         static void print_all_header_fields(const http::request<http::string_body>& req);
@@ -134,6 +139,7 @@ private:
     std::atomic<bool> running_{false};
 
     std::size_t max_body_size_ = 10 * 1024 * 1024; // 默认 10MB,与 WAF 对齐
+    std::size_t max_ws_message_size_ = 16 * 1024 * 1024; // 默认 16MB,与 Beast 默认一致
 
     bool ssl_enabled_{false};
     std::string cert_file_;
