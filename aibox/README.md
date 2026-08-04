@@ -147,6 +147,7 @@ AI 智能体可以调用以下工具来完成任务（由 `Tool` 基类派生，
 | `calculator` | 数学计算 |
 | `set_proxy` | 设置 SOCKS5 代理（host/port/可选账号密码，可持久化，即时生效） |
 | `get_proxy` | 查看当前 SOCKS5 代理配置 |
+| `express_emotion` | 表达情绪并记录当前情绪状态（anger/joy/sadness/surprise），可指定 `persona` 从 `~/.aibox/skills/` 加载人格技能（如 angry/coquettish/tsundere）派生携带该人格的情绪子代理，保证人格独立、不污染主对话上下文 |
 | `create_subagent` | 派生子代理：独立上下文/角色设定，轻量无工具、可选独立模型，用于长任务分解、上下文隔离、独立角色专注处理 |
 
 ## 💬 WebSocket API
@@ -206,14 +207,13 @@ const ws = new WebSocket('ws://localhost:8765');
 
 ### 支持的命令
 
-> 注意：记忆搜索通过 `memory` 工具（在对话中由 AI 调用）完成，本系统**不存在** `/search` 斜杠命令。
-
 | 命令 | 功能 |
 |-----|------|
 | `/exit` | 退出连接 |
 | `/new` | 开始新对话（保存当前，重置 AI 记忆，重新加载提示词） |
 | `/list` | 列出所有历史对话 |
 | `/memories` | 查看最近记忆（支持分页） |
+| `/search <关键词>` | 按关键词搜索记忆 |
 | `/memos` | 查看待办任务 |
 | `/config` | 查看配置 |
 | `/reload` | 重载配置 |
@@ -238,6 +238,8 @@ const ws = new WebSocket('ws://localhost:8765');
 | `task_process` | 任务执行过程中的 AI 输出 |
 | `task_error` | 任务执行错误 |
 | `task_added` | 任务添加成功 |
+| `task_list` | 待办任务列表（`task` action=list 的返回） |
+| `task_completed` | 任务完成通知 |
 | `dialogue_ended` | 对话结束通知 |
 | `dialogue_reset` | 对话重置完成 |
 | `notification` | 通知消息 |
@@ -720,6 +722,10 @@ elif command == "/mycommand":
 3. 确认工具返回值为字符串且不含二进制/控制字符
 
 ## 📄 更新日志
+
+### v2.8
+- ✅ **新增 `express_emotion` 工具**：表达情绪并记录当前情绪状态（anger/joy/sadness/surprise），可指定 `persona` 从 `~/.aibox/skills/` 加载人格技能文件（如 angry/coquettish/tsundere），自动派生携带该人格的情绪子代理生成回应，保证人格独立、不污染主对话上下文
+- ✅ **新增 `/search <关键词>` 命令**：在 WebSocket 会话中按关键词搜索记忆，返回匹配的记忆条目
 
 ### v2.7
 - ✅ **新增子代理功能（`create_subagent` 工具）**：
