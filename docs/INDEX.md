@@ -7,7 +7,6 @@
 ```
 docs/
 ├── INDEX.md                              # 本文件（文档总索引）
-├── SECURITY_AUDIT_20260801.md            # 全局安全审计总览
 ├── security/                             # 安全审计与加固相关
 ├── reviews/                              # 代码审查日志
 └── reports/                              # 其他分析报告
@@ -29,7 +28,6 @@ docs/
 
 | 文档 | 说明 |
 |------|------|
-| [SECURITY_AUDIT_20260801.md](security/SECURITY_AUDIT_20260801.md) | **全局总览** — 全模块安全审计汇总（问题等级定义、各模块问题汇总、修复跟踪） |
 | [DEPLOY_SECURITY_AUDIT_20260801.md](security/DEPLOY_SECURITY_AUDIT_20260801.md) | 部署配置安全审计（docker-compose、systemd、防火墙、TLS 等） |
 | [DEPS_SECURITY_AUDIT_20260801.md](security/DEPS_SECURITY_AUDIT_20260801.md) | 依赖安全审计（第三方库版本、已知漏洞、许可证） |
 | [SECURITY_HARDENING_PLAN_20260803.md](security/SECURITY_HARDENING_PLAN_20260803.md) | 安全加固计划（内网通信安全加固开发计划） |
@@ -49,8 +47,8 @@ docs/
 | smtp | [smtp_SECURITY_AUDIT_20260801.md](security/smtp_SECURITY_AUDIT_20260801.md) | Python 邮件服务（验证码发送/校验） |
 | captcha | [captcha_SECURITY_AUDIT_20260801.md](security/captcha_SECURITY_AUDIT_20260801.md) | Python 验证码服务 |
 | confs | [confs_SECURITY_AUDIT_20260801.md](security/confs_SECURITY_AUDIT_20260801.md) | Python 统一配置服务 |
+| libhttp | [libhttp_SECURITY_AUDIT_20260803.md](security/libhttp_SECURITY_AUDIT_20260803.md) | C++ HTTP/WebSocket 库（请求/响应/WS/静态文件） |
 | aibox | [aibox_SECURITY_AUDIT_20260801.md](security/aibox_SECURITY_AUDIT_20260801.md) | Python AI 智能体系统（WebSocket） |
-| aibox (详版) | [aibox_SECURITY_AUDIT_full_20260801.md](security/aibox_SECURITY_AUDIT_full_20260801.md) | aibox 详细安全审计（含具体漏洞位置与修复建议） |
 | BotOps | [BotOps_SECURITY_AUDIT_20260801.md](security/BotOps_SECURITY_AUDIT_20260801.md) | BotOps 运维控制面板 |
 
 ---

@@ -16,6 +16,8 @@ C++20 network library for the UniServe microservice framework, providing unified
 
 ### HttpClient
 - **HTTP Client**: Synchronous HTTP requests via libcurl (GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS)
+- **Streaming Response**: `request_stream_sync` streams response body chunk-by-chunk to the callback (no full-body buffering)
+- **Response Size Limit**: `set_max_response_size()` caps downstream response body (default 10MB, aligned with WAF; 0 = unlimited) to prevent OOM on oversized responses
 - **WebSocket Client**: Synchronous WebSocket client via Boost.Beast
 - **Dual Protocol**: Same client instance handles both HTTP and WebSocket
 - **ws:// and wss://**: Supports both plain and TLS-encrypted WebSocket connections
@@ -221,6 +223,10 @@ void put_stream_sync(const std::string& url, const std::string& data, ResponseCa
 void delete_stream_sync(const std::string& url, ResponseCallback cb);
 void request_stream_sync(HttpMethod method, const std::string& url,
                           const std::string& data, ResponseCallback cb);
+
+// Response size limit (防 OOM). Default 10MB (aligned with WAF); 0 = unlimited.
+void set_max_response_size(size_t bytes);
+size_t get_max_response_size() const;
 ```
 
 **WebSocket Methods**
@@ -277,6 +283,7 @@ using WebSocketClientBase = HttpClient;
 
 ## Version History
 
+- **v3.4.0**: HttpClient 响应大小限制（防 OOM）。`request_stream_sync` 改为真流式（按块回调，不二次缓冲）；新增 `set_max_response_size()`/`get_max_response_size()`（默认 10MB，对齐 WAF，0 表示不限制），超限时 `write_callback` 返回 0 中止传输并抛异常。
 - **v3.3.0**: Split HttpServer into 6 modular translation units by functional area (core/lifecycle, listener, routes, request dispatch, WS management, WS session/proxy) for dramatically faster incremental builds. Added internal detail header `inc/us/detail/HttpServerImpl.hpp` for shared definitions across TU boundaries.
 - **v3.2.0**: Split into two shared libraries — `libus_http.so` (server only, no curl) and `libus_httpclient.so` (HttpClient, depends on curl). HttpClient implementation moved to `src/HttpClient.cpp`; `HttpClient.hpp` is declaration-only.
 - **v3.1.0**: Added WebSocket reverse proxy (`ws_proxy()`) with bidirectional async bridging, ws:// and wss:// backend support, handshake-time authorization callback.

@@ -11,9 +11,9 @@
 | 优先级 | 总数 | 已修复 | 部分修复 | 未修复 |
 |--------|------|--------|----------|--------|
 | P0 | 0 | 0 | 0 | 0 |
-| P1 | 6 | 2 | 0 | 4 |
+| P1 | 6 | 3 | 0 | 3 |
 | P2 | 4 | 0 | 0 | 4 |
-| **合计** | **10** | **4** | **0** | **6** |
+| **合计** | **10** | **5** | **0** | **5** |
 
 ---
 
@@ -22,7 +22,7 @@
 | # | 问题 | 状态 | 说明 |
 |---|------|------|------|
 | P1-1 | 请求体大小限制不可配置 + 超限无 413 | ✅ 已修复 | `Session::doRead`（`HttpServer_Request.cpp` L167-186）改用 `http::request_parser` + `body_limit()`（默认 10MB，与 WAF 对齐）；`HttpServer` 新增 `setMaxBodySize()`/`getMaxBodySize()`（`HttpServer.hpp` L118-120）。超限时 `handleRead` 返回 **413 Payload Too Large** 并关闭连接（L256-265），而非静默断连 |
-| P1-2 | HttpClient 响应无大小限制 | ❌ 未修复 | `HttpClient::write_callback`（`HttpClient.cpp` L329-334）把下游响应 `append` 进 `full_response` 无上限，超大响应可导致 OOM（`request_stream_sync` L63-81） |
+| P1-2 | HttpClient 响应无大小限制 | ✅ 已修复 | `HttpClient.cpp` 新增 `WriteCtx`（流式回调 + 累计字节 + 上限），`write_callback` 超限返回 0 触发 `CURLE_WRITE_ERROR`，`request_stream_sync` 抛异常；`request_stream_sync` 改为**真流式**（callback 非空时每块即回调，不二次累积），`HttpClient` 新增 `set_max_response_size()`/`get_max_response_size()`（默认 10MB，对齐 WAF，0 表示不限制） |
 | P1-3 | WebSocket 消息无大小限制 | ❌ 未修复 | `Session::onWsRead`（`HttpServer_WsSession.cpp` L88-111）把整条 WS 消息读入内存，依赖 Beast 默认 `read_message_max`（16MB）不可配置；超大消息可被恶意客户端推送导致 OOM |
 | P1-4 | 服务器无读写超时（Slowloris） | ❌ 未修复 | 入站 `stream_`（`beast::tcp_stream`）**从未设置 `expires_after`**（仅代理后端设了超时）。攻击者建立连接后缓慢发送 HTTP 头，可无限占用连接与线程，Slowloris/连接耗尽（对应全局审计 P2-4） |
 | P1-5 | 静态文件目录路径遍历 | ✅ 已修复 | 新增 `isSafeStaticPath()`（`HttpServer_Request.cpp` L139-156），静态文件服务前校验 target_path（拒绝 `..`、空字节、非 `/` 开头、URL 编码 `%2e`/`%2f`/`%5c`），逻辑与 gateway `is_safe_target()` 对齐（`HttpServer.cpp` L94） |
@@ -68,7 +68,7 @@
 
 ### 立即（24小时）
 - [x] P1-1 请求体大小限制：`doRead` 改用 `http::request_parser` + `body_limit()`，`HttpServer` 增加 `setMaxBodySize()`（对齐 WAF 10MB），超限返回 413 而非断开 → ✅ 已实现（默认 10MB，`setMaxBodySize()` 可覆盖）
-- [ ] P1-2 HttpClient 响应上限：`write_callback` 累计超过上限即失败，返回错误
+- [x] P1-2 HttpClient 响应上限：`write_callback` 累计超过上限即失败，返回错误 → ✅ 已实现（`WriteCtx` 流式回调 + 上限，默认 10MB，`set_max_response_size()` 可覆盖）
 - [ ] P1-4 服务器读超时：入站 `stream_` 设置 `expires_after`（首字节/头+体超时），防 Slowloris
 
 ### 短期（72小时）
