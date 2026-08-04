@@ -492,10 +492,12 @@ function renderSpLink(container, sp, appendNote) {
 	appendNote();
 }
 
-/* JS 代码节点：审计（展开源码，textContent 防注入）+ 运行（注入 <script> 在当前页面上下文执行，可直接操作页面加特效）。
- * 不使用 new Function/eval（CSP 未开 unsafe-eval）；改为注入内联 <script>（CSP 允许 'unsafe-inline'）执行。
- * 代码运行在全局作用域，可访问 document/window 对当前页面施加特效；console.log/error/warn 输出捕获到下方输出区。
- * 仅管理员可发布（后端强制）。 */
+/* 前端代码节点：审计（展开源码，textContent 防注入）+ 运行（注入当前页面执行，支持完整 HTML/CSS/JS）。
+ * 不使用 new Function/eval（CSP 未开 unsafe-eval）；解析完整 HTML 文档后注入当前页面：
+ *   - <style> 注入到页面 head
+ *   - <script> 在当前页面全局作用域执行（可操作整页 DOM 加特效）
+ *   - <body> 内容渲染到节点下方容器
+ * console.log/error/warn 输出捕获到下方输出区。仅管理员可发布（后端强制）。 */
 function renderSpJs(container, sp, appendNote) {
 	var bar = document.createElement('div');
 	bar.className = 'sp-actions';
@@ -543,15 +545,48 @@ function renderSpJs(container, sp, appendNote) {
 				window.__spLines.push('Error: ' + ev.message);
 			});
 		}
-		/* 注入内联 <script> 在当前页面全局作用域执行，可操作页面加特效 */
-		var s = document.createElement('script');
-		s.textContent = sp.code;
-		document.head.appendChild(s);
-		out.textContent = window.__spLines.join('\n') || '执行完成';
-		/* 异步输出（setTimeout 等）轮询刷新 */
-		var timer = setInterval(function() {
+		/* 解析完整 HTML 文档 */
+		var doc;
+		try {
+			doc = new DOMParser().parseFromString(sp.code, 'text/html');
+		} catch (err) {
+			window.__spLines.push('Error: 解析 HTML 失败: ' + (err.message || err));
 			out.textContent = window.__spLines.join('\n');
-		}, 400);
+			return;
+		}
+		/* 注入 <style> 到页面 head */
+		Array.prototype.forEach.call(doc.querySelectorAll('style'), function(st) {
+			var s = document.createElement('style');
+			s.textContent = st.textContent;
+			document.head.appendChild(s);
+		});
+		/* 注入 <script> 在当前页面全局作用域执行（可操作整页加特效） */
+		Array.prototype.forEach.call(doc.querySelectorAll('script'), function(sc) {
+			var s = document.createElement('script');
+			if (sc.getAttribute('src')) {
+				s.src = sc.getAttribute('src');
+			} else {
+				s.textContent = sc.textContent;
+			}
+			document.head.appendChild(s);
+		});
+		/* 渲染 <body> 内容到节点下方容器 */
+		if (doc.body) {
+			Array.prototype.forEach.call(doc.body.childNodes, function(node) {
+				out.appendChild(node);
+			});
+		}
+		/* console 输出区 */
+		var logBox = document.createElement('div');
+		logBox.className = 'sp-log';
+		out.appendChild(logBox);
+		var render = function() {
+			var lines = window.__spLines.slice();
+			logBox.textContent = lines.join('\n') || '执行完成';
+		};
+		render();
+		/* 异步输出（setTimeout 等）轮询刷新 */
+		var timer = setInterval(render, 400);
 	});
 	bar.appendChild(audit_btn);
 	bar.appendChild(run_btn);
@@ -680,7 +715,7 @@ sp_type.addEventListener('change', function() {
 		sp_edit_original = null;
 	}
 	if (t === 'link') input_note_content.placeholder = '请输入链接 URL（https://…）';
-	else if (t === 'js') input_note_content.placeholder = '请输入 JS 代码';
+	else if (t === 'js') input_note_content.placeholder = '请输入完整前端代码（可含 HTML/CSS/JS）';
 	else input_note_content.placeholder = '';
 });
 
@@ -705,7 +740,7 @@ async function buildSubmitContent() {
 	}
 	if (t === 'js') {
 		var code = input_note_content.value;
-		if (!code.trim()) { alert('请输入 JS 代码'); return null; }
+		if (!code.trim()) { alert('请输入前端代码'); return null; }
 		return JSON.stringify({ _sp: 'js', code: code });
 	}
 	/* image / file：优先使用新选择的文件；编辑模式下未选新文件则保留原信封 */

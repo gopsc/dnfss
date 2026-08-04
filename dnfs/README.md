@@ -59,7 +59,7 @@ Authorization: Bearer <base64_payload>_<rsa_sign>
 | `_sp` | 信封字段 | 前端表现 |
 |-------|---------|---------|
 | `link` | `url`（http/https，≤2048）、`note?` | favicon 图标（经 static `/api/favicon` 代理拉取）+ 可点击链接 |
-| `js` | `code`（≤512KB）、`note?` | "审计源码"（纯文本展示）+ "运行"（在当前页面上下文执行，可施加特效；console 输出捕获到下方）按钮 |
+| `js` | `code`（完整 HTML/CSS/JS 文档，≤512KB）、`note?` | "审计源码"（纯文本展示）+ "运行"（解析完整 HTML 文档注入当前页面：style 注入 head、script 在全局作用域执行可加特效、body 渲染到节点下方；console 输出捕获到下方）按钮 |
 | `image` | `name`、`data`（`data:image/` DataURL，≤3.5M 字符）、`note?` | 图片直接显示 |
 | `file` | `name`、`mime`、`data`（Base64，≤3.5M 字符）、`note?` | 下载按钮（Base64→Blob→下载） |
 

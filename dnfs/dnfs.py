@@ -248,9 +248,9 @@ def _validate_sp(sp):
     elif t == 'js':
         code = sp.get('code', '')
         if not isinstance(code, str) or not code.strip():
-            raise DnfsExp('JS 代码不能为空', 400)
+            raise DnfsExp('前端代码不能为空', 400)
         if len(code) > _SP_MAX_CODE:
-            raise DnfsExp('JS 代码过大（上限 512KB）', 400)
+            raise DnfsExp('前端代码过大（上限 512KB）', 400)
     elif t == 'image':
         data = sp.get('data', '')
         if not isinstance(data, str) or not data.startswith('data:image/'):

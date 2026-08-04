@@ -81,7 +81,7 @@ static :9200 (Flask + CORS)
 - 流媒体：视频（MP4/WebM/OGG/AVI/MOV/MKV）与音频（MP3/WAV/OGG/FLAC/AAC/M4A）在线播放，支持进度拖动
 - 深色模式：`css/theme.css` 统一主题，自动适配系统偏好
 - 表单组件：注册页图形/邮箱验证码统一 `.code-box` 行内布局（文字标签 + 输入框 + 控件同排，窄屏自动换行），验证码图片样式复用 `theme.css` 的 `.captcha-img` 类
-- 特殊节点（dnfs 管理员专属）：信封 JSON `{"_sp":...}` 内容差异化渲染 —— 链接（favicon 卡片）/ JS 代码（可审计/可运行，在当前页面执行可加特效）/ 图片（直显）/ 文件（下载）；发布权限由 dnfs 后端按 `is_admin` 强制
+- 特殊节点（dnfs 管理员专属）：信封 JSON `{"_sp":...}` 内容差异化渲染 —— 链接（favicon 卡片）/ 前端代码（完整 HTML/CSS/JS，可审计/可运行，注入当前页面可加特效）/ 图片（直显）/ 文件（下载）；发布权限由 dnfs 后端按 `is_admin` 强制
 - aibox Web 客户端：`aibox.html` 移动端适配聊天页，经 gateway `[WsProxy]` 反向代理（如 `/ws/aibox → ws://127.0.0.1:8765`）与 aibox 智能体通信，握手由 gateway 强制 `is_admin` 验签；协议与 BotOps/client.py 兼容（chunk 流式 / reasoning 思考区 / task 任务面板 / 指数退避重连）
 - 路径遍历防护：`safe_path_join` 限制访问范围在 `directory.root` 内
 - Nuitka 编译：可打包为独立二进制 `fsys.bin`（`sys.frozen` 检测 + BASE_DIR 锚定）

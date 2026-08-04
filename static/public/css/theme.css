@@ -528,9 +528,16 @@ input[type="button"]:disabled {
 .sp-image { display: block; max-width: 100%; border-radius: var(--radius-sm); }
 .sp-run {
     margin-top: 0.5rem;
+    padding: 0.75rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+.sp-log {
+    margin-top: 0.5rem;
     max-height: 320px;
     overflow: auto;
-    padding: 0.75rem;
+    padding: 0.5rem;
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
