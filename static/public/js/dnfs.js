@@ -525,33 +525,40 @@ function renderSpJs(container, sp, appendNote) {
 		out.style.display = out.style.display === 'none' ? 'block' : 'none';
 		if (out.dataset.executed) return;	// 已执行过，仅切换显示
 		out.dataset.executed = '1';
-		/* 首次注入 console 捕获：保留原 console 行为，同时备份到 __spLines（避免影响页面其他脚本） */
-		if (!window.__spLines) {
-			window.__spLines = [];
-			var _orig = window.console;
-			window.console.log = function() {
-				window.__spLines.push(Array.prototype.slice.call(arguments).join(' '));
-				_orig.log.apply(_orig, arguments);
-			};
-			window.console.error = function() {
-				window.__spLines.push('Error: ' + Array.prototype.slice.call(arguments).join(' '));
-				_orig.error.apply(_orig, arguments);
-			};
-			window.console.warn = function() {
-				window.__spLines.push('Warn: ' + Array.prototype.slice.call(arguments).join(' '));
-				_orig.warn.apply(_orig, arguments);
-			};
-			window.addEventListener('error', function(ev) {
-				window.__spLines.push('Error: ' + ev.message);
-			});
-		}
+		/* 本次执行专属输出缓冲：捕获脚本执行（含早期异步）期间的 console 输出，捕获窗口结束后恢复
+		 * 应用自身 console，避免把应用日志（如 load_notes 打印的 pid/节点对象）刷进输出框干扰交互。 */
+		var lines = [];
+		var _orig = window.console;
+		var restore = function() {
+			window.console.log = _orig.log.bind(_orig);
+			window.console.error = _orig.error.bind(_orig);
+			window.console.warn = _orig.warn.bind(_orig);
+		};
+		window.console.log = function() {
+			lines.push(Array.prototype.slice.call(arguments).join(' '));
+			_orig.log.apply(_orig, arguments);
+		};
+		window.console.error = function() {
+			lines.push('Error: ' + Array.prototype.slice.call(arguments).join(' '));
+			_orig.error.apply(_orig, arguments);
+		};
+		window.console.warn = function() {
+			lines.push('Warn: ' + Array.prototype.slice.call(arguments).join(' '));
+			_orig.warn.apply(_orig, arguments);
+		};
+		var errHandler = function(ev) {
+			lines.push('Error: ' + ev.message);
+		};
+		window.addEventListener('error', errHandler);
 		/* 解析完整 HTML 文档 */
 		var doc;
 		try {
 			doc = new DOMParser().parseFromString(sp.code, 'text/html');
 		} catch (err) {
-			window.__spLines.push('Error: 解析 HTML 失败: ' + (err.message || err));
-			out.textContent = window.__spLines.join('\n');
+			lines.push('Error: 解析 HTML 失败: ' + (err.message || err));
+			restore();
+			window.removeEventListener('error', errHandler);
+			out.textContent = lines.join('\n');
 			return;
 		}
 		/* 注入 <style> 到页面 head */
@@ -583,12 +590,15 @@ function renderSpJs(container, sp, appendNote) {
 		logBox.className = 'sp-log';
 		out.appendChild(logBox);
 		var render = function() {
-			var lines = window.__spLines.slice();
 			logBox.textContent = lines.join('\n') || '执行完成';
 		};
 		render();
-		/* 异步输出（setTimeout 等）轮询刷新 */
-		var timer = setInterval(render, 400);
+		/* 异步输出（setTimeout 等）轮询刷新；捕获窗口 3 秒后恢复应用自身 console，避免永久污染全局日志 */
+		setInterval(render, 400);
+		setTimeout(function() {
+			restore();
+			window.removeEventListener('error', errHandler);
+		}, 3000);
 	});
 	bar.appendChild(audit_btn);
 	bar.appendChild(run_btn);
