@@ -9,7 +9,39 @@
     <link rel="stylesheet" href="mgmt.css">
 
     <script>
+        async function loadUserInfo() {
+            try {
+                const res = await fetch('/whoami', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: '{}'
+                });
+                const data = await res.json();
+                if (data.login && data.user) {
+                    document.getElementById("current-user").innerText = "当前用户: " + data.user;
+                    document.getElementById("current-role").innerText = data.is_admin ? "当前角色: 管理员" : "当前角色: 普通用户";
+                    if (!data.is_admin) {
+                        alert("需要管理员权限才能访问此页面");
+                    }
+                } else {
+                    document.getElementById("current-user").innerText = "当前用户: 未登录";
+                    document.getElementById("current-role").innerText = "当前角色: 未知";
+                    setTimeout(() => {
+                        window.location = "index.html";
+                    }, 1000);
+                }
+            } catch (err) {
+                console.error('获取用户信息失败:', err);
+                document.getElementById("current-user").innerText = "当前用户: 未知";
+                document.getElementById("current-role").innerText = "当前角色: 未知";
+            }
+        }
+
         window.onload = () => {
+            loadUserInfo();
+
             const featureList = [
                 {
                     name: "进程",

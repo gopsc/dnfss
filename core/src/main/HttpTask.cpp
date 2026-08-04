@@ -1,6 +1,9 @@
 #include <iostream>
+#include <cstdlib>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
+#include <boost/json.hpp>
+#include <us/HttpClient.hpp>
 #include "main/HttpTask.hh"
 #include "main/pmc_mtd.hh"
 #include "main/subsys_call.hh"
@@ -126,6 +129,78 @@ static std::string url_decode(const std::string& str) {
 
 namespace process_http_server {
 
+	/* 从 Cookie 头中解析指定名称的值（找不到返回空串） */
+	static std::string get_cookie_value(const std::string& cookie_header, const std::string& name) {
+		size_t pos = 0;
+		while (pos <= cookie_header.size()) {
+			size_t end = cookie_header.find(';', pos);
+			if (end == std::string::npos) end = cookie_header.size();
+			std::string pair = cookie_header.substr(pos, end - pos);
+			size_t eq = pair.find('=');
+			if (eq != std::string::npos) {
+				std::string k = pair.substr(0, eq);
+				size_t b = k.find_first_not_of(" \t");
+				size_t e = k.find_last_not_of(" \t");
+				if (b != std::string::npos) k = k.substr(b, e - b + 1);
+				if (k == name) return pair.substr(eq + 1);
+			}
+			if (end == cookie_header.size()) break;
+			pos = end + 1;
+		}
+		return "";
+	}
+
+	/* 管理员验证：调用 gateway 的 /admin/verify 验签端点，验证请求携带的 Token 是否为有效管理员。
+	 * gateway 是 Token 签发与验证的唯一权威（RSA 验签 + is_admin + 过期检查）。
+	 * gateway 地址由环境变量 GATEWAY_HOST/GATEWAY_PORT 配置，默认 127.0.0.1:8443。
+	 * gateway 不可用或响应异常一律视为未授权（fail-closed）。 */
+	static bool verify_admin_token(const http::request<http::string_body>& req) {
+		try {
+			/* 提取 Token：Authorization 头优先，回退 Cookie */
+			std::string raw;
+			auto it = req.base().find(http::field::authorization);
+			if (it != req.base().end()) {
+				raw = std::string(it->value());
+			} else {
+				auto cit = req.base().find(http::field::cookie);
+				if (cit != req.base().end()) {
+					std::string cookie_token = get_cookie_value(std::string(cit->value()), "q4_token");
+					if (!cookie_token.empty())
+						raw = "Bearer " + cookie_token;
+				}
+			}
+			if (raw.empty() || raw.substr(0, 7) != "Bearer ") return false;
+
+			/* gateway 地址 */
+			std::string host = "127.0.0.1";
+			int port = 8443;
+			if (const char* h = std::getenv("GATEWAY_HOST")) host = h;
+			if (const char* p = std::getenv("GATEWAY_PORT")) {
+				int v = std::atoi(p);
+				if (v > 0) port = v;
+			}
+
+			std::string url = "http://" + host + ":" + std::to_string(port) + "/admin/verify";
+
+			pmc::net::HttpClient client;
+			client.set_header("Authorization: " + raw);
+			std::string body;
+			client.post_stream_sync(url, "", [&](const std::string& chunk) { body += chunk; });
+
+			auto jv = boost::json::parse(body);
+			if (!jv.is_object()) return false;
+			auto& obj = jv.as_object();
+			auto it_success = obj.find("success");
+			auto it_admin = obj.find("is_admin");
+			if (it_success == obj.end() || it_admin == obj.end()) return false;
+			if (!it_success->value().is_bool() || !it_admin->value().is_bool()) return false;
+			return it_success->value().as_bool() && it_admin->value().as_bool();
+		}
+		catch (const std::exception&) {
+			return false;
+		}
+	}
+
 	/* ---- 注册POST路由 ---- */
 	void registerRoutes(pmc::net::HttpServer& server) {
 		server.post("/list", [](const auto& req, const auto& params) {
@@ -199,6 +274,14 @@ namespace process_http_server {
 		res.version(req.version());
 		res.set(http::field::content_type, "application/json");
 
+		/* 管理员认证：调用 gateway 验签，未授权直接拒绝 */
+		if (!verify_admin_token(req)) {
+			res.result(http::status::unauthorized);
+			res.body() = buildJsonResponse(false, "Unauthorized: admin token required");
+			res.prepare_payload();
+			return res;
+		}
+
 		try {
 			std::string target = getTarget(params);
 
@@ -225,6 +308,14 @@ namespace process_http_server {
 		http::response<http::string_body> res;
 		res.version(req.version());
 		res.set(http::field::content_type, "application/json");
+
+		/* 管理员认证：调用 gateway 验签，未授权直接拒绝 */
+		if (!verify_admin_token(req)) {
+			res.result(http::status::unauthorized);
+			res.body() = buildJsonResponse(false, "Unauthorized: admin token required");
+			res.prepare_payload();
+			return res;
+		}
 
 		try {
 			std::string target = getTarget(params);
@@ -270,6 +361,14 @@ namespace process_http_server {
 		http::response<http::string_body> res;
 		res.version(req.version());
 		res.set(http::field::content_type, "application/json");
+
+		/* 管理员认证：调用 gateway 验签，未授权直接拒绝 */
+		if (!verify_admin_token(req)) {
+			res.result(http::status::unauthorized);
+			res.body() = buildJsonResponse(false, "Unauthorized: admin token required");
+			res.prepare_payload();
+			return res;
+		}
 
 		try {
 			std::string target = getTarget(params);

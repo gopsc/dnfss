@@ -33,7 +33,7 @@
             </div>
 
             <div class="input">
-                <div class="prompt">输入模块名:</div>
+                <div class="prompt">输入命令:</div>
                 <input id="input-area" class="input-area" type="text">
             </div>
             <button class="create-btn" onclick="createProcess()">创建</button>
@@ -41,25 +41,124 @@
     </div>
 
     <script>
+        // core 进程管理接口经 gateway 代理（Target-Url 指向 core:5200）
+        const CORE_TARGET = "http://127.0.0.1:5200";
+
+        function handleUnauthorized(res) {
+            if (res.status === 401) {
+                alert("未授权或管理员 Token 已失效，请重新登录");
+                setTimeout(() => { window.location.href = "../index.html"; }, 800);
+                return true;
+            }
+            return false;
+        }
+
+        async function api(path, body) {
+            const res = await fetch(path, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Target-Url': CORE_TARGET
+                },
+                body: body ? JSON.stringify(body) : '{}'
+            });
+            if (handleUnauthorized(res)) return null;
+            const text = await res.text();
+            let result;
+            try {
+                result = JSON.parse(text);
+            } catch (e) {
+                console.error('接口返回非 JSON:', text);
+                throw new Error('服务器响应格式异常 (HTTP ' + res.status + ')');
+            }
+            if (!res.ok || !result.success) {
+                throw new Error(result.message || '请求失败 (HTTP ' + res.status + ')');
+            }
+            return result;
+        }
+
+        // 列表接口返回的 data，可能是数组，也可能是 ptree 序列化后的
+        // {"": {...}, "": {...}} 对象（boost property_tree 对数组的表示）
+        function toProcessArray(data) {
+            if (Array.isArray(data)) return data;
+            if (data && typeof data === "object") {
+                return Object.values(data);
+            }
+            return [];
+        }
+
+        async function loadProcesses() {
+            const tbody = document.getElementById("tBody");
+            const progress = document.getElementById("inProgressText");
+            tbody.innerHTML = "";
+            progress.innerText = "加载中...";
+            try {
+                const result = await api('/list');
+                const list = toProcessArray(result.data);
+                tbody.innerHTML = "";
+                for (let i = 0; i < list.length; i++) {
+                    const p = list[i];
+                    const tr = document.createElement("tr");
+                    const pid = p.pid;
+                    const status = p.status === true ? "运行中" : (p.status === false ? "已停止" : (p.status || "未知"));
+                    tr.innerHTML = `
+                        <td>${pid}</td>
+                        <td>${status}</td>
+                        <td>${p.command || p.target || "-"}</td>
+                        <td><button class="stopBtn" onclick="stopBtn(${pid})">停止</button></td>
+                    `;
+                    tbody.appendChild(tr);
+                }
+                progress.innerText = "";
+            } catch (err) {
+                progress.innerText = "";
+                tbody.innerHTML = "";
+                alert(err.message || '加载进程列表失败');
+            }
+        }
+
         function newBtn() {
             const modal = document.getElementById("modal-con")
             modal.style.display = "flex"
         }
 
-        function createProcess() {
-            const moduleName = document.getElementById("input-area").value
-            alert("注意：这是静态页面 - 创建进程需要后端 API 支持，请通过 mgmt Flask 后端访问");
+        async function createProcess() {
+            const moduleName = document.getElementById("input-area").value.trim()
+            if (!moduleName) {
+                alert("请输入要执行的命令");
+                return;
+            }
+            const progress = document.getElementById("inProgressText");
+            progress.innerText = "启动中...";
+            try {
+                await api('/exec', { command: moduleName });
+                alert("启动成功");
+                closeModal();
+                await loadProcesses();
+            } catch (err) {
+                progress.innerText = "";
+                alert(err.message || '启动失败');
+            }
         }
 
         function flushBtn() {
-            window.location.reload()
+            loadProcesses();
         }
 
-        function stopBtn(pid) {
+        async function stopBtn(pid) {
             if (!confirm("确认停止该服务?")) {
                 return
             }
-            alert("注意：这是静态页面 - 停止进程需要后端 API 支持，请通过 mgmt Flask 后端访问");
+            const progress = document.getElementById("inProgressText");
+            progress.innerText = "停止中...";
+            try {
+                await api('/kill', { pid: pid });
+                alert("已停止");
+                await loadProcesses();
+            } catch (err) {
+                progress.innerText = "";
+                alert(err.message || '停止失败');
+            }
         }
 
         function closeModal() {
@@ -69,6 +168,11 @@
             input.value = ""
             modal.style.display = "none"
         }
+
+        // 页面加载时自动拉取进程列表
+        window.onload = () => {
+            loadProcesses();
+        };
     </script>
 </body>
 

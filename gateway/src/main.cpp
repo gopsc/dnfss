@@ -321,6 +321,11 @@ http::response<http::string_body> handleWhoami(
 		const http::request<http::string_body>& req,
 		const std::unordered_map<std::string, std::string>& params);
 
+/* 内部服务间管理员验签视图：供 core 等内部服务调用，验证 Token 是否为有效管理员 */
+http::response<http::string_body> handleAdminVerify(
+		const http::request<http::string_body>& req,
+		const std::unordered_map<std::string, std::string>& params);
+
 /* 代理 captcha 图形验证码：pymsg 调 captcha 服务，返回 PNG 图片 */
 http::response<http::string_body> handleCaptchaImage(
 		const http::request<http::string_body>& req,
@@ -871,6 +876,12 @@ void registerRoutes(HttpServer &server) {
 			[](const auto& req, const auto& params) { return handleWhoami(req, params); });
 	});
 
+	/* 内部服务间管理员验签视图（供 core 等调用，须在 post("*") 通配符之前注册） */
+	server.post("/admin/verify", [](const auto& req, const auto& params) -> http::response<http::string_body> {
+		return wrapperHttp(req, params,
+			[](const auto& req, const auto& params) { return handleAdminVerify(req, params); });
+	});
+
 	/* 代理 captcha 图形验证码（须在 get("*") 通配符之前注册） */
 	server.get("/captcha/image", [](const auto& req, const auto& params) -> http::response<http::string_body> {
 		return wrapperHttp(req, params,
@@ -1317,6 +1328,132 @@ http::response<http::string_body> handleWhoami(
 
 	res.set(http::field::content_type, "application/json");
 	res.set("Connection", "close");
+	res.result(http::status::ok);
+	res.body() = json::serialize(jv_r);
+	res.prepare_payload();
+	return res;
+}
+
+/* 内部服务间管理员验签视图：POST /admin/verify
+ *
+ * 供 core 等内部服务调用，验证请求携带的 Token 是否为有效且未过期的管理员。
+ * Token 来源：Authorization: Bearer 优先，回退 Cookie q4_token。
+ * gateway 是 Token 签发与验证的唯一权威，core 通过本接口完成鉴权，避免密钥共享。
+ *
+ * 响应：{ success, is_admin, user }
+ *   - success=true, is_admin=true   → 有效管理员（放行）
+ *   - success=true, is_admin=false  → 非管理员（拒绝）
+ *   - success=false                 → 无 Token / 验签失败 / 过期（拒绝）
+ * 验签失败一律返回 HTTP 401（fail-closed），供内部服务快速判拒绝。 */
+http::response<http::string_body> handleAdminVerify(
+	const http::request<http::string_body>& req,
+	const std::unordered_map<std::string, std::string>& params)
+{
+	http::response<http::string_body> res;
+	res.version(req.version());
+	res.set(http::field::content_type, "application/json");
+	res.set("Connection", "close");
+
+	auto _PUBL = MyRSA::Public_Key::from_pem(_KEYGEN->get_public_key_pem());
+
+	/* 获取 Token：Authorization 头优先，回退 Cookie */
+	std::string raw;
+	auto it_auth = req.base().find("Authorization");
+	if (it_auth != req.base().end()) {
+		raw = std::string(it_auth->value());
+	} else {
+		auto cit = req.base().find("Cookie");
+		if (cit != req.base().end()) {
+			std::string cookie_token = get_cookie_value(std::string(cit->value()), "q4_token");
+			if (!cookie_token.empty())
+				raw = "Bearer " + cookie_token;
+		}
+	}
+
+	/* 无 Token 或格式错误：按未授权处理 */
+	if (raw.empty() || raw.substr(0, 7) != "Bearer ") {
+		res.result(http::status::unauthorized);
+		res.body() = R"({"success": false, "is_admin": false})";
+		res.prepare_payload();
+		return res;
+	}
+
+	raw = raw.substr(7);
+	size_t idx = raw.find("_");
+	if (idx == std::string::npos) {
+		res.result(http::status::unauthorized);
+		res.body() = R"({"success": false, "is_admin": false})";
+		res.prepare_payload();
+		return res;
+	}
+
+	std::string data = raw.substr(0, idx);
+	std::string sign = raw.substr(idx + 1);
+	std::string auth;
+	try { auth = Base64::base64_decode_to_string(data); }
+	catch (const std::exception&) {
+		res.result(http::status::unauthorized);
+		res.body() = R"({"success": false, "is_admin": false})";
+		res.prepare_payload();
+		return res;
+	}
+
+	/* RSA 验签：失败按未授权处理 */
+	if (!_PUBL.Verify(auth, sign)) {
+		res.result(http::status::unauthorized);
+		res.body() = R"({"success": false, "is_admin": false})";
+		res.prepare_payload();
+		return res;
+	}
+
+	/* 解析 Token payload */
+	json::value jv_t;
+	try { jv_t = json::parse(auth); }
+	catch (const std::exception&) {
+		res.result(http::status::unauthorized);
+		res.body() = R"({"success": false, "is_admin": false})";
+		res.prepare_payload();
+		return res;
+	}
+	if (!jv_t.is_object()) {
+		res.result(http::status::unauthorized);
+		res.body() = R"({"success": false, "is_admin": false})";
+		res.prepare_payload();
+		return res;
+	}
+	json::object& obj = jv_t.as_object();
+
+	/* 过期检查：created_at + keep_time 超过当前时间按无效处理 */
+	auto t = json::value_to<std::string>(obj["created_at"]);
+	auto keep_time_val = json::value_to<int>(obj["keep_time"]);
+	auto created_tp = LocalTime::parse(t);
+	if (created_tp) {
+		auto now = std::chrono::system_clock::now();
+		auto expire_tp = *created_tp + std::chrono::seconds(keep_time_val);
+		if (now > expire_tp) {
+			res.result(http::status::unauthorized);
+			res.body() = R"({"success": false, "is_admin": false})";
+			res.prepare_payload();
+			return res;
+		}
+	}
+
+	/* 管理员判定：旧 Token 未携带 is_admin 时默认为 false */
+	bool is_admin = false;
+	if (obj.contains("is_admin")) {
+		auto& v = obj["is_admin"];
+		if (v.is_bool()) is_admin = v.as_bool();
+	}
+
+	std::string username;
+	try { username = json::value_to<std::string>(obj["user"]); }
+	catch (...) {}
+
+	json::value jv_r = {
+		{"success", true},
+		{"is_admin", is_admin},
+		{"user", username}
+	};
 	res.result(http::status::ok);
 	res.body() = json::serialize(jv_r);
 	res.prepare_payload();
