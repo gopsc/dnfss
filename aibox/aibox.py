@@ -2835,7 +2835,36 @@ class TaskScheduler:
         self.execution_history = []
         self.max_history = 100
         
+        # 共享技能管理器（懒加载一次，供所有任务实例复用，避免重复扫描技能）
+        self._shared_skill_manager = None
+        
         self.logger.info(i18n.get('scheduler_started'))
+    
+    def _get_shared_skill_manager(self):
+        """获取共享技能管理器（懒加载，全局只创建一次）"""
+        if self._shared_skill_manager is None:
+            self._shared_skill_manager = SkillManager(self.logger)
+        return self._shared_skill_manager
+    
+    def _create_task_ai(self):
+        """为单个定时任务创建独立的AI实例，实现任务间上下文隔离。
+
+        每个任务拥有独立的 messages / 工具注册表 / 消息锁，互不干扰，
+        也不影响 WebSocket 主对话。共享只读资源（记忆库、备忘录、提示词、
+        技能管理器）复用，避免重复加载开销。
+        """
+        return DeepSeekChat(
+            api_key=None,
+            max_history=constants.DEFAULT_MAX_HISTORY,
+            debug_level=self.logger.level,
+            exit_callback=None,  # 任务执行不触发全局对话结束
+            history_manager=None,  # 不加载历史对话上下文，任务隔离
+            memory_db=self.ai_manager.memory_db if self.ai_manager else None,
+            memo_db=self.ai_manager.memo_db if self.ai_manager else None,
+            command_executor=self.ai_manager.command_executor if self.ai_manager else None,
+            prompt_manager=self.ai_manager.prompt_manager if self.ai_manager else None,
+            skill_manager=self._get_shared_skill_manager()
+        )
     
     def set_websocket_handler(self, handler):
         """设置WebSocket处理器，用于广播任务执行状态"""
@@ -2994,101 +3023,92 @@ class TaskScheduler:
         
         result = "任务已触发AI对话"
         
-        # 如果有AI管理器，触发AI对话
-        if self.ai_manager and self.ai_manager.ai:
-            try:
-                # 获取当前事件循环
-                loop = asyncio.get_running_loop()
+        # 为当前任务创建独立的AI实例，实现任务间上下文隔离（不干扰主对话，也不受其他任务影响）
+        ai = self._create_task_ai()
+        try:
+            # 获取当前事件循环
+            loop = asyncio.get_running_loop()
+            
+            # 创建一个队列来收集完整的响应
+            full_response_queue = queue.Queue()
+            
+            # 定义输出回调函数 - 直接广播，同时收集
+            def output_callback(msg_type, content):
+                """AI输出的回调函数 - 直接广播，同时收集"""
+                # 收集完整响应
+                if msg_type == "complete":
+                    full_response_queue.put(content)
                 
-                # 创建一个队列来收集完整的响应
-                full_response_queue = queue.Queue()
-                
-                # 定义输出回调函数 - 直接广播，同时收集
-                def output_callback(msg_type, content):
-                    """AI输出的回调函数 - 直接广播，同时收集"""
-                    # 收集完整响应
-                    if msg_type == "complete":
-                        full_response_queue.put(content)
-                    
-                    # 直接广播给所有客户端 - 必须带上 task_id 和 execution_id
-                    if self.ws_handler and self.broadcast_enabled:
-                        # 使用 run_coroutine_threadsafe 在正确的循环中运行异步函数
-                        asyncio.run_coroutine_threadsafe(
-                            self.ws_handler.broadcast({
-                                "type": "task_process",
-                                "task_id": str(memo['id']),  # 原始任务ID
-                                "execution_id": execution_id,  # 唯一的执行ID
-                                "task_title": memo['title'],
-                                "msg_type": msg_type,
-                                "content": content,
-                                "is_new_execution": msg_type == "chunk",  # 标记是否为新的执行
-                                "timestamp": datetime.now().strftime(constants.DATETIME_FORMAT)
-                            }),
-                            loop
-                        )
-                
-                # 修改：确保AI处于新对话状态，不加载历史上下文
-                if self.ai_manager.ai:
-                    ai = self.ai_manager.ai
-                    # 先取消任何正在进行中的对话（防止WebSocket线程与调度器线程并发修改messages）
-                    if ai.is_busy():
-                        self.logger.info("AI正在处理中，先取消当前对话...")
-                        ai.cancel()
-                        # 短暂等待让正在进行的请求退出并释放锁（使用asyncio.sleep避免阻塞事件循环）
-                        for _ in range(20):
-                            await asyncio.sleep(0.1)
-                            if not ai.is_busy():
-                                break
-                    # 重置AI对话状态，但保留系统提示词（在锁保护下执行）
-                    ai.reset_conversation()
-                    self.logger.info("AI对话状态已重置，准备执行任务")
-                
-                # 创建一个 Future 来等待 AI 完成
-                ai_future = loop.create_future()
-                
-                def run_ai():
-                    try:
-                        # 在单独的线程中运行 AI
-                        response = self.ai_manager.ai.think_and_respond(user_input, output_callback)
-                        # 将结果设置到 Future 中
-                        loop.call_soon_threadsafe(ai_future.set_result, response)
-                    except Exception as e:
-                        loop.call_soon_threadsafe(ai_future.set_exception, e)
-                
-                # 启动 AI 线程
-                ai_thread = threading.Thread(target=run_ai)
-                ai_thread.daemon = True
-                ai_thread.start()
-                
-                # 等待 AI 完成，同时处理可能的取消
+                # 直接广播给所有客户端 - 必须带上 task_id 和 execution_id
+                if self.ws_handler and self.broadcast_enabled:
+                    # 使用 run_coroutine_threadsafe 在正确的循环中运行异步函数
+                    asyncio.run_coroutine_threadsafe(
+                        self.ws_handler.broadcast({
+                            "type": "task_process",
+                            "task_id": str(memo['id']),  # 原始任务ID
+                            "execution_id": execution_id,  # 唯一的执行ID
+                            "task_title": memo['title'],
+                            "msg_type": msg_type,
+                            "content": content,
+                            "is_new_execution": msg_type == "chunk",  # 标记是否为新的执行
+                            "timestamp": datetime.now().strftime(constants.DATETIME_FORMAT)
+                        }),
+                        loop
+                    )
+            
+            # 创建一个 Future 来等待 AI 完成
+            ai_future = loop.create_future()
+            
+            def run_ai():
                 try:
-                    response = await ai_future
-                    result = response or "AI无响应"
+                    # 在单独的线程中运行 AI（独立实例，天然隔离，无并发冲突）
+                    response = ai.think_and_respond(user_input, output_callback)
+                    # 将结果设置到 Future 中
+                    loop.call_soon_threadsafe(ai_future.set_result, response)
                 except Exception as e:
-                    self.logger.error(f"AI对话失败: {e}")
-                    result = f"任务执行但AI对话失败: {str(e)}"
-                finally:
-                    # 确保线程结束
-                    ai_thread.join(timeout=1.0)
-                
+                    loop.call_soon_threadsafe(ai_future.set_exception, e)
+            
+            # 启动 AI 线程
+            ai_thread = threading.Thread(target=run_ai)
+            ai_thread.daemon = True
+            ai_thread.start()
+            
+            # 等待 AI 完成，同时处理可能的取消
+            try:
+                response = await ai_future
+                result = response or "AI无响应"
             except Exception as e:
                 self.logger.error(f"AI对话失败: {e}")
-                import traceback
-                traceback.print_exc()
                 result = f"任务执行但AI对话失败: {str(e)}"
-                # 广播错误信息
-                if self.ws_handler and self.broadcast_enabled:
-                    try:
-                        await self.ws_handler.broadcast({
-                            "type": "task_error",
-                            "task_id": str(memo['id']),  # 确保是字符串
-                            "execution_id": execution_id,
-                            "task_title": memo['title'],
-                            "error": str(e),
-                            "timestamp": datetime.now().strftime(constants.DATETIME_FORMAT)
-                        })
-                    except:
-                        pass
+            finally:
+                # 确保线程结束
+                ai_thread.join(timeout=1.0)
+            
+        except Exception as e:
+            self.logger.error(f"AI对话失败: {e}")
+            import traceback
+            traceback.print_exc()
+            result = f"任务执行但AI对话失败: {str(e)}"
+            # 广播错误信息
+            if self.ws_handler and self.broadcast_enabled:
+                try:
+                    await self.ws_handler.broadcast({
+                        "type": "task_error",
+                        "task_id": str(memo['id']),  # 确保是字符串
+                        "execution_id": execution_id,
+                        "task_title": memo['title'],
+                        "error": str(e),
+                        "timestamp": datetime.now().strftime(constants.DATETIME_FORMAT)
+                    })
+                except:
+                    pass
+        finally:
+            # 任务执行完毕，释放独立实例占用的资源
+            try:
+                if ai and hasattr(ai, 'cancel'):
+                    ai.cancel()
+            except Exception:
+                pass
         
         # 获取任务的最新状态（可选，用于日志）
         updated_memo = memo_db.get_memo(memo['id'])
@@ -6686,7 +6706,7 @@ class DeepSeekChat:
                  system_prompt: str = None, debug_level: int = None, exit_callback: Callable = None,
                  history_manager: ConversationHistory = None, memory_db: MemoryDatabase = None,
                  memo_db: MemoDatabase = None, command_executor: CommandExecutor = None,
-                 prompt_manager: PromptManager = None):
+                 prompt_manager: PromptManager = None, skill_manager: SkillManager = None):
         self.config = ConfigManager()
         self.logger = Logger("DeepSeek", debug_level if debug_level is not None else Logger("").level)
         self.debug_level = self.logger.level
@@ -6701,6 +6721,8 @@ class DeepSeekChat:
         self.history_loaded = False
         self.conversation_active = True
         self.messages = []
+        # 共享技能管理器：传入时复用（避免每个任务重复扫描技能），否则按需创建
+        self._shared_skill_manager = skill_manager
         
         # 添加对话压缩器
         self.compressor = ConversationCompressor(self, self.logger)
@@ -6826,7 +6848,8 @@ class DeepSeekChat:
         self.tool_registry.register_many(builtin_tools, is_builtin=True)
         
         # 创建技能管理器：启动时对每个技能执行 --help，收集第一行简介
-        skill_manager = SkillManager(self.logger)
+        # 若传入共享 skill_manager 则复用，避免每个任务/实例重复扫描技能
+        skill_manager = self._shared_skill_manager or SkillManager(self.logger)
         self.tool_registry.skill_manager = skill_manager
         
         # 注册扩展技能搜索工具（单一工具，替代逐个注册 ExtensionTool）
