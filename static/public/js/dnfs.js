@@ -499,6 +499,10 @@ function renderSpLink(container, sp, appendNote) {
  *   - iframe 全屏铺底且 pointer-events:none，不拦截父页面点击，视觉特效悬浮展示在页面上方；
  *   - 不使用 new Function/eval（CSP 未开 unsafe-eval），srcdoc 内联脚本由 CSP 'unsafe-inline' 放行。
  * 仅管理员可发布（后端强制）。 */
+/* 无特效模式：true 为关闭自动执行（用户面板开关控制，localStorage 持久化） */
+var sp_effects_disabled = (function() {
+	try { return localStorage.getItem('sp_effects_disabled') === '1'; } catch (e) { return false; }
+})();
 function renderSpJs(container, sp, appendNote) {
 	var bar = document.createElement('div');
 	bar.className = 'sp-actions';
@@ -551,8 +555,8 @@ function renderSpJs(container, sp, appendNote) {
 	container.appendChild(pre);
 	container.appendChild(out);
 	appendNote();
-	/* 含前端内容的节点渲染到当前页面时自动执行 */
-	startEffect();
+	/* 含前端内容的节点渲染到当前页面时自动执行（无特效模式下跳过） */
+	if (!sp_effects_disabled) startEffect();
 }
 
 /* 图片节点：DataURL 直接显示（CSP img-src 允许 data:） */
@@ -1038,6 +1042,36 @@ function renderUserPanel() {
 	role_tag.className = "tag no-hover";
 	role_tag.textContent = current_user.is_admin ? "管理员" : "普通用户";
 	userpanel.appendChild(role_tag);
+
+	/* 无特效模式开关（所有用户）：关闭后特效节点不再自动执行 */
+	let effect_btn = document.createElement("div");
+	effect_btn.className = "tag";
+	effect_btn.textContent = sp_effects_disabled ? "✨ 无特效模式" : "✨ 特效模式";
+	effect_btn.addEventListener("click", () => {
+		sp_effects_disabled = !sp_effects_disabled;
+		try { localStorage.setItem('sp_effects_disabled', sp_effects_disabled ? '1' : '0'); } catch (e) {}
+		effect_btn.textContent = sp_effects_disabled ? "✨ 无特效模式" : "✨ 特效模式";
+		/* 关闭时移除当前已运行的全部特效沙箱 */
+		if (sp_effects_disabled) {
+			document.querySelectorAll('.sp-effect-frame').forEach(function(f) { f.remove(); });
+		}
+	});
+	userpanel.appendChild(effect_btn);
+
+	/* 管理员专属入口：运维机器人 / 进程管理器 */
+	if (current_user.is_admin) {
+		let ops_btn = document.createElement("div");
+		ops_btn.className = "tag";
+		ops_btn.textContent = "🤖 运维机器人";
+		ops_btn.addEventListener("click", () => { window.location.href = "/aibox.html"; });
+		userpanel.appendChild(ops_btn);
+
+		let mgmt_btn = document.createElement("div");
+		mgmt_btn.className = "tag";
+		mgmt_btn.textContent = "🛠 进程管理器";
+		mgmt_btn.addEventListener("click", () => { window.location.href = "/mgmt/mgmt.html"; });
+		userpanel.appendChild(mgmt_btn);
+	}
 
 	let logout_tag = document.createElement("div");
 	logout_tag.className = "tag back";
