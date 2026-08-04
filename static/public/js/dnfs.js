@@ -492,12 +492,13 @@ function renderSpLink(container, sp, appendNote) {
 	appendNote();
 }
 
-/* 前端代码节点：审计（展开源码，textContent 防注入）+ 运行（注入当前页面执行，支持完整 HTML/CSS/JS）。
- * 不使用 new Function/eval（CSP 未开 unsafe-eval）；解析完整 HTML 文档后注入当前页面：
- *   - <style> 注入到页面 head
- *   - <script> 在当前页面全局作用域执行（可操作整页 DOM 加特效）
- *   - <body> 内容渲染到节点下方容器
- * console.log/error/warn 输出捕获到下方输出区。仅管理员可发布（后端强制）。 */
+/* 前端代码节点：审计（展开源码，textContent 防注入）+ 运行（在隔离 iframe 沙箱中执行完整 HTML/CSS/JS）。
+ * 采用 iframe 沙箱而非注入父页面全局作用域，原因：
+ *   - 特效脚本运行在独立 iframe 内，无法访问父页面 DOM/JS，任何报错、死循环、变量覆盖
+ *     都不会污染父页面，从而保证"运行特效后卡片点击/节点导航依然正常"；
+ *   - iframe 全屏铺底且 pointer-events:none，不拦截父页面点击，视觉特效悬浮展示在页面上方；
+ *   - 不使用 new Function/eval（CSP 未开 unsafe-eval），srcdoc 内联脚本由 CSP 'unsafe-inline' 放行。
+ * 仅管理员可发布（后端强制）。 */
 function renderSpJs(container, sp, appendNote) {
 	var bar = document.createElement('div');
 	bar.className = 'sp-actions';
@@ -514,6 +515,7 @@ function renderSpJs(container, sp, appendNote) {
 	var out = document.createElement('div');
 	out.className = 'sp-run';
 	out.style.display = 'none';
+	var frame = null;	/* 当前特效 iframe 沙箱实例，null 表示未运行 */
 	audit_btn.addEventListener('click', function(e) {
 		e.stopPropagation();
 		var hidden = (pre.style.display === 'none');
@@ -522,83 +524,25 @@ function renderSpJs(container, sp, appendNote) {
 	});
 	run_btn.addEventListener('click', function(e) {
 		e.stopPropagation();
-		out.style.display = out.style.display === 'none' ? 'block' : 'none';
-		if (out.dataset.executed) return;	// 已执行过，仅切换显示
-		out.dataset.executed = '1';
-		/* 本次执行专属输出缓冲：捕获脚本执行（含早期异步）期间的 console 输出，捕获窗口结束后恢复
-		 * 应用自身 console，避免把应用日志（如 load_notes 打印的 pid/节点对象）刷进输出框干扰交互。 */
-		var lines = [];
-		var _orig = window.console;
-		var restore = function() {
-			window.console.log = _orig.log.bind(_orig);
-			window.console.error = _orig.error.bind(_orig);
-			window.console.warn = _orig.warn.bind(_orig);
-		};
-		window.console.log = function() {
-			lines.push(Array.prototype.slice.call(arguments).join(' '));
-			_orig.log.apply(_orig, arguments);
-		};
-		window.console.error = function() {
-			lines.push('Error: ' + Array.prototype.slice.call(arguments).join(' '));
-			_orig.error.apply(_orig, arguments);
-		};
-		window.console.warn = function() {
-			lines.push('Warn: ' + Array.prototype.slice.call(arguments).join(' '));
-			_orig.warn.apply(_orig, arguments);
-		};
-		var errHandler = function(ev) {
-			lines.push('Error: ' + ev.message);
-		};
-		window.addEventListener('error', errHandler);
-		/* 解析完整 HTML 文档 */
-		var doc;
-		try {
-			doc = new DOMParser().parseFromString(sp.code, 'text/html');
-		} catch (err) {
-			lines.push('Error: 解析 HTML 失败: ' + (err.message || err));
-			restore();
-			window.removeEventListener('error', errHandler);
-			out.textContent = lines.join('\n');
+		/* 已运行：停止并移除特效沙箱 */
+		if (frame) {
+			frame.remove();
+			frame = null;
+			run_btn.textContent = '运行';
+			out.style.display = 'none';
 			return;
 		}
-		/* 注入 <style> 到页面 head */
-		Array.prototype.forEach.call(doc.querySelectorAll('style'), function(st) {
-			var s = document.createElement('style');
-			s.textContent = st.textContent;
-			document.head.appendChild(s);
-		});
-		/* 注入 <script>：包一层 IIFE 隔离变量作用域，避免污染页面全局（如覆盖 getNode/stack 等同名
-		 * 变量导致卡片点击失效）；函数体内仍可访问 document/window 对整页施加特效。 */
-		Array.prototype.forEach.call(doc.querySelectorAll('script'), function(sc) {
-			var s = document.createElement('script');
-			if (sc.getAttribute('src')) {
-				s.src = sc.getAttribute('src');
-			} else {
-				s.textContent = '(function(){\n' + sc.textContent + '\n})();';
-			}
-			document.head.appendChild(s);
-		});
-		/* 渲染 <body> 内容到节点下方容器（跳过 script，避免 appendChild 触发其重复执行） */
-		if (doc.body) {
-			Array.prototype.forEach.call(doc.body.childNodes, function(node) {
-				if (node.nodeName && node.nodeName.toLowerCase() === 'script') return;
-				out.appendChild(node);
-			});
-		}
-		/* console 输出区 */
-		var logBox = document.createElement('div');
-		logBox.className = 'sp-log';
-		out.appendChild(logBox);
-		var render = function() {
-			logBox.textContent = lines.join('\n') || '执行完成';
-		};
-		render();
-		/* 异步输出（setTimeout 等）轮询刷新；捕获窗口 3 秒后恢复应用自身 console，避免永久污染全局日志 */
-		setInterval(render, 400);
-		setTimeout(function() {
-			restore();
-			window.removeEventListener('error', errHandler);
-		}, 3000);
+		/* 创建隔离 iframe 沙箱：完整前端代码（含 <style>/<script>/<body>）由此 srcdoc 承载，
+		 * 脚本在独立上下文执行，无法影响父页面导航；pointer-events:none 保证不拦截父页面点击。 */
+		frame = document.createElement('iframe');
+		frame.className = 'sp-effect-frame';
+		frame.setAttribute('sandbox', 'allow-scripts');
+		frame.srcdoc = sp.code;
+		frame.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;border:0;pointer-events:none;z-index:9999;';
+		document.body.appendChild(frame);
+		run_btn.textContent = '停止特效';
+		out.style.display = 'block';
+		out.textContent = '特效已启动（运行于隔离沙箱，不影响页面导航）';
 	});
 	bar.appendChild(audit_btn);
 	bar.appendChild(run_btn);
