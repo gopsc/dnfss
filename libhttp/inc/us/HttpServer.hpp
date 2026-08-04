@@ -21,6 +21,7 @@
 #include <mutex>
 #include <regex>
 #include <deque>
+#include <chrono>
 
 namespace pmc {
 namespace net {
@@ -124,6 +125,13 @@ public:
     void setMaxWsMessageSize(std::size_t bytes) { max_ws_message_size_ = bytes; }
     std::size_t getMaxWsMessageSize() const { return max_ws_message_size_; }
 
+    // 入站读超时（防 Slowloris，P1-4）。默认与 WAF 对齐：头 10s、体 30s。
+    // 头超时覆盖 TCP 连接建立 + SSL 握手 + 请求头读取；体超时覆盖请求体读取。
+    void setHeaderTimeout(std::chrono::seconds t) { header_timeout_ = t; }
+    std::chrono::seconds getHeaderTimeout() const { return header_timeout_; }
+    void setReadTimeout(std::chrono::seconds t) { read_timeout_ = t; }
+    std::chrono::seconds getReadTimeout() const { return read_timeout_; }
+
     class debug {
     public:
         static void print_all_header_fields(const http::request<http::string_body>& req);
@@ -140,6 +148,8 @@ private:
 
     std::size_t max_body_size_ = 10 * 1024 * 1024; // 默认 10MB,与 WAF 对齐
     std::size_t max_ws_message_size_ = 16 * 1024 * 1024; // 默认 16MB,与 Beast 默认一致
+    std::chrono::seconds header_timeout_{10}; // 头/握手超时，防 Slowloris（对齐 WAF ReadHeaderTimeout）
+    std::chrono::seconds read_timeout_{30};   // 体超时（对齐 WAF ReadTimeout）
 
     bool ssl_enabled_{false};
     std::string cert_file_;

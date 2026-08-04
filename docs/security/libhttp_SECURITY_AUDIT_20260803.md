@@ -11,9 +11,9 @@
 | 优先级 | 总数 | 已修复 | 部分修复 | 未修复 |
 |--------|------|--------|----------|--------|
 | P0 | 0 | 0 | 0 | 0 |
-| P1 | 6 | 4 | 0 | 2 |
+| P1 | 6 | 5 | 0 | 1 |
 | P2 | 4 | 0 | 0 | 4 |
-| **合计** | **10** | **6** | **0** | **4** |
+| **合计** | **10** | **7** | **0** | **3** |
 
 ---
 
@@ -24,7 +24,7 @@
 | P1-1 | 请求体大小限制不可配置 + 超限无 413 | ✅ 已修复 | `Session::doRead`（`HttpServer_Request.cpp` L167-186）改用 `http::request_parser` + `body_limit()`（默认 10MB，与 WAF 对齐）；`HttpServer` 新增 `setMaxBodySize()`/`getMaxBodySize()`（`HttpServer.hpp` L118-120）。超限时 `handleRead` 返回 **413 Payload Too Large** 并关闭连接（L256-265），而非静默断连 |
 | P1-2 | HttpClient 响应无大小限制 | ✅ 已修复 | `HttpClient.cpp` 新增 `WriteCtx`（流式回调 + 累计字节 + 上限），`write_callback` 超限返回 0 触发 `CURLE_WRITE_ERROR`，`request_stream_sync` 抛异常；`request_stream_sync` 改为**真流式**（callback 非空时每块即回调，不二次累积），`HttpClient` 新增 `set_max_response_size()`/`get_max_response_size()`（默认 10MB，对齐 WAF，0 表示不限制） |
 | P1-3 | WebSocket 消息无大小限制 | ✅ 已修复 | `HttpServer` 新增 `max_ws_message_size_`（默认 16MB，与 Beast 默认一致）与 `setMaxWsMessageSize()`/`getMaxWsMessageSize()`。`doWsUpgrade`/`doWssUpgrade` 及代理流 `onProxyConnect`/`onProxySslHandshake` 创建后调用 `read_message_max()`，超限消息由 Beast 在分配内存前拒绝并关闭连接，防 OOM |
-| P1-4 | 服务器无读写超时（Slowloris） | ❌ 未修复 | 入站 `stream_`（`beast::tcp_stream`）**从未设置 `expires_after`**（仅代理后端设了超时）。攻击者建立连接后缓慢发送 HTTP 头，可无限占用连接与线程，Slowloris/连接耗尽（对应全局审计 P2-4） |
+| P1-4 | 服务器无读写超时（Slowloris） | ✅ 已修复 | 入站 `stream_` 现设置超时：`doSSLHandshake` 设头超时（覆盖握手），`doRead` 两阶段读（`async_read_header` 头超时 → `async_read` 体超时），`doWsRead` 每个 WS 读取设空闲超时。`HttpServer` 新增 `setHeaderTimeout()`（默认 10s）/`setReadTimeout()`（默认 30s），对齐 WAF ReadHeaderTimeout/ReadTimeout。慢速/空闲连接被清理，防 Slowloris/连接耗尽 |
 | P1-5 | 静态文件目录路径遍历 | ✅ 已修复 | 新增 `isSafeStaticPath()`（`HttpServer_Request.cpp` L139-156），静态文件服务前校验 target_path（拒绝 `..`、空字节、非 `/` 开头、URL 编码 `%2e`/`%2f`/`%5c`），逻辑与 gateway `is_safe_target()` 对齐（`HttpServer.cpp` L94） |
 | P1-6 | 发送队列无界（慢消费者 OOM） | ❌ 未修复 | `ws_send_queue_`、`proxy_to_backend_queue_`、`proxy_to_client_queue_`（`HttpServer_WsSession.cpp` L8-16/L362-367/L438-443）均为无界 `std::deque`。若客户端消费慢，服务端持续入队可导致内存耗尽 |
 
@@ -69,7 +69,7 @@
 ### 立即（24小时）
 - [x] P1-1 请求体大小限制：`doRead` 改用 `http::request_parser` + `body_limit()`，`HttpServer` 增加 `setMaxBodySize()`（对齐 WAF 10MB），超限返回 413 而非断开 → ✅ 已实现（默认 10MB，`setMaxBodySize()` 可覆盖）
 - [x] P1-2 HttpClient 响应上限：`write_callback` 累计超过上限即失败，返回错误 → ✅ 已实现（`WriteCtx` 流式回调 + 上限，默认 10MB，`set_max_response_size()` 可覆盖）
-- [ ] P1-4 服务器读超时：入站 `stream_` 设置 `expires_after`（首字节/头+体超时），防 Slowloris
+- [x] P1-4 服务器读超时：入站 `stream_` 设置 `expires_after`（首字节/头+体超时），防 Slowloris → ✅ 已实现（`setHeaderTimeout()` 默认 10s / `setReadTimeout()` 默认 30s，两阶段读 + WS 空闲超时）
 
 ### 短期（72小时）
 - [x] P1-3 WS 消息大小限制：设置 `read_message_max`（可配置）→ ✅ 已实现（`setMaxWsMessageSize()`，默认 16MB，服务端与代理流均生效）

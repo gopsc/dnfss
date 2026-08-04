@@ -167,6 +167,13 @@ void HttpServer::Session::doSSLHandshake() {
     std::cout << "[SSL] Starting handshake for "
               << remote_ip_ << ":" << remote_port_ << std::endl;
 
+    // P1-4：设置头超时（TCP 连接完成后，覆盖 SSL 握手 + 请求头读取）
+    if (ssl_enabled_ && ssl_stream_) {
+        ssl_stream_->next_layer().expires_after(server_->getHeaderTimeout());
+    } else {
+        stream_.expires_after(server_->getHeaderTimeout());
+    }
+
     ssl_stream_->async_handshake(
         asio::ssl::stream_base::server,
         [self](beast::error_code ec) {
@@ -192,6 +199,37 @@ void HttpServer::Session::doRead() {
     // 使用 request_parser 并设置可配置的请求体上限（默认 10MB，超限返回 413）
     parser_.emplace();
     parser_->body_limit(server_->max_body_size_);
+
+    // P1-4：阶段1 读请求头（头超时，防 Slowloris）
+    if (ssl_enabled_ && ssl_stream_) {
+        ssl_stream_->next_layer().expires_after(server_->getHeaderTimeout());
+    } else {
+        stream_.expires_after(server_->getHeaderTimeout());
+    }
+
+    auto on_header = [self](beast::error_code ec, std::size_t) {
+        if (ec) {
+            self->handleRead(ec);
+            return;
+        }
+        // 阶段2 读请求体：切换到体超时
+        if (self->ssl_enabled_ && self->ssl_stream_) {
+            self->ssl_stream_->next_layer().expires_after(self->server_->getReadTimeout());
+        } else {
+            self->stream_.expires_after(self->server_->getReadTimeout());
+        }
+        self->doReadBody();
+    };
+
+    if (ssl_enabled_ && ssl_stream_) {
+        http::async_read_header(*ssl_stream_, buffer_, *parser_, on_header);
+    } else {
+        http::async_read_header(stream_, buffer_, *parser_, on_header);
+    }
+}
+
+void HttpServer::Session::doReadBody() {
+    auto self = shared_from_this();
 
     auto on_read = [self](beast::error_code ec, std::size_t) {
         if (!ec) self->request_ = self->parser_->release();

@@ -67,6 +67,7 @@ private:
     void close();
     void doSSLHandshake();
     void doRead();
+    void doReadBody();
     void handleRead(beast::error_code ec);
     bool isWebSocketUpgrade(const http::request<http::string_body>& req);
     void doWsUpgrade();

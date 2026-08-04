@@ -74,6 +74,9 @@ void HttpServer::Session::doWsRead() {
     auto self = shared_from_this();
     ws_buffer_.consume(ws_buffer_.size());
 
+    // P1-4：WS 读取设置空闲超时，清理长期不发消息的连接
+    stream_.expires_after(server_->getReadTimeout());
+
     if (ssl_enabled_ && wss_stream_) {
         wss_stream_->async_read(
             ws_buffer_,
