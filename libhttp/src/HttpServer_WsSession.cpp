@@ -82,8 +82,12 @@ void HttpServer::Session::doWsRead() {
     auto self = shared_from_this();
     ws_buffer_.consume(ws_buffer_.size());
 
-    // P1-4：WS 读取设置空闲超时，清理长期不发消息的连接
-    stream_.expires_after(server_->getReadTimeout());
+    // P1-4：WS 读取设置空闲超时，清理长期不发消息的连接。
+    // WebSocket 代理模式（如 aibox）不设超时：后端 AI 处理可能长时间无数据，
+    // 由前端心跳保活 + 后端自身超时机制管理连接生命周期。
+    if (!is_ws_proxy_) {
+        stream_.expires_after(server_->getReadTimeout());
+    }
 
     if (ssl_enabled_ && wss_stream_) {
         wss_stream_->async_read(
@@ -329,6 +333,12 @@ void HttpServer::Session::onProxyHandshake(beast::error_code ec) {
 
     proxy_connected_ = true;
     proxy_closed_ = false;
+
+    // 清除客户端侧流在 HTTP 升级阶段继承的读 deadline（body 阶段设置的 30s）。
+    // 否则代理连接会在握手后约 30s 被强制关闭，导致长连接 WebSocket 断线。
+    // 注意：后端侧 proxy_tcp_stream_ 已在 onProxyConnect 中 expires_never()。
+    stream_.expires_never();
+
     std::cout << "[WS-Proxy] Connected to backend " << proxy_host_ << ":" << proxy_port_
               << proxy_path_ << std::endl;
 

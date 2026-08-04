@@ -7133,7 +7133,32 @@ class DeepSeekChat:
             
             result_raw = None
             try:
+                # 启动后台线程持续排空 output_queue，将流式输出实时转发给 output_callback，
+                # 避免 SubAgent 等长时间工具执行期间前端收不到数据导致 WS 空闲断线
+                def _drain_queue(q=output_queue, cb=output_callback, stop_event=self._cancel_event):
+                    while not stop_event.is_set():
+                        try:
+                            msg_type, content = q.get(timeout=0.1)
+                            if cb and msg_type == "line":
+                                cb("line", str(content) if content is not None else "")
+                        except queue.Empty:
+                            continue
+
+                import threading as _th
+                drain_thread = _th.Thread(target=_drain_queue, daemon=True)
+                drain_thread.start()
+
                 result_raw = self.tool_registry.execute_tool(tool_name, **args)
+
+                # 工具执行完毕，排空队列中剩余内容并等待 drain 线程退出
+                while not output_queue.empty():
+                    try:
+                        msg_type, content = output_queue.get_nowait()
+                        if output_callback and msg_type == "line":
+                            output_callback("line", str(content) if content is not None else "")
+                    except queue.Empty:
+                        break
+                # drain 线程会在下一次 get 超时后自动退出（队列已空）
             except Exception as e:
                 result_raw = f"❌ 工具 {tool_name} 执行异常: {str(e)}"
                 self.logger.error(f"工具 {tool_name} 执行异常: {e}")
@@ -7141,18 +7166,8 @@ class DeepSeekChat:
             # 安全转换并清理结果
             result = self._sanitize_tool_result(result_raw)
 
-            # 排空 output_queue，把流式行输出转发给 output_callback
-            has_stream_output = False
-            while not output_queue.empty():
-                try:
-                    msg_type, content = output_queue.get_nowait()
-                    if output_callback and msg_type == "line":
-                        # 只转发"line"类型；"complete"是流式结束信号，不作为行输出
-                        # （之前complete也被转发导致工具结果在侧栏显示两次）
-                        output_callback("line", str(content) if content is not None else "")
-                        has_stream_output = True
-                except queue.Empty:
-                    break
+            # drain 线程已排空队列中的 line 输出，这里只需判断是否有流式输出
+            has_stream_output = not output_queue.empty()
 
             # 普通（非流式）工具没有队列输出，直接发送结果
             if not has_stream_output and output_callback and result:
