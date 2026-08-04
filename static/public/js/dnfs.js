@@ -503,6 +503,10 @@ function renderSpLink(container, sp, appendNote) {
 var sp_effects_disabled = (function() {
 	try { return localStorage.getItem('sp_effects_disabled') === '1'; } catch (e) { return false; }
 })();
+/* 清除当前页面已运行的全部特效沙箱（进入新节点 / 关闭特效时调用） */
+function clearAllEffects() {
+	document.querySelectorAll('.sp-effect-frame').forEach(function(f) { f.remove(); });
+}
 function renderSpJs(container, sp, appendNote) {
 	var bar = document.createElement('div');
 	bar.className = 'sp-actions';
@@ -851,6 +855,8 @@ function load_notes(main_node) {
 
 
 	recommend_list.replaceChildren();
+	/* 进入新节点：先清除上一节点的特效，再渲染当前节点（新节点含特效时自动加载） */
+	clearAllEffects();
 	for (let i in main_node) {
 		let item = main_node[i]
 		console.log(item)
@@ -1052,9 +1058,7 @@ function renderUserPanel() {
 		try { localStorage.setItem('sp_effects_disabled', sp_effects_disabled ? '1' : '0'); } catch (e) {}
 		effect_btn.textContent = sp_effects_disabled ? "✨ 无特效模式" : "✨ 特效模式";
 		/* 关闭时移除当前已运行的全部特效沙箱 */
-		if (sp_effects_disabled) {
-			document.querySelectorAll('.sp-effect-frame').forEach(function(f) { f.remove(); });
-		}
+		if (sp_effects_disabled) clearAllEffects();
 	});
 	userpanel.appendChild(effect_btn);
 
