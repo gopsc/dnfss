@@ -3029,8 +3029,18 @@ class TaskScheduler:
                 
                 # 修改：确保AI处于新对话状态，不加载历史上下文
                 if self.ai_manager.ai:
-                    # 重置AI对话状态，但保留系统提示词
-                    self.ai_manager.ai.reset_conversation()
+                    ai = self.ai_manager.ai
+                    # 先取消任何正在进行中的对话（防止WebSocket线程与调度器线程并发修改messages）
+                    if ai.is_busy():
+                        self.logger.info("AI正在处理中，先取消当前对话...")
+                        ai.cancel()
+                        # 短暂等待让正在进行的请求退出并释放锁（使用asyncio.sleep避免阻塞事件循环）
+                        for _ in range(20):
+                            await asyncio.sleep(0.1)
+                            if not ai.is_busy():
+                                break
+                    # 重置AI对话状态，但保留系统提示词（在锁保护下执行）
+                    ai.reset_conversation()
                     self.logger.info("AI对话状态已重置，准备执行任务")
                 
                 # 创建一个 Future 来等待 AI 完成
@@ -6702,6 +6712,8 @@ class DeepSeekChat:
         # 取消机制：threading.Event 用于跨线程信号，HTTP 中断由客户端抽象层负责
         self._cancel_event = threading.Event()
         self._command_executor = command_executor  # 保存命令执行器引用，用于取消时kill子进程
+        # 消息锁：保护 self.messages 免受 WebSocket 线程与调度器线程并发修改导致对话历史污染
+        self._msg_lock = threading.RLock()
         
         self._init_system_prompts(system_prompt)
         
@@ -7066,6 +7078,11 @@ class DeepSeekChat:
             is_continuation: 是否为工具调用后的递归继续；为 True 时不注入冗长的工作流指令，
                             因为 system prompt 中已有完整行为规范，继续时只需传递工具结果
         """
+        with self._msg_lock:
+            return self._think_and_respond_impl(input_text, output_callback, is_continuation)
+    
+    def _think_and_respond_impl(self, input_text: str, output_callback: Callable = None, is_continuation: bool = False) -> Optional[str]:
+        """think_and_respond 的实际实现，在 _msg_lock 保护下执行。"""
         # 首轮开始时清除取消标志
         if not is_continuation:
             self._cancel_event.clear()
@@ -7161,6 +7178,9 @@ class DeepSeekChat:
                     enhanced_messages.append(tool_msg)
                 else:
                     enhanced_messages.append(msg)
+        
+        # API 调用前最终校验：确保 tool_calls ↔ tool 消息配对完整，避免 400 错误
+        self._validate_enhanced_messages(enhanced_messages)
         
         # 工具调用（v4-flash 支持思考+工具调用）
         tools = self.tool_registry.get_tools_schemas() or None
@@ -7418,46 +7438,151 @@ class DeepSeekChat:
         except Exception as e:
             self.logger.error(f"消息回滚失败: {e}")
     
+    def _validate_enhanced_messages(self, messages):
+        """发送给 API 前的最终校验：检查 tool_calls 与 tool 消息的配对完整性。
+        若发现问题，就地修复（补占位 tool 消息），避免 HTTP 400。"""
+        if not messages:
+            return
+        pending_tool_ids = []  # 当前等待 tool 响应的 tool_call_id 列表
+        seen_ids = set()
+        fixed = []
+        i = 0
+        n = len(messages)
+        while i < n:
+            msg = messages[i]
+            role = msg.get("role")
+            if role == "assistant" and msg.get("tool_calls"):
+                # 如果有未被响应的 tool_calls，先补占位（正常情况不应出现）
+                for tid in pending_tool_ids:
+                    if tid not in seen_ids:
+                        fixed.append({
+                            "role": "tool",
+                            "tool_call_id": tid,
+                            "content": "⚠️ 该工具调用未返回结果（校验修复）。",
+                        })
+                pending_tool_ids = [tc.get("id") for tc in msg["tool_calls"] if tc.get("id")]
+                seen_ids = set()
+                fixed.append(msg)
+            elif role == "tool":
+                tid = msg.get("tool_call_id")
+                if tid and tid in pending_tool_ids and tid not in seen_ids:
+                    seen_ids.add(tid)
+                    fixed.append(msg)
+                elif tid and tid not in pending_tool_ids:
+                    # 孤立 tool 消息：不属于最近一个 assistant 的 tool_calls，跳过
+                    self.logger.warning(f"_validate: 跳过孤立 tool 消息 {tid}")
+                else:
+                    fixed.append(msg)
+            else:
+                # 遇到非 assistant/tool 消息（user/system），如果有待响应的 tool_calls，先补占位
+                for tid in pending_tool_ids:
+                    if tid not in seen_ids:
+                        fixed.append({
+                            "role": "tool",
+                            "tool_call_id": tid,
+                            "content": "⚠️ 该工具调用未返回结果（校验修复）。",
+                        })
+                pending_tool_ids = []
+                seen_ids = set()
+                fixed.append(msg)
+            i += 1
+        # 处理末尾：如果最后一条是 assistant with tool_calls 但没有 tool 响应
+        for tid in pending_tool_ids:
+            if tid not in seen_ids:
+                fixed.append({
+                    "role": "tool",
+                    "tool_call_id": tid,
+                    "content": "⚠️ 该工具调用未返回结果（校验修复）。",
+                })
+        # 原地替换 messages 内容
+        messages.clear()
+        messages.extend(fixed)
+    
     def _repair_tool_pairs(self):
         """修复消息历史中的工具调用配对，保证 API 消息结构合法。
 
         场景：assistant 消息携带 tool_calls，但对应的 tool 响应缺失（工具被中断、
-        压缩算法丢弃、端对话提前 break 等），下一次请求会因
+        压缩算法丢弃、端对话提前 break、system 消息插入等），下一次请求会因
         "insufficient tool messages following tool_calls" 返回 400。
-        修复策略：为每个缺失响应的 tool_call_id 补一条占位 tool 消息，使其配对完整。
+        修复策略：
+        1. 跳过 system 消息查找 tool 响应（压缩后 system 摘要可能插入在 assistant 与 tool 之间）
+        2. 只收集与当前 assistant 的 tool_call_id 匹配的 tool 消息
+        3. 为缺失响应的 tool_call_id 补占位 tool 消息
+        4. 移除孤立的 tool 消息（tool_call_id 无对应前置 assistant tool_call）
+        5. 同一 tool_call_id 只保留第一条 tool 响应，去重
         """
         if not self.messages:
             return
         repaired = []
         i = 0
         n = len(self.messages)
+        # 追踪所有已见的 assistant tool_call_id，用于识别孤立 tool 消息
+        known_tool_ids = set()
         while i < n:
             msg = self.messages[i]
             role = msg.get("role")
-            tool_calls = msg.get("tool_calls") if role == "assistant" else None
-            if not tool_calls:
+            if role == "system":
                 repaired.append(msg)
                 i += 1
                 continue
-            # 收集紧随其后的 tool 消息
-            needed = [tc.get("id") for tc in tool_calls if tc.get("id")]
-            j = i + 1
-            tool_msgs = []
-            while j < n and self.messages[j].get("role") == "tool":
-                tool_msgs.append(self.messages[j])
-                j += 1
-            have = {tm.get("tool_call_id") for tm in tool_msgs if tm.get("tool_call_id")}
-            # 补齐缺失的 tool 响应
-            for tid in needed:
-                if tid not in have:
-                    tool_msgs.append({
-                        "role": "tool",
-                        "tool_call_id": tid,
-                        "content": "⚠️ 该工具调用未返回结果（可能被中断）。",
-                    })
-            repaired.append(msg)  # 保留 assistant 消息本身
-            repaired.extend(tool_msgs)
-            i = j
+            if role == "assistant" and msg.get("tool_calls"):
+                tool_calls = msg["tool_calls"]
+                needed_ids = []
+                for tc in tool_calls:
+                    tid = tc.get("id")
+                    if tid:
+                        needed_ids.append(tid)
+                        known_tool_ids.add(tid)
+                # 收集紧随其后的 tool 消息，跳过 system 消息
+                collected_tools = []  # list of (index, tool_msg) to ensure ordering
+                collected_ids = set()
+                j = i + 1
+                pending_systems = []  # system 消息在 assistant 和 tool 之间暂存，最后放到 tool 之后
+                while j < n:
+                    m = self.messages[j]
+                    r = m.get("role")
+                    if r == "system":
+                        pending_systems.append(m)
+                        j += 1
+                        continue
+                    if r == "tool":
+                        tid = m.get("tool_call_id")
+                        # 只收集属于当前 assistant 且未重复的 tool 响应
+                        if tid and tid in needed_ids and tid not in collected_ids:
+                            collected_tools.append(m)
+                            collected_ids.add(tid)
+                        elif tid and tid not in needed_ids and tid in known_tool_ids:
+                            # 属于更早 assistant 的 tool 响应，停止收集（已越过当前 assistant 的范围）
+                            break
+                        # tid 为空或不属于任何已知 assistant，跳过（可能是脏数据）
+                        j += 1
+                        continue
+                    # 遇到 user 或下一个 assistant，停止收集
+                    break
+                # 为缺失的 tool_call_id 补占位消息
+                for tid in needed_ids:
+                    if tid not in collected_ids:
+                        collected_tools.append({
+                            "role": "tool",
+                            "tool_call_id": tid,
+                            "content": "⚠️ 该工具调用未返回结果（可能被中断或压缩丢失）。",
+                        })
+                        collected_ids.add(tid)
+                repaired.append(msg)
+                repaired.extend(collected_tools)
+                repaired.extend(pending_systems)
+                i = j
+            elif role == "tool":
+                tid = msg.get("tool_call_id")
+                if tid and tid in known_tool_ids:
+                    repaired.append(msg)
+                else:
+                    self.logger.warning(f"_repair_tool_pairs: 跳过孤立 tool 消息 id={tid}")
+                i += 1
+            else:
+                # user 或普通 assistant（无 tool_calls）
+                repaired.append(msg)
+                i += 1
         self.messages = repaired
     
     def reset_conversation(self, reload_prompts: bool = True):
@@ -7467,37 +7592,47 @@ class DeepSeekChat:
         Args:
             reload_prompts: 是否重新加载系统提示词，默认为 True
         """
-        self.conversation_active = True
-        self.history_loaded = False  # 重置历史加载标记
-        
-        if reload_prompts:
-            # 完全重置：清除所有消息，重新加载系统提示词
-            self.messages = []
-            self._init_system_prompts()
-            self.logger.info("对话已完全重置，系统提示词已重新加载")
-        else:
-            # 只清除非系统消息，保留系统提示词
-            if self.preserve_system:
-                system_messages = [msg for msg in self.messages if msg["role"] == "system"]
-                self.messages = system_messages
-            else:
+        with self._msg_lock:
+            self.conversation_active = True
+            self.history_loaded = False  # 重置历史加载标记
+            
+            if reload_prompts:
+                # 完全重置：清除所有消息，重新加载系统提示词
                 self.messages = []
-            self.logger.info("对话已重置（仅清除对话历史）")
+                self._init_system_prompts()
+                self.logger.info("对话已完全重置，系统提示词已重新加载")
+            else:
+                # 只清除非系统消息，保留系统提示词
+                if self.preserve_system:
+                    system_messages = [msg for msg in self.messages if msg["role"] == "system"]
+                    self.messages = system_messages
+                else:
+                    self.messages = []
+                self.logger.info("对话已重置（仅清除对话历史）")
+    
+    def is_busy(self) -> bool:
+        """检查AI是否正在处理消息（非阻塞，供调度器等外部调用者判断）。"""
+        acquired = self._msg_lock.acquire(blocking=False)
+        if acquired:
+            self._msg_lock.release()
+            return False
+        return True
     
     def reload_prompts(self):
         """重新加载提示词"""
-        old_system_count = len([msg for msg in self.messages if msg["role"] == "system"])
-        
-        # 移除所有旧的系统消息
-        self.messages = [msg for msg in self.messages if msg["role"] != "system"]
-        
-        # 重新加载提示词
-        self.prompt_manager.reload()
-        self._init_system_prompts()
-        
-        new_system_count = len([msg for msg in self.messages if msg["role"] == "system"])
-        self.logger.info(f"提示词已重新加载: {old_system_count} -> {new_system_count} 个")
-        return new_system_count
+        with self._msg_lock:
+            old_system_count = len([msg for msg in self.messages if msg["role"] == "system"])
+            
+            # 移除所有旧的系统消息
+            self.messages = [msg for msg in self.messages if msg["role"] != "system"]
+            
+            # 重新加载提示词
+            self.prompt_manager.reload()
+            self._init_system_prompts()
+            
+            new_system_count = len([msg for msg in self.messages if msg["role"] == "system"])
+            self.logger.info(f"提示词已重新加载: {old_system_count} -> {new_system_count} 个")
+            return new_system_count
 
 
 # ==================== WebSocket处理器（修改版：添加重置对话功能） ====================
@@ -7812,8 +7947,17 @@ class WebSocketHandler:
             # 【新增】开始新对话：保存当前对话，重置AI状态，重新加载系统提示词
             self.ai_manager.history_manager.archive_current_conversation()
             if self.ai_manager.ai:
+                ai = self.ai_manager.ai
+                # 如果AI正在处理（可能是调度器在跑定时任务），先取消
+                if ai.is_busy():
+                    self.logger.info("/new: AI正在处理中，先取消当前对话...")
+                    ai.cancel()
+                    for _ in range(20):
+                        await asyncio.sleep(0.1)
+                        if not ai.is_busy():
+                            break
                 # 重置对话状态，重新加载系统提示词
-                self.ai_manager.ai.reset_conversation(reload_prompts=True)
+                ai.reset_conversation(reload_prompts=True)
                 # 重置对话进行中标记
                 self.ai_manager.dialogue_in_progress = False
                 # 重新初始化提示词管理器（确保最新）
@@ -8135,16 +8279,8 @@ class EnhancedAIManager:
         self.history_manager.end_current_conversation(summary)
         
         if self.ai:
-            # 智能体主动结束对话后，重置对话状态但不清除系统提示词
-            # 注意：这里只重置对话标记，不清除消息历史
-            self.ai.conversation_active = True
-            # 但为了下次对话不加载旧的历史，我们清除非系统消息
-            if self.ai.preserve_system:
-                system_messages = [msg for msg in self.ai.messages if msg["role"] == "system"]
-                self.ai.messages = system_messages
-            else:
-                self.ai.messages = []
-            self.ai.history_loaded = False  # 重置历史加载标记
+            # 智能体主动结束对话后，重置对话状态但保留系统提示词（锁保护）
+            self.ai.reset_conversation(reload_prompts=False)
         
         self.dialogue_in_progress = False
         self.logger.info("对话状态已重置，可以开始新对话")
