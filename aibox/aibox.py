@@ -6556,13 +6556,17 @@ def run_light_subagent(role, task, config, logger=None, model=None,
 
 
 def run_full_subagent(role, task, config, logger=None, model=None,
-                      temperature=None, max_tokens=2048, max_turns=10) -> str:
+                      temperature=None, max_tokens=2048, max_turns=10,
+                      output_callback=None) -> str:
     """完整子代理：拥有全部工具，独立上下文，多轮对话直到任务完成。
 
     子代理是完整的 DeepSeekChat 实例，拥有文件操作、命令执行、网页访问、
     技能扩展等全部工具能力。独立上下文窗口，不污染主对话。
     多轮对话（工具调用→结果→继续）直到任务完成或达到最大轮次。
     结束后自动总结对话内容，返回摘要给父代理。
+
+    output_callback: 可选回调(msg_type, content)，用于转发子代理的实时思考过程
+    （reasoning_start / reasoning / reasoning_end），不传则静默执行。
 
     供 create_subagent 工具使用。
     """
@@ -6611,7 +6615,13 @@ def run_full_subagent(role, task, config, logger=None, model=None,
 
         # 运行对话：think_and_respond 内部递归处理工具调用，
         # 直到 AI 返回纯文本无工具调用，或达到轮次限制
-        sub_chat.think_and_respond(task, output_callback=None)
+        # 将子代理的思考过程（reasoning）通过 output_callback 转发给父代理
+        def sub_think_callback(msg_type, content):
+            if output_callback is not None and \
+                    msg_type in ("reasoning_start", "reasoning", "reasoning_end"):
+                output_callback(msg_type, content)
+
+        sub_chat.think_and_respond(task, output_callback=sub_think_callback)
 
         if logger:
             logger.info(f"子代理完成，共 {turn_count[0]} 轮，开始总结...")
@@ -6732,6 +6742,15 @@ class SubAgentTool(Tool):
             "required": ["role", "task"]
         }
 
+    def _subagent_output(self, msg_type: str, content: str):
+        """子代理思考过程转发：把子代理的实时推理文字输出到主对话侧栏"""
+        if msg_type == "reasoning_start":
+            self.send_line("\n💭 [子代理思考] ")
+        elif msg_type == "reasoning":
+            self.send_line(content)
+        elif msg_type == "reasoning_end":
+            self.send_line("\n")
+
     def execute(self, role: str = None, task: str = None, model: str = None,
                 temperature: float = None, max_tokens: int = 2048,
                 max_turns: int = 10, **kwargs) -> str:
@@ -6739,7 +6758,8 @@ class SubAgentTool(Tool):
             return error
         return run_full_subagent(role, task, self.config, logger=self.logger,
                                  model=model, temperature=temperature,
-                                 max_tokens=max_tokens, max_turns=max_turns)
+                                 max_tokens=max_tokens, max_turns=max_turns,
+                                 output_callback=self._subagent_output)
 
 
 class SetProxyTool(Tool):
