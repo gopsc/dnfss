@@ -2861,7 +2861,8 @@ class TaskScheduler:
             history_manager=None,  # 不加载历史对话上下文，任务隔离
             memory_db=self.ai_manager.memory_db if self.ai_manager else None,
             memo_db=self.ai_manager.memo_db if self.ai_manager else None,
-            command_executor=self.ai_manager.command_executor if self.ai_manager else None,
+            # 每个任务使用独立的命令执行器，互不共享，避免 cancel() 误杀其他任务的子进程
+            command_executor=SubprocessCommandExecutor(self.logger),
             prompt_manager=self.ai_manager.prompt_manager if self.ai_manager else None,
             skill_manager=self._get_shared_skill_manager()
         )
@@ -7030,10 +7031,10 @@ class DeepSeekChat:
             if not has_stream_output and output_callback and result:
                 output_callback("line", result + "\n")
             
-            # 检查结果大小，如果超过阈值，截断返回提示信息
+            # 检查结果大小，如果超过阈值，不保留截断内容，仅返回提示信息
             if len(result) > MAX_RESULT_LENGTH:
-                truncated_note = f"\n\n⚠️ 结果已截断（原始 {len(result)} 字符，限制 {MAX_RESULT_LENGTH} 字符）。请使用更精确的查询获取所需信息。"
-                result = result[:MAX_RESULT_LENGTH] + truncated_note
+                truncated_note = f"⚠️ 工具调用结果长度超过 {MAX_RESULT_LENGTH} 字符，已丢弃。请使用更精确的查询获取所需信息。"
+                result = truncated_note
                 if output_callback:
                     output_callback("line", truncated_note + "\n")
             
@@ -7691,7 +7692,8 @@ class WebSocketHandler:
             history_manager=None,  # 不加载共享历史上下文，避免多用户历史相互污染
             memory_db=self.ai_manager.memory_db,
             memo_db=self.ai_manager.memo_db,
-            command_executor=self.ai_manager.command_executor,
+            # 每个连接使用独立的命令执行器，互不共享，避免 cancel() 误杀其他用户/任务正在运行的子进程
+            command_executor=SubprocessCommandExecutor(self.logger),
             prompt_manager=self.ai_manager.prompt_manager,
             skill_manager=self._get_shared_skill_manager()
         )
