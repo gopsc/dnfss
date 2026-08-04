@@ -492,9 +492,10 @@ function renderSpLink(container, sp, appendNote) {
 	appendNote();
 }
 
-/* JS 代码节点：审计（展开源码，textContent 防注入）+ 运行（在当前页面上下文执行，可直接操作页面加特效）。
- * 代码通过 new Function 注入包装 console 执行，可访问全局 document/window 对当前页面施加特效；
- * console.log/error/warn 输出捕获到下方输出区。仅管理员可发布（后端强制）。 */
+/* JS 代码节点：审计（展开源码，textContent 防注入）+ 运行（注入 <script> 在当前页面上下文执行，可直接操作页面加特效）。
+ * 不使用 new Function/eval（CSP 未开 unsafe-eval）；改为注入内联 <script>（CSP 允许 'unsafe-inline'）执行。
+ * 代码运行在全局作用域，可访问 document/window 对当前页面施加特效；console.log/error/warn 输出捕获到下方输出区。
+ * 仅管理员可发布（后端强制）。 */
 function renderSpJs(container, sp, appendNote) {
 	var bar = document.createElement('div');
 	bar.className = 'sp-actions';
@@ -520,20 +521,37 @@ function renderSpJs(container, sp, appendNote) {
 	run_btn.addEventListener('click', function(e) {
 		e.stopPropagation();
 		out.style.display = out.style.display === 'none' ? 'block' : 'none';
-		if (out.textContent) return;	// 已执行过，仅切换显示
-		var lines = [];
-		var hook = {
-			log: function() { lines.push(Array.prototype.slice.call(arguments).join(' ')); },
-			error: function() { lines.push('Error: ' + Array.prototype.slice.call(arguments).join(' ')); },
-			warn: function() { lines.push('Warn: ' + Array.prototype.slice.call(arguments).join(' ')); }
-		};
-		try {
-			/* 在当前页面上下文执行，函数体内可访问全局 document/window 施加特效 */
-			new Function('console', sp.code)(hook);
-		} catch (err) {
-			lines.push('Error: ' + (err && err.message ? err.message : err));
+		if (out.dataset.executed) return;	// 已执行过，仅切换显示
+		out.dataset.executed = '1';
+		/* 首次注入 console 捕获：保留原 console 行为，同时备份到 __spLines（避免影响页面其他脚本） */
+		if (!window.__spLines) {
+			window.__spLines = [];
+			var _orig = window.console;
+			window.console.log = function() {
+				window.__spLines.push(Array.prototype.slice.call(arguments).join(' '));
+				_orig.log.apply(_orig, arguments);
+			};
+			window.console.error = function() {
+				window.__spLines.push('Error: ' + Array.prototype.slice.call(arguments).join(' '));
+				_orig.error.apply(_orig, arguments);
+			};
+			window.console.warn = function() {
+				window.__spLines.push('Warn: ' + Array.prototype.slice.call(arguments).join(' '));
+				_orig.warn.apply(_orig, arguments);
+			};
+			window.addEventListener('error', function(ev) {
+				window.__spLines.push('Error: ' + ev.message);
+			});
 		}
-		out.textContent = lines.join('\n') || '执行完成';
+		/* 注入内联 <script> 在当前页面全局作用域执行，可操作页面加特效 */
+		var s = document.createElement('script');
+		s.textContent = sp.code;
+		document.head.appendChild(s);
+		out.textContent = window.__spLines.join('\n') || '执行完成';
+		/* 异步输出（setTimeout 等）轮询刷新 */
+		var timer = setInterval(function() {
+			out.textContent = window.__spLines.join('\n');
+		}, 400);
 	});
 	bar.appendChild(audit_btn);
 	bar.appendChild(run_btn);
