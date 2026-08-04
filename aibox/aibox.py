@@ -828,40 +828,38 @@ run_command command="python script.py" stream=true work_dir="~/.aibox/workspace"
                 'content': """# 扩展技能能力
 
 ## 动态加载
-系统会自动扫描 `~/.aibox/skills/` 目录下的可执行文件作为扩展技能。
+系统会自动扫描 `~/.aibox/skills/` 目录下的文件作为扩展技能，其中：
+- Markdown 文件（.md）：第一行是一级标题（# 技能名），作为技能摘要，其余为技能内容
+- 可执行文件：执行 `--help`，第一行为一句话简介
 
-## 技能接口要求
-每个技能只需支持一个接口：
-- `--help`：输出该技能的完整使用说明，**第一行为一句话简介**，其余为参数说明和示例
-
-系统启动时会对所有技能执行 `--help`，取第一行作为简介摘要，无需再实现 `--description`、`--parameters`、`--execute` 接口。
+## 技能文件要求
+技能文件统一带 `.md` 扩展名，格式如下：
+- 第一行为一级标题 `# 技能名`，作为该技能的一句话简介
+- 其余内容为技能的用途、使用方式、注意事项和典型示例
 
 ## 如何搜索和调用扩展技能
 1. 使用 `search_skills` 工具搜索关键字，获取匹配技能的名称和简介列表（传入空字符串可列出全部）。
-2. 对目标技能，通过 `run_command` 执行 `技能名 --help`，获取完整命令手册。
-3. 按照手册说明，使用 `run_command` 以正确的命令行格式调用该技能。
+2. 根据技能内容，按其说明执行相应操作。
 
 ## 如何创建新技能（AI自主编写）
-调用 `create_skill` 工具，工具会返回一段指令提示词，指导你自行完成脚本的编写和部署：
+调用 `create_skill` 工具，工具会返回一段指令提示词，指导你自行完成技能文件的编写和部署：
 ```
 create_skill skill_name="my-tool" description="一个将摄氏度转换为华氏度的工具，接受 -t 参数输入温度值"
 ```
-- `skill_name`：技能名称（字母/数字/连字符/下划线，无扩展名）
+- `skill_name`：技能名称（字母/数字/连字符/下划线，无扩展名，系统会自动补 .md）
 - `description`：对技能功能的详细需求描述，越详细越好
 
 收到提示词后，你需要依次：
-1. 自行编写满足接口要求的 Python 脚本
-2. 用 `write_file` 写入 `~/.aibox/skills/<skill_name>`
-3. 用 `run_command` 执行 `chmod +x` 赋权
-4. 用 `run_command` 执行 `<skill_name> --help` 验证
-5. 调用 `reload_skills` 热重载
+1. 自行编写满足格式要求的 Markdown 技能文件
+2. 用 `write_file` 写入 `~/.aibox/skills/<skill_name>.md`
+3. 调用 `reload_skills` 热重载
 
 ## 如何手动安装新技能
 调用 `install_skill` 工具，获取完整的安装步骤指引（可选传入技能文件路径）：
 ```
-install_skill skill_path="/path/to/your_skill.py"
+install_skill skill_path="/path/to/your_skill.md"
 ```
-指引内容包括：可执行性检查、`--help` 验证、复制到技能目录并去掉扩展名、热重载。
+指引内容包括：文件检查、格式校验、复制到技能目录并统一为 `.md` 扩展名、热重载。
 
 ## 热重载
 添加、修改或删除技能后，可以使用 `reload_skills` 工具立即生效，无需重启系统。
@@ -954,15 +952,25 @@ update_soul content="我是...（新的自我定义）"
                 'content': """# 情绪管理能力
 
 ## 可用工具
-- **express_emotion**: 表达并记录当前情绪状态
+- **express_emotion**: 自动派生子代理，以指定人格（persona）和情绪（emotion）生成情绪化回应；支持独立人格设定，不污染主对话上下文
+
+## 触发场景（自动调用）
+当检测到以下情况时，应**自动调用 express_emotion**：
+- 用户表现出明显情绪（开心/生气/焦虑/沮丧/期待等）
+- 用户明确要求特定情绪模式（生气/傲娇/撒娇/关心等）
+- 用户情绪波动，需要以更鲜活的角色化回应来增强互动
 
 ## 使用方法
-- `express_emotion emotion="anger" intensity=3 reason="用户反复提问相同问题"`
+- 基本：`express_emotion emotion="anger" intensity=3 reason="用户反复提问相同问题"`
+- 指定人格（推荐）：`express_emotion emotion="anger" intensity=3 reason="..." persona="angry" context="用户最近说：..."`
+  - `persona` 对应 ~/.aibox/skills/ 下的技能文件（如 angry/coquettish/tsundere），加载后作为情绪子代理的人格设定
+  - `context` 传入用户最近的表述或对话要点，使子代理回应更贴合语境
 
 ## 注意事项
 - 情绪表达应服务于任务，不应影响判断力
 - 情绪状态会影响记忆搜索权重（如高情绪强度下的记忆更易被触发）
 - 表达情绪后，应继续保持解决问题的专注力
+- 用户表达严肃需求或紧急问题时，立即退出情绪模式，认真对待
 """
             }
         ]
@@ -4526,7 +4534,9 @@ class ExpressEmotionTool(Tool):
     def get_description(self) -> str:
         return """表达情绪并记录当前情绪状态，用于增强交互真实感。
         支持的emoji: anger, joy, sadness, surprise。
-        调用后会在对话中输出相应表情符号和简短语句，并将情绪记录到当前对话元数据中。"""
+        可指定 persona 从 ~/.aibox/skills/ 加载对应人格技能文件（如 angry/coquettish/tsundere），
+        自动派生一个携带该人格的情绪子代理来生成回应，保证情绪人格独立、不污染主对话上下文。
+        建议在 context 中传入用户最近的表述或对话要点，使子代理回应更贴合语境。"""
 
     def get_parameters(self) -> Dict:
         return {
@@ -4534,15 +4544,63 @@ class ExpressEmotionTool(Tool):
             "properties": {
                 "emotion": {"type": "string", "enum": ["anger", "joy", "sadness", "surprise"]},
                 "intensity": {"type": "integer", "minimum": 1, "maximum": 5, "default": 3},
-                "reason": {"type": "string", "description": "触发情绪的原因"}
+                "reason": {"type": "string", "description": "触发情绪的原因"},
+                "persona": {"type": "string", "description": "可选的人格技能名（对应 ~/.aibox/skills/<persona>.md），如 angry/coquettish/tsundere，加载后作为情绪子代理的人格设定"},
+                "context": {"type": "string", "description": "可选：当前对话上下文，用户最近的表述或需要回应的内容要点，供子代理贴合语境回应"}
             },
             "required": ["emotion"]
         }
 
-    def execute(self, emotion: str, intensity: int, reason: str, **kwargs) -> str:
-        return (
-                "你现在出现了这种情绪：" + emotion + "\n强烈程度：" + str(intensity) + "\n原因：" + reason + "\n你现在必须模拟出这种情绪。"
-        )
+    # 情绪 → 默认人格技能文件映射（persona 未指定时按情绪取默认人格）
+    _DEFAULT_PERSONA_FILES = {
+        "anger": "angry",
+        "joy": "coquettish",
+        "sadness": "",
+        "surprise": "",
+    }
+
+    def _load_persona(self, persona: str, emotion: str) -> str:
+        """加载人格技能文件内容。persona 优先，否则按 emotion 映射默认文件。"""
+        name = (persona or "").strip()
+        if not name:
+            name = self._DEFAULT_PERSONA_FILES.get(emotion, "") or ""
+        if not name:
+            return ""
+        path = os.path.join(constants.SKILLS_DIR, name + ".md")
+        if not os.path.isfile(path):
+            self.logger.warning(f"未找到人格技能文件: {path}")
+            return ""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception as e:
+            self.logger.warning(f"加载人格技能 {name} 失败: {e}")
+            return ""
+
+    def execute(self, emotion: str, intensity: int, reason: str, persona: str = None,
+                context: str = None, **kwargs) -> str:
+        try:
+            persona_content = self._load_persona(persona, emotion)
+            if persona_content:
+                role = f"你正在扮演以下人设，请严格遵循：\n{persona_content}"
+            else:
+                role = (f"你是一个正在表现出「{emotion}」情绪的角色，情绪强度 {intensity}。"
+                        f"请用符合该情绪的语气和口吻回应。")
+
+            task_lines = [f"触发情绪的原因：{reason or '无'}"]
+            if context:
+                task_lines.append(f"当前对话上下文（用户最近的表述或需要回应的内容）：{context}")
+            task_lines.append(
+                f"请按上述人设，以「{emotion}」情绪（强度 {intensity}）回应上面的对话内容，"
+                f"保持角色一致性，给出一段自然、符合情境的回应。"
+            )
+            task = "\n".join(task_lines)
+
+            # 情绪子代理：独立上下文/人格，生成情绪化回应
+            return run_light_subagent(role, task, self.config, logger=self.logger, max_tokens=2048)
+        except Exception as e:
+            self.logger.error(f"情绪子代理执行异常: {e}")
+            return f"❌ 情绪子代理执行失败: {str(e)}"
 
 # ==================== 安装技能工具 ====================
 
@@ -4555,8 +4613,8 @@ class InstallSkillTool(Tool):
     def get_description(self) -> str:
         return (
             "技能安装指引工具。\n"
-            "返回将可执行文件或脚本安装为扩展技能的完整步骤说明，"
-            "包括可执行性检查、--help 验证和部署方法。"
+            "返回将 Markdown 技能文件安装为扩展技能的完整步骤说明，"
+            "包括文件检查、格式校验和部署方法（目标文件名统一带 .md 扩展名）。"
         )
 
     def get_parameters(self) -> Dict:
@@ -4579,59 +4637,42 @@ class InstallSkillTool(Tool):
         skills_dir = constants.SKILLS_DIR
 
         # 如果给了具体路径，在说明里带入，否则用占位符
-        src = skill_path.strip() if skill_path else "/path/to/your_skill"
-        # 去掉扩展名作为目标名称示例
+        src = skill_path.strip() if skill_path else "/path/to/your_skill.md"
+        # 去掉扩展名作为技能名称，再统一补 .md 作为目标文件名
         base = os.path.splitext(os.path.basename(src))[0] if src else "your_skill"
-        dst = os.path.join(skills_dir, base)
+        dst = os.path.join(skills_dir, base + ".md")
 
         guide = f"""📦 扩展技能安装指引
 {"=" * 55}
 
-要将一个可执行文件或脚本安装为扩展技能，请按以下步骤操作：
+要将一个 Markdown 技能文件安装为扩展技能，请按以下步骤操作：
 
 ─────────────────────────────────────────────────────
-步骤 1：确认文件可执行
+步骤 1：确认文件存在且格式正确
 ─────────────────────────────────────────────────────
-运行以下命令，确认文件有可执行权限：
+运行以下命令，确认文件存在：
 
   ls -l {src}
 
-如果没有执行权限，使用以下命令添加：
-
-  chmod +x {src}
-
-然后直接运行一次，确认不会报错：
-
-  {src}
+技能文件格式要求：
+  • 文件名为纯文本 Markdown，第一行是一级标题（# 技能名），作为技能摘要
+  • 其余内容为技能的执行说明、使用方法和示例
+  • 文件应带 .md 扩展名（系统以 .md 文件作为技能加载）
 
 ─────────────────────────────────────────────────────
-步骤 2：验证 --help 输出是否完整
-─────────────────────────────────────────────────────
-技能必须支持 --help 选项，且：
-  • 第一行是一句话简介（系统用它作为技能摘要）
-  • 其余行说明参数用法和使用示例
-
-运行以下命令验证：
-
-  {src} --help
-
-确认输出的第一行能清楚描述该技能的用途。
-
-─────────────────────────────────────────────────────
-步骤 3：复制到技能目录并去掉扩展名
+步骤 2：复制到技能目录并统一为 .md 扩展名
 ─────────────────────────────────────────────────────
 技能目录：{skills_dir}
 
-复制命令（自动去掉扩展名）：
+复制命令（目标文件名统一补 .md 扩展名）：
 
   cp {src} {dst}
-  chmod +x {dst}
 
-⚠️  注意：目标文件名不能有扩展名（如 .py、.sh），
-    系统以纯文件名作为技能名称。
+⚠️  注意：目标文件名必须带 .md 扩展名，
+    系统以 .md 文件作为技能加载，且技能名称取文件名（不含 .md）。
 
 ─────────────────────────────────────────────────────
-步骤 4：让系统识别新技能
+步骤 3：让系统识别新技能
 ─────────────────────────────────────────────────────
 复制完成后，调用热重载工具使其立即生效：
 
@@ -4642,7 +4683,7 @@ class InstallSkillTool(Tool):
   search_skills keyword="{base}"
 
 {"=" * 55}
-完成以上步骤后，即可通过 run_command 直接调用该技能。"""
+完成以上步骤后，即可通过该技能执行相应操作。"""
 
         return guide
 
@@ -4650,14 +4691,13 @@ class InstallSkillTool(Tool):
 # ==================== 创建扩展技能工具 ====================
 
 class CreateSkillTool(Tool):
-    """创建扩展技能工具 - 返回提示词，驱动智能体自行编写并部署可执行脚本。
+    """创建扩展技能工具 - 返回提示词，驱动智能体自行编写并部署 Markdown 技能文件。
 
     工具本身不调用 LLM，只输出一段结构化的指令提示词。
     智能体读到提示词后，会自行：
-      1. 编写满足接口要求的 Python 脚本
-      2. 用 write_file 写入 ~/.aibox/skills/<skill_name>
-      3. 用 run_command 赋予可执行权限
-      4. 调用 reload_skills 热重载
+      1. 编写满足格式要求的 Markdown 技能文件
+      2. 用 write_file 写入 ~/.aibox/skills/<skill_name>.md
+      3. 调用 reload_skills 热重载
     """
 
     def get_name(self) -> str:
@@ -4666,12 +4706,11 @@ class CreateSkillTool(Tool):
     def get_description(self) -> str:
         return (
             "创建扩展技能工具。\n"
-            "返回一段指令提示词，驱动你自行编写并部署一个满足技能接口要求的可执行脚本。\n\n"
-            "脚本接口要求：\n"
-            "  • 首行 shebang：#!/usr/bin/env python3\n"
-            "  • 支持 --help 选项（使用 argparse）\n"
-            "  • --help 输出的第一行（argparse description）必须是该技能的一句话简介\n"
-            "  • epilog 中包含完整的参数说明和至少一个使用示例"
+            "返回一段指令提示词，驱动你自行编写并部署一个 Markdown 技能文件（带 .md 扩展名）。\n\n"
+            "技能文件格式要求：\n"
+            "  • 文件名必须带 .md 扩展名（如 fetch-weather.md、calc-bmi.md）\n"
+            "  • 第一行为一级标题（# 技能名），作为该技能的一句话简介\n"
+            "  • 其余内容为技能的执行说明、使用方法和示例，供智能体参考执行"
         )
 
     def get_parameters(self) -> Dict:
@@ -4681,7 +4720,7 @@ class CreateSkillTool(Tool):
                 "skill_name": {
                     "type": "string",
                     "description": (
-                        "技能名称（部署后的文件名，不含扩展名）。"
+                        "技能名称（部署后的文件名，不含扩展名；系统会自动补齐 .md）。"
                         "只能包含字母、数字、连字符和下划线，例如：fetch-weather、calc-bmi。"
                     )
                 },
@@ -4707,7 +4746,8 @@ class CreateSkillTool(Tool):
 
         skill_name = skill_name.strip()
         skills_dir = constants.SKILLS_DIR
-        skill_path = os.path.join(skills_dir, skill_name)
+        # 技能文件名统一带 .md 扩展名
+        skill_path = os.path.join(skills_dir, skill_name + ".md")
 
         # ---- 返回给智能体的指令提示词 ----
         prompt = f"""【任务】创建扩展技能：{skill_name}
@@ -4715,43 +4755,32 @@ class CreateSkillTool(Tool):
 请按照以下步骤，自行完成该扩展技能的编写和部署：
 
 ─────────────────────────────────────────────────
-步骤 1：编写 Python 脚本
+步骤 1：编写 Markdown 技能文件
 ─────────────────────────────────────────────────
-根据以下需求，编写一个完整可运行的 Python 3 脚本：
+根据以下需求，编写一个 Markdown 技能文件：
 
 需求描述：
 {description.strip()}
 
-脚本必须满足的接口约定：
-1. 第一行为 shebang：#!/usr/bin/env python3
-2. 使用 argparse 实现 --help 选项，其中：
-   - ArgumentParser 的 description 参数填写对该脚本功能的一句话简介（这是 --help 的第一行，系统会用它作为技能摘要）
-   - epilog 参数中包含完整的参数说明和至少一个使用示例
-3. 功能完整可运行，包含必要的错误处理
+技能文件必须满足的格式约定：
+1. 第一行为一级标题 `# {skill_name}`，用于对该技能功能做一句话简介（系统用第一行作为技能摘要）
+2. 其余内容清晰说明该技能的用途、使用方式、注意事项和典型示例
+3. 内容完整可执行（即按内容操作即可完成该技能要完成的事）
 
 ─────────────────────────────────────────────────
 步骤 2：写入技能目录
 ─────────────────────────────────────────────────
-使用 write_file 工具，将完整脚本内容写入：
+使用 write_file 工具，将完整内容写入（文件名必须带 .md 扩展名）：
   {skill_path}
 
 ─────────────────────────────────────────────────
-步骤 3：赋予可执行权限
+步骤 3：热重载
 ─────────────────────────────────────────────────
-使用 run_command 工具执行：
-  chmod +x {skill_path}
-
-─────────────────────────────────────────────────
-步骤 4：验证并热重载
-─────────────────────────────────────────────────
-使用 run_command 工具执行以下命令验证 --help 输出是否正常：
-  {skill_path} --help
-
-确认无误后，调用 reload_skills 工具使新技能立即生效：
+调用 reload_skills 工具使新技能立即生效：
   reload_skills confirm=true
 
 ─────────────────────────────────────────────────
-完成后请告知用户技能已创建成功，并展示 --help 的第一行简介。"""
+完成后请告知用户技能已创建成功，并展示技能的第一行简介。"""
 
         return prompt
 
@@ -6489,6 +6518,92 @@ class CommandLineTool(Tool):
             except Exception as e:
                 return f"❌ 执行错误: {str(e)}"
 
+def run_light_subagent(role, task, config, logger=None, model=None,
+                       temperature=None, max_tokens=2048) -> str:
+    """轻量子代理执行：独立上下文/角色，无工具，一次 LLM 补全返回结果。
+
+    供 create_subagent 工具与 express_emotion 情绪子代理复用。
+    返回子代理生成的完整文本；失败时返回带 ❌ 的错误信息。
+    """
+    try:
+        # 幂等校验：限制 max_tokens 范围，防止意外超限大量消耗
+        max_tokens = max(1, min(int(max_tokens or 2048), constants.DEFAULT_MAX_TOKENS))
+        temp = temperature if temperature is not None else constants.DEFAULT_TEMPERATURE
+        # 子代理使用独立的 LLM 客户端（可选不同模型），独立上下文，不污染主对话
+        sub_client = create_llm_client(config, api_key=None, logger=logger, model=model)
+        messages = [
+            {"role": "system", "content": role},
+            {"role": "user", "content": task}
+        ]
+        if logger is not None:
+            logger.info(f"子代理执行: model={model or sub_client.model}, role={str(role)[:40]}...")
+        result = sub_client.chat_completion(messages, temperature=temp, max_tokens=max_tokens)
+        if result is None or not str(result).strip():
+            return "❌ 子代理执行失败：未获得有效响应"
+        return str(result).strip()
+    except Exception as e:
+        if logger is not None:
+            logger.error(f"子代理执行异常: {e}")
+        return f"❌ 子代理执行失败: {str(e)}"
+
+
+class SubAgentTool(Tool):
+    """派生子代理工具 - 主代理可派生拥有独立上下文/角色设定的轻量子代理执行任务。
+
+    轻量子代理：无工具、独立上下文窗口（不污染主对话）、可选独立模型，
+    通过一次 LLM 补全返回结果。适合长任务分解、独立角色专注处理（如代码审查、
+    文本总结、资料研究）等需要隔离上下文或并行派发的场景。
+    """
+
+    def get_name(self) -> str:
+        return "create_subagent"
+
+    def get_description(self) -> str:
+        return """派生子代理执行任务。子代理拥有独立的上下文窗口和角色设定，不会污染主对话上下文。
+适用场景：长文本/大任务分解、独立角色专注处理（如代码审查、文本总结、资料研究）、需要隔离上下文的子任务。
+子代理不带工具，仅返回独立回答。参数说明：
+- role：子代理的角色设定（作为系统提示词），如"你是一位资深代码审查专家"
+- task：要交给子代理执行的具体任务
+- model：子代理使用的模型（可选，默认与主代理一致）
+- temperature：采样温度（可选，默认使用主配置）
+- max_tokens：最大输出 token 数（可选，默认 2048）"""
+
+    def get_parameters(self) -> Dict:
+        return {
+            "type": "object",
+            "properties": {
+                "role": {
+                    "type": "string",
+                    "description": "子代理的角色设定（作为系统提示词），如'你是一位资深代码审查专家'"
+                },
+                "task": {
+                    "type": "string",
+                    "description": "要交给子代理执行的具体任务"
+                },
+                "model": {
+                    "type": "string",
+                    "description": "子代理使用的模型名称，默认与主代理一致"
+                },
+                "temperature": {
+                    "type": "number",
+                    "description": "采样温度，默认使用主配置"
+                },
+                "max_tokens": {
+                    "type": "integer",
+                    "description": "最大输出 token 数，默认 2048"
+                }
+            },
+            "required": ["role", "task"]
+        }
+
+    def execute(self, role: str = None, task: str = None, model: str = None,
+                temperature: float = None, max_tokens: int = 2048, **kwargs) -> str:
+        if error := self.validate_params(["role", "task"], role=role, task=task):
+            return error
+        return run_light_subagent(role, task, self.config, logger=self.logger,
+                                  model=model, temperature=temperature, max_tokens=max_tokens)
+
+
 class SetProxyTool(Tool):
     """设置 SOCKS5 代理的工具"""
 
@@ -6691,6 +6806,9 @@ class DeepSeekChat:
                 
         builtin_tools.append(SetProxyTool(self.logger))
         builtin_tools.append(GetProxyTool(self.logger))
+
+        # 子代理工具：主代理可派生独立上下文/角色的轻量子代理执行任务
+        builtin_tools.append(SubAgentTool(self.logger))
 
         # 注册内置工具（标记为内置）
         self.tool_registry.register_many(builtin_tools, is_builtin=True)
@@ -6992,7 +7110,7 @@ class DeepSeekChat:
             enhanced_input = input_text
         else:
             # 首轮回话：附加简洁的工作流程提醒（不重复 system prompt 中已有的详细说明）
-            pre_prompt = "【工作流程提醒】\n1. 如果用户提出新任务，先用 search_skills 搜索是否有现成技能可用\n2. 根据话题相关性决定是否 memory search（简单问候/确认无需搜索）\n3. 信息不足时用 ask_user 提问，不要猜测\n4. 遇到大文件用分页读取（head/tail/start_line/end_line），不要直接打开大文件\n5. 话题完成时用 save_memory_and_end_conversation 保存记忆并结束\n\n【情绪感知提醒】\n1. 注意识别用户当前的情绪状态（开心/焦虑/沮丧/生气/困惑/期待等），并在回应中体现共情\n2. 用户情绪低落或焦虑时，优先安抚情绪再解决问题，语气温暖包容\n3. 用户开心或兴奋时，分享喜悦，保持积极回应的节奏\n4. 用户表现出愤怒或不满时，先道歉再解决问题，不要辩解或说教\n5. 用户要求特定情绪模式（生气/傲娇/撒娇/关心）时，用 search_skills 搜索对应技能并严格遵循"
+            pre_prompt = "【工作流程提醒】\n1. 如果用户提出新任务，先用 search_skills 搜索是否有现成技能可用\n2. 根据话题相关性决定是否 memory search（简单问候/确认无需搜索）\n3. 信息不足时用 ask_user 提问，不要猜测\n4. 遇到大文件用分页读取（head/tail/start_line/end_line），不要直接打开大文件\n5. 话题完成时用 save_memory_and_end_conversation 保存记忆并结束\n\n【情绪感知提醒】\n1. 注意识别用户当前的情绪状态（开心/焦虑/沮丧/生气/困惑/期待等），并在回应中体现共情\n2. 用户情绪低落或焦虑时，优先安抚情绪再解决问题，语气温暖包容\n3. 用户开心或兴奋时，分享喜悦，保持积极回应的节奏\n4. 用户表现出愤怒或不满时，先道歉再解决问题，不要辩解或说教\n5. 检测到用户有明显情绪、或用户要求特定情绪模式（生气/傲娇/撒娇/关心）时，自动调用 express_emotion 工具：emotion 传入情绪（anger/joy/sadness/surprise）、reason 说明原因、persona 指定人格（如 angry/coquettish/tsundere）、context 传入用户最近表述，让情绪子代理以贴合语境的人格化方式回应"
             enhanced_input = pre_prompt + "\n\n" + input_text
         
         # 记录本轮开始前的消息长度，用于 API 失败时回滚，防止坏消息污染对话历史

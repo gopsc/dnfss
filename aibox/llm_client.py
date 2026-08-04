@@ -241,11 +241,19 @@ def resolve_api_key(api_key: Optional[str], config=None) -> str:
 
 
 def create_llm_client(config, api_key: Optional[str] = None,
-                      logger=None) -> LLMClient:
-    """根据配置创建对应厂商的 LLM 客户端。可通过 `api.provider` 切换厂商。"""
+                      logger=None, model: Optional[str] = None) -> LLMClient:
+    """根据配置创建对应厂商的 LLM 客户端。可通过 `api.provider` 切换厂商。
+
+    Args:
+        config: 配置对象（需提供 get 方法）。
+        api_key: 显式传入的 API Key；为 None 时按 resolve_api_key 解析。
+        logger: 可选日志对象。
+        model: 可选模型名覆盖；为 None 时使用配置中的 `api.deepseek_model`。
+               子代理等场景可通过此参数显式指定与主代理不同的模型。
+    """
     provider = (config.get("api.provider", "deepseek") or "deepseek").lower()
     base_url = config.get("api.deepseek_api_url")
-    model = config.get("api.deepseek_model", "deepseek-v4-flash")
+    model = model or config.get("api.deepseek_model", "deepseek-v4-flash")
     timeout = config.get("api.timeout", 30)
 
     resolved_key = resolve_api_key(api_key, config)
