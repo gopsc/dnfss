@@ -210,13 +210,13 @@ class DnfsExp(Exception):
         return self.status
 
 # ==================== 特殊节点（管理员专属） ====================
-# 信封格式：content 为 JSON {"_sp": "link|html|image|file", ...}，前端识别后差异化渲染；
+# 信封格式：content 为 JSON {"_sp": "link|js|image|file", ...}，前端识别后差异化渲染；
 # 普通 Markdown 内容不受影响。仅管理员可发布（Token payload is_admin）。
-_SP_TYPES = ('link', 'html', 'image', 'file')
+_SP_TYPES = ('link', 'js', 'image', 'file')
 _SP_MAX_URL = 2048                    # link 节点 url 长度上限
-_SP_MAX_CODE = 512 * 1024             # html 节点代码长度上限（字符）
+_SP_MAX_CODE = 512 * 1024             # js 节点代码长度上限（字符）
 _SP_MAX_DATA = 3500 * 1024            # image/file 节点 base64 长度上限（字符，约 2.6MB 原始数据）
-_SP_REVIEW_CODE_PREFIX = 4000         # html 节点送审的代码前缀长度
+_SP_REVIEW_CODE_PREFIX = 4000         # js 节点送审的代码前缀长度
 
 
 def _parse_sp(content):
@@ -245,12 +245,12 @@ def _validate_sp(sp):
             raise DnfsExp('链接节点必须是 http/https URL', 400)
         if len(url) > _SP_MAX_URL:
             raise DnfsExp('链接过长', 400)
-    elif t == 'html':
+    elif t == 'js':
         code = sp.get('code', '')
         if not isinstance(code, str) or not code.strip():
-            raise DnfsExp('网页代码不能为空', 400)
+            raise DnfsExp('JS 代码不能为空', 400)
         if len(code) > _SP_MAX_CODE:
-            raise DnfsExp('网页代码过大（上限 512KB）', 400)
+            raise DnfsExp('JS 代码过大（上限 512KB）', 400)
     elif t == 'image':
         data = sp.get('data', '')
         if not isinstance(data, str) or not data.startswith('data:image/'):
@@ -279,7 +279,7 @@ def _sp_review_text(title, sp):
     t = sp['_sp']
     if t == 'link':
         parts.append(str(sp.get('url', '')))
-    elif t == 'html':
+    elif t == 'js':
         parts.append(str(sp.get('code', ''))[:_SP_REVIEW_CODE_PREFIX])
     else:  # image / file
         parts.append(str(sp.get('name', '')))

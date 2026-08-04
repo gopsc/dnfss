@@ -526,6 +526,14 @@ input[type="button"]:disabled {
     word-break: break-all;
 }
 .sp-image { display: block; max-width: 100%; border-radius: var(--radius-sm); }
+.sp-run { margin-top: 0.5rem; }
+.sp-run-frame {
+    width: 100%;
+    height: 120px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+}
 .sp-note { font-size: 0.82rem; color: var(--fg-secondary); margin-top: 0.4rem; }
 #sp-panel { margin-top: 0.4rem; }
 #sp-panel select { margin-bottom: 0.4rem; }

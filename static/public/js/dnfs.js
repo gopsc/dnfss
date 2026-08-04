@@ -430,7 +430,7 @@ function renderMarkdown(element, content) {
 }
 
 /* ===== by qing — 特殊节点（管理员专属）=====
- * 信封：content 为 {"_sp":"link|html|image|file", ...} JSON，普通内容走 Markdown。
+ * 信封：content 为 {"_sp":"link|js|image|file", ...} JSON，普通内容走 Markdown。
  * 发布权限由后端 dnfs 强制（is_admin），前端仅做展示与表单切换。 */
 
 /* 与后端 base64 上限（3.5M 字符）对齐：原始文件约 2.5MB */
@@ -445,7 +445,7 @@ function parseSp(content) {
 	} catch (e) {
 		return null;	// 非法信封按普通文本展示（后端发布时已拦截，这里是兜底）
 	}
-	if (obj && typeof obj === 'object' && ['link', 'html', 'image', 'file'].indexOf(obj._sp) !== -1) return obj;
+	if (obj && typeof obj === 'object' && ['link', 'js', 'image', 'file'].indexOf(obj._sp) !== -1) return obj;
 	return null;
 }
 
@@ -465,7 +465,7 @@ function renderContent(container, item) {
 		}
 	}
 	if (sp._sp === 'link') renderSpLink(container, sp, appendNote);
-	else if (sp._sp === 'html') renderSpHtml(container, sp, appendNote);
+	else if (sp._sp === 'js') renderSpJs(container, sp, appendNote);
 	else if (sp._sp === 'image') renderSpImage(container, sp, appendNote);
 	else if (sp._sp === 'file') renderSpFile(container, sp, appendNote);
 }
@@ -492,8 +492,8 @@ function renderSpLink(container, sp, appendNote) {
 	appendNote();
 }
 
-/* 网页代码节点：审计（展开源码，textContent 防注入）+ 运行（新窗口 document.write） */
-function renderSpHtml(container, sp, appendNote) {
+/* JS 代码节点：审计（展开源码，textContent 防注入）+ 运行（插入到页面中 iframe 沙箱执行，捕获 console 输出） */
+function renderSpJs(container, sp, appendNote) {
 	var bar = document.createElement('div');
 	bar.className = 'sp-actions';
 	var audit_btn = document.createElement('button');
@@ -506,6 +506,9 @@ function renderSpHtml(container, sp, appendNote) {
 	pre.className = 'sp-code';
 	pre.style.display = 'none';
 	pre.textContent = sp.code;
+	var run_box = document.createElement('div');
+	run_box.className = 'sp-run';
+	run_box.style.display = 'none';
 	audit_btn.addEventListener('click', function(e) {
 		e.stopPropagation();
 		var hidden = (pre.style.display === 'none');
@@ -514,18 +517,51 @@ function renderSpHtml(container, sp, appendNote) {
 	});
 	run_btn.addEventListener('click', function(e) {
 		e.stopPropagation();
-		var win = window.open('', '_blank');
-		if (!win) { alert('浏览器拦截了弹窗，请允许后重试'); return; }
-		win.document.open();
-		win.document.write(sp.code);
-		win.document.close();
+		if (run_box.firstChild) {	// 已注入过，仅切换显示，不重复执行
+			run_box.style.display = run_box.style.display === 'none' ? 'block' : 'none';
+			return;
+		}
+		run_box.style.display = 'block';
+		var iframe = document.createElement('iframe');
+		iframe.className = 'sp-run-frame';	// 高度由 iframe 内 postMessage 自适应
+		iframe.setAttribute('sandbox', 'allow-scripts');
+		/* 代码中若含 </script> 会提前闭合注入的 script 标签，先转义防逃逸 */
+		var code = sp.code.replace(/<\/script/gi, '<\\/script');
+		var html = '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>'
+			+ '<script>'
+			+ 'var _out=function(s){var d=document.createElement("div");d.textContent="&gt; "+s;document.body.appendChild(d);};'
+			+ 'window.console.log=function(){_out(Array.prototype.slice.call(arguments).join(" "));};'
+			+ 'window.console.error=function(){_out("Error: "+Array.prototype.slice.call(arguments).join(" "));};'
+			+ 'window.console.warn=function(){_out("Warn: "+Array.prototype.slice.call(arguments).join(" "));};'
+			+ 'window.onerror=function(m){_out("Error: "+m);};'
+			+ 'window.addEventListener("load",function(){window.parent.postMessage({__spRunH:document.body.scrollHeight},"*");});'
+			+ '<\/script>'
+			+ '<script>' + code + '<\/script>'
+			+ '</body></html>';
+		iframe.srcdoc = html;
+		run_box.appendChild(iframe);
 	});
 	bar.appendChild(audit_btn);
 	bar.appendChild(run_btn);
 	container.appendChild(bar);
 	container.appendChild(pre);
+	container.appendChild(run_box);
 	appendNote();
 }
+
+/* 监听 iframe 内 postMessage，自适应 .sp-run-frame 高度 */
+var _sp_run_hack = false;
+function _ensureSpRunHeight() {
+	if (_sp_run_hack) return;
+	_sp_run_hack = true;
+	window.addEventListener('message', function(e) {
+		if (e.data && typeof e.data.__spRunH === 'number') {
+			var f = document.querySelector('.sp-run-frame');
+			if (f) f.style.height = (e.data.__spRunH + 24) + 'px';
+		}
+	});
+}
+_ensureSpRunHeight();
 
 /* 图片节点：DataURL 直接显示（CSP img-src 允许 data:） */
 function renderSpImage(container, sp, appendNote) {
@@ -646,7 +682,7 @@ sp_type.addEventListener('change', function() {
 		sp_edit_original = null;
 	}
 	if (t === 'link') input_note_content.placeholder = '请输入链接 URL（https://…）';
-	else if (t === 'html') input_note_content.placeholder = '请输入完整 HTML 代码';
+	else if (t === 'js') input_note_content.placeholder = '请输入 JS 代码';
 	else input_note_content.placeholder = '';
 });
 
@@ -669,10 +705,10 @@ async function buildSubmitContent() {
 		if (!/^https?:\/\//i.test(url)) { alert('链接必须以 http:// 或 https:// 开头'); return null; }
 		return JSON.stringify({ _sp: 'link', url: url });
 	}
-	if (t === 'html') {
+	if (t === 'js') {
 		var code = input_note_content.value;
-		if (!code.trim()) { alert('请输入 HTML 代码'); return null; }
-		return JSON.stringify({ _sp: 'html', code: code });
+		if (!code.trim()) { alert('请输入 JS 代码'); return null; }
+		return JSON.stringify({ _sp: 'js', code: code });
 	}
 	/* image / file：优先使用新选择的文件；编辑模式下未选新文件则保留原信封 */
 	if (sp_file.files.length === 0) {
@@ -742,13 +778,13 @@ delete_note.addEventListener('click', (event) => {
 })
 
 /* by qing — 点击卡片"编辑"：把节点标题/内容载入下方表单，进入编辑模式。
- * 特殊节点：link/html 回填 url/code 到文本域；image/file 记住原信封（未选新文件则原样提交） */
+ * 特殊节点：link/js 回填 url/code 到文本域；image/file 记住原信封（未选新文件则原样提交） */
 function startEdit(item) {
 	editing_id = item.id;
 	input_note_title.value = item.title;
 	var sp = parseSp(item.content);
 	sp_edit_original = null;
-	if (sp && (sp._sp === 'link' || sp._sp === 'html')) {
+	if (sp && (sp._sp === 'link' || sp._sp === 'js')) {
 		sp_type.value = sp._sp;
 		sp_type.dispatchEvent(new Event('change'));
 		input_note_content.value = (sp._sp === 'link') ? (sp.url || '') : (sp.code || '');
