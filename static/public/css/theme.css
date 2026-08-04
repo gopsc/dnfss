@@ -238,6 +238,69 @@ input[type="button"]:disabled {
 .article-stats span { font-weight: 600; color: var(--fg-secondary); }
 #article-content { font-size: 0.95rem; line-height: 1.7; margin-bottom: 1.25rem; }
 
+/* ===== Search Box (dnfs 顶部搜索) ===== */
+.searchbox {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.45rem 0.55rem 0.45rem 0.9rem;
+    background: var(--card);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+    margin-bottom: 1rem;
+    transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+}
+.searchbox:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-glow), var(--shadow-md);
+}
+.searchbox-icon {
+    width: 18px;
+    height: 18px;
+    flex: none;
+    color: var(--muted);
+    transition: color 0.2s;
+}
+.searchbox:focus-within .searchbox-icon {
+    color: var(--accent);
+}
+.searchbox-input {
+    flex: 1;
+    min-width: 0;
+    border: none !important;
+    background: transparent !important;
+    padding: 0.45rem 0.25rem !important;
+    font-size: 0.92rem !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+}
+.searchbox-input:focus {
+    box-shadow: none !important;
+}
+.searchbox-btn {
+    flex: none;
+    padding: 0.5rem 1rem !important;
+    font-size: 0.85rem !important;
+    font-weight: 600;
+    background: var(--accent) !important;
+    color: #fff !important;
+    border: none !important;
+    border-radius: var(--radius-sm) !important;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s, background 0.2s;
+    line-height: 1.2;
+}
+.searchbox-btn:hover { opacity: 0.88; }
+.searchbox-btn:active { transform: scale(0.96); }
+@media (max-width: 480px) {
+    .searchbox { padding: 0.35rem 0.4rem 0.35rem 0.75rem; gap: 0.35rem; }
+    .searchbox-icon { width: 16px; height: 16px; }
+    .searchbox-input { font-size: 0.88rem !important; }
+    .searchbox-btn { padding: 0.45rem 0.75rem !important; font-size: 0.82rem !important; }
+}
+
 /* ===== Recommend List (dnfs) ===== */
 /* 卡片尺寸随内容自适应：宽度包裹内容（fit-content），上限为容器宽度；高度天然随内容伸缩 */
 .recommend-list {

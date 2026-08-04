@@ -10,9 +10,13 @@
 	</head>
 	<body>
 		<div class="box">
-			<div id="searchbox">
-				<input type="text" placeholder="输入你想搜索的内容......" id="searchtext" style="display: inline-block; width: 89%;">
-				<input type="submit" value="搜索" id="searchsubmit" style="display: inline-block;">
+			<div id="searchbox" class="searchbox">
+				<svg class="searchbox-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+					<circle cx="11" cy="11" r="7"/>
+					<line x1="21" y1="21" x2="16.65" y2="16.65"/>
+				</svg>
+				<input type="text" placeholder="在当前节点内搜索..." id="searchtext" class="searchbox-input" autocomplete="off">
+				<button type="button" id="searchsubmit" class="searchbox-btn" aria-label="搜索">搜索</button>
 			</div>
 			<div id="userpanel" class="userpanel"></div>
 			<div id="minimap" class="minimap"></div>
