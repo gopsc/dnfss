@@ -492,7 +492,9 @@ function renderSpLink(container, sp, appendNote) {
 	appendNote();
 }
 
-/* JS 代码节点：审计（展开源码，textContent 防注入）+ 运行（插入到页面中 iframe 沙箱执行，捕获 console 输出） */
+/* JS 代码节点：审计（展开源码，textContent 防注入）+ 运行（在当前页面上下文执行，可直接操作页面加特效）。
+ * 代码通过 new Function 注入包装 console 执行，可访问全局 document/window 对当前页面施加特效；
+ * console.log/error/warn 输出捕获到下方输出区。仅管理员可发布（后端强制）。 */
 function renderSpJs(container, sp, appendNote) {
 	var bar = document.createElement('div');
 	bar.className = 'sp-actions';
@@ -506,9 +508,9 @@ function renderSpJs(container, sp, appendNote) {
 	pre.className = 'sp-code';
 	pre.style.display = 'none';
 	pre.textContent = sp.code;
-	var run_box = document.createElement('div');
-	run_box.className = 'sp-run';
-	run_box.style.display = 'none';
+	var out = document.createElement('div');
+	out.className = 'sp-run';
+	out.style.display = 'none';
 	audit_btn.addEventListener('click', function(e) {
 		e.stopPropagation();
 		var hidden = (pre.style.display === 'none');
@@ -517,51 +519,29 @@ function renderSpJs(container, sp, appendNote) {
 	});
 	run_btn.addEventListener('click', function(e) {
 		e.stopPropagation();
-		if (run_box.firstChild) {	// 已注入过，仅切换显示，不重复执行
-			run_box.style.display = run_box.style.display === 'none' ? 'block' : 'none';
-			return;
+		out.style.display = out.style.display === 'none' ? 'block' : 'none';
+		if (out.textContent) return;	// 已执行过，仅切换显示
+		var lines = [];
+		var hook = {
+			log: function() { lines.push(Array.prototype.slice.call(arguments).join(' ')); },
+			error: function() { lines.push('Error: ' + Array.prototype.slice.call(arguments).join(' ')); },
+			warn: function() { lines.push('Warn: ' + Array.prototype.slice.call(arguments).join(' ')); }
+		};
+		try {
+			/* 在当前页面上下文执行，函数体内可访问全局 document/window 施加特效 */
+			new Function('console', sp.code)(hook);
+		} catch (err) {
+			lines.push('Error: ' + (err && err.message ? err.message : err));
 		}
-		run_box.style.display = 'block';
-		var iframe = document.createElement('iframe');
-		iframe.className = 'sp-run-frame';	// 高度由 iframe 内 postMessage 自适应
-		iframe.setAttribute('sandbox', 'allow-scripts');
-		/* 代码中若含 </script> 会提前闭合注入的 script 标签，先转义防逃逸 */
-		var code = sp.code.replace(/<\/script/gi, '<\\/script');
-		var html = '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>'
-			+ '<script>'
-			+ 'var _out=function(s){var d=document.createElement("div");d.textContent="&gt; "+s;document.body.appendChild(d);};'
-			+ 'window.console.log=function(){_out(Array.prototype.slice.call(arguments).join(" "));};'
-			+ 'window.console.error=function(){_out("Error: "+Array.prototype.slice.call(arguments).join(" "));};'
-			+ 'window.console.warn=function(){_out("Warn: "+Array.prototype.slice.call(arguments).join(" "));};'
-			+ 'window.onerror=function(m){_out("Error: "+m);};'
-			+ 'window.addEventListener("load",function(){window.parent.postMessage({__spRunH:document.body.scrollHeight},"*");});'
-			+ '<\/script>'
-			+ '<script>' + code + '<\/script>'
-			+ '</body></html>';
-		iframe.srcdoc = html;
-		run_box.appendChild(iframe);
+		out.textContent = lines.join('\n') || '执行完成';
 	});
 	bar.appendChild(audit_btn);
 	bar.appendChild(run_btn);
 	container.appendChild(bar);
 	container.appendChild(pre);
-	container.appendChild(run_box);
+	container.appendChild(out);
 	appendNote();
 }
-
-/* 监听 iframe 内 postMessage，自适应 .sp-run-frame 高度 */
-var _sp_run_hack = false;
-function _ensureSpRunHeight() {
-	if (_sp_run_hack) return;
-	_sp_run_hack = true;
-	window.addEventListener('message', function(e) {
-		if (e.data && typeof e.data.__spRunH === 'number') {
-			var f = document.querySelector('.sp-run-frame');
-			if (f) f.style.height = (e.data.__spRunH + 24) + 'px';
-		}
-	});
-}
-_ensureSpRunHeight();
 
 /* 图片节点：DataURL 直接显示（CSP img-src 允许 data:） */
 function renderSpImage(container, sp, appendNote) {
