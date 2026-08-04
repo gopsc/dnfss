@@ -560,19 +560,21 @@ function renderSpJs(container, sp, appendNote) {
 			s.textContent = st.textContent;
 			document.head.appendChild(s);
 		});
-		/* 注入 <script> 在当前页面全局作用域执行（可操作整页加特效） */
+		/* 注入 <script>：包一层 IIFE 隔离变量作用域，避免污染页面全局（如覆盖 getNode/stack 等同名
+		 * 变量导致卡片点击失效）；函数体内仍可访问 document/window 对整页施加特效。 */
 		Array.prototype.forEach.call(doc.querySelectorAll('script'), function(sc) {
 			var s = document.createElement('script');
 			if (sc.getAttribute('src')) {
 				s.src = sc.getAttribute('src');
 			} else {
-				s.textContent = sc.textContent;
+				s.textContent = '(function(){\n' + sc.textContent + '\n})();';
 			}
 			document.head.appendChild(s);
 		});
-		/* 渲染 <body> 内容到节点下方容器 */
+		/* 渲染 <body> 内容到节点下方容器（跳过 script，避免 appendChild 触发其重复执行） */
 		if (doc.body) {
 			Array.prototype.forEach.call(doc.body.childNodes, function(node) {
+				if (node.nodeName && node.nodeName.toLowerCase() === 'script') return;
 				out.appendChild(node);
 			});
 		}
