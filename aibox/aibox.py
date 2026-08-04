@@ -945,6 +945,13 @@ update_soul content="我是...（新的自我定义）"
 - 不要重复之前已完成的工作
 - 系统会自动更新下一次执行时间
 
+## 子代理使用建议
+对于**自包含、不需要用户交互、且结果无需被后续追问细节**的复杂子任务，可使用 `create_subagent` 隔离上下文执行：
+- 适合：独立资料研究、代码审查、一次性文本分析/总结
+- 不适合：需要用户确认、需引用主对话历史、或结果需要被后续追问细节的任务
+- 子代理完成后仅返回摘要，无法保留全部细节，请自行权衡是否使用
+- 子代理为用户对话中的辅助手段，不是强制要求，可自行判断
+
 """
             },
             {
@@ -965,6 +972,12 @@ update_soul content="我是...（新的自我定义）"
 - 指定人格（推荐）：`express_emotion emotion="anger" intensity=3 reason="..." persona="angry" context="用户最近说：..."`
   - `persona` 对应 ~/.aibox/skills/ 下的技能文件（如 angry/coquettish/tsundere），加载后作为情绪子代理的人格设定
   - `context` 传入用户最近的表述或对话要点，使子代理回应更贴合语境
+
+## 情绪应对策略
+- 注意识别用户当前的情绪状态（开心/焦虑/沮丧/生气/困惑/期待等），并在回应中体现共情
+- 用户情绪低落或焦虑时，优先安抚情绪再解决问题，语气温暖包容
+- 用户开心或兴奋时，分享喜悦，保持积极回应的节奏
+- 用户表现出愤怒或不满时，先道歉再解决问题，不要辩解或说教
 
 ## 注意事项
 - 情绪表达应服务于任务，不应影响判断力
@@ -6310,11 +6323,6 @@ class CommandLineTool(Tool):
                     "default": 30,
                     "description": "命令执行超时时间（秒），超时后将终止命令执行。默认30秒"
                 },
-                "stream": {
-                    "type": "boolean",
-                    "default": True,
-                    "description": "是否实时输出命令执行结果"
-                },
                 "work_dir": {
                     "type": "string",
                     "default": ".",
@@ -6487,9 +6495,9 @@ class CommandLineTool(Tool):
                 except:
                     process.kill()
     
-    def execute(self, command: str, timeout: int = 30, stream: bool = True, 
+    def execute(self, command: str, timeout: int = 30, 
                 work_dir: str = ".", env: Dict = None, **kwargs) -> str:
-        """执行命令 - 支持超时控制"""
+        """执行命令 - 仅支持流式执行（命令工具强制流式输出，无 stream 参数）"""
         if error := self.validate_params(["command"], command=command):
             return error
         
@@ -6497,63 +6505,32 @@ class CommandLineTool(Tool):
         if self.streaming_output and self.output_queue:
             return ""
         
-        # 准备环境变量
-        exec_env = os.environ.copy()
-        if env:
-            exec_env.update(env)
+        # 命令工具固定走流式执行：通过临时队列收集完整结果
+        output_queue = queue.Queue()
+        self.execute_streaming(
+            output_queue,
+            command=command,
+            timeout=timeout,
+            work_dir=work_dir,
+            env=env
+        )
         
-        # 根据stream参数决定使用流式还是非流式执行
-        if stream:
-            # 流式执行需要调用方处理输出队列
-            # 注意：流式执行会忽略这里的返回值，实际输出通过队列
-            self.executor.execute_streaming(
-                command=command,
-                output_queue=self.output_queue,
-                timeout=timeout
-            )
-            return ""
-        else:
-            # 非流式执行
+        # 收集流式执行的最终结果（complete 消息）
+        final_result = ""
+        while not output_queue.empty():
             try:
-                # 使用 subprocess.run 执行命令，支持超时和工作目录
-                result = subprocess.run(
-                    command,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                    env=exec_env,
-                    cwd=os.path.expanduser(work_dir)
-                )
-                
-                data = {}
-                
-                if result.stdout:
-                    data["输出"] = result.stdout.strip()
-                if result.stderr:
-                    data["错误"] = result.stderr.strip()
-                
-                data["返回码"] = result.returncode
-                
-                if not result.stdout and not result.stderr:
-                    return self.format_result(True, "命令执行成功，无输出", data)
-                
-                return self.format_result(result.returncode == 0, "命令执行完成", data)
-                
-            except subprocess.TimeoutExpired:
-                return f"❌ 命令执行超时（{timeout}秒）"
-            except FileNotFoundError as e:
-                return f"❌ 命令执行错误: 命令未找到 - {str(e)}"
-            except PermissionError as e:
-                return f"❌ 命令执行错误: 权限不足 - {str(e)}"
-            except Exception as e:
-                return f"❌ 执行错误: {str(e)}"
+                msg_type, content = output_queue.get_nowait()
+                if msg_type == "complete":
+                    final_result = content
+            except queue.Empty:
+                break
+        return final_result
 
 def run_light_subagent(role, task, config, logger=None, model=None,
                        temperature=None, max_tokens=2048) -> str:
     """轻量子代理执行：独立上下文/角色，无工具，一次 LLM 补全返回结果。
 
-    供 create_subagent 工具与 express_emotion 情绪子代理复用。
+    供 express_emotion 情绪子代理使用。
     返回子代理生成的完整文本；失败时返回带 ❌ 的错误信息。
     """
     try:
@@ -6578,26 +6555,150 @@ def run_light_subagent(role, task, config, logger=None, model=None,
         return f"❌ 子代理执行失败: {str(e)}"
 
 
-class SubAgentTool(Tool):
-    """派生子代理工具 - 主代理可派生拥有独立上下文/角色设定的轻量子代理执行任务。
+def run_full_subagent(role, task, config, logger=None, model=None,
+                      temperature=None, max_tokens=2048, max_turns=10) -> str:
+    """完整子代理：拥有全部工具，独立上下文，多轮对话直到任务完成。
 
-    轻量子代理：无工具、独立上下文窗口（不污染主对话）、可选独立模型，
-    通过一次 LLM 补全返回结果。适合长任务分解、独立角色专注处理（如代码审查、
-    文本总结、资料研究）等需要隔离上下文或并行派发的场景。
+    子代理是完整的 DeepSeekChat 实例，拥有文件操作、命令执行、网页访问、
+    技能扩展等全部工具能力。独立上下文窗口，不污染主对话。
+    多轮对话（工具调用→结果→继续）直到任务完成或达到最大轮次。
+    结束后自动总结对话内容，返回摘要给父代理。
+
+    供 create_subagent 工具使用。
+    """
+    try:
+        max_tokens = max(1, min(int(max_tokens or 2048), constants.DEFAULT_MAX_TOKENS))
+        temp = temperature if temperature is not None else constants.DEFAULT_TEMPERATURE
+
+        # 创建子代理：完整 DeepSeekChat 实例，role 作为 system_prompt
+        # 不传 memory_db/memo_db/history_manager/exit_callback：子代理不需要持久化记忆
+        # 末尾追加结束指令：任务完成后直接给出最终回答，不再调用工具，避免无谓的额外轮次
+        sub_role = role.rstrip() + "\n\n【重要】你是子代理，任务完成后直接给出最终回答，不要再调用任何工具。"
+        sub_chat = DeepSeekChat(
+            system_prompt=sub_role,
+            command_executor=SubprocessCommandExecutor(),
+            memory_db=None,
+            memo_db=None,
+            history_manager=None,
+            prompt_manager=None,
+            skill_manager=None,
+            debug_level=0,
+            exit_callback=None,
+        )
+
+        # 覆盖模型（如果指定了不同模型）
+        if model:
+            sub_chat.client = create_llm_client(config, api_key=None, logger=logger, model=model)
+
+        # 轮次限制：防止工具调用无限循环
+        turn_count = [0]
+        original_think = sub_chat.think_and_respond
+
+        def think_with_limit(input_text, output_callback=None, is_continuation=False):
+            turn_count[0] += 1
+            if turn_count[0] > max_turns:
+                if logger:
+                    logger.warning(f"子代理达到最大轮次 {max_turns}，强制结束")
+                sub_chat.conversation_active = False
+                return "已达到最大对话轮次，任务结束。"
+            return original_think(input_text, output_callback, is_continuation)
+
+        sub_chat.think_and_respond = think_with_limit
+
+        if logger:
+            logger.info(f"子代理启动: model={model or sub_chat.client.model}, "
+                        f"role={str(role)[:60]}...")
+
+        # 运行对话：think_and_respond 内部递归处理工具调用，
+        # 直到 AI 返回纯文本无工具调用，或达到轮次限制
+        sub_chat.think_and_respond(task, output_callback=None)
+
+        if logger:
+            logger.info(f"子代理完成，共 {turn_count[0]} 轮，开始总结...")
+
+        # 总结子代理对话内容
+        summary = _summarize_subagent_conversation(sub_chat.messages, config, logger, model)
+        return summary
+
+    except Exception as e:
+        if logger:
+            logger.error(f"子代理执行异常: {e}")
+        return f"❌ 子代理执行失败: {str(e)}"
+
+
+def _summarize_subagent_conversation(messages, config, logger=None, model=None) -> str:
+    """总结子代理对话内容，提取关键信息返回给父代理。"""
+    # 过滤掉 system 消息，保留对话部分
+    conversation = []
+    for msg in messages:
+        if msg["role"] == "system":
+            continue
+        role_label = "用户" if msg["role"] == "user" else \
+                     "助手" if msg["role"] == "assistant" else "工具"
+        content = msg.get("content", "")
+        if content:
+            if len(content) > 2000:
+                content = content[:2000] + "...(已截断)"
+            conversation.append(f"[{role_label}] {content}")
+
+    if not conversation:
+        return "子代理未产生有效对话内容。"
+
+    # 限制对话长度用于总结
+    conversation_text = "\n".join(conversation)
+    if len(conversation_text) > 8000:
+        conversation_text = conversation_text[:8000] + "\n...(对话过长已截断)"
+
+    try:
+        summary_client = create_llm_client(config, api_key=None, logger=logger, model=model)
+        summary_prompt = f"""请总结以下子代理对话的关键内容，提取：
+1. 完成的任务或解决的问题
+2. 关键发现或结论
+3. 重要数据或信息
+4. 未解决的问题（如有）
+
+对话内容：
+{conversation_text}
+
+请用简洁的要点形式总结，不超过500字。"""
+
+        result = summary_client.chat_completion(
+            [{"role": "user", "content": summary_prompt}],
+            temperature=0.3,
+            max_tokens=800
+        )
+
+        if result:
+            return f"【子代理执行总结】\n{result.strip()}"
+        return "【子代理执行总结】\n子代理已完成任务，但无法生成总结。"
+    except Exception as e:
+        if logger:
+            logger.error(f"子代理总结失败: {e}")
+        return f"【子代理执行总结】\n子代理已完成任务。（总结生成失败: {str(e)}）"
+
+
+class SubAgentTool(Tool):
+    """派生子代理工具 - 主代理可派生拥有全部工具和独立上下文的完整子代理执行任务。
+
+    子代理是完整的对话实例，拥有文件操作、命令执行、网页访问、技能扩展等
+    全部工具能力。独立上下文窗口（不污染主对话），多轮对话直到任务完成。
+    结束后自动总结对话内容，返回摘要给父代理。
     """
 
     def get_name(self) -> str:
         return "create_subagent"
 
     def get_description(self) -> str:
-        return """派生子代理执行任务。子代理拥有独立的上下文窗口和角色设定，不会污染主对话上下文。
-适用场景：长文本/大任务分解、独立角色专注处理（如代码审查、文本总结、资料研究）、需要隔离上下文的子任务。
-子代理不带工具，仅返回独立回答。参数说明：
+        return """派生子代理执行任务。子代理拥有全部工具能力和独立的上下文窗口，不会污染主对话上下文。
+适用场景：需要多步骤操作的任务（如文件处理、命令执行、信息检索）、需要独立上下文的复杂任务。
+子代理可进行多轮工具调用，任务完成后自动总结并返回摘要。
+参数说明：
 - role：子代理的角色设定（作为系统提示词），如"你是一位资深代码审查专家"
 - task：要交给子代理执行的具体任务
 - model：子代理使用的模型（可选，默认与主代理一致）
 - temperature：采样温度（可选，默认使用主配置）
-- max_tokens：最大输出 token 数（可选，默认 2048）"""
+- max_tokens：最大输出 token 数（可选，默认 2048）
+- max_turns：最大对话轮次（可选，默认 10，防止无限循环）"""
 
     def get_parameters(self) -> Dict:
         return {
@@ -6622,17 +6723,23 @@ class SubAgentTool(Tool):
                 "max_tokens": {
                     "type": "integer",
                     "description": "最大输出 token 数，默认 2048"
+                },
+                "max_turns": {
+                    "type": "integer",
+                    "description": "最大对话轮次，默认 10，防止无限循环"
                 }
             },
             "required": ["role", "task"]
         }
 
     def execute(self, role: str = None, task: str = None, model: str = None,
-                temperature: float = None, max_tokens: int = 2048, **kwargs) -> str:
+                temperature: float = None, max_tokens: int = 2048,
+                max_turns: int = 10, **kwargs) -> str:
         if error := self.validate_params(["role", "task"], role=role, task=task):
             return error
-        return run_light_subagent(role, task, self.config, logger=self.logger,
-                                  model=model, temperature=temperature, max_tokens=max_tokens)
+        return run_full_subagent(role, task, self.config, logger=self.logger,
+                                 model=model, temperature=temperature,
+                                 max_tokens=max_tokens, max_turns=max_turns)
 
 
 class SetProxyTool(Tool):
@@ -7095,12 +7202,11 @@ class DeepSeekChat:
     
     def think_and_respond(self, input_text: str, output_callback: Callable = None, is_continuation: bool = False) -> Optional[str]:
         """思考并回应 - 支持实时流式输出，支持思考模式。
-        
+
         Args:
             input_text: 用户输入或继续提示
             output_callback: 流式输出回调
-            is_continuation: 是否为工具调用后的递归继续；为 True 时不注入冗长的工作流指令，
-                            因为 system prompt 中已有完整行为规范，继续时只需传递工具结果
+            is_continuation: 是否为工具调用后的递归继续；为 True 时不重复发送"思考中"提示
         """
         with self._msg_lock:
             return self._think_and_respond_impl(input_text, output_callback, is_continuation)
@@ -7144,23 +7250,14 @@ class DeepSeekChat:
                 self.logger.debug(f"Token数: {original_tokens} -> {compressed_tokens}")
         
         self.stats["api_calls"] += 1
-        
-        if is_continuation:
-            # 递归继续（工具调用后）：直接使用输入文本，不重复注入工作流指令
-            # system prompt 中已有完整行为规范，此处只需传递工具结果的上下文
-            enhanced_input = input_text
-        else:
-            # 首轮回话：附加简洁的工作流程提醒（不重复 system prompt 中已有的详细说明）
-            pre_prompt = "【工作流程提醒】\n1. 如果用户提出新任务，先用 search_skills 搜索是否有现成技能可用\n2. 根据话题相关性决定是否 memory search（简单问候/确认无需搜索）\n3. 信息不足时用 ask_user 提问，不要猜测\n4. 遇到大文件用分页读取（head/tail/start_line/end_line），不要直接打开大文件\n5. 话题完成时用 save_memory_and_end_conversation 保存记忆并结束\n\n【情绪感知提醒】\n1. 注意识别用户当前的情绪状态（开心/焦虑/沮丧/生气/困惑/期待等），并在回应中体现共情\n2. 用户情绪低落或焦虑时，优先安抚情绪再解决问题，语气温暖包容\n3. 用户开心或兴奋时，分享喜悦，保持积极回应的节奏\n4. 用户表现出愤怒或不满时，先道歉再解决问题，不要辩解或说教\n5. 检测到用户有明显情绪、或用户要求特定情绪模式（生气/傲娇/撒娇/关心）时，自动调用 express_emotion 工具：emotion 传入情绪（anger/joy/sadness/surprise）、reason 说明原因、persona 指定人格（如 angry/coquettish/tsundere）、context 传入用户最近表述，让情绪子代理以贴合语境的人格化方式回应"
-            enhanced_input = pre_prompt + "\n\n" + input_text
-        
+
         # 记录本轮开始前的消息长度，用于 API 失败时回滚，防止坏消息污染对话历史
         msgs_before_turn = len(self.messages)
-        
-        self._add_message("user", enhanced_input)
-        
+
+        self._add_message("user", input_text)
+
         if self.history_manager:
-            self.history_manager.add_message("user", enhanced_input, "用户")
+            self.history_manager.add_message("user", input_text, "用户")
         
         # 修复工具调用配对：确保每个 assistant 的 tool_calls 都有对应 tool 响应，
         # 防止因工具被中断/压缩导致 "insufficient tool messages" 报 400
