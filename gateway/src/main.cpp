@@ -2126,7 +2126,10 @@ http::response<http::string_body> handleProxy(
 			THROW_EX_CUSTOM(HttpException, 2300, "Invalid request path", 400, "*");
 
 		url = t_url;
-		url += "/";
+		/* 避免 target_path 以 "/" 开头时产生双斜杠（如 http://host:port//list），
+		 * 下游服务（core 等）使用精确路径匹配，双斜杠会导致 404 */
+		if (target_path.empty() || target_path[0] != '/')
+			url += "/";
 		url += target_path;
 
 		std::string raw = "";
