@@ -114,23 +114,9 @@ SecAction \\
     nolog,\\
     setvar:tx.crs_setup_version=${SETUP_VER}"
 
-# ===== 可选调优（取消注释以启用） =====
-# 异常评分阈值（默认 inbound=5, outbound=4）
-# SecAction \\
-#     "id:900110,\\
-#     phase:1,\\
-#     pass,\\
-#     nolog,\\
-#     setvar:tx.inbound_anomaly_score_threshold=5,\\
-#     setvar:tx.outbound_anomaly_score_threshold=4"
-
-# 偏执等级（默认 1；等级越高规则越严、误报越多）
-# SecAction \\
-#     "id:900000,\\
-#     phase:1,\\
-#     pass,\\
-#     nolog,\\
-#     setvar:tx.blocking_paranoia_level=1"
+# ===== 可选调优（由 local/tuning.conf 统一管理，重跑本脚本不会覆盖） =====
+# 异常评分阈值 / 偏执等级等 CRS 调优，已移至 rules/local/tuning.conf。
+# 注意：本文件由 _fetch_crs.sh 自动生成，重跑脚本会覆盖，请不要在此处修改调优。
 CONFEOF
 
 echo ""
