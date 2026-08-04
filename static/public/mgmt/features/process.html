@@ -100,11 +100,11 @@
                     const p = list[i];
                     const tr = document.createElement("tr");
                     const pid = p.pid;
-                    const status = p.status === true ? "运行中" : (p.status === false ? "已停止" : (p.status || "未知"));
+                    const status = p.running === true ? "运行中" : (p.running === false ? "已停止" : "未知");
                     tr.innerHTML = `
                         <td>${pid}</td>
                         <td>${status}</td>
-                        <td>${p.command || p.target || "-"}</td>
+                        <td>${p.command || "-"}</td>
                         <td><button class="stopBtn" onclick="stopBtn(${pid})">停止</button></td>
                     `;
                     tbody.appendChild(tr);

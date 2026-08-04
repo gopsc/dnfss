@@ -34,7 +34,8 @@ auto list() -> std::string {
         processes.push_back({ /* 向json中推入对象 */
             {"index", i},
             {"pid", ppool[i].pid()},
-            {"status", ppool[i].check()}
+            {"running", ppool[i].isRunning()},
+            {"command", ppool[i].check()}
         });
     }
     
