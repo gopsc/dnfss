@@ -11,9 +11,9 @@
 | 优先级 | 总数 | 已修复 | 部分修复 | 未修复 |
 |--------|------|--------|----------|--------|
 | P0 | 0 | 0 | 0 | 0 |
-| P1 | 6 | 5 | 0 | 1 |
+| P1 | 6 | 6 | 0 | 0 |
 | P2 | 4 | 0 | 0 | 4 |
-| **合计** | **10** | **7** | **0** | **3** |
+| **合计** | **10** | **8** | **0** | **2** |
 
 ---
 
@@ -26,7 +26,7 @@
 | P1-3 | WebSocket 消息无大小限制 | ✅ 已修复 | `HttpServer` 新增 `max_ws_message_size_`（默认 16MB，与 Beast 默认一致）与 `setMaxWsMessageSize()`/`getMaxWsMessageSize()`。`doWsUpgrade`/`doWssUpgrade` 及代理流 `onProxyConnect`/`onProxySslHandshake` 创建后调用 `read_message_max()`，超限消息由 Beast 在分配内存前拒绝并关闭连接，防 OOM |
 | P1-4 | 服务器无读写超时（Slowloris） | ✅ 已修复 | 入站 `stream_` 现设置超时：`doSSLHandshake` 设头超时（覆盖握手），`doRead` 两阶段读（`async_read_header` 头超时 → `async_read` 体超时），`doWsRead` 每个 WS 读取设空闲超时。`HttpServer` 新增 `setHeaderTimeout()`（默认 10s）/`setReadTimeout()`（默认 30s），对齐 WAF ReadHeaderTimeout/ReadTimeout。慢速/空闲连接被清理，防 Slowloris/连接耗尽 |
 | P1-5 | 静态文件目录路径遍历 | ✅ 已修复 | 新增 `isSafeStaticPath()`（`HttpServer_Request.cpp` L139-156），静态文件服务前校验 target_path（拒绝 `..`、空字节、非 `/` 开头、URL 编码 `%2e`/`%2f`/`%5c`），逻辑与 gateway `is_safe_target()` 对齐（`HttpServer.cpp` L94） |
-| P1-6 | 发送队列无界（慢消费者 OOM） | ❌ 未修复 | `ws_send_queue_`、`proxy_to_backend_queue_`、`proxy_to_client_queue_`（`HttpServer_WsSession.cpp` L8-16/L362-367/L438-443）均为无界 `std::deque`。若客户端消费慢，服务端持续入队可导致内存耗尽 |
+| P1-6 | 发送队列无界（慢消费者 OOM） | ✅ 已修复 | `HttpServer` 新增 `setMaxWsQueueSize()`（默认 1000），`wsSend` / `onProxyReadClient` / `onProxyReadBackend` 入队前检查，超过上限判定慢消费者/慢后端，关闭连接并清空队列，防止内存耗尽 |
 
 ---
 
@@ -74,7 +74,7 @@
 ### 短期（72小时）
 - [x] P1-3 WS 消息大小限制：设置 `read_message_max`（可配置）→ ✅ 已实现（`setMaxWsMessageSize()`，默认 16MB，服务端与代理流均生效）
 - [x] P1-5 静态文件路径遍历：新增 `isSafeStaticPath()` 拼接前校验 `target_path`，拒绝 `..`/空字节/编码遍历 → ✅ 已实现（`HttpServer_Request.cpp` L139-157）
-- [ ] P1-6 发送队列上限：`ws_send_queue_`/代理队列设最大值，超限断开慢消费者
+- [x] P1-6 发送队列上限：`ws_send_queue_`/代理队列设最大值，超限断开慢消费者 → ✅ 已实现（`setMaxWsQueueSize()`，默认 1000，入队前检查超限即关闭）
 - [ ] P2-1 CORS 白名单：origin 白名单校验，替代反射任意 Origin
 
 ### 中期

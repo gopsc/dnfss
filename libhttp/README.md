@@ -15,6 +15,7 @@ C++20 network library for the UniServe microservice framework, providing unified
 - **Client Management**: WebSocket client tracking, broadcast, and targeted send
 - **WS Message Size Limit**: `setMaxWsMessageSize()` caps single WebSocket message (default 16MB, aligned with Beast; applies to server and proxy streams) to prevent OOM
 - **Read Timeouts (Slowloris Protection)**: `setHeaderTimeout()` (default 10s) / `setReadTimeout()` (default 30s) enforce two-stage header/body read timeouts plus WS idle timeout, aligned with WAF
+- **WS Queue Size Limit**: `setMaxWsQueueSize()` (default 1000) caps WS send / proxy queues; slow consumers get disconnected to prevent unbounded-memory OOM
 
 ### HttpClient
 - **HTTP Client**: Synchronous HTTP requests via libcurl (GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS)
@@ -179,6 +180,10 @@ std::chrono::seconds getHeaderTimeout() const;
 void setReadTimeout(std::chrono::seconds t);
 std::chrono::seconds getReadTimeout() const;
 
+// WS 发送/代理队列上限（条数）。默认 1000；超限判定慢消费者并关闭连接（防 OOM）。
+void setMaxWsQueueSize(std::size_t n);
+std::size_t getMaxWsQueueSize() const;
+
 **WebSocket Routes**
 ```cpp
 void ws(const std::string& path, WebSocketMessageHandler handler);
@@ -295,6 +300,7 @@ using WebSocketClientBase = HttpClient;
 
 ## Version History
 
+- **v3.4.3**: WebSocket 发送/代理队列上限（P1-6）。新增 `setMaxWsQueueSize()`（默认 1000）；`wsSend` / `onProxyReadClient` / `onProxyReadBackend` 入队前检查，超限判定慢消费者并关闭连接，防止无界队列内存耗尽。
 - **v3.4.2**: 服务器读超时防 Slowloris（P1-4）。新增 `setHeaderTimeout()`（默认 10s）/`setReadTimeout()`（默认 30s）；`doRead` 两阶段读（`async_read_header` 头超时 → `async_read` 体超时），`doSSLHandshake` 覆盖握手超时，`doWsRead` 设 WS 空闲超时，对齐 WAF ReadHeaderTimeout/ReadTimeout。
 - **v3.4.1**: WebSocket 单条消息大小限制（P1-3）。新增 `setMaxWsMessageSize()`/`getMaxWsMessageSize()`（默认 16MB，与 Beast 默认一致），服务端 `doWsUpgrade`/`doWssUpgrade` 与代理 `onProxyConnect`/`onProxySslHandshake` 创建流后调用 `read_message_max()`，超限消息由 Beast 在分配内存前拒绝并关闭连接，防 OOM。
 - **v3.4.0**: HttpClient 响应大小限制（防 OOM）。`request_stream_sync` 改为真流式（按块回调，不二次缓冲）；新增 `set_max_response_size()`/`get_max_response_size()`（默认 10MB，对齐 WAF，0 表示不限制），超限时 `write_callback` 返回 0 中止传输并抛异常。

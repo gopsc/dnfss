@@ -132,6 +132,11 @@ public:
     void setReadTimeout(std::chrono::seconds t) { read_timeout_ = t; }
     std::chrono::seconds getReadTimeout() const { return read_timeout_; }
 
+    // WS 发送/代理队列上限（条数）。默认 1000。防止慢消费者导致无界队列内存耗尽（P1-6）。
+    // 超限时判定为慢消费者，关闭对应连接。
+    void setMaxWsQueueSize(std::size_t n) { max_ws_queue_size_ = n; }
+    std::size_t getMaxWsQueueSize() const { return max_ws_queue_size_; }
+
     class debug {
     public:
         static void print_all_header_fields(const http::request<http::string_body>& req);
@@ -150,6 +155,7 @@ private:
     std::size_t max_ws_message_size_ = 16 * 1024 * 1024; // 默认 16MB,与 Beast 默认一致
     std::chrono::seconds header_timeout_{10}; // 头/握手超时，防 Slowloris（对齐 WAF ReadHeaderTimeout）
     std::chrono::seconds read_timeout_{30};   // 体超时（对齐 WAF ReadTimeout）
+    std::size_t max_ws_queue_size_ = 1000;    // WS 发送/代理队列上限，防慢消费者 OOM（P1-6）
 
     bool ssl_enabled_{false};
     std::string cert_file_;

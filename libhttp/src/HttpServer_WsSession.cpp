@@ -8,6 +8,14 @@ namespace net {
 void HttpServer::Session::wsSend(const std::string& message) {
     auto exec = stream_.get_executor();
     asio::post(exec, [self = shared_from_this(), message]() {
+        // P1-6：超过队列上限，判定慢消费者，关闭连接防内存耗尽
+        if (self->ws_send_queue_.size() >= self->server_->getMaxWsQueueSize()) {
+            std::cerr << "[WS] ws_send_queue_ overflow (" << self->ws_send_queue_.size()
+                      << " >= " << self->server_->getMaxWsQueueSize()
+                      << ") from " << self->getRemoteAddress() << ", closing" << std::endl;
+            self->close();
+            return;
+        }
         self->ws_send_queue_.push_back(message);
         if (self->ws_send_queue_.size() == 1) {
             self->doWsWrite();
@@ -373,6 +381,13 @@ void HttpServer::Session::onProxyReadClient(beast::error_code ec, std::size_t by
     // Queue to backend
     auto exec = stream_.get_executor();
     asio::post(exec, [self = shared_from_this(), data = std::move(data), is_binary]() {
+        // P1-6：超过队列上限，判定慢后端，关闭代理连接防内存耗尽
+        if (self->proxy_to_backend_queue_.size() >= self->server_->getMaxWsQueueSize()) {
+            std::cerr << "[WS-Proxy] proxy_to_backend_queue_ overflow ("
+                      << self->proxy_to_backend_queue_.size() << ") closing" << std::endl;
+            self->closeProxy(websocket::close_code::internal_error);
+            return;
+        }
         self->proxy_to_backend_queue_.emplace_back(std::move(data), is_binary);
         if (self->proxy_to_backend_queue_.size() == 1) {
             self->doProxyWriteBackend();
@@ -449,6 +464,13 @@ void HttpServer::Session::onProxyReadBackend(beast::error_code ec, std::size_t b
     // Queue to client
     auto exec = stream_.get_executor();
     asio::post(exec, [self = shared_from_this(), data = std::move(data), is_binary]() {
+        // P1-6：超过队列上限，判定慢客户端，关闭代理连接防内存耗尽
+        if (self->proxy_to_client_queue_.size() >= self->server_->getMaxWsQueueSize()) {
+            std::cerr << "[WS-Proxy] proxy_to_client_queue_ overflow ("
+                      << self->proxy_to_client_queue_.size() << ") closing" << std::endl;
+            self->closeProxy(websocket::close_code::internal_error);
+            return;
+        }
         self->proxy_to_client_queue_.emplace_back(std::move(data), is_binary);
         if (self->proxy_to_client_queue_.size() == 1) {
             self->doProxyWriteClient();
