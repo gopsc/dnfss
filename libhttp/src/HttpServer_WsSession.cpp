@@ -8,6 +8,14 @@ namespace net {
 void HttpServer::Session::wsSend(const std::string& message) {
     auto exec = stream_.get_executor();
     asio::post(exec, [self = shared_from_this(), message]() {
+        // P1-6：超过队列上限，判定慢消费者，关闭连接防内存耗尽
+        if (self->ws_send_queue_.size() >= self->server_->getMaxWsQueueSize()) {
+            std::cerr << "[WS] ws_send_queue_ overflow (" << self->ws_send_queue_.size()
+                      << " >= " << self->server_->getMaxWsQueueSize()
+                      << ") from " << self->getRemoteAddress() << ", closing" << std::endl;
+            self->close();
+            return;
+        }
         self->ws_send_queue_.push_back(message);
         if (self->ws_send_queue_.size() == 1) {
             self->doWsWrite();
@@ -19,6 +27,8 @@ void HttpServer::Session::doWsUpgrade() {
     auto self = shared_from_this();
     ws_stream_ = std::make_unique<ws_stream>(stream_);
     ws_stream_->text(true);
+    // P1-3：限制单条 WS 消息大小，超限由 Beast 拒绝并关闭连接（防 OOM）
+    ws_stream_->read_message_max(server_->getMaxWsMessageSize());
 
     ws_stream_->async_accept(
         request_,
@@ -31,6 +41,8 @@ void HttpServer::Session::doWssUpgrade() {
     auto self = shared_from_this();
     wss_stream_ = std::make_unique<wss_stream>(*ssl_stream_);
     wss_stream_->text(true);
+    // P1-3：限制单条 WS 消息大小，超限由 Beast 拒绝并关闭连接（防 OOM）
+    wss_stream_->read_message_max(server_->getMaxWsMessageSize());
 
     wss_stream_->async_accept(
         request_,
@@ -69,6 +81,13 @@ void HttpServer::Session::onWsAccept(beast::error_code ec) {
 void HttpServer::Session::doWsRead() {
     auto self = shared_from_this();
     ws_buffer_.consume(ws_buffer_.size());
+
+    // P1-4：WS 读取设置空闲超时，清理长期不发消息的连接。
+    // WebSocket 代理模式（如 aibox）不设超时：后端 AI 处理可能长时间无数据，
+    // 由前端心跳保活 + 后端自身超时机制管理连接生命周期。
+    if (!is_ws_proxy_) {
+        stream_.expires_after(server_->getReadTimeout());
+    }
 
     if (ssl_enabled_ && wss_stream_) {
         wss_stream_->async_read(
@@ -261,6 +280,9 @@ void HttpServer::Session::onProxyConnect(beast::error_code ec, tcp::endpoint /*e
         proxy_ws_stream_ = std::make_unique<proxy_ws_stream>(proxy_tcp_stream_->socket());
         proxy_tcp_stream_->expires_never();
 
+        // P1-3：限制代理方向单条 WS 消息大小（防 OOM）
+        proxy_ws_stream_->read_message_max(server_->getMaxWsMessageSize());
+
         proxy_ws_stream_->set_option(websocket::stream_base::decorator(
             [](websocket::request_type& req) {
                 req.set(http::field::user_agent, "UniServe-WsProxy");
@@ -286,6 +308,9 @@ void HttpServer::Session::onProxySslHandshake(beast::error_code ec) {
     proxy_wss_stream_ = std::make_unique<proxy_wss_stream>(*proxy_ssl_stream_);
     proxy_tcp_stream_->expires_never();
 
+    // P1-3：限制代理方向单条 WS 消息大小（防 OOM）
+    proxy_wss_stream_->read_message_max(server_->getMaxWsMessageSize());
+
     proxy_wss_stream_->set_option(websocket::stream_base::decorator(
         [](websocket::request_type& req) {
             req.set(http::field::user_agent, "UniServe-WsProxy");
@@ -308,6 +333,12 @@ void HttpServer::Session::onProxyHandshake(beast::error_code ec) {
 
     proxy_connected_ = true;
     proxy_closed_ = false;
+
+    // 清除客户端侧流在 HTTP 升级阶段继承的读 deadline（body 阶段设置的 30s）。
+    // 否则代理连接会在握手后约 30s 被强制关闭，导致长连接 WebSocket 断线。
+    // 注意：后端侧 proxy_tcp_stream_ 已在 onProxyConnect 中 expires_never()。
+    stream_.expires_never();
+
     std::cout << "[WS-Proxy] Connected to backend " << proxy_host_ << ":" << proxy_port_
               << proxy_path_ << std::endl;
 
@@ -360,6 +391,13 @@ void HttpServer::Session::onProxyReadClient(beast::error_code ec, std::size_t by
     // Queue to backend
     auto exec = stream_.get_executor();
     asio::post(exec, [self = shared_from_this(), data = std::move(data), is_binary]() {
+        // P1-6：超过队列上限，判定慢后端，关闭代理连接防内存耗尽
+        if (self->proxy_to_backend_queue_.size() >= self->server_->getMaxWsQueueSize()) {
+            std::cerr << "[WS-Proxy] proxy_to_backend_queue_ overflow ("
+                      << self->proxy_to_backend_queue_.size() << ") closing" << std::endl;
+            self->closeProxy(websocket::close_code::internal_error);
+            return;
+        }
         self->proxy_to_backend_queue_.emplace_back(std::move(data), is_binary);
         if (self->proxy_to_backend_queue_.size() == 1) {
             self->doProxyWriteBackend();
@@ -436,6 +474,13 @@ void HttpServer::Session::onProxyReadBackend(beast::error_code ec, std::size_t b
     // Queue to client
     auto exec = stream_.get_executor();
     asio::post(exec, [self = shared_from_this(), data = std::move(data), is_binary]() {
+        // P1-6：超过队列上限，判定慢客户端，关闭代理连接防内存耗尽
+        if (self->proxy_to_client_queue_.size() >= self->server_->getMaxWsQueueSize()) {
+            std::cerr << "[WS-Proxy] proxy_to_client_queue_ overflow ("
+                      << self->proxy_to_client_queue_.size() << ") closing" << std::endl;
+            self->closeProxy(websocket::close_code::internal_error);
+            return;
+        }
         self->proxy_to_client_queue_.emplace_back(std::move(data), is_binary);
         if (self->proxy_to_client_queue_.size() == 1) {
             self->doProxyWriteClient();

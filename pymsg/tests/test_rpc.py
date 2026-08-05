@@ -92,7 +92,7 @@ class TestRpc(unittest.TestCase):
                 from pymsg import recv
                 resp = json.loads(recv(s, timeout=5))
             self.assertFalse(resp["success"])
-            self.assertIn("JSON 解析失败", resp["error"])
+            self.assertIn("invalid JSON request", resp["error"])
             # 服务仍然存活
             self.assertEqual(RpcClient("127.0.0.1", fx.port).call("ok"), "fine")
 
@@ -132,6 +132,42 @@ class TestRpc(unittest.TestCase):
 
         self.assertEqual(results, [i * 2 for i in range(6)])
         self.assertLess(elapsed, 1.2, f"workers=4 应并发，实际 {elapsed:.2f}s")
+
+    def test_error_path_is_redacted(self):
+        """P1-3: 异常信息中的绝对路径应被脱敏，不透传内部细节。"""
+
+        def handler(req):
+            raise ValueError("open /opt/micro_servers/db/db_tools.py: no such file")
+
+        with _RpcFixture({"boom": handler}) as fx:
+            with self.assertRaises(RpcError) as cm:
+                RpcClient("127.0.0.1", fx.port).call("boom")
+            msg = str(cm.exception)
+            self.assertIn("<redacted>", msg)
+            self.assertNotIn("/opt/micro_servers", msg)
+
+    def test_huge_integer_rejected(self):
+        """P1-5: 超大整数应被拒绝，防止 CPU/内存 DoS。"""
+        with _RpcFixture({"ok": lambda req: "fine"}) as fx:
+            huge = "9" * 10000
+            with socket.create_connection(("127.0.0.1", fx.port), timeout=5) as s:
+                send(s, '{"_route": "ok", "n": %s}' % huge)
+                from pymsg import recv
+                resp = json.loads(recv(s, timeout=5))
+            self.assertFalse(resp["success"])
+
+    def test_deeply_nested_json_rejected(self):
+        """P1-5: 深度嵌套 JSON 应被拒绝，防止栈溢出。"""
+        with _RpcFixture({"ok": lambda req: "fine"}) as fx:
+            depth = 200000
+            payload = "[" * depth + "]" * depth
+            with socket.create_connection(("127.0.0.1", fx.port), timeout=5) as s:
+                send(s, '{"_route": "ok", "n": %s}' % payload)
+                from pymsg import recv
+                resp = json.loads(recv(s, timeout=5))
+            self.assertFalse(resp["success"])
+            # 服务仍然存活
+            self.assertEqual(RpcClient("127.0.0.1", fx.port).call("ok"), "fine")
 
     def test_per_call_timeout_override(self):
         with _RpcFixture({"slow": lambda req: time.sleep(2)}) as fx:

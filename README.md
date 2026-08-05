@@ -168,7 +168,7 @@
 | 库 | 说明 |
 |----|------|
 | [libth](libth/) | 线程库：`Thread`、`Cv_wait`（条件变量等待）、`Fsm`、`ITask` 任务接口 |
-| [libhttp](libhttp/) | HTTP/WebSocket 库：`HttpServer`、`HttpClient`、`WebSocketServer/Client`（基于 Boost.Beast） |
+| [libhttp](libhttp/) | HTTP/WebSocket 库：`HttpServer`（含 WebSocket 服务/代理）、`HttpClient`（含 WebSocket 客户端，基于 Boost.Beast） |
 | [libcrypt](libcrypt/) | 加密库：`AES_CBC`、`MyRSA`、`SHA256`、`Base64`、`Crypto_Basic` |
 | [libsqlite3](libsqlite3/) | SQLite3 C++ 封装（Header-only） |
 | [libtry](libtry/) | 嵌入式脚本解释器（~741 行 C），手写递归下降词法/语法/执行引擎，支持变量/数组/函数/控制流，宽字符（中文标识符），用于嵌入式操作界面 shell |
@@ -297,6 +297,22 @@ gateway 改为内部 HTTP 模式（[example.ini](gateway/example.ini) 中 `tls =
 - **安全分层**：`waf` 在边缘做规则匹配（OWASP CRS / 自定义 SecLang 规则），`gateway` 在应用层做鉴权，`db` 仅监听本机，多层防护。
 
 与云原生微服务的差异：未引入服务注册发现、容器编排、消息总线，服务地址在 `waf/config.yaml` 与 `gateway/example.ini` 中静态配置。对于个人/中小规模的 DIY 场景，这种取舍在简洁性与可控性上是合理的。
+
+## 文档管理约定
+
+所有项目文档统一通过根目录 [docs/](docs/) 聚合管理，入口索引见 [docs/INDEX.md](docs/INDEX.md)。文档分类与存放规则如下：
+
+| 文档类型 | 存放位置 | 说明 |
+|----------|----------|------|
+| **模块 README** | 各模块根目录（如 `waf/README.md`） | 遵循行业惯例，方便 GitHub/IDE 直接识别，不移动 |
+| **安全审计报告** | `docs/security/` | 各模块的安全审计、部署审计、依赖审计、加固计划统一存放，文件命名为 `<模块名>_<文档类型>_<日期>.md` |
+| **代码审查日志** | `docs/reviews/` | 代码审查、评审记录统一存放 |
+| **分析报告** | `docs/reports/` | 各类分析报告（HTML/MD 等）统一存放 |
+| **全局文档** | `docs/` 根目录 | 全局审计总览、跨模块文档直接放在 `docs/` 下 |
+| **aibox 技能提示词** | `aibox/skills/`、`aibox/tasks/` | 属于运行时数据，保留在原目录 |
+| **虚拟环境/第三方文档** | `.venv/` 等 | 不纳入文档管理，由 `.gitignore` 排除 |
+
+新增模块文档时遵循以上规则：模块说明写本目录 `README.md`，审计/审查/报告类文档放入 `docs/` 对应子目录。
 
 ## 许可证
 

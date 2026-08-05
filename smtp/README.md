@@ -144,7 +144,6 @@ python3 smtp_v2.py --addr 127.0.0.1 --port 8008
 ```
 smtp/
 ├── smtp_v2.py        # 服务主程序（pymsg 协议，当前有效版本）
-├── smtp.py           # 旧版 Flask HTTP 实现（已废弃，仅作参考）
 ├── log_client.py     # 集中日志推送 SDK
 ├── _set.sh           # 初始化脚本（创建 venv + 安装依赖）
 ├── _run.sh           # 启动脚本（exec python3 smtp_v2.py）
@@ -156,7 +155,7 @@ smtp/
 
 - 验证码存储在进程内存中，服务重启后全部失效；不支持多实例水平扩展。
 - 默认仅监听 `127.0.0.1`，仅供本机调用；浏览器侧不直接访问本服务。
-- 旧版 `smtp.py`（Flask HTTP 实现）已废弃，`_run.sh` 当前启动的是 `smtp_v2.py`。旧版存在无冷却、无失败回滚、无防枚举等安全问题，且 `verify_email` 在 email 不存在时有 KeyError 风险，不应在生产环境使用。
+- 旧版 `smtp.py`（Flask HTTP 实现）因存在无冷却、无失败回滚、无防枚举、`verify_email` 在 email 不存在时 KeyError、`server.quit()` NameError 等安全问题，已**删除下线**。`_run.sh` 当前启动的是 `smtp_v2.py`。
 - 多数邮箱服务商（163/QQ 等）强制 From 头与登录账号一致，`MAIL_FROM` 仅当服务商允许自定义发件身份时才起作用。
 - 验证码为纯 6 位数字，有效期 600 秒。
 

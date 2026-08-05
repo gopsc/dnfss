@@ -59,14 +59,14 @@ Authorization: Bearer <base64_payload>_<rsa_sign>
 | `_sp` | 信封字段 | 前端表现 |
 |-------|---------|---------|
 | `link` | `url`（http/https，≤2048）、`note?` | favicon 图标（经 static `/api/favicon` 代理拉取）+ 可点击链接 |
-| `html` | `code`（≤512KB）、`note?` | "审计源码"（纯文本展示）+ "运行"（新窗口执行）按钮 |
+| `js` | `code`（完整 HTML/CSS/JS 文档，≤512KB）、`note?` | "审计源码"（纯文本展示）+ "运行"（解析完整 HTML 文档注入当前页面：style 注入 head、script 在全局作用域执行可加特效、body 渲染到节点下方；console 输出捕获到下方）按钮 |
 | `image` | `name`、`data`（`data:image/` DataURL，≤3.5M 字符）、`note?` | 图片直接显示 |
 | `file` | `name`、`mime`、`data`（Base64，≤3.5M 字符）、`note?` | 下载按钮（Base64→Blob→下载） |
 
 规则：
 
 - **仅管理员可发布/更新**（`add_note` / `update_note` 中按 `is_admin` 强制，非管理员返回 403）；前端发布面板也仅对管理员显示。
-- AI 内容审核剔除 Base64 负载（体量大且无审核意义）：`link` 审 `title+url+note`，`html` 审 `title+code 前 4000 字符+note`，`image`/`file` 审 `title+name+note`。
+- AI 内容审核剔除 Base64 负载（体量大且无审核意义）：`link` 审 `title+url+note`，`js` 审 `title+code 前 4000 字符+note`，`image`/`file` 审 `title+name+note`。
 - `{"_sp"` 开头但 JSON 非法的内容会被拒绝发布（400），防止半截信封流入。
 
 ## 接口文档
@@ -214,7 +214,7 @@ curl -X POST http://localhost:8006/update_note \
 - **安全响应头**（[security_middleware.py](security_middleware.py)）：`X-Frame-Options: SAMEORIGIN`、`X-XSS-Protection`、`X-Content-Type-Options: nosniff`、`Referrer-Policy: strict-origin-when-cross-origin`、`Permissions-Policy`（禁用摄像头/麦克风/地理位置）、CSP（`default-src 'self'` 等），并移除 `Server` 头。
 - **Token 鉴权**：写操作强制校验，payload 取 `user` 字段。
 - **所有权隔离**：普通用户只能改/删自己的节点。
-- **特殊节点管控**：link/html/image/file 类型有格式校验与大小限制（URL 前缀、文件名长度、内容大小上限）。
+- **特殊节点管控**：link/js/image/file 类型有格式校验与大小限制（URL 前缀、文件名长度、内容大小上限）。
 - **内容审核**：写入与更新前调用 `ai_review`，非法内容会被拒绝（fail-closed 设计，见已知问题）。
 - **异步日志**：通过 pymsg `AsyncRpcQueue` 异步批量写日志，fail-safe 不阻塞业务线程。
 - **非 root 容器化运行**：Dockerfile 中使用 appuser 非特权用户运行服务。

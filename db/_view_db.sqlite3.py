@@ -35,7 +35,7 @@ def print_rows(cols, rows):
 def main():
     parser = argparse.ArgumentParser(description="查看 database.db")
     parser.add_argument("table", nargs="?", help="要查看的表名 (不指定则列出所有表)")
-    parser.add_argument("-n", "--limit", type=int, default=50, help="最多显示行数 (默认 50)")
+    parser.add_argument("-n", "--limit", type=int, default=50, help="显示最后 N 行 (默认 50)")
     parser.add_argument("-w", "--where", help="WHERE 条件, 如: \"level='ERROR'\"")
     parser.add_argument("-s", "--sql", help="自由 SQL 查询 (忽略 table/where/limit)")
     args = parser.parse_args()
@@ -65,15 +65,17 @@ def main():
         conn.close()
         return
 
-    # 查看指定表
+    # 查看指定表：取最后 N 行（按 rowid 倒序取，再正序展示）
+    # 用子查询包装：内层倒序取末尾 N 行，外层按 rowid 正序还原展示顺序
     if args.table not in tables:
         print(f"表 '{args.table}' 不存在, 可用: {', '.join(tables)}", file=sys.stderr)
         sys.exit(1)
 
-    sql = f"SELECT * FROM [{args.table}]"
+    inner = f"SELECT * FROM [{args.table}]"
     if args.where:
-        sql += f" WHERE {args.where}"
-    sql += f" LIMIT {args.limit}"
+        inner += f" WHERE {args.where}"
+    inner += f" ORDER BY rowid DESC LIMIT {args.limit}"
+    sql = f"SELECT * FROM ({inner}) ORDER BY rowid ASC"
 
     cur.execute(sql)
     cols = [d[0] for d in cur.description]

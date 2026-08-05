@@ -297,7 +297,21 @@ def stream_video(file_path):
                     extra={"file": file_path})
         return jsonify({'error': str(e)}), 500
 
-GATEWAY_DB = '/opt/micro_servers/gateway/sqlite3.db'
+# db 服务 RPC 调用辅助函数（替代直连 SQLite）
+def _db_call(action, table, where=None, values=None, columns=None):
+    from pymsg import RpcClient, RpcError
+    client = RpcClient('127.0.0.1', 8005, 'static', timeout=5)
+    data = {"action": action, "table": table}
+    if where is not None:
+        data["where"] = where
+    if values is not None:
+        data["values"] = values
+    if columns is not None:
+        data["columns"] = columns
+    result = client.call('execute', data)
+    if not result.get('success'):
+        raise RpcError(f"db execute failed: {result.get('error', 'unknown')}")
+    return result.get('data', [])
 
 
 @app.route('/api/hash', methods=['POST'])
@@ -309,160 +323,154 @@ def api_hash():
     return jsonify({"hash": h})
 
 
-@app.route('/api/reset_password', methods=['POST'])
-def api_reset_password():
-    from flask import request, jsonify
-    import sqlite3 as _sql
-    data = request.get_json(force=True)
-    email = data.get('email', '').strip()
-    new_hash = data.get('password_hash', '').strip()
-    if not email or not new_hash:
-        return jsonify({"success": False, "error": "missing params"}), 400
-    conn = _sql.connect(GATEWAY_DB)
-    conn.execute("UPDATE Users SET password_hash=? WHERE email=?", (new_hash, email))
-    conn.commit()
-    conn.close()
-    logs.info("static", "密码重置", extra={"email": email[:3] + "***"})
-    return jsonify({"success": True})
+# DISABLED: P0 security issue - no authentication, allows arbitrary password reset
+# @app.route('/api/reset_password', methods=['POST'])
+# def api_reset_password():
+#     from flask import request, jsonify
+#     import sqlite3 as _sql
+#     data = request.get_json(force=True)
+#     email = data.get('email', '').strip()
+#     new_hash = data.get('password_hash', '').strip()
+#     if not email or not new_hash:
+#         return jsonify({"success": False, "error": "missing params"}), 400
+#     conn = _sql.connect(GATEWAY_DB)
+#     conn.execute("UPDATE Users SET password_hash=? WHERE email=?", (new_hash, email))
+#     conn.commit()
+#     conn.close()
+#     logs.info("static", "密码重置", extra={"email": email[:3] + "***"})
+#     return jsonify({"success": True})
 
 
 @app.route('/api/check_user', methods=['POST'])
 def api_check_user():
     from flask import request, jsonify
-    import sqlite3 as _sql
     data = request.get_json(force=True)
     email = data.get('email', '').strip()
     if not email:
         return jsonify({"success": False, "error": "missing email"}), 400
-    conn = _sql.connect(GATEWAY_DB)
-    rows = conn.execute("SELECT email FROM Users WHERE email=?", (email,)).fetchall()
-    conn.close()
-    return jsonify({"success": True, "found": len(rows) > 0})
-
-
-
-
-YHDET_VERIFY_URL = "https://yhdet.top/api/verify_auth_token"
-YHDET_SECRET = "yhdet_qsont_oauth_2026_secret_key"
-GATEWAY_DB_YHDET = '/opt/micro_servers/gateway/sqlite3.db'
-
-
-def _yhdet_verify_token(token):
-    import traceback
-    import urllib.request, json
     try:
-        data = json.dumps({"token": token}).encode()
-        req = urllib.request.Request(YHDET_VERIFY_URL, data=data,
-                headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        rows = _db_call('select', 'Users', where={'email': email}, columns=['email'])
+        return jsonify({"success": True, "found": len(rows) > 0})
     except Exception as e:
-        traceback.print_exc()
-        raise
-
-
-@app.route('/yhdet_callback', methods=['GET', 'POST'])
-def yhdet_callback():
-    from flask import request, make_response
-    import hashlib, sqlite3, base64, json as _json, urllib.request as _urlreq
-    token = (request.args.get('yhdet_token', '') or request.form.get('yhdet_token', '')).strip()
-    if not token:
-        return make_response("No token", 400)
-    try:
-        result = _yhdet_verify_token(token)
-        if not result.get("success"):
-            return make_response("Verify failed: " + str(result), 401)
-        username = result.get("username", "")
-        user_id = result.get("user_id", 0)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return make_response("Verify error: " + str(e), 500)
-    email = f"yhdet_{user_id}@yhdet.oauth"
-    password = f"oauth_{user_id}"
-    conn = sqlite3.connect(GATEWAY_DB_YHDET)
-    rows = conn.execute("SELECT email FROM Users WHERE email=?", (email,)).fetchall()
-    if not rows:
-        fake_hash = hashlib.sha256(password.encode()).hexdigest()
-        conn.execute("INSERT INTO Users (email, password_hash) VALUES (?, ?)", (email, fake_hash))
-        conn.commit()
-        logs.info("static", "OAuth 新用户注册", extra={"email": email})
-    conn.close()
-    try:
-        login_data = _json.dumps({"username": email, "password": password}).encode()
-        req = _urlreq.Request("https://qsont.me/login", data=login_data,
-            headers={"Content-Type": "application/json"}, method="POST")
-        with _urlreq.urlopen(req, timeout=10, context=__import__('ssl')._create_unverified_context()) as resp:
-            login_result = _json.loads(resp.read().decode("utf-8"))
-            real_token = login_result.get("data", {}).get("token", "")
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        real_token = ""
-    html = "<!DOCTYPE html><html><head><meta charset='utf-8'></head><body><p>Login...</p><script>"
-    if real_token:
-        html += "localStorage.setItem('q4_token','" + real_token + "');"
-        html += "sessionStorage.setItem('q4_token','" + real_token + "');"
-    html += "location.href='/dnfs.html';"
-    html += "</script></body></html>"
-    return make_response(html, 200)
-
-@app.route('/api/yhdet_login', methods=['POST'])
-def yhdet_login():
-    import hashlib, sqlite3, base64
-    data = request.get_json(force=True) if request.is_json else {}
-    email = data.get("email", "").strip()
-    password = data.get("password", "").strip()
-    if not email or not password:
-        return jsonify({"success": False, "error": "Missing params"}), 400
-    pwd_hash = hashlib.sha256(password.encode()).hexdigest()
-    conn = sqlite3.connect(GATEWAY_DB_YHDET)
-    rows = conn.execute("SELECT email, password_hash FROM Users WHERE email=?", (email,)).fetchall()
-    conn.close()
-    if not rows:
-        logs.warning("static", "yhdet 登录失败-用户不存在",
-                      extra={"email": email[:8] + "***"})
-        return jsonify({"success": False, "error": "Invalid credentials"})
-    if rows[0][1] != pwd_hash:
-        logs.warning("static", "yhdet 登录失败-密码错误",
-                      extra={"email": email[:8] + "***"})
-        return jsonify({"success": False, "error": "Invalid credentials"})
-    logs.info("static", "yhdet 登录成功",
-               extra={"email": email[:8] + "***"})
-    token_data = f"{email}:{password}"
-    token = base64.urlsafe_b64encode(token_data.encode()).decode()
-    return jsonify({"success": True, "token": token})
-
-
-@app.route('/api/yhdet_verify', methods=['POST'])
-def yhdet_verify():
-    import base64, hashlib, sqlite3
-    data = request.get_json(force=True)
-    token = data.get("token", "")
-    if not token:
-        return jsonify({"success": False}), 400
-    try:
-        decoded = base64.urlsafe_b64decode(token.encode()).decode()
-        parts = decoded.split(":")
-        if len(parts) == 3 and parts[1] == "oauth":
-            return jsonify({"success": True, "email": parts[0], "type": "oauth"})
-        if len(parts) == 2:
-            email, password = parts
-            pwd_hash = hashlib.sha256(password.encode()).hexdigest()
-            conn = sqlite3.connect(GATEWAY_DB_YHDET)
-            rows = conn.execute("SELECT email FROM Users WHERE email=? AND password_hash=?", (email, pwd_hash)).fetchall()
-            conn.close()
-            if rows:
-                return jsonify({"success": True, "email": email, "type": "password"})
-        return jsonify({"success": False})
-    except:
-        return jsonify({"success": False})
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 
 
-PRIVATE_SECRET = "qsont_me_yhdet_2026_private"
-YHDET_PRIVATE_API = "https://yhdet.top/api/v1/private"
+# DISABLED: yhdet OAuth 已失效，以下常量、辅助函数和视图函数全部禁用
+# YHDET_VERIFY_URL = "https://yhdet.top/api/verify_auth_token"
+# YHDET_SECRET = ""  # 已失效，原值: "yhdet_qsont_oauth_2026_secret_key"
+#
+#
+# def _yhdet_verify_token(token):
+#     import traceback
+#     import urllib.request, json
+#     try:
+#         data = json.dumps({"token": token}).encode()
+#         req = urllib.request.Request(YHDET_VERIFY_URL, data=data,
+#                 headers={"Content-Type": "application/json"}, method="POST")
+#         with urllib.request.urlopen(req, timeout=10) as resp:
+#             return json.loads(resp.read().decode("utf-8"))
+#     except Exception as e:
+#         traceback.print_exc()
+#         raise
+
+
+# @app.route('/yhdet_callback', methods=['GET', 'POST'])
+# def yhdet_callback():
+#     from flask import request, make_response
+#     import hashlib, base64, json as _json, urllib.request as _urlreq
+#     token = (request.args.get('yhdet_token', '') or request.form.get('yhdet_token', '')).strip()
+#     if not token:
+#         return make_response("No token", 400)
+#     try:
+#         result = _yhdet_verify_token(token)
+#         if not result.get("success"):
+#             return make_response("Verify failed: " + str(result), 401)
+#         username = result.get("username", "")
+#         user_id = result.get("user_id", 0)
+#     except Exception as e:
+#         import traceback
+#         traceback.print_exc()
+#         return make_response("Verify error: " + str(e), 500)
+#     email = f"yhdet_{user_id}@yhdet.oauth"
+#     password = f"oauth_{user_id}"
+#     rows = _db_call('select', 'Users', where={'email': email}, columns=['email'])
+#     if not rows:
+#         fake_hash = hashlib.sha256(password.encode()).hexdigest()
+#         _db_call('insert', 'Users', values={'email': email, 'password_hash': fake_hash})
+#         logs.info("static", "OAuth 新用户注册", extra={"email": email})
+#     try:
+#         login_data = _json.dumps({"username": email, "password": password}).encode()
+#         req = _urlreq.Request("https://qsont.me/login", data=login_data,
+#             headers={"Content-Type": "application/json"}, method="POST")
+#         with _urlreq.urlopen(req, timeout=10, context=__import__('ssl')._create_unverified_context()) as resp:
+#             login_result = _json.loads(resp.read().decode("utf-8"))
+#             real_token = login_result.get("data", {}).get("token", "")
+#     except Exception as e:
+#         import traceback
+#         traceback.print_exc()
+#         real_token = ""
+#     html = "<!DOCTYPE html><html><head><meta charset='utf-8'></head><body><p>Login...</p><script>"
+#     if real_token:
+#         html += "localStorage.setItem('q4_token','" + real_token + "');"
+#         html += "sessionStorage.setItem('q4_token','" + real_token + "');"
+#     html += "location.href='/dnfs.html';"
+#     html += "</script></body></html>"
+#     return make_response(html, 200)
+#
+# @app.route('/api/yhdet_login', methods=['POST'])
+# def yhdet_login():
+#     import hashlib, base64
+#     data = request.get_json(force=True) if request.is_json else {}
+#     email = data.get("email", "").strip()
+#     password = data.get("password", "").strip()
+#     if not email or not password:
+#         return jsonify({"success": False, "error": "Missing params"}), 400
+#     pwd_hash = hashlib.sha256(password.encode()).hexdigest()
+#     rows = _db_call('select', 'Users', where={'email': email}, columns=['email', 'password_hash'])
+#     if not rows:
+#         logs.warning("static", "yhdet 登录失败-用户不存在",
+#                       extra={"email": email[:8] + "***"})
+#         return jsonify({"success": False, "error": "Invalid credentials"})
+#     if rows[0]['password_hash'] != pwd_hash:
+#         logs.warning("static", "yhdet 登录失败-密码错误",
+#                       extra={"email": email[:8] + "***"})
+#         return jsonify({"success": False, "error": "Invalid credentials"})
+#     logs.info("static", "yhdet 登录成功",
+#                extra={"email": email[:8] + "***"})
+#     token_data = f"{email}:{password}"
+#     token = base64.urlsafe_b64encode(token_data.encode()).decode()
+#     return jsonify({"success": True, "token": token})
+#
+#
+# @app.route('/api/yhdet_verify', methods=['POST'])
+# def yhdet_verify():
+#     import base64, hashlib
+#     data = request.get_json(force=True)
+#     token = data.get("token", "")
+#     if not token:
+#         return jsonify({"success": False}), 400
+#     try:
+#         decoded = base64.urlsafe_b64decode(token.encode()).decode()
+#         parts = decoded.split(":")
+#         if len(parts) == 3 and parts[1] == "oauth":
+#             return jsonify({"success": True, "email": parts[0], "type": "oauth"})
+#         if len(parts) == 2:
+#             email, password = parts
+#             pwd_hash = hashlib.sha256(password.encode()).hexdigest()
+#             rows = _db_call('select', 'Users', where={'email': email, 'password_hash': pwd_hash}, columns=['email'])
+#             if rows:
+#                 return jsonify({"success": True, "email": email, "type": "password"})
+#         return jsonify({"success": False})
+#     except:
+#         return jsonify({"success": False})
+
+
+
+
+# PRIVATE_SECRET = "qsont_me_yhdet_2026_private"
+# YHDET_PRIVATE_API = "https://yhdet.top/api/v1/private"
 
 
 from flask import make_response
@@ -539,26 +547,26 @@ def proxy_update_note():
         return _cors(make_response(_json.dumps({"error": str(e)}), 502, {"Content-Type": "application/json"}))
 
 
-@app.route('/api/proxy_send_code', methods=['POST'])
-def proxy_send_code():
-    from flask import request, jsonify
-    import urllib.request as _urlreq, json as _json, __import__ as _imp
-    data = request.get_json(force=True)
-    req_data = _json.dumps(data).encode()
-    req = _urlreq.Request(f"{YHDET_PRIVATE_API}/send_code", data=req_data,
-        headers={"Content-Type": "application/json", "X-Forwarded-For": "8.137.52.11", "X-Secret": PRIVATE_SECRET}, method="POST")
-    ctx = _imp('ssl').create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = _imp('ssl').CERT_NONE
-    with _urlreq.urlopen(req, timeout=15, context=ctx) as resp:
-        return jsonify(_json.loads(resp.read().decode("utf-8")))
-    req = _urlreq.Request(f"{YHDET_PRIVATE_API}/check_code", data=req_data,
-        headers={"Content-Type": "application/json", "X-Forwarded-For": "8.137.52.11", "X-Secret": PRIVATE_SECRET}, method="POST")
-    ctx = _imp('ssl').create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = _imp('ssl').CERT_NONE
-    with _urlreq.urlopen(req, timeout=15, context=ctx) as resp:
-        return jsonify(_json.loads(resp.read().decode("utf-8")))
+# @app.route('/api/proxy_send_code', methods=['POST'])
+# def proxy_send_code():
+#     from flask import request, jsonify
+#     import urllib.request as _urlreq, json as _json, __import__ as _imp
+#     data = request.get_json(force=True)
+#     req_data = _json.dumps(data).encode()
+#     req = _urlreq.Request(f"{YHDET_PRIVATE_API}/send_code", data=req_data,
+#         headers={"Content-Type": "application/json", "X-Forwarded-For": "8.137.52.11", "X-Secret": PRIVATE_SECRET}, method="POST")
+#     ctx = _imp('ssl').create_default_context()
+#     ctx.check_hostname = False
+#     ctx.verify_mode = _imp('ssl').CERT_NONE
+#     with _urlreq.urlopen(req, timeout=15, context=ctx) as resp:
+#         return jsonify(_json.loads(resp.read().decode("utf-8")))
+#     req = _urlreq.Request(f"{YHDET_PRIVATE_API}/check_code", data=req_data,
+#         headers={"Content-Type": "application/json", "X-Forwarded-For": "8.137.52.11", "X-Secret": PRIVATE_SECRET}, method="POST")
+#     ctx = _imp('ssl').create_default_context()
+#     ctx.check_hostname = False
+#     ctx.verify_mode = _imp('ssl').CERT_NONE
+#     with _urlreq.urlopen(req, timeout=15, context=ctx) as resp:
+#         return jsonify(_json.loads(resp.read().decode("utf-8")))
 
 
 

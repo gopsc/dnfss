@@ -13,10 +13,9 @@ else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -pipe -Wall")
 endif()
 
-# Set library names
-set(SHARED_LIB_NAME "us_http")
-set(STATIC_LIB_NAME "us_http_static")
-set(FRAMEWORK_NAME "us")
+# Library names (与 Makefile 保持一致)
+set(SERVER_LIB_NAME "us_http")
+set(CLIENT_LIB_NAME "us_httpclient")
 
 # ===== Boost Library Configuration (Header-Only) =====
 if(DEFINED ENV{BOOST_ROOT})
@@ -41,86 +40,66 @@ include_directories(${Boost_INCLUDE_DIR})
 set(INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/inc")
 include_directories(${INCLUDE_DIR})
 
-# Source files
-set(SOURCES
+# Lowest-path OpenSSL/libcurl (macOS homebrew) — 可被环境覆盖
+set(EXTERNAL_LIB_DIR "/opt/homebrew/lib")
+set(EXTERNAL_INC_DIR "/opt/homebrew/include")
+include_directories(${EXTERNAL_INC_DIR})
+
+# Server sources (HttpServer 拆分后的 6 个 TU)
+set(SERVER_SOURCES
     src/HttpServer.cpp
-    src/WebSocketServer.cpp
-    src/WebSocketClient.cpp
+    src/HttpServer_Listener.cpp
+    src/HttpServer_Routes.cpp
+    src/HttpServer_Request.cpp
+    src/HttpServer_Ws.cpp
+    src/HttpServer_WsSession.cpp
 )
 
-# Header files list
-set(HEADERS
-    inc/${FRAMEWORK_NAME}/HttpServer.hpp
-    inc/${FRAMEWORK_NAME}/HttpClient.hpp
-    inc/${FRAMEWORK_NAME}/WebSocketServer.hpp
-    inc/${FRAMEWORK_NAME}/WebSocketClient.hpp
+# Client sources
+set(CLIENT_SOURCES
+    src/HttpClient.cpp
 )
 
-# Create shared library (DLL)
-add_library(${SHARED_LIB_NAME} SHARED ${SOURCES})
+# Server library: libus_http.so (HTTP + WebSocket server + WS proxy, 不依赖 curl)
+add_library(${SERVER_LIB_NAME} SHARED ${SERVER_SOURCES})
+target_link_libraries(${SERVER_LIB_NAME}
+    ${EXTERNAL_LIB_DIR}/libssl.a
+    ${EXTERNAL_LIB_DIR}/libcrypto.a
+    pthread
+)
 
-# Create static library (LIB)
-add_library(${STATIC_LIB_NAME} STATIC ${SOURCES})
-
-# Set properties for shared library
-if(WIN32)
-    target_link_libraries(${SHARED_LIB_NAME} 
-        ws2_32
-    )
-else()
-    target_link_libraries(${SHARED_LIB_NAME} 
-        pthread
-    )
-endif()
+# Client library: libus_httpclient.so (HttpClient, 依赖 curl)
+add_library(${CLIENT_LIB_NAME} SHARED ${CLIENT_SOURCES})
+target_link_libraries(${CLIENT_LIB_NAME}
+    ${EXTERNAL_LIB_DIR}/libssl.a
+    ${EXTERNAL_LIB_DIR}/libcrypto.a
+    ${EXTERNAL_LIB_DIR}/libcurl.a
+    pthread
+)
 
 # Set output directories
-set_target_properties(${SHARED_LIB_NAME} ${STATIC_LIB_NAME} PROPERTIES
+set_target_properties(${SERVER_LIB_NAME} ${CLIENT_LIB_NAME} PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/build"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/build"
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/build"
 )
 
-# Additional properties for Windows
-if(WIN32)
-    set_target_properties(${SHARED_LIB_NAME} PROPERTIES
-        PREFIX ""
-        SUFFIX ".dll"
-    )
-    set_target_properties(${STATIC_LIB_NAME} PROPERTIES
-        PREFIX ""
-        SUFFIX ".lib"
-    )
-else()
-    set_target_properties(${SHARED_LIB_NAME} PROPERTIES
-        PREFIX "lib"
-        SUFFIX ".so"
-    )
-    set_target_properties(${STATIC_LIB_NAME} PROPERTIES
-        PREFIX "lib"
-        SUFFIX ".a"
-    )
-endif()
-
-# Position independent code for static library on Unix
-if(UNIX AND NOT APPLE)
-    set_target_properties(${STATIC_LIB_NAME} PROPERTIES
-        POSITION_INDEPENDENT_CODE ON
-    )
-    set_target_properties(${SHARED_LIB_NAME} PROPERTIES
-        POSITION_INDEPENDENT_CODE ON
-    )
-endif()
-
 # Install targets
-install(TARGETS ${SHARED_LIB_NAME} ${STATIC_LIB_NAME}
+install(TARGETS ${SERVER_LIB_NAME} ${CLIENT_LIB_NAME}
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION bin
     ARCHIVE DESTINATION lib
 )
 
 # Install headers
-install(FILES ${HEADERS}
-    DESTINATION include/${FRAMEWORK_NAME}
+install(FILES
+    inc/us/HttpServer.hpp
+    inc/us/HttpClient.hpp
+    DESTINATION include/us
+)
+install(FILES
+    inc/us/detail/HttpServerImpl.hpp
+    DESTINATION include/us/detail
 )
 
 # Clean target
@@ -133,13 +112,9 @@ add_custom_target(clear
 message(STATUS "========================================")
 message(STATUS "Project: ${PROJECT_NAME}")
 message(STATUS "Version: ${PROJECT_VERSION}")
-message(STATUS "Shared library: ${SHARED_LIB_NAME}")
-message(STATUS "Static library: ${STATIC_LIB_NAME}")
+message(STATUS "Server library: ${SERVER_LIB_NAME}")
+message(STATUS "Client library: ${CLIENT_LIB_NAME}")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "Install prefix: ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "Compiler: ${CMAKE_CXX_COMPILER_ID}")
-if(MSVC)
-    message(STATUS "MSVC version: ${MSVC_VERSION}")
-endif()
-message(STATUS "BOOST_ROOT: ${BOOST_ROOT}")
 message(STATUS "========================================")

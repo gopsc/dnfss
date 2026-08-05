@@ -31,7 +31,8 @@ rules/
 ├── waf.conf              # 主入口：基础配置（SecRuleEngine / SecRequestBodyLimit 等）
 ├── local/                # 本地自定义规则（ID 段 100000-199999）
 │   ├── custom.conf       # 示例：SQL注入/XSS/路径遍历/命令注入/扫描器UA
-│   └── exceptions.conf   # 误报白名单（SecRuleRemoveById / ctl:ruleRemoveById）
+│   ├── exceptions.conf   # 误报白名单（SecRuleRemoveById / ctl:ruleRemoveById）
+│   └── tuning.conf       # CRS 调优：偏执等级 + 异常评分阈值（自动拦截的"旋钮"）
 └── crs/                  # OWASP CRS（不入库，由 _fetch_crs.sh 拉取，可选）
     ├── coraza.conf       # CRS 入口（请求体处理器初始化 + tx.crs_setup_version）
     ├── LICENSE           # Apache-2.0
@@ -70,6 +71,36 @@ SecRule REQUEST_URI|ARGS "@rx (?i)union[\s/*]+select" \
 - `phase:1` 请求头阶段 / `phase:2` 请求体阶段 / `phase:3` 响应头 / `phase:4` 响应体
 - `deny,status:403` 命中后动作
 - `msg` 命中日志描述
+
+## 异常评分制自动拦截
+
+启用 OWASP CRS 后，WAF 采用**异常评分制**自动拦截，而非单条硬规则直接 deny——无需人工干预，按命中严重度自动分级：
+
+- 每条规则命中时按严重度累加异常分：`CRITICAL=5`、`ERROR=4`、`WARNING=3`、`NOTICE=2`
+- 当 `tx.anomaly_score >= tx.inbound_anomaly_score_threshold` 时，规则 **949110** 自动 `deny`
+- **低分请求放行、高分请求拦截**，全自动
+
+### 引擎模式（[waf.conf](rules/waf.conf)）
+
+| 模式 | 行为 |
+|------|------|
+| `On` | 自动拦截：异常评分达到阈值即 deny（当前配置） |
+| `DetectionOnly` | 只记录异常评分，不执行 deny（用于观察误报） |
+| `Off` | 完全关闭 |
+
+> 上线建议：先 `DetectionOnly` 跑一段时间，确认异常评分无误报后，再切回 `On` 开启自动拦截。
+
+### 调参旋钮（[rules/local/tuning.conf](rules/local/tuning.conf)）
+
+| 参数 | 当前值 | 说明 |
+|------|--------|------|
+| `tx.blocking_paranoia_level` | `1` | 偏执等级，1 最保守（误报最少）；2/3/4 递增更严、误报更多 |
+| `tx.inbound_anomaly_score_threshold` | `5` | 请求侧拦截阈值，越小越敏感、误报越多；越大越宽松、漏报越多 |
+| `tx.outbound_anomaly_score_threshold` | `4` | 响应侧拦截阈值 |
+
+调参后 `kill -HUP <pid>` 热加载即可，无需重启。
+
+> 说明：`tuning.conf` 独立于自动生成的 `crs/coraza.conf`，重跑 `_fetch_crs.sh` 不会覆盖调优配置。
 
 ## 部署形态
 
@@ -120,7 +151,8 @@ waf/
 │   ├── waf.conf
 │   └── local/
 │       ├── custom.conf
-│       └── exceptions.conf
+│       ├── exceptions.conf
+│       └── tuning.conf       # CRS 调优（偏执等级 + 异常评分阈值）
 ├── _set.sh                  # 编译（含 go mod tidy + download + build）
 ├── _run.sh                  # 运行
 ├── _goproxy.sh              # 设置 GOPROXY 国内镜像（由 _set.sh 调用）
@@ -315,6 +347,13 @@ WAF 支持透明代理 WebSocket 连接（如 aibox 的 WebSocket 接口）。�
 - 标准日志（`log.SetOutput`）被静默到 `io.Discard`，net/http 的 panic 堆栈和 TLS 错误不可见。
 
 ## 版本日志
+
+### v1.3（2026-08-04）— 启用 OWASP CRS 异常评分制自动拦截
+
+- **feat**: 启用 OWASP CRS v4.25.0 异常评分制，`SecRuleEngine On` 自动拦截评分达阈值的请求（规则 949110）
+- **feat**: 新增 `rules/local/tuning.conf` CRS 调优文件，可配置偏执等级（默认 1）与异常评分阈值（inbound 5 / outbound 4）
+- **feat**: `tuning.conf` 独立于自动生成的 `crs/coraza.conf`，重跑 `_fetch_crs.sh` 不会覆盖调优配置
+- 校验：SQLi / XSS / 路径遍历 / 命令注入均命中 949110 拦截，正常请求放行
 
 ### v1.2（2026-08-01）— WebSocket 支持 + 修复
 

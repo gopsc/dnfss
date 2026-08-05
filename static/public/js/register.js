@@ -19,10 +19,12 @@ let cooldownTimer = null;	// 重发倒计时（与服务端同邮箱 60s 发送�
 let captchaToken = '';
 let captchaLoading = false;	// 防重复点击：加载中忽略再次触发
 
-async function refreshCaptcha() {
+async function refreshCaptcha(preserveInput) {
 	if (captchaLoading) return;
 	captchaLoading = true;
 	captchaToken = '';
+	if (!preserveInput) captchaInput.value = '';  // 默认清空输入；preserveInput=true 时保留（获取验证码后）
+	captchaImg.style.opacity = '0.5'; // 视觉提示：正在刷新
 	try {
 		const res = await fetch('/captcha/image', { cache: 'no-store' });
 		if (res.status === 403) {	// WAF 拦截：body 非图片，提示后待用户点击重试
@@ -36,6 +38,7 @@ async function refreshCaptcha() {
 		if (captchaImg.src && captchaImg.src.startsWith('blob:')) URL.revokeObjectURL(captchaImg.src);
 		captchaImg.src = URL.createObjectURL(blob);
 		captchaImg.alt = '点击刷新';
+		captchaImg.style.opacity = '';  // 恢复透明度
 	} catch (e) {
 		captchaImg.removeAttribute('src');
 		captchaImg.alt = '加载失败，点击重试';
@@ -219,9 +222,9 @@ getCodeButton.addEventListener('click', async function () {
 		codeTip.classList.add('tip-red');
 		if (httpStatus === 429) startResendCooldown(60);	// 命中冷却/限流，倒计时对齐
 	} finally {
-		// CAPTCHA Token 一次性消费，无论成败都刷新
-		captchaInput.value = '';
-		refreshCaptcha();
+		// CAPTCHA Token 一次性消费，无论成败都刷新图形验证码；
+		// 刷新时保留已输入的图形验证码答案，避免误清空用户输入
+		refreshCaptcha(true);
 		if (!cooldownTimer) getCodeButton.disabled = false;
 	}
 });

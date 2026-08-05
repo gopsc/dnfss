@@ -430,7 +430,7 @@ function renderMarkdown(element, content) {
 }
 
 /* ===== by qing — 特殊节点（管理员专属）=====
- * 信封：content 为 {"_sp":"link|html|image|file", ...} JSON，普通内容走 Markdown。
+ * 信封：content 为 {"_sp":"link|js|image|file", ...} JSON，普通内容走 Markdown。
  * 发布权限由后端 dnfs 强制（is_admin），前端仅做展示与表单切换。 */
 
 /* 与后端 base64 上限（3.5M 字符）对齐：原始文件约 2.5MB */
@@ -445,7 +445,7 @@ function parseSp(content) {
 	} catch (e) {
 		return null;	// 非法信封按普通文本展示（后端发布时已拦截，这里是兜底）
 	}
-	if (obj && typeof obj === 'object' && ['link', 'html', 'image', 'file'].indexOf(obj._sp) !== -1) return obj;
+	if (obj && typeof obj === 'object' && ['link', 'js', 'image', 'file'].indexOf(obj._sp) !== -1) return obj;
 	return null;
 }
 
@@ -465,7 +465,7 @@ function renderContent(container, item) {
 		}
 	}
 	if (sp._sp === 'link') renderSpLink(container, sp, appendNote);
-	else if (sp._sp === 'html') renderSpHtml(container, sp, appendNote);
+	else if (sp._sp === 'js') renderSpJs(container, sp, appendNote);
 	else if (sp._sp === 'image') renderSpImage(container, sp, appendNote);
 	else if (sp._sp === 'file') renderSpFile(container, sp, appendNote);
 }
@@ -492,39 +492,83 @@ function renderSpLink(container, sp, appendNote) {
 	appendNote();
 }
 
-/* 网页代码节点：审计（展开源码，textContent 防注入）+ 运行（新窗口 document.write） */
-function renderSpHtml(container, sp, appendNote) {
+/* 前端代码节点：含前端内容的节点在渲染到当前页面时自动执行（隔离 iframe 沙箱）。
+ * 采用 iframe 沙箱而非注入父页面全局作用域，原因：
+ *   - 特效脚本运行在独立 iframe 内，无法访问父页面 DOM/JS，任何报错、死循环、变量覆盖
+ *     都不会污染父页面，从而保证"运行特效后卡片点击/节点导航依然正常"；
+ *   - iframe 元素挂载在节点容器内部（DOM 归属该节点），但 keep 全屏 fixed 定位，视觉特效悬浮覆盖整个页面；
+ *     pointer-events:none 不拦截父页面点击，不影响卡片点击/节点导航；
+ *   - 不使用 new Function/eval（CSP 未开 unsafe-eval），srcdoc 内联脚本由 CSP 'unsafe-inline' 放行。
+ * 仅管理员可发布（后端强制）。 */
+/* 无特效模式：true 为关闭自动执行（用户面板开关控制，localStorage 持久化） */
+var sp_effects_disabled = (function() {
+	try { return localStorage.getItem('sp_effects_disabled') === '1'; } catch (e) { return false; }
+})();
+/* 清除当前页面已运行的全部特效沙箱（进入新节点 / 关闭特效时调用） */
+function clearAllEffects() {
+	document.querySelectorAll('.sp-effect-frame').forEach(function(f) { f.remove(); });
+}
+function renderSpJs(container, sp, appendNote) {
 	var bar = document.createElement('div');
 	bar.className = 'sp-actions';
 	var audit_btn = document.createElement('button');
 	audit_btn.className = 'act-btn act-edit';
 	audit_btn.textContent = '审计源码';
-	var run_btn = document.createElement('button');
-	run_btn.className = 'act-btn act-move';
-	run_btn.textContent = '运行';
+	var toggle_btn = document.createElement('button');
+	toggle_btn.className = 'act-btn act-move';
+	toggle_btn.textContent = '停止特效';
 	var pre = document.createElement('pre');
 	pre.className = 'sp-code';
 	pre.style.display = 'none';
 	pre.textContent = sp.code;
+	var out = document.createElement('div');
+	out.className = 'sp-run';
+	out.style.display = 'none';
+	var frame = null;	/* 当前特效 iframe 沙箱实例，null 表示未运行 */
 	audit_btn.addEventListener('click', function(e) {
 		e.stopPropagation();
 		var hidden = (pre.style.display === 'none');
 		pre.style.display = hidden ? 'block' : 'none';
 		audit_btn.textContent = hidden ? '收起源码' : '审计源码';
 	});
-	run_btn.addEventListener('click', function(e) {
+	/* 启动特效：创建隔离 iframe 沙箱，完整前端代码（含 <style>/<script>/<body>）由 srcdoc 承载，
+	 * 脚本在独立上下文执行，无法影响父页面导航。
+	 * 两种模式：
+	 *   - 代码含 "<!-- in-node -->" 标记 → 渲染在节点内部（relative 定位、可交互、随节点滚动）；
+	 *   - 否则 → 全屏 fixed 定位，视觉特效悬浮覆盖整个页面（pointer-events:none 不拦截父页面点击）。
+	 * iframe 元素始终挂载在节点容器内部（DOM 归属该节点）。 */
+	function startEffect() {
+		if (frame) return;
+		frame = document.createElement('iframe');
+		frame.className = 'sp-effect-frame';
+		frame.setAttribute('sandbox', 'allow-scripts');
+		frame.srcdoc = sp.code;
+		var inNode = /<!--\s*in-node\s*-->/.test(sp.code || '');
+		frame.style.cssText = inNode
+			? 'position:relative;display:block;width:100%;height:420px;border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden;background:transparent;'
+			: 'position:fixed;top:0;left:0;width:100%;height:100%;border:0;pointer-events:none;z-index:9999;';
+		container.appendChild(frame);
+		toggle_btn.textContent = '停止特效';
+		out.style.display = 'block';
+		out.textContent = inNode ? '已载入（运行于隔离沙箱）' : '特效已启动（运行于隔离沙箱，不影响页面导航）';
+	}
+	function stopEffect() {
+		if (frame) { frame.remove(); frame = null; }
+		toggle_btn.textContent = '重新运行';
+		out.style.display = 'none';
+	}
+	toggle_btn.addEventListener('click', function(e) {
 		e.stopPropagation();
-		var win = window.open('', '_blank');
-		if (!win) { alert('浏览器拦截了弹窗，请允许后重试'); return; }
-		win.document.open();
-		win.document.write(sp.code);
-		win.document.close();
+		if (frame) stopEffect(); else startEffect();
 	});
 	bar.appendChild(audit_btn);
-	bar.appendChild(run_btn);
+	bar.appendChild(toggle_btn);
 	container.appendChild(bar);
 	container.appendChild(pre);
+	container.appendChild(out);
 	appendNote();
+	/* 含前端内容的节点渲染到当前页面时自动执行（无特效模式下跳过） */
+	if (!sp_effects_disabled) startEffect();
 }
 
 /* 图片节点：DataURL 直接显示（CSP img-src 允许 data:） */
@@ -612,6 +656,10 @@ var sp_type = document.getElementById('sp-type');
 var sp_file = document.getElementById('sp-file');
 var sp_file_tip = document.getElementById('sp-file-tip');
 var sp_edit_original = null;	/* 编辑图片/文件节点时的原信封字符串：未选新文件则原样提交 */
+/* 搜索框：当前层卡片标题/内容关键词过滤 */
+var searchtext = document.getElementById('searchtext');
+var searchsubmit = document.getElementById('searchsubmit');
+var current_children = [];		/* 当前层子节点列表（load_notes 时更新，搜索据此过滤） */
 /* 面板默认展开的最小视口宽度（px）：窄屏下面板展开会遮挡内容，默认折叠；宽屏默认展开 */
 var PANEL_EXPAND_MIN_WIDTH = 768;
 var is_expand = window.innerWidth >= PANEL_EXPAND_MIN_WIDTH;
@@ -646,7 +694,7 @@ sp_type.addEventListener('change', function() {
 		sp_edit_original = null;
 	}
 	if (t === 'link') input_note_content.placeholder = '请输入链接 URL（https://…）';
-	else if (t === 'html') input_note_content.placeholder = '请输入完整 HTML 代码';
+	else if (t === 'js') input_note_content.placeholder = '请输入完整前端代码（可含 HTML/CSS/JS）';
 	else input_note_content.placeholder = '';
 });
 
@@ -669,10 +717,10 @@ async function buildSubmitContent() {
 		if (!/^https?:\/\//i.test(url)) { alert('链接必须以 http:// 或 https:// 开头'); return null; }
 		return JSON.stringify({ _sp: 'link', url: url });
 	}
-	if (t === 'html') {
+	if (t === 'js') {
 		var code = input_note_content.value;
-		if (!code.trim()) { alert('请输入 HTML 代码'); return null; }
-		return JSON.stringify({ _sp: 'html', code: code });
+		if (!code.trim()) { alert('请输入前端代码'); return null; }
+		return JSON.stringify({ _sp: 'js', code: code });
 	}
 	/* image / file：优先使用新选择的文件；编辑模式下未选新文件则保留原信封 */
 	if (sp_file.files.length === 0) {
@@ -742,13 +790,13 @@ delete_note.addEventListener('click', (event) => {
 })
 
 /* by qing — 点击卡片"编辑"：把节点标题/内容载入下方表单，进入编辑模式。
- * 特殊节点：link/html 回填 url/code 到文本域；image/file 记住原信封（未选新文件则原样提交） */
+ * 特殊节点：link/js 回填 url/code 到文本域；image/file 记住原信封（未选新文件则原样提交） */
 function startEdit(item) {
 	editing_id = item.id;
 	input_note_title.value = item.title;
 	var sp = parseSp(item.content);
 	sp_edit_original = null;
-	if (sp && (sp._sp === 'link' || sp._sp === 'html')) {
+	if (sp && (sp._sp === 'link' || sp._sp === 'js')) {
 		sp_type.value = sp._sp;
 		sp_type.dispatchEvent(new Event('change'));
 		input_note_content.value = (sp._sp === 'link') ? (sp.url || '') : (sp.code || '');
@@ -817,24 +865,34 @@ function load_notes(main_node) {
 			cancelEdit();
 	}
 
+	/* 切换到新节点：清空搜索关键词，清除上一节点特效，再渲染当前层 */
+	current_children = Array.isArray(main_node) ? main_node : [];
+	if (searchtext) searchtext.value = "";
+	clearAllEffects();
+	renderCards(current_children);
+};
 
+/* 把卡片列表渲染到 recommend_list（从 load_notes/搜索过滤复用） */
+function renderCards(list) {
 	recommend_list.replaceChildren();
-	for (let i in main_node) {
-		let item = main_node[i]
+	for (let i in list) {
+		let item = list[i]
 		console.log(item)
 		let card = document.createElement('div');
 		card.className = "card";
-		card.addEventListener('click', function(event) {
+		card.__item = item;		/* 供搜索过滤时读取原始数据 */
+		let ttl = document.createElement('center');
+		let ttl1 =document.createElement('h3');
+		ttl1.textContent = item.title;
+		card.id = item.title;
+		/* 仅标题可点击进入子节点（内容/统计/操作区不触发跳转） */
+		ttl1.addEventListener('click', function(event) {
 			if (!confirmLeaveIfDirty()) return;	/* 未放弃输入则不跳转，stack 保持原样 */
 			var id = Number(item.id)
 			stack.push(id)
 			getNode(id).then(load_notes)
 			getNode(id).then(loadMap)
 		});
-		let ttl = document.createElement('center');
-		let ttl1 =document.createElement('h3');
-		ttl1.textContent = item.title;
-		card.id = item.title;
 		ttl.appendChild(ttl1);
 		card.appendChild(ttl);
 		let wrt_div = document.createElement('p');
@@ -897,6 +955,60 @@ function load_notes(main_node) {
 		recommend_list.appendChild(document.createElement('br'))
 	}
 };
+
+/* ===== 当前层搜索：从 item 中提取可搜索文本（title + 内容文本；信封类排除 base64 数据） ===== */
+function itemSearchText(item) {
+	var parts = [];
+	if (item.title) parts.push(item.title);
+	if (item.owner) parts.push(item.owner);
+	var c = item.content;
+	if (typeof c === 'string') {
+		var sp = parseSp(c);
+		if (!sp) {
+			parts.push(c);
+		} else if (sp._sp === 'link') {
+			if (sp.url) parts.push(sp.url);
+			if (sp.note) parts.push(sp.note);
+		} else if (sp._sp === 'js') {
+			if (sp.code) parts.push(sp.code);
+			if (sp.note) parts.push(sp.note);
+		} else {	/* image / file：不把 base64 数据纳入搜索 */
+			if (sp.name) parts.push(sp.name);
+			if (sp.note) parts.push(sp.note);
+		}
+	}
+	return parts.join(' ').toLowerCase();
+}
+
+function applySearch() {
+	var kw = (searchtext && searchtext.value || '').trim().toLowerCase();
+	var cards = recommend_list.querySelectorAll('.card');
+	var anyMatch = false;
+	for (var i = 0; i < cards.length; i++) {
+		var card = cards[i];
+		var item = card.__item;
+		var matched = !kw || (item && itemSearchText(item).indexOf(kw) !== -1);
+		card.style.display = matched ? '' : 'none';
+		if (matched) anyMatch = true;
+	}
+	/* 无匹配结果提示（避免空列表看不出是已过滤） */
+	var noMatchTip = document.getElementById('search-no-match');
+	if (kw && !anyMatch) {
+		if (!noMatchTip) {
+			noMatchTip = document.createElement('div');
+			noMatchTip.id = 'search-no-match';
+			noMatchTip.className = 'card';
+			noMatchTip.style.textAlign = 'center';
+			noMatchTip.style.color = 'var(--fg-secondary)';
+			noMatchTip.style.cursor = 'default';
+			recommend_list.appendChild(noMatchTip);
+		}
+		noMatchTip.textContent = '未找到匹配「' + searchtext.value + '」的节点';
+		noMatchTip.style.display = '';
+	} else if (noMatchTip) {
+		noMatchTip.style.display = 'none';
+	}
+}
 
 function loadMap(children_json) {
 	let need_return = false;
@@ -984,7 +1096,7 @@ function renderUserPanel() {
 	if (userpanel_expand) {
 		fold.textContent = "v 折叠";
 	} else {
-		fold.textContent = "> " + (current_user.login ? current_user.user : "未登录");
+		fold.textContent = "> 展开";
 	}
 	fold.addEventListener("click", () => {
 		userpanel_expand = !userpanel_expand;
@@ -1011,6 +1123,34 @@ function renderUserPanel() {
 	role_tag.textContent = current_user.is_admin ? "管理员" : "普通用户";
 	userpanel.appendChild(role_tag);
 
+	/* 无特效模式开关（所有用户）：关闭后特效节点不再自动执行 */
+	let effect_btn = document.createElement("div");
+	effect_btn.className = "tag";
+	effect_btn.textContent = sp_effects_disabled ? "无特效模式" : "特效模式";
+	effect_btn.addEventListener("click", () => {
+		sp_effects_disabled = !sp_effects_disabled;
+		try { localStorage.setItem('sp_effects_disabled', sp_effects_disabled ? '1' : '0'); } catch (e) {}
+		effect_btn.textContent = sp_effects_disabled ? "无特效模式" : "特效模式";
+		/* 关闭时移除当前已运行的全部特效沙箱 */
+		if (sp_effects_disabled) clearAllEffects();
+	});
+	userpanel.appendChild(effect_btn);
+
+	/* 管理员专属入口：运维机器人 / 进程管理器 */
+	if (current_user.is_admin) {
+		let ops_btn = document.createElement("div");
+		ops_btn.className = "tag";
+		ops_btn.textContent = "运维机器人";
+		ops_btn.addEventListener("click", () => { window.location.href = "/aibox.html"; });
+		userpanel.appendChild(ops_btn);
+
+		let mgmt_btn = document.createElement("div");
+		mgmt_btn.className = "tag";
+		mgmt_btn.textContent = "进程管理器";
+		mgmt_btn.addEventListener("click", () => { window.location.href = "/mgmt/mgmt.html"; });
+		userpanel.appendChild(mgmt_btn);
+	}
+
 	let logout_tag = document.createElement("div");
 	logout_tag.className = "tag back";
 	logout_tag.textContent = "退出登录";
@@ -1024,3 +1164,15 @@ function renderUserPanel() {
 getNode(0).then(load_notes);
 getNode(0).then(loadMap)
 loadUserPanel();
+
+/* ===== 搜索框事件绑定：实时过滤当前层卡片；ESC 清空；回车不提交 ===== */
+if (searchtext) {
+	searchtext.addEventListener('input', applySearch);
+	searchtext.addEventListener('keydown', function(e) {
+		if (e.key === 'Enter') { e.preventDefault(); applySearch(); }
+		if (e.key === 'Escape') { searchtext.value = ''; applySearch(); }
+	});
+}
+if (searchsubmit) {
+	searchsubmit.addEventListener('click', function(e) { e.preventDefault(); applySearch(); });
+}

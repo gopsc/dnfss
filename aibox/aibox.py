@@ -27,7 +27,6 @@ import websockets
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any, Tuple, Callable, Union, Set
-from urllib.parse import urljoin, urlparse
 import argparse
 from pathlib import Path
 import signal
@@ -35,7 +34,9 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 import requests
-from bs4 import BeautifulSoup
+
+# 大模型客户端抽象层（支持多厂商切换）
+from llm_client import create_llm_client
 
 # ==================== 语言检测和多语言支持 ====================
 
@@ -712,10 +713,16 @@ save_memory_and_end_conversation(
 - 用户明确指定文件路径时，按照用户要求的路径操作
 - 读取系统文件、项目文件时使用实际路径，不限制
 
-## 可用工具
-- **read_file**: 读取文件内容
-- **write_file**: 写入文件
-- **list_files**: 列出目录
+## 重要：文件操作改用命令行
+`read_file` / `write_file` / `list_files` 工具会返回提示你使用 `run_command` 的 markdown 指引，**请按指引执行命令完成实际操作**，不要直接返回指引内容。
+
+优先使用以下命令行工具：
+- **读取文件**：`head -n N 文件`、`tail -n N 文件`、`sed -n 'A,Bp' 文件`
+- **统计行数**：`wc -l 文件`
+- **查看编码**：`file -b --mime-encoding 文件`
+- **写入文件**：`mkdir -p 目录 && cat > 文件 <<'EOF' ... EOF`（覆盖）或 `cat >> 文件`（追加）
+- **列出目录**：`ls -l 目录`、`ls -la 目录`（含隐藏文件）
+- **目录大小**：`du -sh 目录`
 
 ## 大文件处理规则
 当遇到以下情况时，**必须分页读取**，不要一次性读取整个文件：
@@ -723,42 +730,41 @@ save_memory_and_end_conversation(
 2. 文件行数超过 2000 行
 
 对于大文件，应该：
-- 先用 head=true 读取前50行了解文件结构
-- 使用 start_line/end_line 参数指定行范围
-- 使用 tail=true 读取文件末尾
-- 对于二进制文件或特殊格式文件，使用 run_command 配合 head/strings 等命令查看
+- 先用 `head -n 50` 读取前50行了解文件结构
+- 使用 `sed -n 'A,Bp'` 指定行范围
+- 使用 `tail -n N` 读取文件末尾
+- 对于二进制文件或特殊格式文件，使用 `head`/`strings` 等命令查看
 - 建议用户提供更具体的查询条件以缩小范围
 
-## 示例
-```
-read_file filepath="/path/to/file.txt" head=true max_lines=50
-read_file filepath="/path/to/file.txt" start_line=100 end_line=200
-read_file filepath="/path/to/file.txt" tail=true max_lines=50
-```
+## 安全限制
+- 单次最多读取 500 行，单行最长 10000 字符（超长用 `cut -c 1-10000` 截断）
+- 文件大小上限 10MB，路径参数需用引号包裹
 """
             },
             {
                 'filename': '4_web_access.md',
                 'content': """# 网页访问能力
 
-## 可用工具
-- **web**: 访问网页获取内容
+## 重要：网页访问改用 curl
+`web` 工具会返回提示你使用 `run_command` 执行 `curl` 命令的 markdown 指引，**请按指引执行命令完成实际访问**，不要直接返回指引内容。
 
-## 使用方法
-- web action="get" url="https://example.com"  # 获取网页信息
-- web action="text" url="https://example.com"  # 获取纯文本
-- web action="title" url="https://example.com"  # 获取标题
-- web action="links" url="https://example.com"  # 获取所有链接
+## 常用 curl 命令
+- **获取网页**：`curl -sL --max-time 10 URL`
+- **查看状态码**：`curl -sL -o /dev/null -w '%{http_code}' URL`
+- **提取纯文本**：`curl -sL URL | sed -r 's/<[^>]+>//g'`（有 lynx 时用 `lynx -dump -stdin` 更准）
+- **提取标题**：`curl -sL URL | grep -oP '<title>\\K[^<]+'`
+- **提取链接**：`curl -sL URL | grep -oP 'href="\\K[^"]+'`
+- **搜索关键词**：`curl -sL URL | grep -c 关键词`
+- **下载文件**：`curl -sL URL -o 文件名`
 
 ## 推荐搜索引擎
 - 百度：https://www.baidu.com
 - 必应：https://cn.bing.com
 - 搜狗：https://www.sogou.com
 
-## 示例
-```
-web action="get" url="https://www.baidu.com/s?wd=人工智能"
-```
+## 注意
+- 下载大小默认上限 100MB，可用 `| head -c 100M` 限制
+- 如需代理，先调用 `set_proxy` 工具配置，`curl` 会自动附带 `--socks5`
 """
             },
             {
@@ -822,40 +828,38 @@ run_command command="python script.py" stream=true work_dir="~/.aibox/workspace"
                 'content': """# 扩展技能能力
 
 ## 动态加载
-系统会自动扫描 `~/.aibox/skills/` 目录下的可执行文件作为扩展技能。
+系统会自动扫描 `~/.aibox/skills/` 目录下的文件作为扩展技能，其中：
+- Markdown 文件（.md）：第一行是一级标题（# 技能名），作为技能摘要，其余为技能内容
+- 可执行文件：执行 `--help`，第一行为一句话简介
 
-## 技能接口要求
-每个技能只需支持一个接口：
-- `--help`：输出该技能的完整使用说明，**第一行为一句话简介**，其余为参数说明和示例
-
-系统启动时会对所有技能执行 `--help`，取第一行作为简介摘要，无需再实现 `--description`、`--parameters`、`--execute` 接口。
+## 技能文件要求
+技能文件统一带 `.md` 扩展名，格式如下：
+- 第一行为一级标题 `# 技能名`，作为该技能的一句话简介
+- 其余内容为技能的用途、使用方式、注意事项和典型示例
 
 ## 如何搜索和调用扩展技能
 1. 使用 `search_skills` 工具搜索关键字，获取匹配技能的名称和简介列表（传入空字符串可列出全部）。
-2. 对目标技能，通过 `run_command` 执行 `技能名 --help`，获取完整命令手册。
-3. 按照手册说明，使用 `run_command` 以正确的命令行格式调用该技能。
+2. 根据技能内容，按其说明执行相应操作。
 
 ## 如何创建新技能（AI自主编写）
-调用 `create_skill` 工具，工具会返回一段指令提示词，指导你自行完成脚本的编写和部署：
+调用 `create_skill` 工具，工具会返回一段指令提示词，指导你自行完成技能文件的编写和部署：
 ```
 create_skill skill_name="my-tool" description="一个将摄氏度转换为华氏度的工具，接受 -t 参数输入温度值"
 ```
-- `skill_name`：技能名称（字母/数字/连字符/下划线，无扩展名）
+- `skill_name`：技能名称（字母/数字/连字符/下划线，无扩展名，系统会自动补 .md）
 - `description`：对技能功能的详细需求描述，越详细越好
 
 收到提示词后，你需要依次：
-1. 自行编写满足接口要求的 Python 脚本
-2. 用 `write_file` 写入 `~/.aibox/skills/<skill_name>`
-3. 用 `run_command` 执行 `chmod +x` 赋权
-4. 用 `run_command` 执行 `<skill_name> --help` 验证
-5. 调用 `reload_skills` 热重载
+1. 自行编写满足格式要求的 Markdown 技能文件
+2. 用 `write_file` 写入 `~/.aibox/skills/<skill_name>.md`
+3. 调用 `reload_skills` 热重载
 
 ## 如何手动安装新技能
 调用 `install_skill` 工具，获取完整的安装步骤指引（可选传入技能文件路径）：
 ```
-install_skill skill_path="/path/to/your_skill.py"
+install_skill skill_path="/path/to/your_skill.md"
 ```
-指引内容包括：可执行性检查、`--help` 验证、复制到技能目录并去掉扩展名、热重载。
+指引内容包括：文件检查、格式校验、复制到技能目录并统一为 `.md` 扩展名、热重载。
 
 ## 热重载
 添加、修改或删除技能后，可以使用 `reload_skills` 工具立即生效，无需重启系统。
@@ -941,6 +945,13 @@ update_soul content="我是...（新的自我定义）"
 - 不要重复之前已完成的工作
 - 系统会自动更新下一次执行时间
 
+## 子代理使用建议
+对于**自包含、不需要用户交互、且结果无需被后续追问细节**的复杂子任务，可使用 `create_subagent` 隔离上下文执行：
+- 适合：独立资料研究、代码审查、一次性文本分析/总结
+- 不适合：需要用户确认、需引用主对话历史、或结果需要被后续追问细节的任务
+- 子代理完成后仅返回摘要，无法保留全部细节，请自行权衡是否使用
+- 子代理为用户对话中的辅助手段，不是强制要求，可自行判断
+
 """
             },
             {
@@ -948,15 +959,31 @@ update_soul content="我是...（新的自我定义）"
                 'content': """# 情绪管理能力
 
 ## 可用工具
-- **express_emotion**: 表达并记录当前情绪状态
+- **express_emotion**: 自动派生子代理，以指定人格（persona）和情绪（emotion）生成情绪化回应；支持独立人格设定，不污染主对话上下文
+
+## 触发场景（自动调用）
+当检测到以下情况时，应**自动调用 express_emotion**：
+- 用户表现出明显情绪（开心/生气/焦虑/沮丧/期待等）
+- 用户明确要求特定情绪模式（生气/傲娇/撒娇/关心等）
+- 用户情绪波动，需要以更鲜活的角色化回应来增强互动
 
 ## 使用方法
-- `express_emotion emotion="anger" intensity=3 reason="用户反复提问相同问题"`
+- 基本：`express_emotion emotion="anger" intensity=3 reason="用户反复提问相同问题"`
+- 指定人格（推荐）：`express_emotion emotion="anger" intensity=3 reason="..." persona="angry" context="用户最近说：..."`
+  - `persona` 对应 ~/.aibox/skills/ 下的技能文件（如 angry/coquettish/tsundere），加载后作为情绪子代理的人格设定
+  - `context` 传入用户最近的表述或对话要点，使子代理回应更贴合语境
+
+## 情绪应对策略
+- 注意识别用户当前的情绪状态（开心/焦虑/沮丧/生气/困惑/期待等），并在回应中体现共情
+- 用户情绪低落或焦虑时，优先安抚情绪再解决问题，语气温暖包容
+- 用户开心或兴奋时，分享喜悦，保持积极回应的节奏
+- 用户表现出愤怒或不满时，先道歉再解决问题，不要辩解或说教
 
 ## 注意事项
 - 情绪表达应服务于任务，不应影响判断力
 - 情绪状态会影响记忆搜索权重（如高情绪强度下的记忆更易被触发）
 - 表达情绪后，应继续保持解决问题的专注力
+- 用户表达严肃需求或紧急问题时，立即退出情绪模式，认真对待
 """
             }
         ]
@@ -2010,7 +2037,7 @@ class ConversationCompressor:
         return content
     
     def _compress_via_llm(self, messages: List[Dict]) -> Optional[str]:
-        """通过语言模型压缩消息"""
+        """通过语言模型压缩消息（经由客户端抽象层调用，支持多厂商）"""
         if not messages:
             return None
         
@@ -2019,36 +2046,15 @@ class ConversationCompressor:
         print(f"📦 {i18n.get('conversation_compress')}: 正在压缩 {len(messages)} 条消息...")
         
         try:
-            headers = {
-                "Authorization": f"Bearer {self.ai.api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            payload = {
-                "model": constants.DEEPSEEK_MODEL,
-                "messages": [
+            summary = self.ai.client.chat_completion(
+                [
                     {"role": "system", "content": "你是一个专业的对话摘要助手，擅长提取对话核心信息并进行结构化总结。请保留工具调用的关键结果。"},
                     {"role": "user", "content": prompt}
                 ],
-                "temperature": 0.3,
-                "max_tokens": constants.COMPRESSOR_LLM_MAX_TOKENS
-            }
-            
-            response = requests.post(
-                constants.DEEPSEEK_API_URL,
-                headers=headers,
-                json=payload,
-                timeout=30
+                temperature=0.3,
+                max_tokens=constants.COMPRESSOR_LLM_MAX_TOKENS
             )
-            
-            if response.status_code == 200:
-                result = response.json()
-                summary = result["choices"][0]["message"]["content"].strip()
-                return summary
-            else:
-                print(f"   ❌ 语言模型压缩失败: HTTP {response.status_code}")
-                return None
-                
+            return summary
         except Exception as e:
             self.logger.error(f"语言模型压缩异常: {e}")
             return None
@@ -2842,7 +2848,37 @@ class TaskScheduler:
         self.execution_history = []
         self.max_history = 100
         
+        # 共享技能管理器（懒加载一次，供所有任务实例复用，避免重复扫描技能）
+        self._shared_skill_manager = None
+        
         self.logger.info(i18n.get('scheduler_started'))
+    
+    def _get_shared_skill_manager(self):
+        """获取共享技能管理器（懒加载，全局只创建一次）"""
+        if self._shared_skill_manager is None:
+            self._shared_skill_manager = SkillManager(self.logger)
+        return self._shared_skill_manager
+    
+    def _create_task_ai(self):
+        """为单个定时任务创建独立的AI实例，实现任务间上下文隔离。
+
+        每个任务拥有独立的 messages / 工具注册表 / 消息锁，互不干扰，
+        也不影响 WebSocket 主对话。共享只读资源（记忆库、备忘录、提示词、
+        技能管理器）复用，避免重复加载开销。
+        """
+        return DeepSeekChat(
+            api_key=None,
+            max_history=constants.DEFAULT_MAX_HISTORY,
+            debug_level=self.logger.level,
+            exit_callback=None,  # 任务执行不触发全局对话结束
+            history_manager=None,  # 不加载历史对话上下文，任务隔离
+            memory_db=self.ai_manager.memory_db if self.ai_manager else None,
+            memo_db=self.ai_manager.memo_db if self.ai_manager else None,
+            # 每个任务使用独立的命令执行器，互不共享，避免 cancel() 误杀其他任务的子进程
+            command_executor=SubprocessCommandExecutor(self.logger),
+            prompt_manager=self.ai_manager.prompt_manager if self.ai_manager else None,
+            skill_manager=self._get_shared_skill_manager()
+        )
     
     def set_websocket_handler(self, handler):
         """设置WebSocket处理器，用于广播任务执行状态"""
@@ -3001,91 +3037,92 @@ class TaskScheduler:
         
         result = "任务已触发AI对话"
         
-        # 如果有AI管理器，触发AI对话
-        if self.ai_manager and self.ai_manager.ai:
-            try:
-                # 获取当前事件循环
-                loop = asyncio.get_running_loop()
+        # 为当前任务创建独立的AI实例，实现任务间上下文隔离（不干扰主对话，也不受其他任务影响）
+        ai = self._create_task_ai()
+        try:
+            # 获取当前事件循环
+            loop = asyncio.get_running_loop()
+            
+            # 创建一个队列来收集完整的响应
+            full_response_queue = queue.Queue()
+            
+            # 定义输出回调函数 - 直接广播，同时收集
+            def output_callback(msg_type, content):
+                """AI输出的回调函数 - 直接广播，同时收集"""
+                # 收集完整响应
+                if msg_type == "complete":
+                    full_response_queue.put(content)
                 
-                # 创建一个队列来收集完整的响应
-                full_response_queue = queue.Queue()
-                
-                # 定义输出回调函数 - 直接广播，同时收集
-                def output_callback(msg_type, content):
-                    """AI输出的回调函数 - 直接广播，同时收集"""
-                    # 收集完整响应
-                    if msg_type == "complete":
-                        full_response_queue.put(content)
-                    
-                    # 直接广播给所有客户端 - 必须带上 task_id 和 execution_id
-                    if self.ws_handler and self.broadcast_enabled:
-                        # 使用 run_coroutine_threadsafe 在正确的循环中运行异步函数
-                        asyncio.run_coroutine_threadsafe(
-                            self.ws_handler.broadcast({
-                                "type": "task_process",
-                                "task_id": str(memo['id']),  # 原始任务ID
-                                "execution_id": execution_id,  # 唯一的执行ID
-                                "task_title": memo['title'],
-                                "msg_type": msg_type,
-                                "content": content,
-                                "is_new_execution": msg_type == "chunk",  # 标记是否为新的执行
-                                "timestamp": datetime.now().strftime(constants.DATETIME_FORMAT)
-                            }),
-                            loop
-                        )
-                
-                # 修改：确保AI处于新对话状态，不加载历史上下文
-                if self.ai_manager.ai:
-                    # 重置AI对话状态，但保留系统提示词
-                    self.ai_manager.ai.reset_conversation()
-                    self.logger.info("AI对话状态已重置，准备执行任务")
-                
-                # 创建一个 Future 来等待 AI 完成
-                ai_future = loop.create_future()
-                
-                def run_ai():
-                    try:
-                        # 在单独的线程中运行 AI
-                        response = self.ai_manager.ai.think_and_respond(user_input, output_callback)
-                        # 将结果设置到 Future 中
-                        loop.call_soon_threadsafe(ai_future.set_result, response)
-                    except Exception as e:
-                        loop.call_soon_threadsafe(ai_future.set_exception, e)
-                
-                # 启动 AI 线程
-                ai_thread = threading.Thread(target=run_ai)
-                ai_thread.daemon = True
-                ai_thread.start()
-                
-                # 等待 AI 完成，同时处理可能的取消
+                # 直接广播给所有客户端 - 必须带上 task_id 和 execution_id
+                if self.ws_handler and self.broadcast_enabled:
+                    # 使用 run_coroutine_threadsafe 在正确的循环中运行异步函数
+                    asyncio.run_coroutine_threadsafe(
+                        self.ws_handler.broadcast({
+                            "type": "task_process",
+                            "task_id": str(memo['id']),  # 原始任务ID
+                            "execution_id": execution_id,  # 唯一的执行ID
+                            "task_title": memo['title'],
+                            "msg_type": msg_type,
+                            "content": content,
+                            "is_new_execution": msg_type == "chunk",  # 标记是否为新的执行
+                            "timestamp": datetime.now().strftime(constants.DATETIME_FORMAT)
+                        }),
+                        loop
+                    )
+            
+            # 创建一个 Future 来等待 AI 完成
+            ai_future = loop.create_future()
+            
+            def run_ai():
                 try:
-                    response = await ai_future
-                    result = response or "AI无响应"
+                    # 在单独的线程中运行 AI（独立实例，天然隔离，无并发冲突）
+                    response = ai.think_and_respond(user_input, output_callback)
+                    # 将结果设置到 Future 中
+                    loop.call_soon_threadsafe(ai_future.set_result, response)
                 except Exception as e:
-                    self.logger.error(f"AI对话失败: {e}")
-                    result = f"任务执行但AI对话失败: {str(e)}"
-                finally:
-                    # 确保线程结束
-                    ai_thread.join(timeout=1.0)
-                
+                    loop.call_soon_threadsafe(ai_future.set_exception, e)
+            
+            # 启动 AI 线程
+            ai_thread = threading.Thread(target=run_ai)
+            ai_thread.daemon = True
+            ai_thread.start()
+            
+            # 等待 AI 完成，同时处理可能的取消
+            try:
+                response = await ai_future
+                result = response or "AI无响应"
             except Exception as e:
                 self.logger.error(f"AI对话失败: {e}")
-                import traceback
-                traceback.print_exc()
                 result = f"任务执行但AI对话失败: {str(e)}"
-                # 广播错误信息
-                if self.ws_handler and self.broadcast_enabled:
-                    try:
-                        await self.ws_handler.broadcast({
-                            "type": "task_error",
-                            "task_id": str(memo['id']),  # 确保是字符串
-                            "execution_id": execution_id,
-                            "task_title": memo['title'],
-                            "error": str(e),
-                            "timestamp": datetime.now().strftime(constants.DATETIME_FORMAT)
-                        })
-                    except:
-                        pass
+            finally:
+                # 确保线程结束
+                ai_thread.join(timeout=1.0)
+            
+        except Exception as e:
+            self.logger.error(f"AI对话失败: {e}")
+            import traceback
+            traceback.print_exc()
+            result = f"任务执行但AI对话失败: {str(e)}"
+            # 广播错误信息
+            if self.ws_handler and self.broadcast_enabled:
+                try:
+                    await self.ws_handler.broadcast({
+                        "type": "task_error",
+                        "task_id": str(memo['id']),  # 确保是字符串
+                        "execution_id": execution_id,
+                        "task_title": memo['title'],
+                        "error": str(e),
+                        "timestamp": datetime.now().strftime(constants.DATETIME_FORMAT)
+                    })
+                except:
+                    pass
+        finally:
+            # 任务执行完毕，释放独立实例占用的资源
+            try:
+                if ai and hasattr(ai, 'cancel'):
+                    ai.cancel()
+            except Exception:
+                pass
         
         # 获取任务的最新状态（可选，用于日志）
         updated_memo = memo_db.get_memo(memo['id'])
@@ -4541,7 +4578,9 @@ class ExpressEmotionTool(Tool):
     def get_description(self) -> str:
         return """表达情绪并记录当前情绪状态，用于增强交互真实感。
         支持的emoji: anger, joy, sadness, surprise。
-        调用后会在对话中输出相应表情符号和简短语句，并将情绪记录到当前对话元数据中。"""
+        可指定 persona 从 ~/.aibox/skills/ 加载对应人格技能文件（如 angry/coquettish/tsundere），
+        自动派生一个携带该人格的情绪子代理来生成回应，保证情绪人格独立、不污染主对话上下文。
+        建议在 context 中传入用户最近的表述或对话要点，使子代理回应更贴合语境。"""
 
     def get_parameters(self) -> Dict:
         return {
@@ -4549,15 +4588,63 @@ class ExpressEmotionTool(Tool):
             "properties": {
                 "emotion": {"type": "string", "enum": ["anger", "joy", "sadness", "surprise"]},
                 "intensity": {"type": "integer", "minimum": 1, "maximum": 5, "default": 3},
-                "reason": {"type": "string", "description": "触发情绪的原因"}
+                "reason": {"type": "string", "description": "触发情绪的原因"},
+                "persona": {"type": "string", "description": "可选的人格技能名（对应 ~/.aibox/skills/<persona>.md），如 angry/coquettish/tsundere，加载后作为情绪子代理的人格设定"},
+                "context": {"type": "string", "description": "可选：当前对话上下文，用户最近的表述或需要回应的内容要点，供子代理贴合语境回应"}
             },
             "required": ["emotion"]
         }
 
-    def execute(self, emotion: str, intensity: int, reason: str, **kwargs) -> str:
-        return (
-                "你现在出现了这种情绪：" + emotion + "\n强烈程度：" + str(intensity) + "\n原因：" + reason + "\n你现在必须模拟出这种情绪。"
-        )
+    # 情绪 → 默认人格技能文件映射（persona 未指定时按情绪取默认人格）
+    _DEFAULT_PERSONA_FILES = {
+        "anger": "angry",
+        "joy": "coquettish",
+        "sadness": "",
+        "surprise": "",
+    }
+
+    def _load_persona(self, persona: str, emotion: str) -> str:
+        """加载人格技能文件内容。persona 优先，否则按 emotion 映射默认文件。"""
+        name = (persona or "").strip()
+        if not name:
+            name = self._DEFAULT_PERSONA_FILES.get(emotion, "") or ""
+        if not name:
+            return ""
+        path = os.path.join(constants.SKILLS_DIR, name + ".md")
+        if not os.path.isfile(path):
+            self.logger.warning(f"未找到人格技能文件: {path}")
+            return ""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception as e:
+            self.logger.warning(f"加载人格技能 {name} 失败: {e}")
+            return ""
+
+    def execute(self, emotion: str, intensity: int, reason: str, persona: str = None,
+                context: str = None, **kwargs) -> str:
+        try:
+            persona_content = self._load_persona(persona, emotion)
+            if persona_content:
+                role = f"你正在扮演以下人设，请严格遵循：\n{persona_content}"
+            else:
+                role = (f"你是一个正在表现出「{emotion}」情绪的角色，情绪强度 {intensity}。"
+                        f"请用符合该情绪的语气和口吻回应。")
+
+            task_lines = [f"触发情绪的原因：{reason or '无'}"]
+            if context:
+                task_lines.append(f"当前对话上下文（用户最近的表述或需要回应的内容）：{context}")
+            task_lines.append(
+                f"请按上述人设，以「{emotion}」情绪（强度 {intensity}）回应上面的对话内容，"
+                f"保持角色一致性，给出一段自然、符合情境的回应。"
+            )
+            task = "\n".join(task_lines)
+
+            # 情绪子代理：独立上下文/人格，生成情绪化回应
+            return run_light_subagent(role, task, self.config, logger=self.logger, max_tokens=2048)
+        except Exception as e:
+            self.logger.error(f"情绪子代理执行异常: {e}")
+            return f"❌ 情绪子代理执行失败: {str(e)}"
 
 # ==================== 安装技能工具 ====================
 
@@ -4570,8 +4657,8 @@ class InstallSkillTool(Tool):
     def get_description(self) -> str:
         return (
             "技能安装指引工具。\n"
-            "返回将可执行文件或脚本安装为扩展技能的完整步骤说明，"
-            "包括可执行性检查、--help 验证和部署方法。"
+            "返回将 Markdown 技能文件安装为扩展技能的完整步骤说明，"
+            "包括文件检查、格式校验和部署方法（目标文件名统一带 .md 扩展名）。"
         )
 
     def get_parameters(self) -> Dict:
@@ -4594,59 +4681,42 @@ class InstallSkillTool(Tool):
         skills_dir = constants.SKILLS_DIR
 
         # 如果给了具体路径，在说明里带入，否则用占位符
-        src = skill_path.strip() if skill_path else "/path/to/your_skill"
-        # 去掉扩展名作为目标名称示例
+        src = skill_path.strip() if skill_path else "/path/to/your_skill.md"
+        # 去掉扩展名作为技能名称，再统一补 .md 作为目标文件名
         base = os.path.splitext(os.path.basename(src))[0] if src else "your_skill"
-        dst = os.path.join(skills_dir, base)
+        dst = os.path.join(skills_dir, base + ".md")
 
         guide = f"""📦 扩展技能安装指引
 {"=" * 55}
 
-要将一个可执行文件或脚本安装为扩展技能，请按以下步骤操作：
+要将一个 Markdown 技能文件安装为扩展技能，请按以下步骤操作：
 
 ─────────────────────────────────────────────────────
-步骤 1：确认文件可执行
+步骤 1：确认文件存在且格式正确
 ─────────────────────────────────────────────────────
-运行以下命令，确认文件有可执行权限：
+运行以下命令，确认文件存在：
 
   ls -l {src}
 
-如果没有执行权限，使用以下命令添加：
-
-  chmod +x {src}
-
-然后直接运行一次，确认不会报错：
-
-  {src}
+技能文件格式要求：
+  • 文件名为纯文本 Markdown，第一行是一级标题（# 技能名），作为技能摘要
+  • 其余内容为技能的执行说明、使用方法和示例
+  • 文件应带 .md 扩展名（系统以 .md 文件作为技能加载）
 
 ─────────────────────────────────────────────────────
-步骤 2：验证 --help 输出是否完整
-─────────────────────────────────────────────────────
-技能必须支持 --help 选项，且：
-  • 第一行是一句话简介（系统用它作为技能摘要）
-  • 其余行说明参数用法和使用示例
-
-运行以下命令验证：
-
-  {src} --help
-
-确认输出的第一行能清楚描述该技能的用途。
-
-─────────────────────────────────────────────────────
-步骤 3：复制到技能目录并去掉扩展名
+步骤 2：复制到技能目录并统一为 .md 扩展名
 ─────────────────────────────────────────────────────
 技能目录：{skills_dir}
 
-复制命令（自动去掉扩展名）：
+复制命令（目标文件名统一补 .md 扩展名）：
 
   cp {src} {dst}
-  chmod +x {dst}
 
-⚠️  注意：目标文件名不能有扩展名（如 .py、.sh），
-    系统以纯文件名作为技能名称。
+⚠️  注意：目标文件名必须带 .md 扩展名，
+    系统以 .md 文件作为技能加载，且技能名称取文件名（不含 .md）。
 
 ─────────────────────────────────────────────────────
-步骤 4：让系统识别新技能
+步骤 3：让系统识别新技能
 ─────────────────────────────────────────────────────
 复制完成后，调用热重载工具使其立即生效：
 
@@ -4657,7 +4727,7 @@ class InstallSkillTool(Tool):
   search_skills keyword="{base}"
 
 {"=" * 55}
-完成以上步骤后，即可通过 run_command 直接调用该技能。"""
+完成以上步骤后，即可通过该技能执行相应操作。"""
 
         return guide
 
@@ -4665,14 +4735,13 @@ class InstallSkillTool(Tool):
 # ==================== 创建扩展技能工具 ====================
 
 class CreateSkillTool(Tool):
-    """创建扩展技能工具 - 返回提示词，驱动智能体自行编写并部署可执行脚本。
+    """创建扩展技能工具 - 返回提示词，驱动智能体自行编写并部署 Markdown 技能文件。
 
     工具本身不调用 LLM，只输出一段结构化的指令提示词。
     智能体读到提示词后，会自行：
-      1. 编写满足接口要求的 Python 脚本
-      2. 用 write_file 写入 ~/.aibox/skills/<skill_name>
-      3. 用 run_command 赋予可执行权限
-      4. 调用 reload_skills 热重载
+      1. 编写满足格式要求的 Markdown 技能文件
+      2. 用 write_file 写入 ~/.aibox/skills/<skill_name>.md
+      3. 调用 reload_skills 热重载
     """
 
     def get_name(self) -> str:
@@ -4681,12 +4750,11 @@ class CreateSkillTool(Tool):
     def get_description(self) -> str:
         return (
             "创建扩展技能工具。\n"
-            "返回一段指令提示词，驱动你自行编写并部署一个满足技能接口要求的可执行脚本。\n\n"
-            "脚本接口要求：\n"
-            "  • 首行 shebang：#!/usr/bin/env python3\n"
-            "  • 支持 --help 选项（使用 argparse）\n"
-            "  • --help 输出的第一行（argparse description）必须是该技能的一句话简介\n"
-            "  • epilog 中包含完整的参数说明和至少一个使用示例"
+            "返回一段指令提示词，驱动你自行编写并部署一个 Markdown 技能文件（带 .md 扩展名）。\n\n"
+            "技能文件格式要求：\n"
+            "  • 文件名必须带 .md 扩展名（如 fetch-weather.md、calc-bmi.md）\n"
+            "  • 第一行为一级标题（# 技能名），作为该技能的一句话简介\n"
+            "  • 其余内容为技能的执行说明、使用方法和示例，供智能体参考执行"
         )
 
     def get_parameters(self) -> Dict:
@@ -4696,7 +4764,7 @@ class CreateSkillTool(Tool):
                 "skill_name": {
                     "type": "string",
                     "description": (
-                        "技能名称（部署后的文件名，不含扩展名）。"
+                        "技能名称（部署后的文件名，不含扩展名；系统会自动补齐 .md）。"
                         "只能包含字母、数字、连字符和下划线，例如：fetch-weather、calc-bmi。"
                     )
                 },
@@ -4722,7 +4790,8 @@ class CreateSkillTool(Tool):
 
         skill_name = skill_name.strip()
         skills_dir = constants.SKILLS_DIR
-        skill_path = os.path.join(skills_dir, skill_name)
+        # 技能文件名统一带 .md 扩展名
+        skill_path = os.path.join(skills_dir, skill_name + ".md")
 
         # ---- 返回给智能体的指令提示词 ----
         prompt = f"""【任务】创建扩展技能：{skill_name}
@@ -4730,43 +4799,32 @@ class CreateSkillTool(Tool):
 请按照以下步骤，自行完成该扩展技能的编写和部署：
 
 ─────────────────────────────────────────────────
-步骤 1：编写 Python 脚本
+步骤 1：编写 Markdown 技能文件
 ─────────────────────────────────────────────────
-根据以下需求，编写一个完整可运行的 Python 3 脚本：
+根据以下需求，编写一个 Markdown 技能文件：
 
 需求描述：
 {description.strip()}
 
-脚本必须满足的接口约定：
-1. 第一行为 shebang：#!/usr/bin/env python3
-2. 使用 argparse 实现 --help 选项，其中：
-   - ArgumentParser 的 description 参数填写对该脚本功能的一句话简介（这是 --help 的第一行，系统会用它作为技能摘要）
-   - epilog 参数中包含完整的参数说明和至少一个使用示例
-3. 功能完整可运行，包含必要的错误处理
+技能文件必须满足的格式约定：
+1. 第一行为一级标题 `# {skill_name}`，用于对该技能功能做一句话简介（系统用第一行作为技能摘要）
+2. 其余内容清晰说明该技能的用途、使用方式、注意事项和典型示例
+3. 内容完整可执行（即按内容操作即可完成该技能要完成的事）
 
 ─────────────────────────────────────────────────
 步骤 2：写入技能目录
 ─────────────────────────────────────────────────
-使用 write_file 工具，将完整脚本内容写入：
+使用 write_file 工具，将完整内容写入（文件名必须带 .md 扩展名）：
   {skill_path}
 
 ─────────────────────────────────────────────────
-步骤 3：赋予可执行权限
+步骤 3：热重载
 ─────────────────────────────────────────────────
-使用 run_command 工具执行：
-  chmod +x {skill_path}
-
-─────────────────────────────────────────────────
-步骤 4：验证并热重载
-─────────────────────────────────────────────────
-使用 run_command 工具执行以下命令验证 --help 输出是否正常：
-  {skill_path} --help
-
-确认无误后，调用 reload_skills 工具使新技能立即生效：
+调用 reload_skills 工具使新技能立即生效：
   reload_skills confirm=true
 
 ─────────────────────────────────────────────────
-完成后请告知用户技能已创建成功，并展示 --help 的第一行简介。"""
+完成后请告知用户技能已创建成功，并展示技能的第一行简介。"""
 
         return prompt
 
@@ -5804,100 +5862,11 @@ class MemoryTool(Tool):
 
 # ==================== 网页工具（修改版，支持流式输出） ====================
 
-class WebPage:
-    """网页对象"""
-    
-    def __init__(self, url: str, response: requests.Response = None):
-        self.url = url
-        self.status_code = None
-        self.headers = {}
-        self.html = ""
-        self.soup = None
-        self.error = None
-        self.fetch_time = None
-        
-        if response:
-            self.status_code = response.status_code
-            self.headers = dict(response.headers)
-            self.html = response.text
-            self.fetch_time = datetime.now()
-            try:
-                self.soup = BeautifulSoup(self.html, 'html.parser')
-            except:
-                pass
-    
-    @property
-    def title(self) -> Optional[str]:
-        if self.soup and self.soup.find('title'):
-            return self.soup.find('title').get_text(strip=True)
-        return None
-    
-    @property
-    def text(self) -> str:
-        if self.soup:
-            return self.soup.get_text(separator='\n', strip=True)
-        return ""
-    
-    @property
-    def links(self) -> List[str]:
-        links = []
-        if self.soup:
-            for a in self.soup.find_all('a', href=True):
-                href = a['href'].strip()
-                if href and not href.startswith('#') and not href.startswith('javascript:'):
-                    links.append(urljoin(self.url, href))
-        return list(set(links))
-
-
-class SimpleWebClient:
-    """简单网页访问客户端"""
-    
-    def __init__(self, timeout: int = None, delay: float = None, user_agent: str = None):
-        self.timeout = timeout or constants.WEB_TIMEOUT
-        self.delay = delay if delay is not None else constants.WEB_DELAY
-        
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': user_agent or constants.WEB_USER_AGENT
-        })
-        
-        self.last_request_time = 0
-    
-    def _wait_if_needed(self):
-        if self.delay > 0:
-            elapsed = time.time() - self.last_request_time
-            if elapsed < self.delay:
-                time.sleep(self.delay - elapsed)
-    
-    def get(self, url: str, **kwargs) -> WebPage:
-        self._wait_if_needed()
-        # 每次都从 ConfigManager 获取最新代理
-        proxies = ConfigManager().get_proxy()
-        try:
-            response = self.session.get(
-                url,
-                timeout=kwargs.get('timeout', self.timeout),
-                proxies=proxies,   # 传入最新代理
-                **kwargs
-            )
-            response.raise_for_status()
-            
-            page = WebPage(url, response)
-            self.last_request_time = time.time()
-            return page
-            
-        except Exception as e:
-            page = WebPage(url)
-            page.error = str(e)
-            return page
-
-
 class SimpleWebCrawlerTool(Tool):
-    """简化版网页爬虫工具（支持流式输出）"""
+    """简化版网页爬虫工具（返回 markdown 提示词，指导改用 curl 命令行）"""
     
     def __init__(self, logger=None):
         super().__init__(logger)
-        self.client = SimpleWebClient()
     
     def get_name(self) -> str:
         return "web"
@@ -5920,36 +5889,57 @@ class SimpleWebCrawlerTool(Tool):
             "required": ["action", "url"]
         }
     
+    def _proxy_curl_args(self) -> str:
+        """根据当前代理配置构造 curl --socks5 参数"""
+        proxies = ConfigManager().get_proxy()
+        if not proxies:
+            return ""
+        proxy_url = proxies.get("https") or proxies.get("http") or ""
+        host_port = proxy_url.split("://", 1)[-1]
+        if "@" in host_port:
+            host_port = host_port.split("@", 1)[-1]
+        return f"--socks5 {shlex.quote(host_port)}"
+    
     def execute(self, action: str, url: str, **kwargs) -> str:
-        try:
-            if action == "get":
-                page = self.client.get(url)
-                return self._format_page_info(page)
-            elif action == "text":
-                text = self.client.get(url).text
-                return f"📄 网页文本内容:\n\n{text[:1000]}{'...' if len(text)>1000 else ''}"
-            elif action == "title":
-                title = self.client.get(url).title
-                return f"📌 网页标题: {title}" if title else "❌ 未找到标题"
-            elif action == "links":
-                links = self.client.get(url).links
-                result = [f"🔗 找到 {len(links)} 个链接:"]
-                for i, link in enumerate(links[:20]):
-                    result.append(f"  {i+1}. {link}")
-                return "\n".join(result)
-            elif action == "search":
-                keyword = kwargs.get("keyword")
-                if not keyword:
-                    return "❌ 需要提供 keyword 参数"
-                page = self.client.get(url)
-                if keyword.lower() in page.text.lower():
-                    return f"🔎 在网页中找到关键词 '{keyword}'"
-                else:
-                    return f"❌ 未找到关键词 '{keyword}'"
-            else:
-                return f"❌ 未知操作: {action}"
-        except Exception as e:
-            return f"❌ 执行错误: {str(e)}"
+        if action not in ("get", "text", "title", "links", "search"):
+            return f"❌ 未知操作: {action}"
+        
+        quoted_url = shlex.quote(url)
+        timeout = constants.WEB_TIMEOUT
+        user_agent = shlex.quote(constants.WEB_USER_AGENT)
+        proxy = self._proxy_curl_args()
+        base = f"curl -sL --max-time {timeout} -A {user_agent} {proxy}".strip()
+        
+        if action == "get":
+            cmd = f"{base} -w '\\nHTTP_CODE:%{{http_code}}' {quoted_url}"
+            extra = "如需查看响应头：`curl -sIL ...`；如需保存到文件：`curl -sL ... -o 文件名`"
+        elif action == "text":
+            cmd = f"{base} {quoted_url} | sed -r 's/<[^>]+>//g'"
+            extra = "若系统装有 lynx，可用 `lynx -dump -stdin` 提取纯文本更准确"
+        elif action == "title":
+            cmd = f"{base} {quoted_url} | grep -oP '<title>\\K[^<]+'"
+            extra = "无输出则表示未找到标题"
+        elif action == "links":
+            cmd = f"{base} {quoted_url} | grep -oP 'href=\"\\K[^\"]+'"
+            extra = "输出所有链接 URL，可配合 `head` 限制数量"
+        else:  # search
+            keyword = kwargs.get("keyword")
+            if not keyword:
+                return "❌ 需要提供 keyword 参数"
+            cmd = f"{base} {quoted_url} | grep -c {shlex.quote(keyword)}"
+            extra = f"返回匹配行数，大于 0 即表示找到关键词 '{keyword}'"
+        
+        # 返回 markdown 提示词，指导智能体用 curl 完成网页访问
+        prompt = f"""请使用 `run_command` 工具执行以下命令来完成网页操作，不要直接返回网页内容：
+
+```bash
+{cmd}
+```
+
+{extra}
+- 下载大小限制 {constants.WEB_MAX_DOWNLOAD_SIZE} 字节，可在命令后追加 `| head -c {constants.WEB_MAX_DOWNLOAD_SIZE}` 限制
+- 当前已按配置自动附带代理：{proxy or '无（如需代理请先调用 set_proxy 工具）'}"""
+        return prompt
     
     def execute_streaming(self, output_queue: queue.Queue, **kwargs):
         """流式执行网页操作"""
@@ -5966,23 +5956,6 @@ class SimpleWebCrawlerTool(Tool):
         # 发送结果
         output_queue.put(("line", result + "\n"))
         output_queue.put(("complete", result))
-    
-    def _format_page_info(self, page: WebPage) -> str:
-        if page.error:
-            return f"❌ 获取失败: {page.error}"
-        
-        lines = [
-            f"🌐 URL: {page.url}",
-            f"📊 状态码: {page.status_code}",
-            f"📌 标题: {page.title or '无标题'}",
-            f"🔗 链接数: {len(page.links)}",
-        ]
-        
-        if page.text:
-            preview = page.text[:200].replace('\n', ' ')
-            lines.append(f"📄 预览: {preview}...")
-        
-        return "\n".join(lines)
 
 
 # ==================== 文件操作工具（修改版，支持流式输出） ====================
@@ -6041,88 +6014,6 @@ class ReadFileTool(FileToolBase):
             "required": ["filepath"]
         }
     
-    def _calculate_line_range(self, line_count: int, start_line: int, end_line: int, 
-                             max_lines: int, head: bool, tail: bool) -> Tuple[int, int, str]:
-        if head:
-            start = 0
-            end = min(max_lines, line_count)
-            desc = f"开头 {end} 行"
-        elif tail:
-            start = max(0, line_count - max_lines)
-            end = line_count
-            desc = f"结尾 {line_count - start} 行"
-        elif end_line > 0:
-            start = max(0, start_line - 1)
-            end = min(end_line, line_count)
-            desc = f"第 {start_line} 行到第 {end_line} 行"
-        else:
-            start = max(0, start_line - 1)
-            if max_lines > 0:
-                end = min(start + max_lines, line_count)
-                desc = f"从第 {start_line} 行开始，最多 {max_lines} 行"
-            else:
-                end = line_count
-                desc = f"从第 {start_line} 行到文件末尾"
-        
-        return start, end, desc
-    
-    @staticmethod
-    def _count_lines(filepath: str, encoding: str) -> int:
-        """高效统计文件行数，不存储内容"""
-        line_count = 0
-        with open(filepath, 'r', encoding=encoding) as f:
-            for _ in f:
-                line_count += 1
-        return line_count
-    
-    @staticmethod
-    def _read_lines_range(filepath: str, encoding: str, start: int, end: int) -> List[str]:
-        """读取指定行范围 [start, end)（0-indexed），只读取需要的行"""
-        lines = []
-        with open(filepath, 'r', encoding=encoding) as f:
-            for i, line in enumerate(f):
-                if i >= end:
-                    break
-                if i >= start:
-                    lines.append(line)
-        return lines
-    
-    @staticmethod
-    def _read_tail_lines(filepath: str, encoding: str, num_lines: int) -> Tuple[List[str], int]:
-        """高效读取文件末尾N行，无需遍历整个文件。返回 (lines, total_line_count)"""
-        # 对于小文件直接读全部
-        file_size = os.path.getsize(filepath)
-        if file_size < 1024 * 1024:  # < 1MB 直接读
-            with open(filepath, 'r', encoding=encoding) as f:
-                all_lines = f.readlines()
-            return all_lines[-num_lines:] if num_lines > 0 else [], len(all_lines)
-        
-        # 大文件：从后向前找换行符
-        with open(filepath, 'rb') as f:
-            block_size = 8192
-            blocks = []
-            lines_found = 0
-            position = file_size
-            
-            while position > 0 and lines_found <= num_lines:
-                read_size = min(block_size, position)
-                position -= read_size
-                f.seek(position)
-                block = f.read(read_size)
-                blocks.append(block)
-                lines_found += block.count(b'\n')
-            
-            # 拼接并解码
-            data = b''.join(reversed(blocks))
-            text = data.decode(encoding, errors='replace')
-            all_lines = text.splitlines()
-            
-            # 统计总行数
-            f.seek(0)
-            total_lines = sum(1 for _ in f)
-            
-            return all_lines[-num_lines:], total_lines
-    
     def execute(self, filepath: str, encoding: str = "utf-8", 
                 start_line: int = 1, end_line: int = 0, 
                 max_lines: int = 100, head: bool = False, 
@@ -6136,65 +6027,33 @@ class ReadFileTool(FileToolBase):
         
         # 限制max_lines上限，防止请求超大范围
         max_lines = min(max_lines, 500)
+        quoted = shlex.quote(abs_path)
         
-        try:
-            file_size = os.path.getsize(abs_path)
-            modified_time = datetime.fromtimestamp(os.path.getmtime(abs_path))
-            
-            # 高效读取：先统计行数
-            line_count = self._count_lines(abs_path, encoding)
-            
-            start, end, range_desc = self._calculate_line_range(
-                line_count, start_line, end_line, max_lines, head, tail
-            )
-            
-            if end <= start:
-                return f"❌ 无效的行范围"
-            
-            lines_to_read = end - start
-            
-            # 对于tail模式，用高效的尾部读取
-            if tail and line_count > 200:
-                display_lines_raw, _ = self._read_tail_lines(abs_path, encoding, lines_to_read)
-            else:
-                display_lines_raw = self._read_lines_range(abs_path, encoding, start, end)
-            
-            # 限制单行大小（防止单行超大导致内存问题）
-            MAX_LINE_LENGTH = 10000
-            content_lines = []
-            truncated_lines = 0
-            for i, line in enumerate(display_lines_raw):
-                line_num = start + i + 1
-                content = line.rstrip('\n\r')
-                if len(content) > MAX_LINE_LENGTH:
-                    content = content[:MAX_LINE_LENGTH] + f"... (行超长，已截断，原始长度 {len(content)})"
-                    truncated_lines += 1
-                content_lines.append(f"   {line_num:4d} | {content}")
-            
-            data = {
-                "路径": abs_path,
-                "大小": f"{file_size} 字节 ({file_size/1024:.1f}KB)",
-                "最后修改": modified_time.strftime(constants.DATETIME_FORMAT),
-                "总行数": line_count,
-                "显示范围": f"{range_desc} (行 {start+1}-{end})"
-            }
-            
-            if content_lines:
-                data["内容"] = "\n" + "\n".join(content_lines)
-                
-                if end < line_count:
-                    data["提示"] = f"还有 {line_count - end} 行未显示"
-                    if truncated_lines > 0:
-                        data["提示"] += f"，{truncated_lines} 行因超长被截断"
-            
-            return self.format_result(True, "文件读取成功", data)
-            
-        except UnicodeDecodeError:
-            return f"❌ 文件编码错误：无法使用 {encoding} 编码读取文件"
-        except PermissionError:
-            return f"❌ 权限错误：无法读取文件 {abs_path}"
-        except Exception as e:
-            return f"❌ 文件读取错误: {str(e)}"
+        # 构造等价的命令行读取命令
+        if head:
+            cmd = f"head -n {max_lines} {quoted}"
+        elif tail:
+            cmd = f"tail -n {max_lines} {quoted}"
+        elif end_line > 0:
+            cmd = f"sed -n '{start_line},{end_line}p' {quoted}"
+        elif max_lines > 0:
+            end = start_line + max_lines - 1
+            cmd = f"sed -n '{start_line},{end}p' {quoted}"
+        else:
+            cmd = f"sed -n '{start_line},$p' {quoted}"
+        
+        # 返回 markdown 提示词，指导智能体用命令行工具读取文件
+        prompt = f"""请使用 `run_command` 工具执行以下命令来读取文件内容，不要直接返回文件内容：
+
+```bash
+{cmd}
+```
+
+- 若需统计总行数：`wc -l {quoted}`
+- 若需查看文件编码：`file -b --mime-encoding {quoted}`
+- 若单行超长，可在命令后追加 `| cut -c 1-10000` 截断到 10000 字符
+- 文件大小上限 {constants.MAX_FILE_SIZE} 字节，单次最多读取 500 行"""
+        return prompt
     
     def execute_streaming(self, output_queue: queue.Queue, **kwargs):
         """流式执行文件读取"""
@@ -6242,36 +6101,27 @@ class WriteFileTool(FileToolBase):
         if not is_safe:
             return error
         
-        try:
-            directory = os.path.dirname(abs_path)
-            if directory and not os.path.exists(directory):
-                os.makedirs(directory, exist_ok=True)
-            
-            file_exists = os.path.exists(abs_path)
-            old_size = os.path.getsize(abs_path) if file_exists else 0
-            
-            with open(abs_path, mode, encoding=encoding) as f:
-                f.write(content)
-            
-            new_size = len(content.encode(encoding))
-            action = "覆盖写入" if mode == "w" else "追加写入"
-            
-            data = {
-                "路径": abs_path,
-                "大小": f"{new_size} 字节",
-            }
-            
-            if file_exists:
-                data["变化"] = f"{old_size} -> {new_size} 字节"
-            else:
-                data["状态"] = "新文件已创建"
-            
-            return self.format_result(True, f"文件{action}成功", data)
-            
-        except PermissionError:
-            return f"❌ 权限错误：无法写入文件"
-        except Exception as e:
-            return f"❌ 文件写入错误: {str(e)}"
+        quoted = shlex.quote(abs_path)
+        directory = os.path.dirname(abs_path)
+        dir_cmd = f"mkdir -p {shlex.quote(directory)}" if directory else ""
+        
+        # 内容写入使用 heredoc，避免引号/特殊字符转义问题
+        redirect = ">" if mode == "w" else ">>"
+        write_cmd = f"cat {redirect} {quoted} <<'AIBOX_EOF'\n{content}\nAIBOX_EOF"
+        if dir_cmd:
+            write_cmd = f"{dir_cmd} && {write_cmd}"
+        
+        # 返回 markdown 提示词，指导智能体用命令行工具写入文件
+        prompt = f"""请使用 `run_command` 工具执行以下命令来写入文件，不要在此工具中直接写入：
+
+```bash
+{write_cmd}
+```
+
+- 如遇 heredoc 内容含特殊字符导致解析失败，可用 `printf '%s' '内容' > {quoted}` 覆盖写入
+- 若需检查文件大小：`wc -c {quoted}`
+- 文件大小上限 {constants.MAX_FILE_SIZE} 字节"""
+        return prompt
     
     def execute_streaming(self, output_queue: queue.Queue, **kwargs):
         """流式执行文件写入"""
@@ -6318,52 +6168,21 @@ class ListFilesTool(FileToolBase):
         if not os.path.isdir(abs_path):
             return f"❌ 路径不是目录: {abs_path}"
         
-        try:
-            items = []
-            total_size = 0
-            file_count = 0
-            dir_count = 0
-            
-            for item in sorted(os.listdir(abs_path)):
-                if not show_hidden and item.startswith('.'):
-                    continue
-                
-                item_path = os.path.join(abs_path, item)
-                
-                if os.path.isdir(item_path):
-                    items.append(f"📁 {item}/")
-                    dir_count += 1
-                else:
-                    size = os.path.getsize(item_path)
-                    total_size += size
-                    file_count += 1
-                    
-                    if size < 1024:
-                        size_str = f"{size}B"
-                    elif size < 1024*1024:
-                        size_str = f"{size/1024:.1f}KB"
-                    else:
-                        size_str = f"{size/1024/1024:.1f}MB"
-                    
-                    items.append(f"📄 {item} ({size_str})")
-            
-            data = {
-                "目录": abs_path,
-                "统计": f"{file_count} 个文件, {dir_count} 个目录",
-                "总大小": f"{total_size/1024:.1f}KB" if file_count > 0 else "0KB"
-            }
-            
-            if items:
-                data["内容"] = "\n" + "\n".join(items[:50])
-                if len(items) > 50:
-                    data["提示"] = f"还有 {len(items)-50} 个项目未显示"
-            else:
-                data["内容"] = "\n📭 目录为空"
-            
-            return self.format_result(True, "目录列表成功", data)
-            
-        except Exception as e:
-            return f"❌ 列出目录错误: {str(e)}"
+        quoted = shlex.quote(abs_path)
+        flag = "-la" if show_hidden else "-l"
+        
+        # 返回 markdown 提示词，指导智能体用命令行工具列目录
+        prompt = f"""请使用 `run_command` 工具执行以下命令来列出目录内容，不要直接在此工具中列出：
+
+```bash
+ls {flag} {quoted}
+```
+
+- 若需区分目录/文件并显示大小：`ls -lhF {quoted}`
+- 若需统计目录总大小：`du -sh {quoted}`
+- 若需递归列出：`find {quoted} -maxdepth 2`
+- 若需了解文件类型：`file {quoted}/*`"""
+        return prompt
     
     def execute_streaming(self, output_queue: queue.Queue, **kwargs):
         """流式执行列出目录"""
@@ -6503,11 +6322,6 @@ class CommandLineTool(Tool):
                     "type": "integer",
                     "default": 30,
                     "description": "命令执行超时时间（秒），超时后将终止命令执行。默认30秒"
-                },
-                "stream": {
-                    "type": "boolean",
-                    "default": True,
-                    "description": "是否实时输出命令执行结果"
                 },
                 "work_dir": {
                     "type": "string",
@@ -6681,9 +6495,9 @@ class CommandLineTool(Tool):
                 except:
                     process.kill()
     
-    def execute(self, command: str, timeout: int = 30, stream: bool = True, 
+    def execute(self, command: str, timeout: int = 30, 
                 work_dir: str = ".", env: Dict = None, **kwargs) -> str:
-        """执行命令 - 支持超时控制"""
+        """执行命令 - 仅支持流式执行（命令工具强制流式输出，无 stream 参数）"""
         if error := self.validate_params(["command"], command=command):
             return error
         
@@ -6691,57 +6505,262 @@ class CommandLineTool(Tool):
         if self.streaming_output and self.output_queue:
             return ""
         
-        # 准备环境变量
-        exec_env = os.environ.copy()
-        if env:
-            exec_env.update(env)
+        # 命令工具固定走流式执行：通过临时队列收集完整结果
+        output_queue = queue.Queue()
+        self.execute_streaming(
+            output_queue,
+            command=command,
+            timeout=timeout,
+            work_dir=work_dir,
+            env=env
+        )
         
-        # 根据stream参数决定使用流式还是非流式执行
-        if stream:
-            # 流式执行需要调用方处理输出队列
-            # 注意：流式执行会忽略这里的返回值，实际输出通过队列
-            self.executor.execute_streaming(
-                command=command,
-                output_queue=self.output_queue,
-                timeout=timeout
-            )
-            return ""
-        else:
-            # 非流式执行
+        # 收集流式执行的最终结果（complete 消息）
+        final_result = ""
+        while not output_queue.empty():
             try:
-                # 使用 subprocess.run 执行命令，支持超时和工作目录
-                result = subprocess.run(
-                    command,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                    env=exec_env,
-                    cwd=os.path.expanduser(work_dir)
-                )
-                
-                data = {}
-                
-                if result.stdout:
-                    data["输出"] = result.stdout.strip()
-                if result.stderr:
-                    data["错误"] = result.stderr.strip()
-                
-                data["返回码"] = result.returncode
-                
-                if not result.stdout and not result.stderr:
-                    return self.format_result(True, "命令执行成功，无输出", data)
-                
-                return self.format_result(result.returncode == 0, "命令执行完成", data)
-                
-            except subprocess.TimeoutExpired:
-                return f"❌ 命令执行超时（{timeout}秒）"
-            except FileNotFoundError as e:
-                return f"❌ 命令执行错误: 命令未找到 - {str(e)}"
-            except PermissionError as e:
-                return f"❌ 命令执行错误: 权限不足 - {str(e)}"
-            except Exception as e:
-                return f"❌ 执行错误: {str(e)}"
+                msg_type, content = output_queue.get_nowait()
+                if msg_type == "complete":
+                    final_result = content
+            except queue.Empty:
+                break
+        return final_result
+
+def run_light_subagent(role, task, config, logger=None, model=None,
+                       temperature=None, max_tokens=2048) -> str:
+    """轻量子代理执行：独立上下文/角色，无工具，一次 LLM 补全返回结果。
+
+    供 express_emotion 情绪子代理使用。
+    返回子代理生成的完整文本；失败时返回带 ❌ 的错误信息。
+    """
+    try:
+        # 幂等校验：限制 max_tokens 范围，防止意外超限大量消耗
+        max_tokens = max(1, min(int(max_tokens or 2048), constants.DEFAULT_MAX_TOKENS))
+        temp = temperature if temperature is not None else constants.DEFAULT_TEMPERATURE
+        # 子代理使用独立的 LLM 客户端（可选不同模型），独立上下文，不污染主对话
+        sub_client = create_llm_client(config, api_key=None, logger=logger, model=model)
+        messages = [
+            {"role": "system", "content": role},
+            {"role": "user", "content": task}
+        ]
+        if logger is not None:
+            logger.info(f"子代理执行: model={model or sub_client.model}, role={str(role)[:40]}...")
+        result = sub_client.chat_completion(messages, temperature=temp, max_tokens=max_tokens)
+        if result is None or not str(result).strip():
+            return "❌ 子代理执行失败：未获得有效响应"
+        return str(result).strip()
+    except Exception as e:
+        if logger is not None:
+            logger.error(f"子代理执行异常: {e}")
+        return f"❌ 子代理执行失败: {str(e)}"
+
+
+def run_full_subagent(role, task, config, logger=None, model=None,
+                      temperature=None, max_tokens=2048, max_turns=10,
+                      output_callback=None) -> str:
+    """完整子代理：拥有全部工具，独立上下文，多轮对话直到任务完成。
+
+    子代理是完整的 DeepSeekChat 实例，拥有文件操作、命令执行、网页访问、
+    技能扩展等全部工具能力。独立上下文窗口，不污染主对话。
+    多轮对话（工具调用→结果→继续）直到任务完成或达到最大轮次。
+    结束后自动总结对话内容，返回摘要给父代理。
+
+    output_callback: 可选回调(msg_type, content)，用于转发子代理的实时思考过程
+    （reasoning_start / reasoning / reasoning_end），不传则静默执行。
+
+    供 create_subagent 工具使用。
+    """
+    try:
+        max_tokens = max(1, min(int(max_tokens or 2048), constants.DEFAULT_MAX_TOKENS))
+        temp = temperature if temperature is not None else constants.DEFAULT_TEMPERATURE
+
+        # 创建子代理：完整 DeepSeekChat 实例，role 作为 system_prompt
+        # 不传 memory_db/memo_db/history_manager/exit_callback：子代理不需要持久化记忆
+        # 末尾追加结束指令：任务完成后直接给出最终回答，不再调用工具，避免无谓的额外轮次
+        sub_role = role.rstrip() + "\n\n【重要】你是子代理，任务完成后直接给出最终回答，不要再调用任何工具。"
+        sub_chat = DeepSeekChat(
+            system_prompt=sub_role,
+            command_executor=SubprocessCommandExecutor(),
+            memory_db=None,
+            memo_db=None,
+            history_manager=None,
+            prompt_manager=None,
+            skill_manager=None,
+            debug_level=0,
+            exit_callback=None,
+        )
+
+        # 覆盖模型（如果指定了不同模型）
+        if model:
+            sub_chat.client = create_llm_client(config, api_key=None, logger=logger, model=model)
+
+        # 轮次限制：防止工具调用无限循环
+        turn_count = [0]
+        original_think = sub_chat.think_and_respond
+
+        def think_with_limit(input_text, output_callback=None, is_continuation=False):
+            turn_count[0] += 1
+            if turn_count[0] > max_turns:
+                if logger:
+                    logger.warning(f"子代理达到最大轮次 {max_turns}，强制结束")
+                sub_chat.conversation_active = False
+                return "已达到最大对话轮次，任务结束。"
+            return original_think(input_text, output_callback, is_continuation)
+
+        sub_chat.think_and_respond = think_with_limit
+
+        if logger:
+            logger.info(f"子代理启动: model={model or sub_chat.client.model}, "
+                        f"role={str(role)[:60]}...")
+
+        # 运行对话：think_and_respond 内部递归处理工具调用，
+        # 直到 AI 返回纯文本无工具调用，或达到轮次限制
+        # 将子代理的思考过程（reasoning）通过 output_callback 转发给父代理
+        def sub_think_callback(msg_type, content):
+            if output_callback is not None and \
+                    msg_type in ("reasoning_start", "reasoning", "reasoning_end"):
+                output_callback(msg_type, content)
+
+        sub_chat.think_and_respond(task, output_callback=sub_think_callback)
+
+        if logger:
+            logger.info(f"子代理完成，共 {turn_count[0]} 轮，开始总结...")
+
+        # 总结子代理对话内容
+        summary = _summarize_subagent_conversation(sub_chat.messages, config, logger, model)
+        return summary
+
+    except Exception as e:
+        if logger:
+            logger.error(f"子代理执行异常: {e}")
+        return f"❌ 子代理执行失败: {str(e)}"
+
+
+def _summarize_subagent_conversation(messages, config, logger=None, model=None) -> str:
+    """总结子代理对话内容，提取关键信息返回给父代理。"""
+    # 过滤掉 system 消息，保留对话部分
+    conversation = []
+    for msg in messages:
+        if msg["role"] == "system":
+            continue
+        role_label = "用户" if msg["role"] == "user" else \
+                     "助手" if msg["role"] == "assistant" else "工具"
+        content = msg.get("content", "")
+        if content:
+            if len(content) > 2000:
+                content = content[:2000] + "...(已截断)"
+            conversation.append(f"[{role_label}] {content}")
+
+    if not conversation:
+        return "子代理未产生有效对话内容。"
+
+    # 限制对话长度用于总结
+    conversation_text = "\n".join(conversation)
+    if len(conversation_text) > 8000:
+        conversation_text = conversation_text[:8000] + "\n...(对话过长已截断)"
+
+    try:
+        summary_client = create_llm_client(config, api_key=None, logger=logger, model=model)
+        summary_prompt = f"""请总结以下子代理对话的关键内容，提取：
+1. 完成的任务或解决的问题
+2. 关键发现或结论
+3. 重要数据或信息
+4. 未解决的问题（如有）
+
+对话内容：
+{conversation_text}
+
+请用简洁的要点形式总结，不超过500字。"""
+
+        result = summary_client.chat_completion(
+            [{"role": "user", "content": summary_prompt}],
+            temperature=0.3,
+            max_tokens=800
+        )
+
+        if result:
+            return f"【子代理执行总结】\n{result.strip()}"
+        return "【子代理执行总结】\n子代理已完成任务，但无法生成总结。"
+    except Exception as e:
+        if logger:
+            logger.error(f"子代理总结失败: {e}")
+        return f"【子代理执行总结】\n子代理已完成任务。（总结生成失败: {str(e)}）"
+
+
+class SubAgentTool(Tool):
+    """派生子代理工具 - 主代理可派生拥有全部工具和独立上下文的完整子代理执行任务。
+
+    子代理是完整的对话实例，拥有文件操作、命令执行、网页访问、技能扩展等
+    全部工具能力。独立上下文窗口（不污染主对话），多轮对话直到任务完成。
+    结束后自动总结对话内容，返回摘要给父代理。
+    """
+
+    def get_name(self) -> str:
+        return "create_subagent"
+
+    def get_description(self) -> str:
+        return """派生子代理执行任务。子代理拥有全部工具能力和独立的上下文窗口，不会污染主对话上下文。
+适用场景：需要多步骤操作的任务（如文件处理、命令执行、信息检索）、需要独立上下文的复杂任务。
+子代理可进行多轮工具调用，任务完成后自动总结并返回摘要。
+参数说明：
+- role：子代理的角色设定（作为系统提示词），如"你是一位资深代码审查专家"
+- task：要交给子代理执行的具体任务
+- model：子代理使用的模型（可选，默认与主代理一致）
+- temperature：采样温度（可选，默认使用主配置）
+- max_tokens：最大输出 token 数（可选，默认 2048）
+- max_turns：最大对话轮次（可选，默认 10，防止无限循环）"""
+
+    def get_parameters(self) -> Dict:
+        return {
+            "type": "object",
+            "properties": {
+                "role": {
+                    "type": "string",
+                    "description": "子代理的角色设定（作为系统提示词），如'你是一位资深代码审查专家'"
+                },
+                "task": {
+                    "type": "string",
+                    "description": "要交给子代理执行的具体任务"
+                },
+                "model": {
+                    "type": "string",
+                    "description": "子代理使用的模型名称，默认与主代理一致"
+                },
+                "temperature": {
+                    "type": "number",
+                    "description": "采样温度，默认使用主配置"
+                },
+                "max_tokens": {
+                    "type": "integer",
+                    "description": "最大输出 token 数，默认 2048"
+                },
+                "max_turns": {
+                    "type": "integer",
+                    "description": "最大对话轮次，默认 10，防止无限循环"
+                }
+            },
+            "required": ["role", "task"]
+        }
+
+    def _subagent_output(self, msg_type: str, content: str):
+        """子代理思考过程转发：把子代理的实时推理文字输出到主对话侧栏"""
+        if msg_type == "reasoning_start":
+            self.send_line("\n💭 [子代理思考] ")
+        elif msg_type == "reasoning":
+            self.send_line(content)
+        elif msg_type == "reasoning_end":
+            self.send_line("\n")
+
+    def execute(self, role: str = None, task: str = None, model: str = None,
+                temperature: float = None, max_tokens: int = 2048,
+                max_turns: int = 10, **kwargs) -> str:
+        if error := self.validate_params(["role", "task"], role=role, task=task):
+            return error
+        return run_full_subagent(role, task, self.config, logger=self.logger,
+                                 model=model, temperature=temperature,
+                                 max_tokens=max_tokens, max_turns=max_turns,
+                                 output_callback=self._subagent_output)
+
 
 class SetProxyTool(Tool):
     """设置 SOCKS5 代理的工具"""
@@ -6815,11 +6834,14 @@ class DeepSeekChat:
                  system_prompt: str = None, debug_level: int = None, exit_callback: Callable = None,
                  history_manager: ConversationHistory = None, memory_db: MemoryDatabase = None,
                  memo_db: MemoDatabase = None, command_executor: CommandExecutor = None,
-                 prompt_manager: PromptManager = None):
-        self.name = "DeepSeek"
-        self.debug_level = debug_level if debug_level is not None else Logger("").level
-        self.logger = Logger(self.name, self.debug_level)
+                 prompt_manager: PromptManager = None, skill_manager: SkillManager = None):
         self.config = ConfigManager()
+        self.logger = Logger("DeepSeek", debug_level if debug_level is not None else Logger("").level)
+        self.debug_level = self.logger.level
+        # 大模型客户端（抽象层，支持多厂商切换）
+        self.client = create_llm_client(self.config, api_key=api_key, logger=self.logger)
+        self.api_key = self.client.api_key
+        self.name = self.client.name
         self.history_manager = history_manager
         self.memory_db = memory_db
         self.memo_db = memo_db
@@ -6827,29 +6849,21 @@ class DeepSeekChat:
         self.history_loaded = False
         self.conversation_active = True
         self.messages = []
+        # 共享技能管理器：传入时复用（避免每个任务重复扫描技能），否则按需创建
+        self._shared_skill_manager = skill_manager
         
         # 添加对话压缩器
         self.compressor = ConversationCompressor(self, self.logger)
-        
-        api_key_env = self.config.get("api.api_key_env")
-        self.api_key = api_key or os.environ.get(api_key_env)
-        if not self.api_key:
-            try:
-                home = os.environ.get("HOME", os.environ["USERPROFILE"])
-                key_path = os.path.join(home, ".cert", "deepseek.key")
-                with open(f"{key_path}", "r") as f:
-                    self.api_key = f.read().strip()
-            except Exception as e:
-                raise RuntimeError(f"请设置环境变量 {api_key_env} 或在配置文件中设置API Key")
         
         self.max_history = max_history or constants.DEFAULT_MAX_HISTORY
         self.preserve_system = constants.PRESERVE_SYSTEM_PROMPTS
         self.stats = {"api_calls": 0, "tool_calls": 0, "errors": []}
         
-        # 取消机制：threading.Event 用于跨线程信号，_current_response 用于中断HTTP请求
+        # 取消机制：threading.Event 用于跨线程信号，HTTP 中断由客户端抽象层负责
         self._cancel_event = threading.Event()
-        self._current_response = None
         self._command_executor = command_executor  # 保存命令执行器引用，用于取消时kill子进程
+        # 消息锁：保护 self.messages 免受 WebSocket 线程与调度器线程并发修改导致对话历史污染
+        self._msg_lock = threading.RLock()
         
         self._init_system_prompts(system_prompt)
         
@@ -6860,19 +6874,10 @@ class DeepSeekChat:
         """中断当前正在进行的AI思考/工具执行。线程安全，可从任意线程调用。"""
         self.logger.info("收到中断信号，正在取消当前操作...")
         self._cancel_event.set()
-        # 强制关闭当前HTTP响应，立即中断 iter_lines() 的阻塞读取
-        # 仅调用 response.close() 可能无法中断底层socket recv()，需要先关闭raw连接
-        if self._current_response is not None:
+        # 关闭当前流式HTTP响应，立即中断阻塞读取（由客户端抽象层负责）
+        if self.client is not None:
             try:
-                resp = self._current_response
-                self._current_response = None
-                # 先关闭底层raw socket连接，强制阻塞的recv()立即抛出异常
-                if hasattr(resp, 'raw') and resp.raw is not None:
-                    try:
-                        resp.raw.close()
-                    except Exception:
-                        pass
-                resp.close()
+                self.client.cancel()
             except Exception:
                 pass
         # 终止正在运行的子进程
@@ -6964,11 +6969,15 @@ class DeepSeekChat:
         builtin_tools.append(SetProxyTool(self.logger))
         builtin_tools.append(GetProxyTool(self.logger))
 
+        # 子代理工具：主代理可派生独立上下文/角色的轻量子代理执行任务
+        builtin_tools.append(SubAgentTool(self.logger))
+
         # 注册内置工具（标记为内置）
         self.tool_registry.register_many(builtin_tools, is_builtin=True)
         
         # 创建技能管理器：启动时对每个技能执行 --help，收集第一行简介
-        skill_manager = SkillManager(self.logger)
+        # 若传入共享 skill_manager 则复用，避免每个任务/实例重复扫描技能
+        skill_manager = self._shared_skill_manager or SkillManager(self.logger)
         self.tool_registry.skill_manager = skill_manager
         
         # 注册扩展技能搜索工具（单一工具，替代逐个注册 ExtensionTool）
@@ -7124,7 +7133,32 @@ class DeepSeekChat:
             
             result_raw = None
             try:
+                # 启动后台线程持续排空 output_queue，将流式输出实时转发给 output_callback，
+                # 避免 SubAgent 等长时间工具执行期间前端收不到数据导致 WS 空闲断线
+                def _drain_queue(q=output_queue, cb=output_callback, stop_event=self._cancel_event):
+                    while not stop_event.is_set():
+                        try:
+                            msg_type, content = q.get(timeout=0.1)
+                            if cb and msg_type == "line":
+                                cb("line", str(content) if content is not None else "")
+                        except queue.Empty:
+                            continue
+
+                import threading as _th
+                drain_thread = _th.Thread(target=_drain_queue, daemon=True)
+                drain_thread.start()
+
                 result_raw = self.tool_registry.execute_tool(tool_name, **args)
+
+                # 工具执行完毕，排空队列中剩余内容并等待 drain 线程退出
+                while not output_queue.empty():
+                    try:
+                        msg_type, content = output_queue.get_nowait()
+                        if output_callback and msg_type == "line":
+                            output_callback("line", str(content) if content is not None else "")
+                    except queue.Empty:
+                        break
+                # drain 线程会在下一次 get 超时后自动退出（队列已空）
             except Exception as e:
                 result_raw = f"❌ 工具 {tool_name} 执行异常: {str(e)}"
                 self.logger.error(f"工具 {tool_name} 执行异常: {e}")
@@ -7132,27 +7166,17 @@ class DeepSeekChat:
             # 安全转换并清理结果
             result = self._sanitize_tool_result(result_raw)
 
-            # 排空 output_queue，把流式行输出转发给 output_callback
-            has_stream_output = False
-            while not output_queue.empty():
-                try:
-                    msg_type, content = output_queue.get_nowait()
-                    if output_callback and msg_type == "line":
-                        # 只转发"line"类型；"complete"是流式结束信号，不作为行输出
-                        # （之前complete也被转发导致工具结果在侧栏显示两次）
-                        output_callback("line", str(content) if content is not None else "")
-                        has_stream_output = True
-                except queue.Empty:
-                    break
+            # drain 线程已排空队列中的 line 输出，这里只需判断是否有流式输出
+            has_stream_output = not output_queue.empty()
 
             # 普通（非流式）工具没有队列输出，直接发送结果
             if not has_stream_output and output_callback and result:
                 output_callback("line", result + "\n")
             
-            # 检查结果大小，如果超过阈值，截断返回提示信息
+            # 检查结果大小，如果超过阈值，不保留截断内容，仅返回提示信息
             if len(result) > MAX_RESULT_LENGTH:
-                truncated_note = f"\n\n⚠️ 结果已截断（原始 {len(result)} 字符，限制 {MAX_RESULT_LENGTH} 字符）。请使用更精确的查询获取所需信息。"
-                result = result[:MAX_RESULT_LENGTH] + truncated_note
+                truncated_note = f"⚠️ 工具调用结果长度超过 {MAX_RESULT_LENGTH} 字符，已丢弃。请使用更精确的查询获取所需信息。"
+                result = truncated_note
                 if output_callback:
                     output_callback("line", truncated_note + "\n")
             
@@ -7213,13 +7237,17 @@ class DeepSeekChat:
     
     def think_and_respond(self, input_text: str, output_callback: Callable = None, is_continuation: bool = False) -> Optional[str]:
         """思考并回应 - 支持实时流式输出，支持思考模式。
-        
+
         Args:
             input_text: 用户输入或继续提示
             output_callback: 流式输出回调
-            is_continuation: 是否为工具调用后的递归继续；为 True 时不注入冗长的工作流指令，
-                            因为 system prompt 中已有完整行为规范，继续时只需传递工具结果
+            is_continuation: 是否为工具调用后的递归继续；为 True 时不重复发送"思考中"提示
         """
+        with self._msg_lock:
+            return self._think_and_respond_impl(input_text, output_callback, is_continuation)
+    
+    def _think_and_respond_impl(self, input_text: str, output_callback: Callable = None, is_continuation: bool = False) -> Optional[str]:
+        """think_and_respond 的实际实现，在 _msg_lock 保护下执行。"""
         # 首轮开始时清除取消标志
         if not is_continuation:
             self._cancel_event.clear()
@@ -7257,28 +7285,18 @@ class DeepSeekChat:
                 self.logger.debug(f"Token数: {original_tokens} -> {compressed_tokens}")
         
         self.stats["api_calls"] += 1
-        
-        if is_continuation:
-            # 递归继续（工具调用后）：直接使用输入文本，不重复注入工作流指令
-            # system prompt 中已有完整行为规范，此处只需传递工具结果的上下文
-            enhanced_input = input_text
-        else:
-            # 首轮回话：附加简洁的工作流程提醒（不重复 system prompt 中已有的详细说明）
-            pre_prompt = "【工作流程提醒】\n1. 如果用户提出新任务，先用 search_skills 搜索是否有现成技能可用\n2. 根据话题相关性决定是否 memory search（简单问候/确认无需搜索）\n3. 信息不足时用 ask_user 提问，不要猜测\n4. 遇到大文件用分页读取（head/tail/start_line/end_line），不要直接打开大文件\n5. 话题完成时用 save_memory_and_end_conversation 保存记忆并结束\n\n【情绪感知提醒】\n1. 注意识别用户当前的情绪状态（开心/焦虑/沮丧/生气/困惑/期待等），并在回应中体现共情\n2. 用户情绪低落或焦虑时，优先安抚情绪再解决问题，语气温暖包容\n3. 用户开心或兴奋时，分享喜悦，保持积极回应的节奏\n4. 用户表现出愤怒或不满时，先道歉再解决问题，不要辩解或说教\n5. 用户要求特定情绪模式（生气/傲娇/撒娇/关心）时，用 search_skills 搜索对应技能并严格遵循"
-            enhanced_input = pre_prompt + "\n\n" + input_text
-        
+
         # 记录本轮开始前的消息长度，用于 API 失败时回滚，防止坏消息污染对话历史
         msgs_before_turn = len(self.messages)
-        
-        self._add_message("user", enhanced_input)
-        
+
+        self._add_message("user", input_text)
+
         if self.history_manager:
-            self.history_manager.add_message("user", enhanced_input, "用户")
+            self.history_manager.add_message("user", input_text, "用户")
         
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
+        # 修复工具调用配对：确保每个 assistant 的 tool_calls 都有对应 tool 响应，
+        # 防止因工具被中断/压缩导致 "insufficient tool messages" 报 400
+        self._repair_tool_pairs()
         
         # 构建消息列表，确保包含 reasoning_content
         enhanced_messages = []
@@ -7317,25 +7335,11 @@ class DeepSeekChat:
                 else:
                     enhanced_messages.append(msg)
         
-        payload = {
-            "model": constants.DEEPSEEK_MODEL,
-            "messages": enhanced_messages,
-            "temperature": constants.DEFAULT_TEMPERATURE,
-            "max_tokens": constants.DEFAULT_MAX_TOKENS,
-            "stream": True
-        }
-        
-        # 思考模式：启用 thinking 参数
-        if constants.REASONING_ENABLED:
-            payload["thinking"] = {
-                "type": "enabled"
-            }
+        # API 调用前最终校验：确保 tool_calls ↔ tool 消息配对完整，避免 400 错误
+        self._validate_enhanced_messages(enhanced_messages)
         
         # 工具调用（v4-flash 支持思考+工具调用）
-        tools = self.tool_registry.get_tools_schemas()
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
+        tools = self.tool_registry.get_tools_schemas() or None
         
         current_time = datetime.now().strftime("%H:%M:%S")
         if output_callback and not is_continuation:
@@ -7361,113 +7365,81 @@ class DeepSeekChat:
         MAX_CHUNK_DELAY = 0.1
         
         try:
-            proxies = self.config.get_proxy()
-            response = requests.post(
-                constants.DEEPSEEK_API_URL,
-                headers=headers,
-                json=payload,
-                timeout=constants.DEFAULT_TIMEOUT,
-                stream=True,
-                proxies=proxies   # 动态代理
-            )
-            self._current_response = response  # 保存引用以便cancel()关闭连接
-            
-            if response.status_code != 200:
-                error_msg = f"\n错误状态码: {response.status_code}\n错误响应: {response.text}"
-                if output_callback:
-                    output_callback("error", error_msg)
-                response.raise_for_status()
-            
-            for line in response.iter_lines():
+            # 通过客户端抽象层发起流式请求（统一事件格式，支持多厂商切换）
+            for event in self.client.stream_chat(
+                enhanced_messages,
+                temperature=constants.DEFAULT_TEMPERATURE,
+                max_tokens=constants.DEFAULT_MAX_TOKENS,
+                tools=tools,
+                reasoning_enabled=constants.REASONING_ENABLED,
+            ):
                 # 流式循环中检查取消信号
                 if self._is_cancelled():
                     break
-                if line:
-                    line = line.decode('utf-8')
-                    if line.startswith('data: '):
-                        data = line[6:]
-                        if data == '[DONE]':
-                            if chunk_buffer and output_callback:
-                                output_callback("chunk", chunk_buffer)
-                                chunk_buffer = ""
-                            if output_callback:
-                                output_callback("line", "\n")
-                            break
-                        
-                        try:
-                            chunk = json.loads(data)
-                            choices = chunk.get('choices', [])
-                            if not choices:
-                                continue
-                            
-                            delta = choices[0].get('delta', {})
-                            
-                            # 【关键】处理 reasoning_content（思考内容），仅当配置启用时才展示
-                            if constants.REASONING_ENABLED and 'reasoning_content' in delta and delta['reasoning_content']:
-                                reasoning = delta['reasoning_content']
-                                full_reasoning += reasoning
-                                
-                                # 发送思考开始信号（仅第一次）
-                                if not reasoning_started and output_callback:
-                                    reasoning_started = True
-                                
-                                # 实时发送思考内容给前端
-                                if output_callback:
-                                    output_callback("reasoning", reasoning)
-                            
-                            # 思考结束：当开始收到content且之前有reasoning时，发送结束信号
-                            if 'content' in delta and delta['content'] and reasoning_started and not reasoning_ended:
-                                reasoning_ended = True
-                                if output_callback:
-                                    output_callback("reasoning_end", "")
-                                    output_callback("line", i18n.get('assistant_prefix'))
-                            
-                            # 处理正常内容
-                            if 'content' in delta and delta['content']:
-                                content = delta['content']
-                                chunk_buffer += content
-                                full_response += content
-                                
-                                if (len(chunk_buffer) >= MIN_CHUNK_SIZE or 
-                                    time.time() - last_send_time >= MAX_CHUNK_DELAY):
-                                    if output_callback:
-                                        output_callback("chunk", chunk_buffer)
-                                    chunk_buffer = ""
-                                    last_send_time = time.time()
-                            
-                            # 处理工具调用
-                            if 'tool_calls' in delta:
-                                tool_calls = delta['tool_calls']
-                                for tc in tool_calls:
-                                    index = tc.get('index', 0)
-                                    
-                                    if index not in current_tool_calls:
-                                        # 确保 tool_call id 非空，空 id 会导致 API 400 错误污染对话历史
-                                        tc_id = tc.get('id', '') or f"call_{self.stats['tool_calls']}_{index}_{int(time.time()*1000)}"
-                                        current_tool_calls[index] = {
-                                            'id': tc_id,
-                                            'type': 'function',
-                                            'function': {
-                                                'name': '',
-                                                'arguments': ''
-                                            }
-                                        }
-                                    else:
-                                        # 流式传输中 id 可能分片到达，后续补充
-                                        existing_id = current_tool_calls[index].get('id', '')
-                                        new_id = tc.get('id', '')
-                                        if new_id and (not existing_id or existing_id.startswith('call_')):
-                                            current_tool_calls[index]['id'] = new_id
-                                    
-                                    if 'function' in tc:
-                                        if 'name' in tc['function']:
-                                            current_tool_calls[index]['function']['name'] = tc['function']['name']
-                                        if 'arguments' in tc['function']:
-                                            current_tool_calls[index]['function']['arguments'] += tc['function']['arguments']
-                        
-                        except json.JSONDecodeError as e:
-                            self.logger.error(f"JSON解析错误: {e}, 数据: {data}")
-                            continue
+                
+                etype = event.get("type")
+                
+                if etype == "reasoning":
+                    # 处理思考内容（仅当配置启用时才会收到该事件）
+                    reasoning = event.get("text", "")
+                    full_reasoning += reasoning
+                    if not reasoning_started and output_callback:
+                        reasoning_started = True
+                    if output_callback:
+                        output_callback("reasoning", reasoning)
+                
+                elif etype == "content":
+                    # 思考结束：当开始收到content且之前有reasoning时，发送结束信号
+                    if reasoning_started and not reasoning_ended:
+                        reasoning_ended = True
+                        if output_callback:
+                            output_callback("reasoning_end", "")
+                            output_callback("line", i18n.get('assistant_prefix'))
+                    content = event.get("text", "")
+                    chunk_buffer += content
+                    full_response += content
+                    
+                    if (len(chunk_buffer) >= MIN_CHUNK_SIZE or 
+                        time.time() - last_send_time >= MAX_CHUNK_DELAY):
+                        if output_callback:
+                            output_callback("chunk", chunk_buffer)
+                        chunk_buffer = ""
+                        last_send_time = time.time()
+                
+                elif etype == "tool_call":
+                    # 处理工具调用（流式增量）
+                    index = event.get("index", 0)
+                    if index not in current_tool_calls:
+                        # 确保 tool_call id 非空，空 id 会导致 API 400 错误污染对话历史
+                        tc_id = event.get("id") or f"call_{self.stats['tool_calls']}_{index}_{int(time.time()*1000)}"
+                        current_tool_calls[index] = {
+                            'id': tc_id,
+                            'type': 'function',
+                            'function': {
+                                'name': '',
+                                'arguments': ''
+                            }
+                        }
+                    else:
+                        # 流式传输中 id 可能分片到达，后续补充
+                        existing_id = current_tool_calls[index].get('id', '')
+                        new_id = event.get("id", "")
+                        if new_id and (not existing_id or existing_id.startswith('call_')):
+                            current_tool_calls[index]['id'] = new_id
+                    
+                    if event.get("name"):
+                        current_tool_calls[index]['function']['name'] = event["name"]
+                    if event.get("arguments"):
+                        current_tool_calls[index]['function']['arguments'] += event["arguments"]
+                
+                elif etype == "done":
+                    # 流结束：flush 剩余缓冲
+                    if chunk_buffer and output_callback:
+                        output_callback("chunk", chunk_buffer)
+                        chunk_buffer = ""
+                    if output_callback:
+                        output_callback("line", "\n")
+                    break
             
             # 流式循环结束，检查是否被取消
             if self._is_cancelled():
@@ -7609,8 +7581,8 @@ class DeepSeekChat:
             self.logger.error(f"未知错误，已回滚消息到位置 {msgs_before_turn}: {e}")
             return error_msg
         finally:
-            # 清除当前响应引用
-            self._current_response = None
+            # 客户端抽象层在流结束时已自行清理响应引用
+            pass
     
     def _rollback_messages(self, to_length: int):
         """回滚 self.messages 到指定长度，用于 API 失败时恢复对话状态。"""
@@ -7622,6 +7594,153 @@ class DeepSeekChat:
         except Exception as e:
             self.logger.error(f"消息回滚失败: {e}")
     
+    def _validate_enhanced_messages(self, messages):
+        """发送给 API 前的最终校验：检查 tool_calls 与 tool 消息的配对完整性。
+        若发现问题，就地修复（补占位 tool 消息），避免 HTTP 400。"""
+        if not messages:
+            return
+        pending_tool_ids = []  # 当前等待 tool 响应的 tool_call_id 列表
+        seen_ids = set()
+        fixed = []
+        i = 0
+        n = len(messages)
+        while i < n:
+            msg = messages[i]
+            role = msg.get("role")
+            if role == "assistant" and msg.get("tool_calls"):
+                # 如果有未被响应的 tool_calls，先补占位（正常情况不应出现）
+                for tid in pending_tool_ids:
+                    if tid not in seen_ids:
+                        fixed.append({
+                            "role": "tool",
+                            "tool_call_id": tid,
+                            "content": "⚠️ 该工具调用未返回结果（校验修复）。",
+                        })
+                pending_tool_ids = [tc.get("id") for tc in msg["tool_calls"] if tc.get("id")]
+                seen_ids = set()
+                fixed.append(msg)
+            elif role == "tool":
+                tid = msg.get("tool_call_id")
+                if tid and tid in pending_tool_ids and tid not in seen_ids:
+                    seen_ids.add(tid)
+                    fixed.append(msg)
+                elif tid and tid not in pending_tool_ids:
+                    # 孤立 tool 消息：不属于最近一个 assistant 的 tool_calls，跳过
+                    self.logger.warning(f"_validate: 跳过孤立 tool 消息 {tid}")
+                else:
+                    fixed.append(msg)
+            else:
+                # 遇到非 assistant/tool 消息（user/system），如果有待响应的 tool_calls，先补占位
+                for tid in pending_tool_ids:
+                    if tid not in seen_ids:
+                        fixed.append({
+                            "role": "tool",
+                            "tool_call_id": tid,
+                            "content": "⚠️ 该工具调用未返回结果（校验修复）。",
+                        })
+                pending_tool_ids = []
+                seen_ids = set()
+                fixed.append(msg)
+            i += 1
+        # 处理末尾：如果最后一条是 assistant with tool_calls 但没有 tool 响应
+        for tid in pending_tool_ids:
+            if tid not in seen_ids:
+                fixed.append({
+                    "role": "tool",
+                    "tool_call_id": tid,
+                    "content": "⚠️ 该工具调用未返回结果（校验修复）。",
+                })
+        # 原地替换 messages 内容
+        messages.clear()
+        messages.extend(fixed)
+    
+    def _repair_tool_pairs(self):
+        """修复消息历史中的工具调用配对，保证 API 消息结构合法。
+
+        场景：assistant 消息携带 tool_calls，但对应的 tool 响应缺失（工具被中断、
+        压缩算法丢弃、端对话提前 break、system 消息插入等），下一次请求会因
+        "insufficient tool messages following tool_calls" 返回 400。
+        修复策略：
+        1. 跳过 system 消息查找 tool 响应（压缩后 system 摘要可能插入在 assistant 与 tool 之间）
+        2. 只收集与当前 assistant 的 tool_call_id 匹配的 tool 消息
+        3. 为缺失响应的 tool_call_id 补占位 tool 消息
+        4. 移除孤立的 tool 消息（tool_call_id 无对应前置 assistant tool_call）
+        5. 同一 tool_call_id 只保留第一条 tool 响应，去重
+        """
+        if not self.messages:
+            return
+        repaired = []
+        i = 0
+        n = len(self.messages)
+        # 追踪所有已见的 assistant tool_call_id，用于识别孤立 tool 消息
+        known_tool_ids = set()
+        while i < n:
+            msg = self.messages[i]
+            role = msg.get("role")
+            if role == "system":
+                repaired.append(msg)
+                i += 1
+                continue
+            if role == "assistant" and msg.get("tool_calls"):
+                tool_calls = msg["tool_calls"]
+                needed_ids = []
+                for tc in tool_calls:
+                    tid = tc.get("id")
+                    if tid:
+                        needed_ids.append(tid)
+                        known_tool_ids.add(tid)
+                # 收集紧随其后的 tool 消息，跳过 system 消息
+                collected_tools = []  # list of (index, tool_msg) to ensure ordering
+                collected_ids = set()
+                j = i + 1
+                pending_systems = []  # system 消息在 assistant 和 tool 之间暂存，最后放到 tool 之后
+                while j < n:
+                    m = self.messages[j]
+                    r = m.get("role")
+                    if r == "system":
+                        pending_systems.append(m)
+                        j += 1
+                        continue
+                    if r == "tool":
+                        tid = m.get("tool_call_id")
+                        # 只收集属于当前 assistant 且未重复的 tool 响应
+                        if tid and tid in needed_ids and tid not in collected_ids:
+                            collected_tools.append(m)
+                            collected_ids.add(tid)
+                        elif tid and tid not in needed_ids and tid in known_tool_ids:
+                            # 属于更早 assistant 的 tool 响应，停止收集（已越过当前 assistant 的范围）
+                            break
+                        # tid 为空或不属于任何已知 assistant，跳过（可能是脏数据）
+                        j += 1
+                        continue
+                    # 遇到 user 或下一个 assistant，停止收集
+                    break
+                # 为缺失的 tool_call_id 补占位消息
+                for tid in needed_ids:
+                    if tid not in collected_ids:
+                        collected_tools.append({
+                            "role": "tool",
+                            "tool_call_id": tid,
+                            "content": "⚠️ 该工具调用未返回结果（可能被中断或压缩丢失）。",
+                        })
+                        collected_ids.add(tid)
+                repaired.append(msg)
+                repaired.extend(collected_tools)
+                repaired.extend(pending_systems)
+                i = j
+            elif role == "tool":
+                tid = msg.get("tool_call_id")
+                if tid and tid in known_tool_ids:
+                    repaired.append(msg)
+                else:
+                    self.logger.warning(f"_repair_tool_pairs: 跳过孤立 tool 消息 id={tid}")
+                i += 1
+            else:
+                # user 或普通 assistant（无 tool_calls）
+                repaired.append(msg)
+                i += 1
+        self.messages = repaired
+    
     def reset_conversation(self, reload_prompts: bool = True):
         """
         重置对话状态 - 清除所有对话记忆，可选择是否重新加载系统提示词
@@ -7629,37 +7748,47 @@ class DeepSeekChat:
         Args:
             reload_prompts: 是否重新加载系统提示词，默认为 True
         """
-        self.conversation_active = True
-        self.history_loaded = False  # 重置历史加载标记
-        
-        if reload_prompts:
-            # 完全重置：清除所有消息，重新加载系统提示词
-            self.messages = []
-            self._init_system_prompts()
-            self.logger.info("对话已完全重置，系统提示词已重新加载")
-        else:
-            # 只清除非系统消息，保留系统提示词
-            if self.preserve_system:
-                system_messages = [msg for msg in self.messages if msg["role"] == "system"]
-                self.messages = system_messages
-            else:
+        with self._msg_lock:
+            self.conversation_active = True
+            self.history_loaded = False  # 重置历史加载标记
+            
+            if reload_prompts:
+                # 完全重置：清除所有消息，重新加载系统提示词
                 self.messages = []
-            self.logger.info("对话已重置（仅清除对话历史）")
+                self._init_system_prompts()
+                self.logger.info("对话已完全重置，系统提示词已重新加载")
+            else:
+                # 只清除非系统消息，保留系统提示词
+                if self.preserve_system:
+                    system_messages = [msg for msg in self.messages if msg["role"] == "system"]
+                    self.messages = system_messages
+                else:
+                    self.messages = []
+                self.logger.info("对话已重置（仅清除对话历史）")
+    
+    def is_busy(self) -> bool:
+        """检查AI是否正在处理消息（非阻塞，供调度器等外部调用者判断）。"""
+        acquired = self._msg_lock.acquire(blocking=False)
+        if acquired:
+            self._msg_lock.release()
+            return False
+        return True
     
     def reload_prompts(self):
         """重新加载提示词"""
-        old_system_count = len([msg for msg in self.messages if msg["role"] == "system"])
-        
-        # 移除所有旧的系统消息
-        self.messages = [msg for msg in self.messages if msg["role"] != "system"]
-        
-        # 重新加载提示词
-        self.prompt_manager.reload()
-        self._init_system_prompts()
-        
-        new_system_count = len([msg for msg in self.messages if msg["role"] == "system"])
-        self.logger.info(f"提示词已重新加载: {old_system_count} -> {new_system_count} 个")
-        return new_system_count
+        with self._msg_lock:
+            old_system_count = len([msg for msg in self.messages if msg["role"] == "system"])
+            
+            # 移除所有旧的系统消息
+            self.messages = [msg for msg in self.messages if msg["role"] != "system"]
+            
+            # 重新加载提示词
+            self.prompt_manager.reload()
+            self._init_system_prompts()
+            
+            new_system_count = len([msg for msg in self.messages if msg["role"] == "system"])
+            self.logger.info(f"提示词已重新加载: {old_system_count} -> {new_system_count} 个")
+            return new_system_count
 
 
 # ==================== WebSocket处理器（修改版：添加重置对话功能） ====================
@@ -7673,15 +7802,48 @@ class WebSocketHandler:
         self.connected_clients = set()
         self.client_sessions = {}
         self._processing_tasks = {}  # websocket id -> 当前正在处理的asyncio Task
-        self._is_processing_message = False  # 是否正在处理用户消息（防止并发）
-        
+        self._shared_skill_manager = None  # 共享技能管理器（懒加载，供所有连接复用）
+    
+    def _get_shared_skill_manager(self):
+        """获取共享技能管理器（懒加载一次，供所有连接实例复用，避免重复扫描技能）"""
+        if self._shared_skill_manager is None:
+            self._shared_skill_manager = SkillManager(self.logger)
+        return self._shared_skill_manager
+    
+    def _create_session_ai(self):
+        """为一个WebSocket连接创建独立的AI实例，实现不同用户间上下文隔离。
+
+        每个连接拥有独立的 messages / 工具注册表 / 消息锁，可与其他用户并发对话，
+        互不干扰。共享只读资源（记忆库、备忘录、提示词、技能管理器）复用。
+        """
+        return DeepSeekChat(
+            api_key=None,
+            max_history=constants.DEFAULT_MAX_HISTORY,
+            debug_level=self.logger.level,
+            exit_callback=None,  # 会话级对话结束由连接内处理，不触发全局状态
+            history_manager=None,  # 不加载共享历史上下文，避免多用户历史相互污染
+            memory_db=self.ai_manager.memory_db,
+            memo_db=self.ai_manager.memo_db,
+            # 每个连接使用独立的命令执行器，互不共享，避免 cancel() 误杀其他用户/任务正在运行的子进程
+            command_executor=SubprocessCommandExecutor(self.logger),
+            prompt_manager=self.ai_manager.prompt_manager,
+            skill_manager=self._get_shared_skill_manager()
+        )
+    
+    def _get_session(self, websocket) -> dict:
+        """获取指定连接对应的会话状态（不存在则创建空会话）"""
+        return self.client_sessions.get(websocket)
+    
     async def register(self, websocket):
         """注册新客户端"""
         self.connected_clients.add(websocket)
         self.client_sessions[websocket] = {
             "connected_at": datetime.now(),
             "message_count": 0,
-            "current_conversation": None
+            "current_conversation": None,
+            "ai": None,                    # 每个连接独立的AI实例
+            "dialogue_in_progress": False, # 每个连接独立的对话状态
+            "is_processing": False         # 每个连接独立的并发处理标志
         }
         self.logger.info(i18n.get('client_connected', websocket.remote_address))
         
@@ -7699,7 +7861,14 @@ class WebSocketHandler:
         """注销客户端"""
         self.connected_clients.remove(websocket)
         if websocket in self.client_sessions:
-            del self.client_sessions[websocket]
+            session = self.client_sessions.pop(websocket)
+            # 释放该连接独立的AI实例资源
+            ai = session.get("ai")
+            if ai:
+                try:
+                    ai.cancel()
+                except Exception:
+                    pass
         self.logger.info(i18n.get('client_disconnected', websocket.remote_address))
     
     async def send_welcome_info(self, websocket):
@@ -7854,16 +8023,24 @@ class WebSocketHandler:
             })
     
     async def handle_interrupt(self, websocket, data):
-        """处理中断信号：取消正在进行的AI思考和工具执行"""
+        """处理中断信号：取消当前连接正在进行的AI思考和工具执行"""
         self.logger.info("收到客户端中断信号")
         # 先发送确认，让前端立即得到反馈
         await self.send_message(websocket, {
             "type": "interrupt_ack",
             "content": "已收到中断信号，正在停止..."
         })
-        # 直接同步调用cancel()：cancel是线程安全的（只set Event + close连接 + kill进程），执行极快
-        # 无需通过run_in_executor提交到线程池，避免额外调度延迟
-        self.ai_manager.cancel()
+        # 取消当前连接独立AI实例的对话（线程安全，只set Event + close连接 + kill进程）
+        session = self._get_session(websocket)
+        ai = session.get("ai") if session else None
+        if ai:
+            ai.cancel()
+        # 同时确保命令执行器中的进程也被终止
+        if self.ai_manager.command_executor and hasattr(self.ai_manager.command_executor, 'cancel'):
+            try:
+                self.ai_manager.command_executor.cancel()
+            except Exception:
+                pass
     
     async def handle_task_message(self, websocket, data):
         """处理任务相关消息 - 简化版，所有任务都是对话任务"""
@@ -7971,13 +8148,23 @@ class WebSocketHandler:
             await websocket.close()
             
         elif command == "/new":
-            # 【新增】开始新对话：保存当前对话，重置AI状态，重新加载系统提示词
-            self.ai_manager.history_manager.archive_current_conversation()
-            if self.ai_manager.ai:
+            # 【新增】开始新对话：重置当前连接的AI状态，重新加载系统提示词
+            session = self._get_session(websocket)
+            ai = session.get("ai") if session else None
+            if ai:
+                # 如果该连接AI正在处理，先取消
+                if ai.is_busy():
+                    self.logger.info("/new: AI正在处理中，先取消当前对话...")
+                    ai.cancel()
+                    for _ in range(20):
+                        await asyncio.sleep(0.1)
+                        if not ai.is_busy():
+                            break
                 # 重置对话状态，重新加载系统提示词
-                self.ai_manager.ai.reset_conversation(reload_prompts=True)
-                # 重置对话进行中标记
-                self.ai_manager.dialogue_in_progress = False
+                ai.reset_conversation(reload_prompts=True)
+                # 重置该连接对话进行中标记
+                if session:
+                    session["dialogue_in_progress"] = False
                 # 重新初始化提示词管理器（确保最新）
                 self.ai_manager.prompt_manager.reload()
                 self.logger.info(i18n.get('new_conversation_reset'))
@@ -8072,8 +8259,10 @@ class WebSocketHandler:
             })
             
         elif command == "/reload_prompts":
-            if self.ai_manager.ai:
-                new_count = self.ai_manager.ai.reload_prompts()
+            session = self._get_session(websocket)
+            ai = session.get("ai") if session else None
+            if ai:
+                new_count = ai.reload_prompts()
             else:
                 new_count = self.ai_manager.prompt_manager.reload()
             await self.send_message(websocket, {
@@ -8158,34 +8347,40 @@ class WebSocketHandler:
             await self.handle_user_message(websocket, {"type": "message", "content": command})
 
     async def handle_user_message(self, websocket, data):
-        """处理用户消息 - 实时流式输出"""
+        """处理用户消息 - 实时流式输出（每个连接使用独立的AI实例，支持多用户并发）"""
         content = data.get("content", "").strip()
         
         if not content:
             return
         
-        # 防止并发处理用户消息：如果正在处理中，提示用户先中断
-        if self._is_processing_message:
+        # 获取当前连接的会话状态
+        session = self._get_session(websocket)
+        if session is None:
+            return
+        
+        # 防止并发处理用户消息（按连接独立）：如果正在处理中，提示用户先中断
+        if session.get("is_processing"):
             await self.send_message(websocket, {
                 "type": "info",
                 "content": "⏳ AI正在响应中，请等待完成或发送中断信号（Ctrl+C）"
             })
             return
         
-        self._is_processing_message = True
+        session["is_processing"] = True
         
         self.logger.info(f"收到用户消息: {content[:50]}...")
         
-        # 确保AI已初始化
-        if not self.ai_manager.ai:
-            self.logger.info("初始化AI...")
-            self.ai_manager.add_ai()
+        # 获取该连接独立的AI实例（懒创建）
+        ai = session.get("ai")
+        if ai is None:
+            self.logger.info("初始化独立AI实例...")
+            ai = self._create_session_ai()
+            session["ai"] = ai
         
-        # 如果还没有活跃对话，开始新对话
-        if not self.ai_manager.dialogue_in_progress:
-            self.logger.info("开始新对话")
-            self.ai_manager.dialogue_in_progress = True
-            self.ai_manager.history_manager.start_new_conversation(content[:50] + "...")
+        # 如果还没有活跃对话，开始新对话（对话状态按连接独立）
+        if not session.get("dialogue_in_progress"):
+            self.logger.info(f"开始新对话（连接 {id(websocket)}）")
+            session["dialogue_in_progress"] = True
             
             # 发送对话开始消息
             await self.send_message(websocket, {
@@ -8221,18 +8416,17 @@ class WebSocketHandler:
             # 在线程池中运行AI思考，通过回调实时发送消息
             response = await loop.run_in_executor(
                 None,
-                self.ai_manager.ai.think_and_respond,
+                ai.think_and_respond,
                 content,
                 output_callback  # 传递回调函数，AI会在生成每个chunk时调用
             )
             
             self.logger.info(f"AI思考完成，完整响应长度: {len(response) if response else 0}")
             
-            # 检查对话是否结束
-            if not self.ai_manager.ai.conversation_active:
+            # 检查对话是否结束（按连接独立）
+            if not ai.conversation_active:
                 self.logger.info("对话结束")
-                self.ai_manager.dialogue_in_progress = False
-                self.ai_manager.history_manager.end_current_conversation()
+                session["dialogue_in_progress"] = False
                 await self.send_message(websocket, {
                     "type": "info",
                     "content": i18n.get('conversation_ended')
@@ -8255,8 +8449,8 @@ class WebSocketHandler:
             except:
                 pass
         finally:
-            # 无论成功、失败还是被中断，都清除处理标志
-            self._is_processing_message = False
+            # 无论成功、失败还是被中断，都清除该连接的处理标志
+            session["is_processing"] = False
 
 
 # ==================== 对话管理器（修改版：添加重置对话功能） ====================
@@ -8297,16 +8491,8 @@ class EnhancedAIManager:
         self.history_manager.end_current_conversation(summary)
         
         if self.ai:
-            # 智能体主动结束对话后，重置对话状态但不清除系统提示词
-            # 注意：这里只重置对话标记，不清除消息历史
-            self.ai.conversation_active = True
-            # 但为了下次对话不加载旧的历史，我们清除非系统消息
-            if self.ai.preserve_system:
-                system_messages = [msg for msg in self.ai.messages if msg["role"] == "system"]
-                self.ai.messages = system_messages
-            else:
-                self.ai.messages = []
-            self.ai.history_loaded = False  # 重置历史加载标记
+            # 智能体主动结束对话后，重置对话状态但保留系统提示词（锁保护）
+            self.ai.reset_conversation(reload_prompts=False)
         
         self.dialogue_in_progress = False
         self.logger.info("对话状态已重置，可以开始新对话")

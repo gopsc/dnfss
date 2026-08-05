@@ -50,7 +50,7 @@ _confs_port = int(os.environ.get('CONFS_PORT', '8010'))
 # 白名单结构：_merge_ini 仅覆盖此处列出的 section/key，防止意外字段
 _captcha_config = {
     'server': {'host': '', 'port': '', 'workers': ''},
-    'captcha': {'len': '', 'ttl': '', 'font_path': ''},
+    'captcha': {'len': '', 'ttl': '', 'font_path': '', 'max_store': ''},
 }
 
 
@@ -98,12 +98,15 @@ if os.environ.get('WORKERS'):
     _captcha_config['server']['workers'] = os.environ['WORKERS']
 if os.environ.get('CAPTCHA_FONT_PATH'):
     _captcha_config['captcha']['font_path'] = os.environ['CAPTCHA_FONT_PATH']
+if os.environ.get('CAPTCHA_MAX_STORE'):
+    _captcha_config['captcha']['max_store'] = os.environ['CAPTCHA_MAX_STORE']
 
 # 配置完整性校验
 _required = {
     'server': ['host', 'port', 'workers'],
     'captcha': ['len', 'ttl'],
 }
+# max_store 是可选配置（非必填）
 for section, keys in _required.items():
     for key in keys:
         if not _captcha_config[section][key]:
@@ -114,6 +117,14 @@ for section, keys in _required.items():
 # 解析为最终常量
 CAPTCHA_LEN = int(_captcha_config['captcha']['len'])
 CAPTCHA_TTL = int(_captcha_config['captcha']['ttl'])
+
+# 验证码存储容量上限（可选配置，默认 10000 个），防止内存耗尽（审计 P1-1）
+_default_max_store = '10000'
+MAX_STORE_SIZE = int(_captcha_config['captcha']['max_store'] or _default_max_store)
+if MAX_STORE_SIZE <= 0:
+    print('[captcha] 致命错误: 配置项 [captcha] max_store 必须为正整数',
+          file=_sys.stderr)
+    _sys.exit(1)
 
 # 字体路径：可选配置项（缺失或用空值时不致命，回退到代码默认值；
 # 即使默认值文件不存在，PIL 在 truetype() 失败时会回退到 load_ Default()）。
@@ -207,12 +218,20 @@ class CaptchaServer:
         token = secrets.token_hex(16)
 
         with STORE_LOCK:
-            captcha_store[token] = {'answer': text.lower(), 'created_at': time.time()}
             # 惰性清理过期项
             now = time.time()
             expired = [k for k, v in captcha_store.items() if now - v['created_at'] > CAPTCHA_TTL]
             for k in expired:
                 del captcha_store[k]
+
+            # 容量上限保护（P1-1）：清理过期后仍超限则拒绝新生成，防止内存耗尽
+            if len(captcha_store) >= MAX_STORE_SIZE:
+                logs.warning("captcha",
+                             f"验证码存储已满（{len(captcha_store)}/{MAX_STORE_SIZE}），拒绝生成")
+                return {"success": False,
+                        "error": "too many pending captchas, please try again later"}
+
+            captcha_store[token] = {'answer': text.lower(), 'created_at': now}
 
         png_bytes = generate_image(text)
         logs.info("captcha", f"验证码已生成 token={token[:8]}...")

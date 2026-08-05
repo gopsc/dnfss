@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+    <link rel="icon" href="data:;base64,=">
+    <link rel="stylesheet" href="process.css">
+</head>
+
+<body>
+    <!-- stop, new flush -->
+    <button class="newBtn" onclick="newBtn()">新建</button>
+    <button class="flushBtn" onclick="flushBtn()">刷新</button>
+    <table border="1">
+        <thead>
+            <tr>
+                <th class="title">PID</th>
+                <th class="title">状态</th>
+                <th class="title">命令</th>
+                <th class="title">操作</th>
+            </tr>
+        </thead>
+        <tbody id="tBody"></tbody>
+    </table>
+    <div id="inProgressText"></div>
+
+    <div class="modal-con" id="modal-con">
+        <div class="window">
+            <div class="top-bar">
+                <div class="close-btn" onclick="closeModal()">X</div>
+            </div>
+
+            <div class="input">
+                <div class="prompt">输入命令:</div>
+                <input id="input-area" class="input-area" type="text">
+            </div>
+            <button class="create-btn" onclick="createProcess()">创建</button>
+        </div>
+    </div>
+
+    <script>
+        // core 进程管理接口经 gateway 代理（Target-Url 指向 core:5200）
+        const CORE_TARGET = "http://127.0.0.1:5200";
+
+        function handleUnauthorized(res) {
+            if (res.status === 401) {
+                alert("未授权或管理员 Token 已失效，请重新登录");
+                setTimeout(() => { window.location.href = "../index.html"; }, 800);
+                return true;
+            }
+            return false;
+        }
+
+        async function api(path, body) {
+            const res = await fetch(path, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Target-Url': CORE_TARGET
+                },
+                body: body ? JSON.stringify(body) : '{}'
+            });
+            if (handleUnauthorized(res)) return null;
+            const text = await res.text();
+            let result;
+            try {
+                result = JSON.parse(text);
+            } catch (e) {
+                console.error('接口返回非 JSON:', text);
+                throw new Error('服务器响应格式异常 (HTTP ' + res.status + ')');
+            }
+            if (!res.ok || !result.success) {
+                throw new Error(result.message || '请求失败 (HTTP ' + res.status + ')');
+            }
+            return result;
+        }
+
+        // 列表接口返回的 data，可能是数组，也可能是 ptree 序列化后的
+        // {"": {...}, "": {...}} 对象（boost property_tree 对数组的表示）
+        function toProcessArray(data) {
+            if (Array.isArray(data)) return data;
+            if (data && typeof data === "object") {
+                return Object.values(data);
+            }
+            return [];
+        }
+
+        async function loadProcesses() {
+            const tbody = document.getElementById("tBody");
+            const progress = document.getElementById("inProgressText");
+            tbody.innerHTML = "";
+            progress.innerText = "加载中...";
+            try {
+                const result = await api('/list');
+                const list = toProcessArray(result.data);
+                tbody.innerHTML = "";
+                for (let i = 0; i < list.length; i++) {
+                    const p = list[i];
+                    const tr = document.createElement("tr");
+                    const pid = p.pid;
+                    const status = p.running === true ? "运行中" : (p.running === false ? "已停止" : "未知");
+                    tr.innerHTML = `
+                        <td>${pid}</td>
+                        <td>${status}</td>
+                        <td>${p.command || "-"}</td>
+                        <td><button class="stopBtn" onclick="stopBtn(${pid})">停止</button></td>
+                    `;
+                    tbody.appendChild(tr);
+                }
+                progress.innerText = "";
+            } catch (err) {
+                progress.innerText = "";
+                tbody.innerHTML = "";
+                alert(err.message || '加载进程列表失败');
+            }
+        }
+
+        function newBtn() {
+            const modal = document.getElementById("modal-con")
+            modal.style.display = "flex"
+        }
+
+        async function createProcess() {
+            const moduleName = document.getElementById("input-area").value.trim()
+            if (!moduleName) {
+                alert("请输入要执行的命令");
+                return;
+            }
+            const progress = document.getElementById("inProgressText");
+            progress.innerText = "启动中...";
+            try {
+                await api('/exec', { command: moduleName });
+                alert("启动成功");
+                closeModal();
+                await loadProcesses();
+            } catch (err) {
+                progress.innerText = "";
+                alert(err.message || '启动失败');
+            }
+        }
+
+        function flushBtn() {
+            loadProcesses();
+        }
+
+        async function stopBtn(pid) {
+            if (!confirm("确认停止该服务?")) {
+                return
+            }
+            const progress = document.getElementById("inProgressText");
+            progress.innerText = "停止中...";
+            try {
+                await api('/kill', { pid: pid });
+                alert("已停止");
+                await loadProcesses();
+            } catch (err) {
+                progress.innerText = "";
+                alert(err.message || '停止失败');
+            }
+        }
+
+        function closeModal() {
+            const modal = document.getElementById("modal-con")
+            const input = document.getElementById("input-area")
+
+            input.value = ""
+            modal.style.display = "none"
+        }
+
+        // 页面加载时自动拉取进程列表
+        window.onload = () => {
+            loadProcesses();
+        };
+    </script>
+</body>
+
+</html>

@@ -59,6 +59,12 @@ public:
     void put_stream_sync(const std::string& url, const std::string& data, std::function<void(const std::string&)> callback);
     void delete_stream_sync(const std::string& url, std::function<void(const std::string&)> callback);
 
+    // ===== 响应体大小限制（防 OOM）=====
+    // 设置下游响应体大小上限（字节）。0 表示不限制（默认 10MB，与 WAF 对齐）。
+    // 超限时 write_callback 返回 0 中止传输，request_stream_sync 抛异常。
+    void set_max_response_size(size_t bytes);
+    size_t get_max_response_size() const;
+
     // ===== WebSocket Methods (Synchronous, Boost.Beast-based) =====
     bool ws_connect(const std::string& url, int timeout_ms = 5000);
     bool ws_connect(const std::string& host, const std::string& port,
@@ -77,6 +83,7 @@ private:
     struct curl_slist* headers_ = nullptr;
     std::map<std::string, std::string> response_headers_;
     long response_code_ = 0;
+    size_t max_response_size_ = 10 * 1024 * 1024;  // 默认 10MB，对齐 WAF；0 表示不限制
 
     struct WsState {
         asio::io_context ioc;

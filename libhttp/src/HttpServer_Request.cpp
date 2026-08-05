@@ -1,4 +1,5 @@
 #include "us/detail/HttpServerImpl.hpp"
+#include <cctype>
 
 namespace pmc {
 namespace net {
@@ -91,7 +92,7 @@ http::response<http::string_body> HttpServer::handleRequest(const http::request<
 
     auto handler = findRoute(method, target_path);
 
-    if (!handler && !static_directory_.empty()) {
+    if (!handler && !static_directory_.empty() && isSafeStaticPath(target_path)) {
         std::string file_path = static_directory_ + target_path;
         std::ifstream file(file_path, std::ios::binary);
         if (file.is_open()) {
@@ -136,6 +137,25 @@ http::response<http::string_body> HttpServer::handleRequest(const http::request<
     return res;
 }
 
+// ---- 静态文件路径安全校验（P1-5）----
+bool HttpServer::isSafeStaticPath(const std::string& path) const {
+    // 防御：路径遍历、空字节、绝对 URI 形式、URL 编码遍历
+    if (path.empty()) return false;
+    if (path[0] != '/') return false;                    // 拒绝 "http://..."/相对形式
+    if (path.find('\0') != std::string::npos) return false; // 拒绝空字节截断
+    if (path.find("..") != std::string::npos) return false; // 拒绝明文 ".."
+
+    // 拒绝 URL 编码遍历/斜杠变体（%2e/./%2f/%5c）
+    std::string lower;
+    lower.reserve(path.size());
+    for (char c : path)
+        lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    if (lower.find("%2e") != std::string::npos) return false;
+    if (lower.find("%2f") != std::string::npos) return false;
+    if (lower.find("%5c") != std::string::npos) return false;
+    return true;
+}
+
 // ---- Session HTTP 处理 ----
 void HttpServer::Session::setRemoteInfo(const std::string& ip, unsigned short port) {
     remote_ip_ = ip;
@@ -146,6 +166,13 @@ void HttpServer::Session::doSSLHandshake() {
     auto self = shared_from_this();
     std::cout << "[SSL] Starting handshake for "
               << remote_ip_ << ":" << remote_port_ << std::endl;
+
+    // P1-4：设置头超时（TCP 连接完成后，覆盖 SSL 握手 + 请求头读取）
+    if (ssl_enabled_ && ssl_stream_) {
+        ssl_stream_->next_layer().expires_after(server_->getHeaderTimeout());
+    } else {
+        stream_.expires_after(server_->getHeaderTimeout());
+    }
 
     ssl_stream_->async_handshake(
         asio::ssl::stream_base::server,
@@ -169,16 +196,50 @@ void HttpServer::Session::doRead() {
     request_ = {};
     buffer_.consume(buffer_.size());
 
+    // 使用 request_parser 并设置可配置的请求体上限（默认 10MB，超限返回 413）
+    parser_.emplace();
+    parser_->body_limit(server_->max_body_size_);
+
+    // P1-4：阶段1 读请求头（头超时，防 Slowloris）
     if (ssl_enabled_ && ssl_stream_) {
-        http::async_read(*ssl_stream_, buffer_, request_,
-            [self](beast::error_code ec, std::size_t) {
-                self->handleRead(ec);
-            });
+        ssl_stream_->next_layer().expires_after(server_->getHeaderTimeout());
     } else {
-        http::async_read(stream_, buffer_, request_,
-            [self](beast::error_code ec, std::size_t) {
-                self->handleRead(ec);
-            });
+        stream_.expires_after(server_->getHeaderTimeout());
+    }
+
+    auto on_header = [self](beast::error_code ec, std::size_t) {
+        if (ec) {
+            self->handleRead(ec);
+            return;
+        }
+        // 阶段2 读请求体：切换到体超时
+        if (self->ssl_enabled_ && self->ssl_stream_) {
+            self->ssl_stream_->next_layer().expires_after(self->server_->getReadTimeout());
+        } else {
+            self->stream_.expires_after(self->server_->getReadTimeout());
+        }
+        self->doReadBody();
+    };
+
+    if (ssl_enabled_ && ssl_stream_) {
+        http::async_read_header(*ssl_stream_, buffer_, *parser_, on_header);
+    } else {
+        http::async_read_header(stream_, buffer_, *parser_, on_header);
+    }
+}
+
+void HttpServer::Session::doReadBody() {
+    auto self = shared_from_this();
+
+    auto on_read = [self](beast::error_code ec, std::size_t) {
+        if (!ec) self->request_ = self->parser_->release();
+        self->handleRead(ec);
+    };
+
+    if (ssl_enabled_ && ssl_stream_) {
+        http::async_read(*ssl_stream_, buffer_, *parser_, on_read);
+    } else {
+        http::async_read(stream_, buffer_, *parser_, on_read);
     }
 }
 
@@ -250,6 +311,16 @@ void HttpServer::Session::handleRead(beast::error_code ec) {
 
         auto req_copy = std::move(request_);
         processRequest(std::move(req_copy));
+    } else if (ec == http::error::body_limit) {
+        // 请求体超过上限 → 返回 413 并关闭连接
+        auto resp = std::make_shared<http::response<http::string_body>>();
+        resp->version(11); // request_ 在超限时未成功解析，固定 HTTP/1.1
+        resp->result(http::status::payload_too_large);
+        resp->set(http::field::content_type, "text/plain");
+        resp->set(http::field::connection, "close");
+        resp->body() = "413 Payload Too Large\n";
+        resp->prepare_payload();
+        doWrite(resp);
     } else if (ec != http::error::end_of_stream) {
         std::cerr << "[Read] Error from " << remote_ip_ << ":" << remote_port_
                   << ": " << ec.message() << std::endl;

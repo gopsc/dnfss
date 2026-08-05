@@ -44,6 +44,21 @@ let ws = null;
 let manualClose = false;		/* 手动断开则抑制自动重连 */
 let reconnectDelay = RECONNECT_MIN;
 let reconnectTimer = null;
+let heartbeatTimer = null;		/* 心跳定时器，25s 发送 ping 保持 WS 连接 */
+const HEARTBEAT_INTERVAL = 25000;	/* 心跳间隔（< gateway 30s 空闲超时） */
+
+function startHeartbeat() {
+	stopHeartbeat();
+	heartbeatTimer = setInterval(() => {
+		if (ws && ws.readyState === WebSocket.OPEN) {
+			ws.send(JSON.stringify({ type: 'ping' }));
+		}
+	}, HEARTBEAT_INTERVAL);
+}
+
+function stopHeartbeat() {
+	if (heartbeatTimer) { clearTimeout(heartbeatTimer); heartbeatTimer = null; }
+}
 
 /* 流式状态：不预创建空气泡，第一个 chunk 到来才挂载（保证思考区必然在正式回答之前） */
 let aiBubble = null, aiText = '', aiActive = false;
@@ -204,6 +219,7 @@ function connect() {
 		setStatus('connected', '已连接');
 		connBtn.textContent = '断开';
 		connBtn.classList.add('on');
+		startHeartbeat();
 	};
 	ws.onmessage = (ev) => {
 		let data;
@@ -212,6 +228,7 @@ function connect() {
 		routeMessage(data);
 	};
 	ws.onclose = () => {
+		stopHeartbeat();
 		setStatus('disconnected', '已断开');
 		connBtn.textContent = '连接';
 		connBtn.classList.remove('on');
@@ -235,6 +252,7 @@ function scheduleReconnect() {
 function disconnect(manual) {
 	manualClose = manual !== false;
 	clearTimeout(reconnectTimer);
+	stopHeartbeat();
 	if (ws) { ws.close(); ws = null; }
 	setStatus('disconnected', manualClose ? '已手动断开' : '已断开');
 	connBtn.textContent = '连接';

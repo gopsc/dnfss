@@ -13,7 +13,7 @@ UniServe Framework 的应用层网关，C++20 实现。
 - **邮箱验证码**：`/register/send_code` 发送 6 位验证码邮件（10 分钟有效）；注册时校验，一次性消费。
 - **速率限制**：登录 5 次/5 分钟、注册 3 次/10 分钟、发验证码 5 次/10 分钟（IP 级）+ 3 次/小时/10 次/天（邮箱级），按 `X-Forwarded-For` 客户端 IP 计数（由 WAF 注入），超限一律返回 429。
 - **邮件轰炸防护**：`/register/send_code` 强制 CAPTCHA 校验 + 邮箱级双窗口限流（3 次/小时 + 10 次/天），smtp 层兜底同样限流 + 全局熔断（默认 100 封/小时，可配）。
-- **OPTIONS 预检**：通配 `*` 返回 CORS 头，允许跨域。
+- **OPTIONS 预检**：由 libhttp 处理，`Access-Control-Allow-Origin` 反射请求的 Origin 头（任意来源均被放行）；`CORS.allowed_origins` 白名单已读取但尚未用于预检响应（见审计 P2-3）。
 
 ## 安全特性
 
@@ -147,7 +147,7 @@ Target-Url: http://127.0.0.1:9200   // 可选，缺省取 Proxy.default
 
 ### `OPTIONS *`
 
-返回 CORS 预检响应：`Access-Control-Allow-Origin: *`、`Allow-Methods: GET, POST, OPTIONS`、`Max-Age: 86400`。
+返回 CORS 预检响应：`Access-Control-Allow-Origin` 反射请求 Origin 头（等价于允许任意来源，见审计 P2-3）、`Access-Control-Allow-Methods: GET, POST, OPTIONS`、`Max-Age: 86400`。
 
 ### WebSocket 代理（`[WsProxy]` 配置的路径）
 
@@ -202,7 +202,7 @@ gateway 配置采用**两层加载模式**，与其他 Python 服务（dnfs/db/s
 - `Proxy.closed`：仅文档记录用途，实际靠"不在 opened 中即拒绝"实现隔离。
 - `Token.*`：Token 有效期（`keep_time`）、刷新宽限期倍数（`refresh_grace_multiplier`）、最大刷新次数（`max_refresh`）。
 - `Admin.users`：管理员白名单（分号分隔邮箱），登录命中时 Token payload 写入 `is_admin=true`。
-- `CORS.allowed_origins`：允许跨域的 Origin 白名单（分号分隔）。
+- `CORS.allowed_origins`：允许跨域的 Origin 白名单（分号分隔）。⚠️ 当前已读取但**尚未用于预检响应**——OPTIONS 预检由 libhttp 反射请求 Origin，白名单暂不生效（见审计 P2-3）。
 - `WsProxy.routes`：WebSocket 代理路由，格式 `/path=ws://host:port/target`，分号分隔。
 - `Downstream.*`：下游 pymsg 服务地址（db/captcha/smtp），可被 `DB_HOST`/`DB_PORT`、`CAPTCHA_HOST`/`CAPTCHA_PORT`、`SMTP_HOST`/`SMTP_PORT` 环境变量覆盖。
 

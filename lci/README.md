@@ -22,15 +22,110 @@ users用户可以在目录下创建子模块，extra下面还有一些额外的�
 
 LCI（Linux Chinese Interface）是基于 Linux 帧缓冲设备（`/dev/fb0`）的图形界面系统，无需 X11 或 Wayland，直接操作显存，专为树莓派等嵌入式环境设计。
 
-### 图形架构
+### 整体架构
 
 ```
-FrameBuf          -- 帧缓冲设备封装，支持旋转(0~3)和字号设置
-  └─ PoolArea     -- 容器区域，管理子区域树，支持 add() 嵌套和 flush() 刷新
-       ├─ ShapeArea   -- 形状区域，支持单个字符绘制
-       │    └─ CharShape -- 字符形状，指定宽高和位置，Draw() 绘制到 ShapeArea
-       └─ PoolArea    -- 递归嵌套，形成布局树
+应用层    mainLci.cpp (LciTask)
+          ├── 线程管理 (Fsm → CommonThread → Thread)
+          ├── 终端管理 (Term: chvt + 隐藏光标)
+          └── 图形界面 (三层布局)
+
+图形层    PoolArea (树形容器)
+          ├── ShapeArea → CharShape (矢量字符)
+          ├── PoolArea    (递归嵌套)
+          ├── CmdArea → InputBox (命令行交互)
+          └── 图层区域     (CImg 图片渲染)
+
+绘制层    Drawable (抽象基类)
+          ├── FrameBuf  → /dev/fb0 (mmap 显存)
+          └── Area      → 代理绘制 (坐标偏移)
+
+辅助层    Color / Rectangle / 字体绘制器
+          utf8↔ansi / 中文化.hpp / KeyboardEvent
 ```
+
+### 核心类层次
+
+#### 绘制层
+
+| 类 | 头文件 | 职责 |
+|---|--------|------|
+| `Drawable` | `include/lci/Drawable.h` | 抽象基类，提供 point/line/rectangle/rectangle_fill 绘制原语，内置旋转支持(0/90/180/270) |
+| `FrameBuf` | `include/lci/FrameBuf.h` | 帧缓冲实现，`mmap` 映射 `/dev/fb0`，支持 16-bit(RGB565) 和 32-bit(RGB888) 色深 |
+| `Area` | `include/lci/Area.h` | 区域抽象，代理绘制操作时自动叠加偏移量 `(this->x, this->y)` |
+
+`FrameBuf` 构造函数通过 `ioctl FBIOGET_VSCREENINFO/FSCREENINFO` 获取屏幕参数，区分虚拟分辨率和物理分辨率，计算 `line_jump`（行字节跨度）处理行缓冲过量问题。
+
+#### 布局层
+
+| 类 | 头文件 | 职责 |
+|---|--------|------|
+| `PoolArea` | `include/lci/PoolArea.h` | 容器区域，`unordered_map<string, shared_ptr<Area>>` 管理命名子区域 |
+| `ShapeArea` | `include/lci/ShapeArea.h` | 形状集合，`vector<shared_ptr<Shape>>` 管理形状对象 |
+| `Shape` | `include/lci/Shape.h` | 形状抽象基类，定义 `(w,h,x,y)` 和 `Draw(Drawable&, Color)` |
+| `CharShape` | `include/lci/CharShape.h` | 字符形状，使用矢量字体绘制器渲染单个字符 |
+
+#### 交互组件
+
+| 类 | 头文件 | 职责 |
+|---|--------|------|
+| `CmdArea` | `include/lci/CmdArea.h` | 命令行区域，支持 ANSI 转义码解析（颜色、换行、制表符），文本自动换行和触底滚动 |
+| `InputBox` | `include/lci/InputBox.h` | 输入框，渲染用户输入并绘制光标下划线 |
+| `KeyboardEvent` | `include/lci/KeyboardEvent.h` | 键盘输入，扫描 `/dev/input/event*`，`select()` 非阻塞轮询 |
+
+`CmdArea` 解析 ANSI 颜色码：`\033[32m`（绿色）、`\033[34m`（蓝色）、`\033[0m`（白色复位）。当文本超出可视区域时自动向上滚动。
+
+#### 图片渲染
+
+`图层区域` (`include/lci/图层区域.hpp`) 基于 CImg 库，支持 JPEG/PNG 图片渲染：
+- 按区域长宽比自适应缩放（以长边或宽边为标准）
+- 彩色图转灰度图后逐像素绘制
+- 灰度值映射到当前画笔颜色，实现单色图片渲染
+
+### 矢量字体系统
+
+字体渲染器 (`include/lci/字体绘制器.h`) 使用内置矢量字库：
+
+- `zzhi[]` / `zzhinumber`：字符索引表，存储 Unicode 码点
+- `ttu[]` / `ttunumber`：矢量笔画数据，每对字节编码一个坐标点，最低位标记曲线/图像结束
+- `drawvfont()` 在字库中查找字符索引，定位笔画数据，调用 `drawvect()` 将矢量坐标缩放后逐段绘制
+
+字体数据位于 `src/lci/ku500.cpp`（约 20k 行），为 GB2312 编码的中文字库。
+
+### 编码转换
+
+| 类 | 头文件 | 职责 |
+|---|--------|------|
+| `utf8` | `include/lci/utf8.h` | UTF-8 字节长度检测 + `iconv` 转 GB18030 |
+| `ansi` | `include/lci/ansi.h` | GB2312 字符宽度判断（单字节 ASCII / 双字节汉字） |
+
+### 线程架构
+
+| 组件 | 头文件 | 职责 |
+|------|--------|------|
+| `Fsm` | `include/lci/fsm.h` | 有限状态机：SSHUT → SSTOP → SSTART → SRUNNING，mutex + condition_variable 线程安全 |
+| `ThreadInterface` | `include/lci/ThreadInterface.h` | 四事件接口：StopEvent / WakeEvent / LoopEvent / ClearEvent |
+| `CommonThread` | `include/lci/CommonThread.h` | 托管线程，构造函数直接启动 `std::thread`，FSM 驱动生命周期 |
+| `p_th` | `include/lci/p_th.h` | 打印线程，`select` 读取 PTY 输出，渲染到 CmdArea |
+
+线程生命周期：`StopEvent`（挂起等待）→ `WakeEvent`（初始化资源）→ `LoopEvent`（循环执行）→ `ClearEvent`（清理资源）→ 回到 StopEvent 或退出。
+
+### 中文化编程
+
+`include/cn/中文化.hpp` 提供 C++ 关键字的中文宏定义，允许使用中文编写代码：
+
+```cpp
+使用 命名空间 qing;
+类 图层区域: 公开的 Area {
+    如果(长为标准) {
+        auto fixed = scaleByWidth(this->img, this->w);
+    } 否则 {
+        auto fixed = scaleByHeight(this->img, this->h);
+    }
+};
+```
+
+支持的中文关键字包括：`类`/`公开的`/`私有的`/`如果`/`否则`/`返回`/`空类型`/`静态的`/`虚拟的` 等。
 
 ### 布局体系
 
@@ -54,16 +149,18 @@ FrameBuf          -- 帧缓冲设备封装，支持旋转(0~3)和字号设置
 
 | 操作 | 用途 |
 |------|------|
+| `point(x, y, color)` | 绘制像素点 |
+| `line(x0, y0, x1, y1, color)` | 画线（参数插值算法） |
+| `rectangle(x, y, w, h, color)` | 矩形边框 |
 | `rectangle_fill(x, y, w, h, color)` | 矩形填充（清屏/背景） |
-| `line(x0, y0, x1, y1, color)` | 画线（折线图、坐标轴） |
-| `CharShape(w, h, x, y, ch).Draw(area, color)` | 字符绘制 |
+| `drawvfont(x, y, unicode, color)` | 矢量字体绘制字符 |
 | `flush(area, bool)` | 刷新区域到屏幕 |
 
 ### 实时数据可视化
 
 每秒采集一次系统数据并绘制折线图：
-- 通过 `/proc/stat` 读取 CPU 使用率（红色折线）
-- 通过 `sysinfo()` 读取内存使用率（蓝色折线）
+- 通过 `CpuMonitor` 读取 CPU 使用率（红色折线）
+- 通过 `getMemoryUsageWithSysinfo()` 读取内存使用率（蓝色折线）
 - 保留最近 40 个数据点，平滑滚动
 
 ### 构建
@@ -85,7 +182,7 @@ make lci
 | `--rotate` | 屏幕旋转角度 (0~3) | 0 |
 | `--fontsize` | 字号大小 | 18 |
 
-> **注意**: `include/lci/` 和 `src/lci/` 目录下的图形核心文件（FrameBuf, Drawable, PoolArea, ShapeArea, CharShape, Color 等）当前处于开发中，尚未提交到仓库。
+> **注意**: 运行需要 `/dev/fb0` 帧缓冲设备，通常在树莓派等嵌入式 Linux 环境下可用。程序启动时通过 `chvt` 切换到 tty8，退出时切回 tty1。
 
 ## 如何托管外部模块
 

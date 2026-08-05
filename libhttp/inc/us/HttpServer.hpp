@@ -21,6 +21,7 @@
 #include <mutex>
 #include <regex>
 #include <deque>
+#include <chrono>
 
 namespace pmc {
 namespace net {
@@ -115,6 +116,27 @@ public:
 
     void setPrivateKeyPassword(const std::string& password);
 
+    // 请求体大小上限（字节）。默认 10MB，与 WAF 对齐；超限返回 413。
+    void setMaxBodySize(std::size_t bytes) { max_body_size_ = bytes; }
+    std::size_t getMaxBodySize() const { return max_body_size_; }
+
+    // WebSocket 单条消息大小上限（字节）。默认 16MB，与 Beast 默认一致（防 OOM）。
+    // 超限时 Beast 拒绝该消息并关闭连接（P1-3）。
+    void setMaxWsMessageSize(std::size_t bytes) { max_ws_message_size_ = bytes; }
+    std::size_t getMaxWsMessageSize() const { return max_ws_message_size_; }
+
+    // 入站读超时（防 Slowloris，P1-4）。默认与 WAF 对齐：头 10s、体 30s。
+    // 头超时覆盖 TCP 连接建立 + SSL 握手 + 请求头读取；体超时覆盖请求体读取。
+    void setHeaderTimeout(std::chrono::seconds t) { header_timeout_ = t; }
+    std::chrono::seconds getHeaderTimeout() const { return header_timeout_; }
+    void setReadTimeout(std::chrono::seconds t) { read_timeout_ = t; }
+    std::chrono::seconds getReadTimeout() const { return read_timeout_; }
+
+    // WS 发送/代理队列上限（条数）。默认 1000。防止慢消费者导致无界队列内存耗尽（P1-6）。
+    // 超限时判定为慢消费者，关闭对应连接。
+    void setMaxWsQueueSize(std::size_t n) { max_ws_queue_size_ = n; }
+    std::size_t getMaxWsQueueSize() const { return max_ws_queue_size_; }
+
     class debug {
     public:
         static void print_all_header_fields(const http::request<http::string_body>& req);
@@ -128,6 +150,12 @@ private:
     unsigned short port_;
     unsigned int threads_;
     std::atomic<bool> running_{false};
+
+    std::size_t max_body_size_ = 10 * 1024 * 1024; // 默认 10MB,与 WAF 对齐
+    std::size_t max_ws_message_size_ = 16 * 1024 * 1024; // 默认 16MB,与 Beast 默认一致
+    std::chrono::seconds header_timeout_{10}; // 头/握手超时，防 Slowloris（对齐 WAF ReadHeaderTimeout）
+    std::chrono::seconds read_timeout_{30};   // 体超时（对齐 WAF ReadTimeout）
+    std::size_t max_ws_queue_size_ = 1000;    // WS 发送/代理队列上限，防慢消费者 OOM（P1-6）
 
     bool ssl_enabled_{false};
     std::string cert_file_;
@@ -161,6 +189,7 @@ private:
     std::mutex sessions_mutex_;
 
     std::unordered_map<std::string, std::string> parseQueryParams(const std::string& query);
+    bool isSafeStaticPath(const std::string& path) const;
     std::regex wildcardToRegex(const std::string& pattern);
     bool matchPath(const std::string& path, const std::regex& pattern);
     http::response<http::string_body> handleRequest(const http::request<http::string_body>& req);

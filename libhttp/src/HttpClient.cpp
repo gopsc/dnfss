@@ -4,6 +4,19 @@
 
 namespace pmc::net {
 
+namespace {
+
+// write_callback 的用户态上下文：流式回调 + 响应大小上限
+struct WriteCtx {
+    std::function<void(const std::string&)>* callback = nullptr;  // 流式回调（非空时每块回调）
+    std::string* full_response = nullptr;                          // 退化累积（callback 为空时）
+    size_t received = 0;       // 已接收字节数
+    size_t max = 0;            // 响应上限（0 表示不限制）
+    bool overflow = false;     // 是否超限
+};
+
+} // namespace
+
 HttpClient::HttpClient() {
     curl_ = curl_easy_init();
     if (!curl_) {
@@ -19,6 +32,14 @@ HttpClient::~HttpClient() {
     if (headers_) {
         curl_slist_free_all(headers_);
     }
+}
+
+void HttpClient::set_max_response_size(size_t bytes) {
+    max_response_size_ = bytes;
+}
+
+size_t HttpClient::get_max_response_size() const {
+    return max_response_size_;
 }
 
 void HttpClient::set_header(const std::string& header) {
@@ -61,8 +82,12 @@ void HttpClient::request_stream_sync(
     curl_easy_setopt(curl_, CURLOPT_HEADERDATA, this);
 
     std::string full_response;
+    WriteCtx write_ctx;
+    write_ctx.callback = &callback;
+    write_ctx.full_response = &full_response;
+    write_ctx.max = max_response_size_;
     curl_easy_setopt(curl_, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(curl_, CURLOPT_WRITEDATA, &full_response);
+    curl_easy_setopt(curl_, CURLOPT_WRITEDATA, &write_ctx);
 
     curl_easy_setopt(curl_, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl_, CURLOPT_CONNECTTIMEOUT, 10L);
@@ -70,11 +95,16 @@ void HttpClient::request_stream_sync(
     CURLcode res = curl_easy_perform(curl_);
 
     if (res != CURLE_OK) {
+        if (res == CURLE_WRITE_ERROR && write_ctx.overflow) {
+            throw std::runtime_error("HTTP response exceeded max size ("
+                + std::to_string(max_response_size_) + " bytes)");
+        }
         throw std::runtime_error(std::string("CURL error: ") + curl_easy_strerror(res));
     }
 
     curl_easy_getinfo(curl_, CURLINFO_RESPONSE_CODE, &response_code_);
 
+    // 退化路径：调用方未传 callback 时，整块累积后一次性回调
     if (!full_response.empty()) {
         callback(full_response);
     }
@@ -328,8 +358,20 @@ size_t HttpClient::header_callback(char* buffer, size_t size, size_t nitems, voi
 
 size_t HttpClient::write_callback(char* ptr, size_t size, size_t nmemb, void* userdata) {
     size_t total_size = size * nmemb;
-    std::string* response = static_cast<std::string*>(userdata);
-    response->append(ptr, total_size);
+    auto* ctx = static_cast<WriteCtx*>(userdata);
+    // 响应上限：超限返回 0，让 curl 以 CURLE_WRITE_ERROR 中止传输
+    if (ctx->max > 0 && ctx->received + total_size > ctx->max) {
+        ctx->overflow = true;
+        return 0;
+    }
+    ctx->received += total_size;
+    // 流式：callback 非空时每块即回调（不累积，避免二次内存）
+    if (ctx->callback && *ctx->callback) {
+        (*ctx->callback)(std::string(ptr, total_size));
+    } else if (ctx->full_response) {
+        // 退化：callback 为空时整块累积，供一次性回调
+        ctx->full_response->append(ptr, total_size);
+    }
     return total_size;
 }
 

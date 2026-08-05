@@ -6,6 +6,7 @@
 #include <fstream>
 #include <sstream>
 #include <iomanip>
+#include <optional>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <boost/beast/websocket/ssl.hpp>
@@ -66,6 +67,7 @@ private:
     void close();
     void doSSLHandshake();
     void doRead();
+    void doReadBody();
     void handleRead(beast::error_code ec);
     bool isWebSocketUpgrade(const http::request<http::string_body>& req);
     void doWsUpgrade();
@@ -112,6 +114,7 @@ private:
     beast::flat_buffer buffer_;
     beast::flat_buffer ws_buffer_;
     http::request<http::string_body> request_;
+    std::optional<http::request_parser<http::string_body>> parser_;
 
     HttpServer* server_;
     bool ssl_enabled_;

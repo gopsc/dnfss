@@ -15,6 +15,7 @@
 - 🔧 **扩展技能**：动态加载 `~/.aibox/skills/` 下的可执行脚本或 Markdown 技能文件
 - 🌍 **多语言支持**：自动检测系统语言，支持中英文
 - 🧬 **智能体自我进化**：通过 `update_soul` / `update_identity` 工具动态更新角色定位与用户画像
+- 🤖 **子代理**：通过 `create_subagent` 工具派生出拥有独立上下文/角色设定的轻量子代理，主代理可分解长任务、隔离上下文，子代理可选用不同模型
 - 🔄 **技能热重载**：无需重启即可添加、修改或删除扩展技能
 - 🔐 **SOCKS5 代理**：通过 `set_proxy` / `get_proxy` 工具为网页访问与 API 调用配置代理，可持久化
 - 💾 **对话管理**：历史对话归档、开始新对话（重置 AI 记忆并重新加载提示词）
@@ -127,10 +128,10 @@ AI 智能体可以调用以下工具来完成任务（由 `Tool` 基类派生，
 
 | 工具名称 | 功能描述 |
 |---------|---------|
-| `read_file` | 读取文件内容（支持分页、head/tail） |
-| `write_file` | 写入或追加文件 |
-| `list_files` | 列出目录内容 |
-| `web` | 访问网页、获取标题/文本/链接 |
+| `read_file` | 读取文件内容（返回 markdown 指引，改用 `head`/`tail`/`sed`/`wc` 等命令行读取） |
+| `write_file` | 写入或追加文件（返回 markdown 指引，改用 `mkdir -p` + `cat` 重定向写入） |
+| `list_files` | 列出目录内容（返回 markdown 指引，改用 `ls`/`du`/`find` 命令行列出） |
+| `web` | 访问网页、获取标题/文本/链接（返回 markdown 指引，改用 `curl` 命令行访问） |
 | `memory` | 保存、搜索（支持分页）、删除记忆 |
 | `memo` | 创建、查看、完成、搜索任务 |
 | `run_command` | 执行系统命令（实时输出，支持超时控制） |
@@ -146,6 +147,8 @@ AI 智能体可以调用以下工具来完成任务（由 `Tool` 基类派生，
 | `calculator` | 数学计算 |
 | `set_proxy` | 设置 SOCKS5 代理（host/port/可选账号密码，可持久化，即时生效） |
 | `get_proxy` | 查看当前 SOCKS5 代理配置 |
+| `express_emotion` | 表达情绪并记录当前情绪状态（anger/joy/sadness/surprise），可指定 `persona` 从 `~/.aibox/skills/` 加载人格技能（如 angry/coquettish/tsundere）派生携带该人格的情绪子代理，保证人格独立、不污染主对话上下文 |
+| `create_subagent` | 派生子代理：独立上下文/角色设定，轻量无工具、可选独立模型，用于长任务分解、上下文隔离、独立角色专注处理 |
 
 ## 💬 WebSocket API
 
@@ -204,14 +207,13 @@ const ws = new WebSocket('ws://localhost:8765');
 
 ### 支持的命令
 
-> 注意：记忆搜索通过 `memory` 工具（在对话中由 AI 调用）完成，本系统**不存在** `/search` 斜杠命令。
-
 | 命令 | 功能 |
 |-----|------|
 | `/exit` | 退出连接 |
 | `/new` | 开始新对话（保存当前，重置 AI 记忆，重新加载提示词） |
 | `/list` | 列出所有历史对话 |
 | `/memories` | 查看最近记忆（支持分页） |
+| `/search <关键词>` | 按关键词搜索记忆 |
 | `/memos` | 查看待办任务 |
 | `/config` | 查看配置 |
 | `/reload` | 重载配置 |
@@ -236,6 +238,8 @@ const ws = new WebSocket('ws://localhost:8765');
 | `task_process` | 任务执行过程中的 AI 输出 |
 | `task_error` | 任务执行错误 |
 | `task_added` | 任务添加成功 |
+| `task_list` | 待办任务列表（`task` action=list 的返回） |
+| `task_completed` | 任务完成通知 |
 | `dialogue_ended` | 对话结束通知 |
 | `dialogue_reset` | 对话重置完成 |
 | `notification` | 通知消息 |
@@ -437,6 +441,7 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
     "broadcast_enabled": true
   },
   "api": {
+    "provider": "deepseek",
     "deepseek_api_url": "https://api.deepseek.com/chat/completions",
     "deepseek_model": "deepseek-v4-flash",
     "reasoning_enabled": false,
@@ -508,6 +513,8 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
 > 默认模型为 `deepseek-v4-flash`（通过 `api.deepseek_model` 修改）。设置 `api.reasoning_enabled: true` 可启用思考模式，此时会在请求中添加 `thinking: {type: "enabled"}` 参数，模型会先进行思考再回答，实时展示思考过程（灰色斜体区域），回答质量更高且**支持工具调用**（文件操作、命令执行、记忆搜索等工具均可在思考模式下正常使用）。
 > 
 > API Key 从环境变量 `DEEPSEEK_API_KEY` 读取（亦支持 `~/.cert/deepseek.key` 文件）。
+> 
+> **多厂商切换**：大模型调用已通过 `aibox/llm_client.py` 抽象层解耦，业务层不再直接依赖具体厂商。配置 `api.provider`（默认 `deepseek`）即可切换厂商，当前内置 `DeepSeekClient`（兼容 OpenAI Chat Completions 协议，Kimi / Qwen / GLM / Doubao 等绝大多数厂商均可复用）。新增厂商只需在此文件新增一个 `LLMClient` 子类并在 `create_llm_client` 工厂中注册，无需改动业务代码，为后续子代理/多模型共发预留了扩展点。
 
 ## 🛠️ 命令行参数
 
@@ -639,7 +646,7 @@ class MyTool(Tool):
 ```
 
 > **注意**：`execute()` 必须返回字符串。工具结果会经过多层安全防护：
-> 1. **工具层源头限制**：`read_file` 按需读取不全载（最多500行，单行≤10KB），`run_command` 输出≤1MB（超出立即终止进程）
+> 1. **工具层源头限制**：文件/网页工具返回 markdown 指引，实际 I/O 由 `run_command` 完成（`run_command` 输出≤1MB，超出立即终止进程；`read_file` 指引命令限制 500 行、单行≤10KB）
 > 2. **`_sanitize_tool_result()`**：None/非字符串转为安全字符串，过滤控制字符
 > 3. **最终兜底截断**：超过 `tools.max_result_length`（默认1MB字符）时截断并提示，避免破坏 API 请求格式
 
@@ -715,6 +722,18 @@ elif command == "/mycommand":
 3. 确认工具返回值为字符串且不含二进制/控制字符
 
 ## 📄 更新日志
+
+### v2.8
+- ✅ **新增 `express_emotion` 工具**：表达情绪并记录当前情绪状态（anger/joy/sadness/surprise），可指定 `persona` 从 `~/.aibox/skills/` 加载人格技能文件（如 angry/coquettish/tsundere），自动派生携带该人格的情绪子代理生成回应，保证人格独立、不污染主对话上下文
+- ✅ **新增 `/search <关键词>` 命令**：在 WebSocket 会话中按关键词搜索记忆，返回匹配的记忆条目
+
+### v2.7
+- ✅ **新增子代理功能（`create_subagent` 工具）**：
+  - 主代理可派生出拥有**独立上下文窗口**和**独立角色设定**的轻量子代理，不污染主对话上下文
+  - 轻量子代理：无工具，通过一次 LLM 补全返回结果，适合长任务分解、上下文隔离、独立角色专注处理（如代码审查、文本总结、资料研究）
+  - 子代理可选用**不同模型**（复用 `llm_client` 抽象层，`create_llm_client` 新增 `model` 参数）
+  - 参数：`role`（角色/系统提示词，必填）、`task`（任务，必填）、`model`/`temperature`/`max_tokens`（可选）
+  - `max_tokens` 已钳制到 `[1, 主配置 DEFAULT_MAX_TOKENS]`，防止意外超限消耗
 
 ### v2.6
 - ✅ **修复 Ctrl+C 中断无法停止服务器的问题**：

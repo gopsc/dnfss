@@ -62,9 +62,6 @@ install: all
 	@mkdir -vp $(INCLU_TDIR)/$(FRAMEWORK_NAME)/detail
 	@cp -vf $(INCLU_SDIR)/$(FRAMEWORK_NAME)/HttpServer.hpp $(INCLU_TDIR)/$(FRAMEWORK_NAME)/
 	@cp -vf $(INCLU_SDIR)/$(FRAMEWORK_NAME)/HttpClient.hpp $(INCLU_TDIR)/$(FRAMEWORK_NAME)/
-	@cp -vf $(INCLU_SDIR)/$(FRAMEWORK_NAME)/WebSocketServer.hpp $(INCLU_TDIR)/$(FRAMEWORK_NAME)/
-	@cp -vf $(INCLU_SDIR)/$(FRAMEWORK_NAME)/WebSocketClient.hpp $(INCLU_TDIR)/$(FRAMEWORK_NAME)/
-	@cp -vf $(INCLU_SDIR)/$(FRAMEWORK_NAME)/WebSocketClientBase.hpp $(INCLU_TDIR)/$(FRAMEWORK_NAME)/
 	@cp -vf $(INCLU_SDIR)/$(FRAMEWORK_NAME)/detail/HttpServerImpl.hpp $(INCLU_TDIR)/$(FRAMEWORK_NAME)/detail/
 	@cp -vf $(BUILD_TDIR)/$(LIB_NAME).so $(INSTL_TDIR)/
 	@cp -vf $(BUILD_TDIR)/$(LIBC_NAME).so $(INSTL_TDIR)/
@@ -74,9 +71,6 @@ uninstall:
 	@echo "uninstall UniServe_libhttp..."
 	@rm -vf $(INCLU_TDIR)/$(FRAMEWORK_NAME)/HttpServer.hpp
 	@rm -vf $(INCLU_TDIR)/$(FRAMEWORK_NAME)/HttpClient.hpp
-	@rm -vf $(INCLU_TDIR)/$(FRAMEWORK_NAME)/WebSocketServer.hpp
-	@rm -vf $(INCLU_TDIR)/$(FRAMEWORK_NAME)/WebSocketClient.hpp
-	@rm -vf $(INCLU_TDIR)/$(FRAMEWORK_NAME)/WebSocketClientBase.hpp
 	@rm -vf $(INCLU_TDIR)/$(FRAMEWORK_NAME)/detail/HttpServerImpl.hpp
 	@rm -vf $(INSTL_TDIR)/$(LIB_NAME).so
 	@rm -vf $(INSTL_TDIR)/$(LIBC_NAME).so

@@ -260,6 +260,10 @@ func (r *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	}
 	conn, rw, err := hijacker.Hijack()
 	if err == nil {
+		// 清除 http.Server 在劫持前设置的读写 deadline（ReadTimeout=15s / WriteTimeout=30s）。
+		// 这些绝对 deadline 在劫持后仍会生效，会导致长连接 WebSocket 在空闲或 30s 后被强制断开。
+		// 底层 WebSocket 桥接由 ReverseProxy 的 io.Copy 双向转发，长时间无人读写时应保持连接。
+		_ = conn.SetDeadline(time.Time{})
 		r.hijacked = true
 		// WebSocket 升级响应是 101 Switching Protocols
 		r.status = http.StatusSwitchingProtocols
