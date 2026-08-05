@@ -532,19 +532,25 @@ function renderSpJs(container, sp, appendNote) {
 		audit_btn.textContent = hidden ? '收起源码' : '审计源码';
 	});
 	/* 启动特效：创建隔离 iframe 沙箱，完整前端代码（含 <style>/<script>/<body>）由 srcdoc 承载，
-	 * 脚本在独立上下文执行，无法影响父页面导航；pointer-events:none 保证不拦截父页面点击。
-	 * iframe 元素挂载在节点容器内部，但 keep 全屏 fixed 定位，视觉特效依然覆盖整个页面。 */
+	 * 脚本在独立上下文执行，无法影响父页面导航。
+	 * 两种模式：
+	 *   - 代码含 "<!-- in-node -->" 标记 → 渲染在节点内部（relative 定位、可交互、随节点滚动）；
+	 *   - 否则 → 全屏 fixed 定位，视觉特效悬浮覆盖整个页面（pointer-events:none 不拦截父页面点击）。
+	 * iframe 元素始终挂载在节点容器内部（DOM 归属该节点）。 */
 	function startEffect() {
 		if (frame) return;
 		frame = document.createElement('iframe');
 		frame.className = 'sp-effect-frame';
 		frame.setAttribute('sandbox', 'allow-scripts');
 		frame.srcdoc = sp.code;
-		frame.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;border:0;pointer-events:none;z-index:9999;';
+		var inNode = /<!--\s*in-node\s*-->/.test(sp.code || '');
+		frame.style.cssText = inNode
+			? 'position:relative;display:block;width:100%;height:420px;border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden;background:transparent;'
+			: 'position:fixed;top:0;left:0;width:100%;height:100%;border:0;pointer-events:none;z-index:9999;';
 		container.appendChild(frame);
 		toggle_btn.textContent = '停止特效';
 		out.style.display = 'block';
-		out.textContent = '特效已启动（运行于隔离沙箱，不影响页面导航）';
+		out.textContent = inNode ? '已载入（运行于隔离沙箱）' : '特效已启动（运行于隔离沙箱，不影响页面导航）';
 	}
 	function stopEffect() {
 		if (frame) { frame.remove(); frame = null; }
