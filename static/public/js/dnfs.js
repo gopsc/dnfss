@@ -881,17 +881,18 @@ function renderCards(list) {
 		let card = document.createElement('div');
 		card.className = "card";
 		card.__item = item;		/* 供搜索过滤时读取原始数据 */
-		card.addEventListener('click', function(event) {
+		let ttl = document.createElement('center');
+		let ttl1 =document.createElement('h3');
+		ttl1.textContent = item.title;
+		card.id = item.title;
+		/* 仅标题可点击进入子节点（内容/统计/操作区不触发跳转） */
+		ttl1.addEventListener('click', function(event) {
 			if (!confirmLeaveIfDirty()) return;	/* 未放弃输入则不跳转，stack 保持原样 */
 			var id = Number(item.id)
 			stack.push(id)
 			getNode(id).then(load_notes)
 			getNode(id).then(loadMap)
 		});
-		let ttl = document.createElement('center');
-		let ttl1 =document.createElement('h3');
-		ttl1.textContent = item.title;
-		card.id = item.title;
 		ttl.appendChild(ttl1);
 		card.appendChild(ttl);
 		let wrt_div = document.createElement('p');

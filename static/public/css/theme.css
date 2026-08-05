@@ -324,14 +324,15 @@ input[type="button"]:disabled {
     border-radius: var(--radius-sm);
 }
 .recommend-list center {
-    cursor: pointer;
     padding: 0.4rem;
     border-radius: var(--radius-sm);
-    transition: background 0.15s;
 }
-.recommend-list center:hover { background: var(--accent-soft); }
-.recommend-list center:hover h3 { color: var(--accent); }
-.recommend-list .card h3 { transition: color 0.15s; }
+/* 仅标题可点击进入子节点：手型光标 + hover 高亮集中在标题 h3 上 */
+.recommend-list .card h3 {
+    cursor: pointer;
+    transition: color 0.15s;
+}
+.recommend-list .card h3:hover { color: var(--accent); }
 .recommend-list .card p { font-size: 0.9rem; line-height: 1.6; color: var(--fg-secondary); }
 
 /* ===== Owner Chip (dnfs 发帖用户) ===== */
