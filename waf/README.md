@@ -342,7 +342,7 @@ WAF 支持透明代理 WebSocket 连接（如 aibox 的 WebSocket 接口）。�
 - CSP 仍含 `'unsafe-inline'`（为兼容 forgot.html 与 games/*.html 的内联脚本），待前端清理后可收紧。
 - HSTS 已启用（半年期，不含子域），站点全量 HTTPS 覆盖后可按需收紧。
 - logclient 日志推送每次新建 TCP 短连接，高并发拦截场景可能产生较多 TIME_WAIT；db 地址硬编码 `127.0.0.1:8005`，不支持环境变量配置。
-- **默认规则全部注释**：`rules/local/custom.conf` 中自定义规则默认注释，需手动取消注释或拉取 OWASP CRS 后才有实际拦截效果。启动时无 warning 提示。
+- **默认规则全部注释**：`rules/local/custom.conf` 中自定义规则默认注释，需手动取消注释或拉取 OWASP CRS 后才有实际拦截效果。启动时无 warning 提示。**注意：CRS 规则目录不入库，需先在部署机执行 `_fetch_crs.sh`；未拉取 CRS 时 WAF 开箱无拦截能力。**
 - 缺少 SIGINT/SIGTERM 优雅关闭，进程终止时进行中的请求被暴力中断，logclient 队列中未发送的日志可能丢失。
 - 标准日志（`log.SetOutput`）被静默到 `io.Discard`，net/http 的 panic 堆栈和 TLS 错误不可见。
 
@@ -354,6 +354,8 @@ WAF 支持透明代理 WebSocket 连接（如 aibox 的 WebSocket 接口）。�
 - **feat**: 新增 `rules/local/tuning.conf` CRS 调优文件，可配置偏执等级（默认 1）与异常评分阈值（inbound 5 / outbound 4）
 - **feat**: `tuning.conf` 独立于自动生成的 `crs/coraza.conf`，重跑 `_fetch_crs.sh` 不会覆盖调优配置
 - 校验：SQLi / XSS / 路径遍历 / 命令注入均命中 949110 拦截，正常请求放行
+
+> **⚠️ 生效前提**：CRS 规则目录 `rules/crs/` 被 `.gitignore` 排除，不入库。**必须先在某台机器上执行 `bash _fetch_crs.sh` 拉取 CRS 规则**，`crs/coraza.conf` 存在后 engine 才会自动加载并启用自动拦截。若未拉取 CRS，实际生效的仅有 `custom.conf`（默认全注释）+ `tuning.conf`（仅 setvar），**WAF 开箱无拦截能力**。部署时请务必先拉取 CRS 或启用 `custom.conf` 中的兜底规则。
 
 ### v1.2（2026-08-01）— WebSocket 支持 + 修复
 

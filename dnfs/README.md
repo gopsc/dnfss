@@ -45,7 +45,7 @@ Dendrachy Network File-System，基于父子关系（pid）组织的树状节点
 Authorization: Bearer <base64_payload>_<rsa_sign>
 ```
 
-- Token 由 gateway 在 `/login` 签发，dnfs 通过 [dnfs.py:304](dnfs.py#L304) `decode_token` 仅解 Base64 取 payload，**当前代码不验签**（代码中标注 `# FIXME: 验证数字签名`，依赖部署上经 gateway 转发的网络隔离）。
+- Token 由 gateway 在 `/login` 签发；dnfs 通过 [dnfs.py:312](dnfs.py#L312) `decode_token` 将 Token 转发至 gateway `/whoami` 接口，由 gateway 完成 **RSA 签名验证 + 过期检查**（不再本地解码验签）；gateway 不可达时按 **fail-closed** 返回 503，验签失败返回 None。
 - payload 中取 `user` 字段作为操作者，写入 `owner`。
 - `delete_note` 与 `update_note` 校验所有权：
   - 节点 `owner` 必须等于当前 `user`，否则 `403`；
@@ -306,45 +306,39 @@ bash _run.sh   # 启动服务（waitress）
 
 ## 已知问题与风险
 
-审计日期: 2026-08-01
+> 状态基准：2026-08-01 审计 + 2026-08-03 逐条代码验证。
 
-### 🔴 P0 — 严重问题（需立即修复）
+### 🔴 P0 — 严重问题
 
-1. **Token 无 RSA 签名验证，可伪造任意用户身份（含管理员）** — [dnfs.py:304-311](dnfs.py#L304-L311)
-   - `decode_token()` 直接 base64 解码 payload，完全跳过 RSA 签名验证（代码中有 `# FIXME: 验证数字签名` 注释）
-   - 若 dnfs 被直接访问（绕过 gateway），攻击者可构造 `{"user": "任意邮箱", "is_admin": true}` 的 payload，base64 编码后拼接下划线+任意字符串即可伪造管理员身份，绕过所有权限校验
-   - **参考实现**: gateway `verifyWsAdminToken` 展示了正确流程：分割 `_` → base64 解码 → RSA 公钥验签 → 检查过期时间
-   - **修复建议**: 实现 RSA 签名验证（持有 gateway 公钥）+ Token 过期校验（`iat`/`created_at` + `keep_time`）
+1. **Token 无 RSA 签名验证，可伪造任意用户身份（含管理员）** — ✅ 已修复
+   - 原 `decode_token()` 本地 base64 解码 payload、跳过 RSA 验签（`# FIXME: 验证数字签名`）。
+   - 现已重写为转发 gateway `/whoami` 完成验签 + 过期检查（[dnfs.py:312-351](dnfs.py#L312-L351)），gateway 不可达时 fail-closed 返回 503。
 
-2. **`review_content()` 错误处理断裂，fail-closed 失效** — [dnfs.py:149-195](dnfs.py#L149-L195)
-   - 成功路径返回 `bool`，但 HTTPError/URLError/其他异常直接 `raise e`，没有返回 `False` 实现 fail-closed
-   - 内层 `except json.JSONDecodeError as e` 变量名遮蔽外层 `HTTPError as e`
-   - ai_review 不可用时异常向上传播导致 500，而非拒绝内容（违反 fail-closed 设计意图）
-   - **修复建议**: 所有异常路径返回 `False` 或抛 DnfsExp 拒绝写入
+2. **`review_content()` 错误处理 / fail-closed** — ⚠️ 基本修复
+   - 已实现 fail-closed：HTTPError/URLError/JSONDecodeError 等异常路径均拒绝请求（写入/更新被拒、负载不送审）。
+   - 遗留：函数返回类型不一致（成功返回 `bool`，而 `_validate_sp` 等期望 dict），建议代码清理（审计 P2-1）。
 
-3. **`delete_note` 和 `update_note` 缺少 `@_handle_exp` 装饰器** — [dnfs.py:428](dnfs.py#L428), [dnfs.py:531](dnfs.py#L531)
-   - `add_note`/`get_notes` 使用了 `@_handle_exp` 统一异常处理，但 `delete_note`/`update_note` 没有
-   - 抛出 `DnfsExp` 或其他异常时返回 Flask 默认 500 HTML 错误页，与其他接口 JSON 响应不一致
+3. **`delete_note` / `update_note` 缺少 `@_handle_exp` 装饰器** — ✅ 已修复
+   - 现两函数均已加 `@_handle_exp`（[dnfs.py:469](dnfs.py#L469)、[dnfs.py:572](dnfs.py#L572)），异常统一返回结构化 JSON，不再出 Flask 默认 500 页。
 
-4. **有子节点的父节点可能被删除（树结构完整性保护缺陷）**
-   - **数据库层缺失外键约束**: 虽然 dbv2 启用了 `PRAGMA foreign_keys=ON`，但 Notes 表建表 SQL（[db/create_sqlite3.sql:13-19](../db/create_sqlite3.sql#L13-L19)）中 `pid` 列只是普通 INTEGER，没有定义 `FOREIGN KEY (pid) REFERENCES Notes(id) ON DELETE RESTRICT`
-   - **应用层 TOCTOU 竞态**: 子节点查询（SELECT）和删除（DELETE）是两个独立 RPC 调用，无事务保护，检查与删除之间可插入子节点导致父节点被删后子节点成为孤儿
-   - **错误处理缺陷**: `_call_dbv2` 返回 `success=False` 时响应中无 `data` 键，直接访问 `notes['data']` 会抛 KeyError 而非正确处理
-   - **修复建议**: (a) 添加数据库外键约束; (b) 应用层检查返回值 `success` 状态; (c) 使用数据库事务将检查+删除原子化
+4. **有子节点的父节点可能被删除（树结构完整性保护缺陷）** — ❌ 未修复
+   - **数据库层缺失外键约束**: Notes 表 `pid` 列未定义 `FOREIGN KEY ... ON DELETE RESTRICT`（[db/create_sqlite3.sql](../db/create_sqlite3.sql)）。
+   - **应用层 TOCTOU 竞态**: 子节点查询（SELECT）与删除（DELETE）是两个独立 RPC，无事务保护。
+   - **错误处理缺陷**: 多处直接访问 `notes['data']` 而未先确认 `success`（如 [dnfs.py:387](dnfs.py#L387)、[L519](dnfs.py#L519)），`success=False` 时可能抛 KeyError。
 
 ### 🟠 P1 — 高危问题
 
-5. **Token 无过期校验** — payload 中包含 `iat`/`created_at`/`keep_time` 字段，但 `decode_token()` 完全不检查，泄露的 Token 可永久使用
-6. **请求体大小无限制** — Waitress 未配置 `max_request_body_size`，可能被大请求体 DoS；建议设置 10MB 上限与 WAF 对齐
-7. **`log_client.py` 配置与主模块不一致** — [log_client.py:32-33](log_client.py#L32-L33) 直接读 `DB_HOST`/`DB_PORT` 环境变量，不从 confs 拉取配置，可能连错地址
-8. **`update_note` 修改 pid 时未验证目标父节点存在** — `add_note` 会检查 pid≠0 时父节点是否存在，但 `update_note` 直接更新不检查，可将节点移动到不存在的父节点下
-9. **db RPC 客户端未启用启动等待** — `_rpc = RpcClient(...)` 未设置 `retry_on_refused=True`，db 未就绪时首次请求失败（虽然 confs 连接启用了重试）
-10. **`delete_note`/`update_note` 中 `decode_token` 无 try-except** — `get_notes` 中包裹了异常处理，但这两个函数没有，base64 解码/JSON 解析错误直接抛 500
-11. **`note_id` 缺少强制类型转换** — `note_id: int = data.get('id')` 只是类型提示，不会实际转换；传入字符串 `"5"` 依赖 SQLite 类型亲和性隐式匹配
+5. **Token 无过期校验** — ✅ 已修复（gateway `/whoami` 基于 `created_at` + `keep_time` 统一校验，dnfs 不再自行处理）
+6. **请求体大小无限制** — ❌ 未修复（[dnfs.py:723](dnfs.py#L723) `serve(app, ...)` 未配置 `max_request_body_size`，建议设 10MB 与 WAF 对齐）
+7. **`log_client.py` 配置与主模块不一致** — ❌ 未修复（[log_client.py:32-33](log_client.py#L32-L33) 直接读 `DB_HOST`/`DB_PORT` 环境变量，不拉取 confs）
+8. **`update_note` 修改 pid 时未验证目标父节点存在** — ❌ 未修复（[update_note](dnfs.py#L573) 直接更新，不检查 pid≠0 时父节点是否存在）
+9. **db RPC 客户端未启用启动等待** — ❌ 未修复（[dnfs.py:133](dnfs.py#L133) `_rpc = RpcClient(...)` 无 `retry_on_refused=True`）
+10. **`delete_note`/`update_note` 中 `decode_token` 无 try-except** — ✅ 基本解决（两函数均由 `@_handle_exp` 统一捕获异常，不再裸抛 500）
+11. **`note_id` 缺少强制类型转换** — ❌ 未修复（[dnfs.py:474](dnfs.py#L474)、[L577](dnfs.py#L577) 仅类型提示，依赖 SQLite 类型亲和性隐式匹配）
 
 ### 🟡 P2 — 中危问题
 
-12. **错误响应泄露内部信息** — 多处错误消息拼接 `request.remote_addr` 和用户名返回给客户端（如"未授权访问，从xxx"），应仅记录到服务端日志
+12. **错误响应泄露内部信息** — 多处错误消息拼接 `request.remote_addr` 和用户名返回给客户端，应仅记录到服务端日志
 13. **CORS 配置过于宽松** — `CORS(app)` 默认允许所有来源（`*`），建议限制为实际前端域名
 14. **`_call_dbv2` 返回值访问前未统一检查 success** — 多处直接访问 `notes['data']` 而不先确认 `success==True`
 15. **`pid` 参数判断逻辑不严谨** — `if not pid: pid = 0` 会将空字符串/None 等非法输入默默转为 0，掩盖参数错误
