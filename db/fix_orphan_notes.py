@@ -22,7 +22,7 @@ import sys
 
 import argparse
 
-_sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from pymsg import RpcClient  # noqa: E402
 
 DB_HOST = os.environ.get('DB_HOST', '127.0.0.1')
