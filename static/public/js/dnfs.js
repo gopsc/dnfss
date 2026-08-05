@@ -496,7 +496,8 @@ function renderSpLink(container, sp, appendNote) {
  * 采用 iframe 沙箱而非注入父页面全局作用域，原因：
  *   - 特效脚本运行在独立 iframe 内，无法访问父页面 DOM/JS，任何报错、死循环、变量覆盖
  *     都不会污染父页面，从而保证"运行特效后卡片点击/节点导航依然正常"；
- *   - iframe 挂载在节点容器内部且 pointer-events:none，不拦截父页面点击，视觉特效局限在卡片内展示；
+ *   - iframe 元素挂载在节点容器内部（DOM 归属该节点），但 keep 全屏 fixed 定位，视觉特效悬浮覆盖整个页面；
+ *     pointer-events:none 不拦截父页面点击，不影响卡片点击/节点导航；
  *   - 不使用 new Function/eval（CSP 未开 unsafe-eval），srcdoc 内联脚本由 CSP 'unsafe-inline' 放行。
  * 仅管理员可发布（后端强制）。 */
 /* 无特效模式：true 为关闭自动执行（用户面板开关控制，localStorage 持久化） */
@@ -532,18 +533,18 @@ function renderSpJs(container, sp, appendNote) {
 	});
 	/* 启动特效：创建隔离 iframe 沙箱，完整前端代码（含 <style>/<script>/<body>）由 srcdoc 承载，
 	 * 脚本在独立上下文执行，无法影响父页面导航；pointer-events:none 保证不拦截父页面点击。
-	 * iframe 挂载在节点容器内部（而非全屏铺底），特效局限于该节点卡片内展示。 */
+	 * iframe 元素挂载在节点容器内部，但 keep 全屏 fixed 定位，视觉特效依然覆盖整个页面。 */
 	function startEffect() {
 		if (frame) return;
 		frame = document.createElement('iframe');
 		frame.className = 'sp-effect-frame';
 		frame.setAttribute('sandbox', 'allow-scripts');
 		frame.srcdoc = sp.code;
-		frame.style.cssText = 'position:relative;display:block;width:100%;height:360px;border:0;pointer-events:none;margin-top:0.6rem;';
+		frame.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;border:0;pointer-events:none;z-index:9999;';
 		container.appendChild(frame);
 		toggle_btn.textContent = '停止特效';
 		out.style.display = 'block';
-		out.textContent = '特效已启动（运行于节点内隔离沙箱，不影响页面导航）';
+		out.textContent = '特效已启动（运行于隔离沙箱，不影响页面导航）';
 	}
 	function stopEffect() {
 		if (frame) { frame.remove(); frame = null; }
