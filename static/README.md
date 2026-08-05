@@ -49,18 +49,12 @@ static :9200 (Flask + CORS)
 | 路径 | 说明 |
 |------|------|
 | `POST /api/hash` | SHA256 密码哈希 |
-| `POST /api/check_user` | 检查用户是否已注册（查询 gateway 数据库） |
-| `POST /api/reset_password` | 重置用户密码（直接操作 gateway 数据库） |
+| `POST /api/check_user` | 检查用户是否已注册（经 db:8005 服务 pymsg 调用查询） |
 | `GET /api/favicon?url=` | favicon 服务端代理（dnfs 链接卡片用；SSRF 防护：仅 http/https + 内网地址拦截 + 重定向校验，512KB 上限，缓存 1 天） |
 
-### yhdet OAuth 路由
-
-| 路径 | 说明 |
-|------|------|
-| `GET/POST /yhdet_callback` | yhdet.top OAuth 回调，自动注册/登录并跳转 dnfs 页 |
-| `POST /api/yhdet_login` | yhdet OAuth 用户名密码登录 |
-| `POST /api/yhdet_verify` | yhdet Token 验证 |
-| `POST /api/proxy_send_code` | yhdet 验证码代理转发 |
+> 以下路由已在安全审计修复中**禁用**（源码以 `#` 注释，不再对外暴露）：
+> - `POST /api/reset_password` — 无认证可接管任意账户（原 P0-1）
+> - `GET/POST /yhdet_callback`、`POST /api/yhdet_login`、`POST /api/yhdet_verify`、`POST /api/proxy_send_code` — yhdet OAuth 系列（原 P0-2/3/4、NEW-1/2）
 
 ### dnfs 代理路由
 
@@ -72,6 +66,8 @@ static :9200 (Flask + CORS)
 | `POST /update_note` | 更新笔记（代理至 dnfs:8006） |
 
 以上 4 个 dnfs 代理路由均支持 HttpOnly Cookie 模式：当请求携带 `q4_token` Cookie 时，自动转为 `Authorization: Bearer` 头转发。
+
+> **CORS 例外**：全局 CORS 使用 `[cors] allowed_origins` 白名单；但上述 4 个 dnfs 代理路由的 OPTIONS 预检由 `_cors()` 处理，返回 `Access-Control-Allow-Origin: *`（通配）。若需收紧，应按白名单改造 `_cors()`（安全审计 NEW-3 未修复）。
 
 > `/whoami` 已上移至 gateway，由 gateway 直接验签 Token 返回用户身份，不再经 static 代理到 dnfs。
 
