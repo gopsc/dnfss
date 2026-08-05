@@ -272,12 +272,59 @@ body {
 }
 
 /* ===== 响应式 ===== */
+/* 触屏设备：加大可点目标 */
+@media (hover: none) and (pointer: coarse) {
+    .btn { min-height: 44px; }
+    .quick-links a { padding: 0.5rem 0.25rem; }
+}
+
+/* 平板及以下：收敛首屏光晕与留白 */
+@media (max-width: 768px) {
+    body { padding: 1.25rem 0.75rem; }
+    .hero { padding: 4rem 1.25rem 3.5rem; }
+    .hero::after { width: 420px; height: 420px; opacity: 0.4; }
+    .hero-title { letter-spacing: 0.01em; }
+    .features { gap: 0.9rem; }
+    .feature-card { padding: 1.4rem 1.2rem; }
+}
+
+/* 手机：全宽布局、紧凑排版 */
 @media (max-width: 480px) {
-    .header { top: 0.5rem; padding: 0.45rem 0.75rem; }
+    body { padding: 1rem 0.75rem; }
+    .header {
+        top: 0.5rem;
+        padding: 0.45rem 0.85rem;
+        gap: 0.4rem;
+    }
     .header h1 { font-size: 1rem; }
+    .header h1 svg { display: none; } /* 小屏隐藏 logo 图标，避免挤压 */
+    .right-group { gap: 0.35rem; }
+    .right-group .btn { padding: 0.5rem 0.95rem; font-size: 0.82rem; }
     #name { max-width: 72px; }
-    .hero { padding: 2.5rem 0.5rem 2rem; }
+
+    .hero { padding: 3rem 0.75rem 2.5rem; }
+    .hero::after { width: 300px; height: 300px; opacity: 0.32; }
+    .hero-title { margin-bottom: 0.75rem; }
     .hero-sub { font-size: 0.95rem; }
-    .hero-actions { flex-direction: column; align-items: stretch; }
-    .section-title { margin-top: 2rem; }
+    .hero-actions {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.65rem;
+    }
+    .hero-actions .btn-lg { width: 100%; padding: 0.85rem 1.5rem; }
+
+    .section-title { margin-top: 2.5rem; font-size: 1.3rem; }
+    .features { margin-top: 1.25rem; grid-template-columns: 1fr; }
+    .feature-card:hover { transform: none; } /* 触屏取消悬浮位移 */
+
+    .about { padding: 0.5rem 0.5rem 2.5rem; }
+    .about .site-intro { padding: 1.4rem 1.3rem; text-align: left; }
+    .quick-links { gap: 1rem 1.5rem; margin-top: 1.5rem; }
+}
+
+/* 超小屏 */
+@media (max-width: 360px) {
+    .hero { padding: 2.5rem 0.5rem 2rem; }
+    .header h1 { font-size: 0.95rem; }
+    .right-group .btn { padding: 0.45rem 0.8rem; font-size: 0.8rem; }
 }
