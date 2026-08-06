@@ -4,9 +4,10 @@
  *
  * 设计要点（与 Python 版对齐）：
  *   - 通过 pymsg TCP 调用 dbv2 execute 路由，逐条 INSERT 到 Logs 表
- *   - 异步非阻塞：内存队列 + 后台线程批量推送，不拖慢业务
+ *   - 异步非阻塞：基于 pmc::net::AsyncQueue 内存队列 + 后台线程批量推送，不拖慢业务
  *   - fail-safe：db 服务不可用时静默丢弃（仅 stderr 提示），绝不影响业务
  *   - 缓冲批量：队列满 50 条或超时 2 秒时自动 flush
+ *   - 背压保护：队列上限 10000 条，满时丢最旧日志，防止内存无限增长
  *
  * 用法：
  *   #include "LogC.hpp"
@@ -21,20 +22,17 @@
 
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdio>
 #include <ctime>
-#include <deque>
-#include <iostream>
 #include <mutex>
 #include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include <boost/json.hpp>
 
-#include "Msg.hpp"
+#include <us/AsyncQueue.hpp>
+#include <us/Msg.hpp>
 
 namespace qing {
 
@@ -62,12 +60,8 @@ public:
 			const std::string& message,
 			std::optional<std::string> trace_id = std::nullopt,
 			std::optional<std::string> extra = std::nullopt) {
-		{
-			std::lock_guard<std::mutex> lock(_mtx);
-			_queue.push_back(Entry{service, level, message,
-					std::move(trace_id), std::move(extra)});
-		}
-		_cv.notify_one();
+		_queue.push(Entry{service, level, message,
+				std::move(trace_id), std::move(extra)});
 	}
 
 	void debug(const std::string& service, const std::string& message,
@@ -96,88 +90,53 @@ public:
 		push(service, "CRITICAL", message, std::move(trace_id), std::move(extra));
 	}
 
-	// 手动 flush：通知后台线程立即发送当前积攒的批次，并短暂等待其完成
+	// 手动 flush：通知后台线程立即发送当前积攒的批次，并等待其完成
 	void flush() {
-		_force_flush.store(true);
-		_cv.notify_all();
-		for (int i = 0; i < 200 && _force_flush.load(); ++i) {
-			std::this_thread::sleep_for(std::chrono::milliseconds(10));
-		}
+		_queue.flush();
 	}
 
 	// 停止后台线程并 flush 剩余日志（进程退出前调用，幂等）
 	void shutdown() {
-		{
-			std::lock_guard<std::mutex> lock(_mtx);
-			if (_stop) return;
-			_stop = true;
-		}
-		_cv.notify_all();
-		if (_thread.joinable()) _thread.join();
+		_queue.shutdown();
 	}
 
 	// ---- 配置（构造后、首次推送前可改）------------------------------------
 	void set_endpoint(const std::string& addr, int port) {
+		std::lock_guard<std::mutex> lock(_endpoint_mtx);
 		_db_addr = addr;
 		_db_port = port;
 	}
 
 private:
-	LogC() : _thread(&LogC::_flush_loop, this) {}
+	LogC()
+		: _queue(
+			[this](std::vector<Entry>&& batch) { this->_send_batch(std::move(batch)); },
+			{_BATCH_SIZE, _FLUSH_INTERVAL, _MAX_QUEUE_SIZE, 0.5},
+			[](const std::exception& e, std::vector<Entry>&&) {
+				std::cerr << "[LogC] 发送失败: " << e.what() << std::endl;
+			})
+	{
+		_queue.start();
+	}
+
 	~LogC() { shutdown(); }
 
 	LogC(const LogC&) = delete;
 	LogC& operator=(const LogC&) = delete;
 
-	// 后台线程：积攒到 batch_size 或超时 flush_interval 时发送
-	void _flush_loop() {
-		std::vector<Entry> batch;
-		auto last_flush = std::chrono::steady_clock::now();
-
-		for (;;) {
-			{
-				std::unique_lock<std::mutex> lock(_mtx);
-				// 最多 0.5s 轮询一次（对齐 Python 版 chk_timeout 上限）
-				_cv.wait_for(lock, std::chrono::milliseconds(500),
-						[&] { return _stop || !_queue.empty(); });
-				while (!_queue.empty() && batch.size() < _BATCH_SIZE) {
-					batch.push_back(std::move(_queue.front()));
-					_queue.pop_front();
-				}
-			}
-
-			const auto now = std::chrono::steady_clock::now();
-			const bool due = std::chrono::duration<double>(now - last_flush).count()
-					>= _FLUSH_INTERVAL;
-			if (!batch.empty() && (batch.size() >= _BATCH_SIZE || due
-					|| _stop || _force_flush.load())) {
-				_send(batch);
-				batch.clear();
-				last_flush = now;
-				_force_flush.store(false);
-			}
-
-			if (_stop) {
-				// 退出前 flush 队列剩余
-				{
-					std::unique_lock<std::mutex> lock(_mtx);
-					while (!_queue.empty()) {
-						batch.push_back(std::move(_queue.front()));
-						_queue.pop_front();
-					}
-				}
-				if (!batch.empty()) _send(batch);
-				_force_flush.store(false);
-				return;
-			}
-		}
-	}
-
 	// 通过 pymsg 使用 execute 路由逐条 INSERT 到 dbv2 Logs 表
-	void _send(const std::vector<Entry>& batch) {
+	void _send_batch(const std::vector<Entry>& batch) {
+		std::string addr;
+		int port;
+		{
+			std::lock_guard<std::mutex> lock(_endpoint_mtx);
+			addr = _db_addr;
+			port = _db_port;
+		}
+
 		const std::string now = _utc_now_iso();	// 批次共享同一时间戳（对齐 Python 版）
 		try {
-			pmc::net::MsgClient client(_db_addr, _db_port, "gateway-log");
+			pmc::net::MsgClient client(addr, port, "gateway-log");
 			for (const auto& e : batch) {
 				json::object values;
 				values["ts"] = now;
@@ -233,17 +192,15 @@ private:
 	// ---- 配置项 -----------------------------------------------------------
 	std::string _db_addr = "127.0.0.1";
 	int _db_port = 8005;
-	static constexpr size_t _BATCH_SIZE = 50;		// 队列满 50 条时 flush
-	static constexpr double _FLUSH_INTERVAL = 2.0;	// 超时 2 秒强制 flush
-	static constexpr double _TIMEOUT = 5.0;			// socket 超时（秒）
+	std::mutex _endpoint_mtx;	// 保护 _db_addr/_db_port 读写（set_endpoint 与后台线程并发）
 
-	// ---- 状态 -------------------------------------------------------------
-	std::deque<Entry> _queue;
-	std::mutex _mtx;
-	std::condition_variable _cv;
-	bool _stop = false;
-	std::atomic<bool> _force_flush{false};
-	std::thread _thread;
+	static constexpr size_t _BATCH_SIZE     = 50;      // 队列满 50 条时 flush
+	static constexpr double _FLUSH_INTERVAL = 2.0;     // 超时 2 秒强制 flush
+	static constexpr size_t _MAX_QUEUE_SIZE = 10000;   // 队列上限，满时丢最旧
+	static constexpr double _TIMEOUT        = 5.0;     // socket 超时（秒）
+
+	// ---- 核心队列 ---------------------------------------------------------
+	pmc::net::AsyncQueue<Entry> _queue;
 };
 
 } // namespace qing

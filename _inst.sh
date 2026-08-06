@@ -29,6 +29,7 @@ inst_module "libth"
 inst_module "libhttp"
 inst_module "libcrypt"
 inst_module "libsqlite3"
+inst_module "libmsg"
 inst_module "gateway"
 inst_module "waf"	# waf 在 gateway 之前编译，部署时由 core 先拉起 waf 再拉起 gateway
 inst_module "static"
