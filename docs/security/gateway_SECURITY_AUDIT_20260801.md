@@ -20,7 +20,7 @@
 ## 🔴 P0 — 严重问题
 
 ### P0-1: RSA 私钥存储在仓库中/硬编码
-- **位置**: `main.cpp` L681 `_KEYGEN = std::make_unique<MyRSA::Generator>();`
+- **位置**: `main.cpp` L686 `_KEYGEN = std::make_unique<MyRSA::Generator>();`
 - **当前状态**: ⚠️ 部分修复
   - 密钥由 `MyRSA::Generator` 在内存中运行时生成，**未硬编码在源码中**，**未随仓库分发**
   - 每个进程实例独立生成密钥对，满足"每个部署独立密钥"要求
@@ -37,12 +37,12 @@
 
 | # | 问题 | 状态 | 说明 |
 |---|------|------|------|
-| P1-1 | Token 吊销机制缺失 | ❌ 未修复 | `handleLogout` (L1184) 仅清除 Cookie，无服务端黑名单/吊销列表；修改密码/注销后旧 Token 仍有效直到过期 |
-| P1-2 | 登录失败次数限制 | ⚠️ 部分修复 | IP 级限流已实现 (`_LOGIN_RATE` L371，`check_and_record(ip,5,300)` L1022)，但**无账户级锁定**（同一邮箱多次失败不触发账户锁定） |
-| P1-3 | 上游代理超时配置 | ❌ 未修复 | `handleProxy` (L1947) 中 `HttpClient` 未显式设置超时，依赖 libhttp 默认值 |
+| P1-1 | Token 吊销机制缺失 | ❌ 未修复 | `handleLogout` (L1195) 仅清除 Cookie，无服务端黑名单/吊销列表；修改密码/注销后旧 Token 仍有效直到过期 |
+| P1-2 | 登录失败次数限制 | ⚠️ 部分修复 | IP 级限流已实现 (`_LOGIN_RATE` L376，`check_and_record(ip,5,300)` L1033)，但**无账户级锁定**（同一邮箱多次失败不触发账户锁定） |
+| P1-3 | 上游代理超时配置 | ❌ 未修复 | `handleProxy` (L2084) 中 `HttpClient` 未显式设置超时，依赖 libhttp 默认值 |
 | P1-4 | C++ HTTP 解析器缓冲区溢出审计 | ❌ 未修复 | libhttp 库（`src/shared/`）需全面 fuzz 测试 |
 | P1-5 | 请求体大小限制 | ❌ 未修复 | 未配置显式请求体大小上限（如 10MB），依赖 Boost.Beast 默认行为 |
-| P1-6 | 反向代理响应无大小限制 | ❌ 未修复 | `handleProxy` 回调 L2069-2074 拼接下游响应 body 无上限（`res.body() += ret`，带 `FIXME: 增加长度限制`），下游（static/dnfs）返回超大响应可导致 OOM（全局审计 P1-1） |
+| P1-6 | 反向代理响应无大小限制 | ❌ 未修复 | `handleProxy` 回调 L2212-2214 拼接下游响应 body 无上限（`res.body() += ret`，带 `FIXME: 增加长度限制`），下游（static/dnfs）返回超大响应可导致 OOM（全局审计 P1-1） |
 
 ---
 
@@ -50,9 +50,9 @@
 
 | # | 问题 | 状态 | 说明 |
 |---|------|------|------|
-| P2-1 | 错误页面泄露版本号/堆栈信息 | ✅ 已修复 | `wrapperHttp` (L909-940) 异常捕获返回统一 `"Internal Server Error"`；`ExceptionBase::build_message()` 中文件/行号/函数名已注释（`ExpBase.hpp` L173-197），`what()` 仅含业务消息，不向客户端暴露源码位置 |
-| P2-2 | HTTPS TLS 版本和密码套件安全 | ❌ 未修复 | `main.cpp` L677 TLS 模式下仅指定证书文件，未显式限定 TLS 版本和 CipherSuites |
-| P2-3 | CORS 通配（反射任意 Origin） | ❌ 未修复 | **根因**：`_CORS_ORIGINS` 白名单 (L593) 已读取但**从未用于响应头**——OPTIONS 预检由 libhttp 库处理（`HttpServer_Request.cpp` L73-74），直接反射请求 Origin，libhttp 不感知 gateway 的 `_CORS_ORIGINS` 状态，等于允许任意来源（全局审计 P2）。修复需在 libhttp 层接入白名单或由 gateway 注册显式 OPTIONS 路由 |
+| P2-1 | 错误页面泄露版本号/堆栈信息 | ✅ 已修复 | `wrapperHttp` (L920-965) 异常捕获返回统一 `"Internal Server Error"`；`ExceptionBase::build_message()` 中文件/行号/函数名已注释（`ExpBase.hpp` L173-197），`what()` 仅含业务消息，不向客户端暴露源码位置 |
+| P2-2 | HTTPS TLS 版本和密码套件安全 | ❌ 未修复 | `main.cpp` L682 TLS 模式下仅指定证书文件，未显式限定 TLS 版本和 CipherSuites |
+| P2-3 | CORS 通配（反射任意 Origin） | ❌ 未修复 | **根因**：`_CORS_ORIGINS` 白名单 (L598) 已读取但**从未用于响应头**——OPTIONS 预检由 libhttp 库处理（`HttpServer_Request.cpp` L73-74），直接反射请求 Origin，libhttp 不感知 gateway 的 `_CORS_ORIGINS` 状态，等于允许任意来源（全局审计 P2）。修复需在 libhttp 层接入白名单或由 gateway 注册显式 OPTIONS 路由 |
 | P2-4 | HTTP 服务器无超时配置 | ❌ 未修复 | 未设置 Read/Write/Idle 超时，`HttpServer(addr,port,threads)` 构造函数无超时参数，依赖 libhttp 默认行为，存在 Slowloris/连接耗尽风险（全局审计 P2） |
 
 ---
@@ -63,15 +63,15 @@
 2. ✅ **RSA Token 签名**: Token 使用 RSA 私钥签名，防伪造 (`main.cpp` L1112-1130)
 3. ✅ **反向代理架构**: 统一入口，隐藏后端服务拓扑
 4. ✅ **速率限制**: 多层防护（IP 级 + 邮箱级双窗口限流、60秒冷却、失败锁定）
-5. ✅ **防用户名枚举**: 用户不存在时执行 dummy PBKDF2 校验拉平响应时序 (`main.cpp` L1102-1108)
+5. ✅ **防用户名枚举**: 用户不存在时执行 dummy PBKDF2 校验拉平响应时序 (`main.cpp` L1113-1118)
 6. ✅ **WAF 前置防护**: Go WAF 处理 SQLi/XSS/CC/协议解析
 7. ✅ **C++ 高性能实现**: 避免 Python GIL 瓶颈，抗并发能力强
 8. ✅ **依赖审计**: 使用项目自带的 libcrypt 加密库（PBKDF2、RSA）
-9. ✅ **路径遍历防护**: `is_safe_target()` 校验请求路径，拒绝 `..`、空字节、URL 编码遍历 (`main.cpp` L2161-2186)
-10. ✅ **X-Forwarded-For 可信注入**: 剥离客户端伪造的 IP 头后由 gateway 主动设置 (`main.cpp` L2088-2098, `is_special_header` L2126-2138)
-11. ✅ **优雅关闭**: SIGINT/SIGTERM 信号处理 (`main.cpp` L484-490)
-12. ✅ **Token 刷新机制**: 支持宽限期刷新 + 次数上限 + 限流 (`main.cpp` L1339-1450)
-13. ✅ **CAPTCHA 强制校验**: 登录/注册/发送验证码均需 CAPTCHA，对接 captcha 服务 (`main.cpp` L438, 调用点 L1044/1671/1784/1905)
+9. ✅ **路径遍历防护**: `is_safe_target()` 校验请求路径，拒绝 `..`、空字节、URL 编码遍历 (`main.cpp` L2301-2326)
+10. ✅ **X-Forwarded-For 可信注入**: 剥离客户端伪造的 IP 头后由 gateway 主动设置 (`main.cpp` L2229, `is_special_header` L2266-2280)
+11. ✅ **优雅关闭**: SIGINT/SIGTERM 信号处理 (`main.cpp` L482-496)
+12. ✅ **Token 刷新机制**: 支持宽限期刷新 + 次数上限 + 限流 (`main.cpp` L1463-1590)
+13. ✅ **CAPTCHA 强制校验**: 登录/注册/发送验证码均需 CAPTCHA，对接 captcha 服务 (`main.cpp` L443, 调用点 L1048-1055/1707-1713/1801-1810/1915-1923)
 14. ✅ **异步日志**: 批量推送 + fail-safe，db 不可用时静默丢弃 (`LogC.hpp`)
 
 ---
@@ -117,26 +117,26 @@
 
 | 编号 | 状态 | 代码位置 | 验证说明 |
 |------|------|----------|----------|
-| P0-1 | ⚠️ 部分 | `main.cpp` L681 | `MyRSA::Generator()` 运行时生成，非硬编码；但无持久化，重启后 Token 全部失效 |
-| P1-1 | ❌ 未修复 | `main.cpp` L1184-1198 | `handleLogout` 仅清除 Cookie，无 Token 黑名单/吊销机制 |
-| P1-2 | ⚠️ 部分 | `main.cpp` L371, L1022 | IP 限流已实现 (5次/300s)，无账户级锁定 |
-| P1-3 | ❌ 未修复 | `main.cpp` L1947-2124 | `handleProxy` 中 `HttpClient` 未显式设置超时 |
+| P0-1 | ⚠️ 部分 | `main.cpp` L686 | `MyRSA::Generator()` 运行时生成，非硬编码；但无持久化，重启后 Token 全部失效 |
+| P1-1 | ❌ 未修复 | `main.cpp` L1195-1209 | `handleLogout` 仅清除 Cookie，无 Token 黑名单/吊销机制 |
+| P1-2 | ⚠️ 部分 | `main.cpp` L376, L1033 | IP 限流已实现 (5次/300s)，无账户级锁定 |
+| P1-3 | ❌ 未修复 | `main.cpp` L2084-2262 | `handleProxy` 中 `HttpClient` 未显式设置超时 |
 | P1-4 | ❌ 未修复 | `src/shared/` | libhttp 库未进行 fuzz 测试 |
 | P1-5 | ❌ 未修复 | `main.cpp` | 未设置请求体大小上限 |
-| P1-6 | ❌ 未修复 | `main.cpp` L2069-2074 | `handleProxy` 回调 `res.body() += ret` 拼接下游响应 body 无上限，超大响应可 OOM |
-| P2-1 | ✅ 已修复 | `main.cpp` L909-940, `ExpBase.hpp` L173-197 | 异常统一返回 `"Internal Server Error"`；`build_message()` 已注释文件/行号/函数名，不泄露源码位置 |
-| P2-2 | ❌ 未修复 | `main.cpp` L677 | TLS 模式仅指定证书，未限定版本和密码套件 |
-| P2-3 | ❌ 未修复 | `main.cpp` L593, libhttp `HttpServer_Request.cpp` L73-74 | `_CORS_ORIGINS` 白名单读取但未用于响应头（OPTIONS 由 libhttp 处理，不感知 gateway 状态）；OPTIONS 预检反射任意 Origin |
+| P1-6 | ❌ 未修复 | `main.cpp` L2212-2214 | `handleProxy` 回调 `res.body() += ret` 拼接下游响应 body 无上限，超大响应可 OOM |
+| P2-1 | ✅ 已修复 | `main.cpp` L920-965, `ExpBase.hpp` L173-197 | 异常统一返回 `"Internal Server Error"`；`build_message()` 已注释文件/行号/函数名，不泄露源码位置 |
+| P2-2 | ❌ 未修复 | `main.cpp` L682 | TLS 模式仅指定证书，未限定版本和密码套件 |
+| P2-3 | ❌ 未修复 | `main.cpp` L598, libhttp `HttpServer_Request.cpp` L73-74 | `_CORS_ORIGINS` 白名单读取但未用于响应头（OPTIONS 由 libhttp 处理，不感知 gateway 状态）；OPTIONS 预检反射任意 Origin |
 | P2-4 | ❌ 未修复 | `main.cpp` L677-679, libhttp `HttpServer` | `HttpServer(addr,port,threads)` 无超时参数，未设置 HTTP 服务器 Read/Write/Idle 超时 |
 
 ### 新增安全机制（审计报告未覆盖）
 
 | 机制 | 代码位置 | 说明 |
 |------|----------|------|
-| 路径遍历防护 | `main.cpp` L2161-2186 | `is_safe_target()` 拒绝 `..`、空字节、URL 编码遍历 |
-| XFF 可信注入 | `main.cpp` L2088-2098, L2126-2138 | `is_special_header` 剥离客户端伪造 IP 头后主动设置可信 XFF |
-| 优雅关闭 | `main.cpp` L484-490 | SIGINT/SIGTERM 信号处理 |
-| 防用户枚举 | `main.cpp` L1102-1108 | 用户不存在时执行 dummy PBKDF2 拉平响应时序 |
-| 密码强度校验 | `main.cpp` L146-176 | 8-128字符，至少3种字符类别 |
-| 邮箱双窗口限流 | `main.cpp` L1677-1681 | 3次/小时 + 10次/天/邮箱 |
+| 路径遍历防护 | `main.cpp` L2301-2326 | `is_safe_target()` 拒绝 `..`、空字节、URL 编码遍历 |
+| XFF 可信注入 | `main.cpp` L2229, L2266-2280 | `is_special_header` 剥离客户端伪造 IP 头后主动设置可信 XFF |
+| 优雅关闭 | `main.cpp` L482-496 | SIGINT/SIGTERM 信号处理 |
+| 防用户枚举 | `main.cpp` L1113-1118 | 用户不存在时执行 dummy PBKDF2 拉平响应时序 |
+| 密码强度校验 | `main.cpp` L146-180 | 8-128字符，至少3种字符类别 |
+| 邮箱双窗口限流 | `main.cpp` L1814-1818 | 3次/小时 + 10次/天/邮箱 |
 | 异步日志 fail-safe | `LogC.hpp` L210-213 | db 不可用时静默丢弃，绝不影响业务 |

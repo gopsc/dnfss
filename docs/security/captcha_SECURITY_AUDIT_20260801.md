@@ -78,7 +78,7 @@
 
 ### NEW-1: 验证码答案使用 random 模块生成（P2）
 
-- **位置**: `captcha_service.py` L134-135
+- **位置**: `captcha_service.py` L146
 - **问题**: `generate_text()` 使用 `random.choices` 而非 `secrets` 模块生成验证码答案。`random` 模块是确定性伪随机，若攻击者能推测随机种子状态，可预测验证码答案
 - **影响**: 低（Token 使用 `secrets.token_hex` 保护，攻击者需先获取有效 Token）
 - **建议**: 将 `random.choices` 替换为 `secrets.SystemRandom().choices` 或逐个调用 `secrets.choice`

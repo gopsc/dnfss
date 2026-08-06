@@ -35,7 +35,7 @@
 | # | 问题 | 位置 | 说明 |
 |---|------|------|------|
 | P1-1 | libcrypt RSA 实现需审计 | `libcrypt/src/Crypto_Basic.cpp`、`inc/us/MyRSA.hpp` | 自研 RSA 实现需验证侧信道攻击防护、填充方案（PKCS#1 v1.5/OAEP）正确性 |
-| P1-2 | WebSocket 帧解析需 fuzz | `libhttp/src/WebSocketServer.cpp` | 畸形帧、超大帧、分片帧处理需验证 |
+| P1-2 | WebSocket 帧解析需 fuzz | ⚠️ 原文件已删除 | `libhttp/src/WebSocketServer.cpp` 已删除（见 libhttp 审计 P3-1），WebSocket 能力现由 `HttpServer` + `HttpClient` 提供，帧解析 fuzz 需求转移至 `HttpServer_WsSession.cpp` |
 
 ---
 
@@ -60,7 +60,7 @@
 ## 修复路线图
 
 ### 短期（72小时）
-- [ ] 对 libhttp HTTP/WebSocket 解析器进行 fuzz 测试
+- [ ] 对 libhttp HTTP/WebSocket 解析器进行 fuzz 测试（WebSocket 部分针对 `HttpServer_WsSession.cpp`）
 - [ ] 验证 libsqlite3 封装的参数化查询正确使用
 
 ### 中期
