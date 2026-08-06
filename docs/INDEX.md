@@ -40,6 +40,7 @@ docs/
 | gateway | [gateway_SECURITY_AUDIT_20260801.md](security/gateway_SECURITY_AUDIT_20260801.md) | C++20 应用网关（鉴权、Token、反向代理） |
 | core | [core_SECURITY_AUDIT_20260801.md](security/core_SECURITY_AUDIT_20260801.md) | C++20 进程托管服务（PMC/Nidus） |
 | db | [db_SECURITY_AUDIT_20260801.md](security/db_SECURITY_AUDIT_20260801.md) | Python 数据库服务（pymsg、SQLAlchemy、日志收集） |
+| db2 | [db2_SECURITY_AUDIT_20260806.md](security/db2_SECURITY_AUDIT_20260806.md) | C++20 数据库 RPC 服务（db 的 C++ 重实现，SQLite C API） |
 | pymsg | [pymsg_SECURITY_AUDIT_20260801.md](security/pymsg_SECURITY_AUDIT_20260801.md) | Python RPC 基础库（长度前缀帧、MsgClient/Server） |
 | dnfs | [dnfs_SECURITY_AUDIT_20260801.md](security/dnfs_SECURITY_AUDIT_20260801.md) | Python 树状菜单服务 |
 | static | [static_SECURITY_AUDIT_20260801.md](security/static_SECURITY_AUDIT_20260801.md) | Python 前端托管/文件服务 |
@@ -84,6 +85,7 @@ docs/
 | waf | [../waf/README.md](../waf/README.md) | WAF 网关（Go, coraza） |
 | gateway | [../gateway/README.md](../gateway/README.md) | 应用层网关（C++20） |
 | db | [../db/README.md](../db/README.md) | 通用数据库服务（pymsg） |
+| db2 | [../db2/README.md](../db2/README.md) | C++20 数据库 RPC 服务（db 重实现） |
 | confs | [../confs/README.md](../confs/README.md) | 统一配置服务 |
 | static | [../static/README.md](../static/README.md) | 前端托管服务 |
 | dnfs | [../dnfs/README.md](../dnfs/README.md) | 树状网络文件系统 |
