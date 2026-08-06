@@ -364,27 +364,49 @@ private:
             || n.find("date")  != std::string::npos;
     }
 
-    // 将 JSON 值转换为 SQLite 绑定字符串（$now 替换为 UTC 时间）
-    static std::string _coerce_value(const ColInfo& ci, const json::value& jv) {
+    // 将 JSON 值做必要转换（$now 替换为 UTC 时间），但保留原始类型用于绑定
+    static json::value _coerce_value(const ColInfo& ci, const json::value& jv) {
         if (jv.is_string()) {
             std::string s(jv.as_string());
-            if (_is_datetime_col(ci) && s == "$now") return utc_now();
-            return s;
+            if (_is_datetime_col(ci) && s == "$now") return json::value(utc_now());
         }
-        if (jv.is_int64())  return std::to_string(jv.as_int64());
-        if (jv.is_uint64()) return std::to_string(jv.as_uint64());
-        if (jv.is_double()) return std::to_string(jv.as_double());
-        if (jv.is_bool())   return jv.as_bool() ? "1" : "0";
-        if (jv.is_null())   return "";  // 绑定 NULL
-        return json::serialize(jv);
+        return jv;
+    }
+
+    static void _bind_value(sqlite3_stmt* stmt, int idx, const json::value& jv) {
+        if (jv.is_null()) {
+            sqlite3_bind_null(stmt, idx);
+        } else if (jv.is_int64()) {
+            sqlite3_bind_int64(stmt, idx, jv.as_int64());
+        } else if (jv.is_uint64()) {
+            sqlite3_bind_int64(stmt, idx, static_cast<sqlite3_int64>(jv.as_uint64()));
+        } else if (jv.is_double()) {
+            sqlite3_bind_double(stmt, idx, jv.as_double());
+        } else if (jv.is_bool()) {
+            sqlite3_bind_int(stmt, idx, jv.as_bool() ? 1 : 0);
+        } else if (jv.is_string()) {
+            std::string s(jv.as_string());
+            sqlite3_bind_text(stmt, idx, s.c_str(), -1, SQLITE_TRANSIENT);
+        } else {
+            std::string s = json::serialize(jv);
+            sqlite3_bind_text(stmt, idx, s.c_str(), -1, SQLITE_TRANSIENT);
+        }
+    }
+
+    // 校验列名：必须存在于表 schema 中，拒绝未知列名（防 SQL 注入）
+    static ColInfo _validate_col(const std::string& col,
+                                 const std::unordered_map<std::string, ColInfo>& col_map) {
+        auto it = col_map.find(col);
+        if (it == col_map.end())
+            throw std::runtime_error("unknown column: " + col);
+        return it->second;
     }
 
     // ---- WHERE 子句构建 --------------------------------------------------------
 
     struct WhereClause {
-        std::string sql;                 // "col1 = ? AND col2 > ?"
-        std::vector<std::string> params; // 绑定参数值（顺序对应 ?）
-        std::vector<bool>        is_null; // 对应参数是否绑定 NULL
+        std::string sql;                  // "col1 = ? AND col2 > ?"
+        std::vector<json::value> params;  // 绑定参数值（顺序对应 ?），保留 JSON 类型
     };
 
     WhereClause _build_where(const json::object& where,
@@ -398,10 +420,7 @@ private:
 
         for (auto& [key, val] : where) {
             std::string col(key);
-            ColInfo ci;
-            auto it = col_map.find(col);
-            if (it != col_map.end()) ci = it->second;
-            else { ci.name = col; ci.type = "TEXT"; }
+            ColInfo ci = _validate_col(col, col_map);
 
             if (val.is_object()) {
                 // {"op": value} 形式
@@ -410,39 +429,34 @@ private:
                     if (op == "eq") {
                         parts.push_back(col + " = ?");
                         wc.params.push_back(_coerce_value(ci, op_val));
-                        wc.is_null.push_back(op_val.is_null());
                     } else if (op == "ne") {
                         parts.push_back(col + " != ?");
                         wc.params.push_back(_coerce_value(ci, op_val));
-                        wc.is_null.push_back(op_val.is_null());
                     } else if (op == "gt") {
                         parts.push_back(col + " > ?");
                         wc.params.push_back(_coerce_value(ci, op_val));
-                        wc.is_null.push_back(false);
                     } else if (op == "lt") {
                         parts.push_back(col + " < ?");
                         wc.params.push_back(_coerce_value(ci, op_val));
-                        wc.is_null.push_back(false);
                     } else if (op == "ge") {
                         parts.push_back(col + " >= ?");
                         wc.params.push_back(_coerce_value(ci, op_val));
-                        wc.is_null.push_back(false);
                     } else if (op == "le") {
                         parts.push_back(col + " <= ?");
                         wc.params.push_back(_coerce_value(ci, op_val));
-                        wc.is_null.push_back(false);
                     } else if (op == "like") {
                         parts.push_back(col + " LIKE ?");
                         wc.params.push_back(_coerce_value(ci, op_val));
-                        wc.is_null.push_back(false);
                     } else if (op == "in") {
-                        if (!op_val.is_array() || op_val.as_array().empty()) continue;
+                        if (!op_val.is_array() || op_val.as_array().empty()) {
+                            parts.push_back("0");
+                            continue;
+                        }
                         std::string placeholders;
                         for (auto& item : op_val.as_array()) {
                             if (!placeholders.empty()) placeholders += ", ";
                             placeholders += "?";
                             wc.params.push_back(_coerce_value(ci, item));
-                            wc.is_null.push_back(item.is_null());
                         }
                         parts.push_back(col + " IN (" + placeholders + ")");
                     }
@@ -451,7 +465,6 @@ private:
                 // 直接等于
                 parts.push_back(col + " = ?");
                 wc.params.push_back(_coerce_value(ci, val));
-                wc.is_null.push_back(val.is_null());
             }
         }
 
@@ -465,15 +478,9 @@ private:
     // ---- 参数绑定辅助 ----------------------------------------------------------
 
     static void _bind_params(sqlite3_stmt* stmt, int start_idx,
-                             const std::vector<std::string>& params,
-                             const std::vector<bool>& is_null) {
+                             const std::vector<json::value>& params) {
         for (size_t i = 0; i < params.size(); ++i) {
-            int idx = start_idx + static_cast<int>(i);
-            if (is_null[i]) {
-                sqlite3_bind_null(stmt, idx);
-            } else {
-                sqlite3_bind_text(stmt, idx, params[i].c_str(), -1, SQLITE_TRANSIENT);
-            }
+            _bind_value(stmt, start_idx + static_cast<int>(i), params[i]);
         }
     }
 
@@ -511,14 +518,19 @@ private:
                            const std::vector<ColInfo>& cols) {
         DbConn& conn = _get_conn();
 
+        std::unordered_map<std::string, ColInfo> col_map;
+        for (auto& c : cols) col_map[c.name] = c;
+
         // columns
         std::string col_expr = "*";
         if (auto it = req.find("columns");
             it != req.end() && it->value().is_array() && !it->value().as_array().empty()) {
             col_expr.clear();
             for (auto& c : it->value().as_array()) {
+                std::string col_name = std::string(c.as_string());
+                _validate_col(col_name, col_map);
                 if (!col_expr.empty()) col_expr += ", ";
-                col_expr += std::string(c.as_string());
+                col_expr += col_name;
             }
         }
 
@@ -537,8 +549,10 @@ private:
                 if (!ob.is_object()) continue;
                 auto& o = ob.as_object();
                 if (!o.contains("column")) continue;
+                std::string col_name = std::string(o.at("column").as_string());
+                _validate_col(col_name, col_map);
                 if (!order.empty()) order += ", ";
-                order += std::string(o.at("column").as_string());
+                order += col_name;
                 if (o.contains("desc") && o.at("desc").as_bool()) order += " DESC";
             }
             if (!order.empty()) sql += " ORDER BY " + order;
@@ -554,7 +568,7 @@ private:
         if (sqlite3_prepare_v2(conn.get(), sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
             throw std::runtime_error(std::string("prepare failed: ") + sqlite3_errmsg(conn.get()));
         }
-        _bind_params(stmt, 1, wc.params, wc.is_null);
+        _bind_params(stmt, 1, wc.params);
 
         // 获取结果列名（可能是 * 展开后的实际列名）
         int ncols = sqlite3_column_count(stmt);
@@ -603,19 +617,15 @@ private:
         for (auto& c : cols) col_map[c.name] = c;
 
         std::string col_list, ph_list;
-        std::vector<std::string> params;
-        std::vector<bool> is_null;
+        std::vector<json::value> params;
 
         for (auto& [k, v] : vals) {
+            std::string col_name(k);
+            ColInfo ci = _validate_col(col_name, col_map);
             if (!col_list.empty()) { col_list += ", "; ph_list += ", "; }
-            col_list += std::string(k);
+            col_list += col_name;
             ph_list += "?";
-            ColInfo ci;
-            auto it = col_map.find(std::string(k));
-            if (it != col_map.end()) ci = it->second;
-            else { ci.name = std::string(k); ci.type = "TEXT"; }
             params.push_back(_coerce_value(ci, v));
-            is_null.push_back(v.is_null());
         }
 
         std::string sql = "INSERT INTO " + table + " (" + col_list + ") VALUES (" + ph_list + ")";
@@ -623,7 +633,7 @@ private:
         if (sqlite3_prepare_v2(conn.get(), sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK)
             throw std::runtime_error(std::string("prepare failed: ") + sqlite3_errmsg(conn.get()));
 
-        _bind_params(stmt, 1, params, is_null);
+        _bind_params(stmt, 1, params);
         int rc = sqlite3_step(stmt);
         sqlite3_finalize(stmt);
         if (rc != SQLITE_DONE)
@@ -648,18 +658,14 @@ private:
         for (auto& c : cols) col_map[c.name] = c;
 
         std::string set_clause;
-        std::vector<std::string> params;
-        std::vector<bool> is_null;
+        std::vector<json::value> params;
 
         for (auto& [k, v] : vals) {
+            std::string col_name(k);
+            ColInfo ci = _validate_col(col_name, col_map);
             if (!set_clause.empty()) set_clause += ", ";
-            set_clause += std::string(k) + " = ?";
-            ColInfo ci;
-            auto it = col_map.find(std::string(k));
-            if (it != col_map.end()) ci = it->second;
-            else { ci.name = std::string(k); ci.type = "TEXT"; }
+            set_clause += col_name + " = ?";
             params.push_back(_coerce_value(ci, v));
-            is_null.push_back(v.is_null());
         }
 
         std::string sql = "UPDATE " + table + " SET " + set_clause;
@@ -669,14 +675,13 @@ private:
         if (!wc.sql.empty()) {
             sql += " WHERE " + wc.sql;
             params.insert(params.end(), wc.params.begin(), wc.params.end());
-            is_null.insert(is_null.end(), wc.is_null.begin(), wc.is_null.end());
         }
 
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(conn.get(), sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK)
             throw std::runtime_error(std::string("prepare failed: ") + sqlite3_errmsg(conn.get()));
 
-        _bind_params(stmt, 1, params, is_null);
+        _bind_params(stmt, 1, params);
         int rc = sqlite3_step(stmt);
         sqlite3_finalize(stmt);
         if (rc != SQLITE_DONE)
@@ -703,7 +708,7 @@ private:
         if (sqlite3_prepare_v2(conn.get(), sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK)
             throw std::runtime_error(std::string("prepare failed: ") + sqlite3_errmsg(conn.get()));
 
-        _bind_params(stmt, 1, wc.params, wc.is_null);
+        _bind_params(stmt, 1, wc.params);
         int rc = sqlite3_step(stmt);
         sqlite3_finalize(stmt);
         if (rc != SQLITE_DONE)
