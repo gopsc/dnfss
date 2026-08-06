@@ -15,7 +15,26 @@ namespace qing {
 		}
 
 		~Sqlite3_stmt() {
-			sqlite3_finalize(stmt);
+			if (stmt) {
+				sqlite3_finalize(stmt);
+				stmt = nullptr;
+			}
+		}
+
+		Sqlite3_stmt(const Sqlite3_stmt&) = delete;
+		Sqlite3_stmt& operator=(const Sqlite3_stmt&) = delete;
+
+		Sqlite3_stmt(Sqlite3_stmt&& other) noexcept : stmt(other.stmt) {
+			other.stmt = nullptr;
+		}
+
+		Sqlite3_stmt& operator=(Sqlite3_stmt&& other) noexcept {
+			if (this != &other) {
+				if (stmt) sqlite3_finalize(stmt);
+				stmt = other.stmt;
+				other.stmt = nullptr;
+			}
+			return *this;
 		}
 
 		void bind_int(int idx, int data) {
@@ -56,7 +75,7 @@ namespace qing {
 		}
 
 	private:
-		sqlite3_stmt* stmt;
+		sqlite3_stmt* stmt = nullptr;
 	};
 
 	class Sqlite3 {
@@ -72,27 +91,45 @@ namespace qing {
 		}
 
 		~Sqlite3() {
-			sqlite3_close(db);
+			if (db) {
+				sqlite3_close_v2(db);
+				db = nullptr;
+			}
+		}
+
+		Sqlite3(const Sqlite3&) = delete;
+		Sqlite3& operator=(const Sqlite3&) = delete;
+
+		Sqlite3(Sqlite3&& other) noexcept : db(other.db) {
+			other.db = nullptr;
+		}
+
+		Sqlite3& operator=(Sqlite3&& other) noexcept {
+			if (this != &other) {
+				if (db) sqlite3_close_v2(db);
+				db = other.db;
+				other.db = nullptr;
+			}
+			return *this;
 		}
 
 		bool exec(const std::string& sql) {
-			char *errMsg;
+			char *errMsg = nullptr;
 			int rc = sqlite3_exec(db, sql.c_str(), 0, 0, &errMsg);
 			if (rc != SQLITE_OK) {
 				std::cerr << "Failed to execute at sqlite3: " << errMsg << std::endl;
 				sqlite3_free(errMsg);
-				//sqlite3_close(db);
 				return false;
 			}
 
 			return true;
 		}
 
-		Sqlite3_stmt stmt(std::string& sql) {
+		Sqlite3_stmt stmt(const std::string& sql) {
 			return Sqlite3_stmt(db, sql.c_str());
 		}
 
 	private:
-		sqlite3* db;
+		sqlite3* db = nullptr;
 	};
 }
