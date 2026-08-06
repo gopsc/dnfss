@@ -6,3 +6,18 @@ confs/__pycache__/
 libhttp/test_server
 *.pyc
 __pycache__/
+
+# Python 虚拟环境（各模块 _set.sh 创建的 venv/.env）
+venv/
+.env/
+**/venv/
+**/.env/
+
+# 构建产物
+build/
+*.out
+*.bin
+waf/certs/
+
+# 本地 IDE / 工具
+.qoder/
