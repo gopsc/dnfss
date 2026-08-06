@@ -31,13 +31,22 @@ body::after {
     pointer-events: none;
 }
 
-/* ===== 节点卡片入场：逐张上浮（JS 动态插入时播放） ===== */
+/* ===== 节点卡片入场：逐张淡入（JS 动态插入时播放） =====
+ * 注意：此处只能动画 opacity，不能带 transform——特效节点的全屏 iframe 是
+ * position:fixed，祖先 transform 会成为 fixed 后代的包含块，把全屏特效困在卡片内
+ *（in-node 特效是 relative 定位不受影响，故障表现为"部分特效不自动启动"） */
 @keyframes card-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+/* 带位移的入场仅用于不含 fixed 后代的骨架元素；
+ * 不含 .minimap——它自身依赖 transform: translateY(-50%) 垂直居中，动画会覆盖 */
+@keyframes rise-in {
     from { opacity: 0; transform: translateY(12px); }
     to { opacity: 1; transform: none; }
 }
 @media (prefers-reduced-motion: no-preference) {
-    .recommend-list .card { animation: card-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both; }
+    .recommend-list .card { animation: card-in 0.45s ease both; }
     .recommend-list .card:nth-of-type(2) { animation-delay: 0.05s; }
     .recommend-list .card:nth-of-type(3) { animation-delay: 0.1s; }
     .recommend-list .card:nth-of-type(4) { animation-delay: 0.15s; }
@@ -47,8 +56,9 @@ body::after {
     .recommend-list .card:nth-of-type(n+8) { animation-delay: 0.35s; }
 
     /* 首屏骨架元素入场 */
-    .searchbox, .userpanel, .minimap, .node-form { animation: card-in 0.4s ease both; }
+    .searchbox, .node-form { animation: rise-in 0.4s ease both; }
     .node-form { animation-delay: 0.1s; }
+    .userpanel, .minimap { animation: card-in 0.4s ease both; }
 }
 
 /* ===== 搜索框：hover 升温（focus 高亮由 theme.css 提供） ===== */
