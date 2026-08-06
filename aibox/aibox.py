@@ -8649,7 +8649,12 @@ class EnhancedAIManager:
         async def handler(websocket):
             await self.handle_connection(websocket, None)
         
-        server = await websockets.serve(handler, host, port)
+        # ping_interval=None：禁用服务端协议层主动 Ping。
+        # websockets 库默认 ping_interval=20s / ping_timeout=20s，服务端每 20s 发协议层
+        # Ping 帧，20s 内收不到 Pong 即强制断连。经 WAF→gateway 两层代理转发后 Pong 无法
+        # 可靠回传，导致连接约 20s 被服务端关闭。前端已通过 25s 应用层心跳（{type:'ping'}）
+        # 保活，故此处完全禁用服务端协议层 ping。
+        server = await websockets.serve(handler, host, port, ping_interval=None)
         self.logger.info(i18n.get('websocket_started', host, port))
         
         try:
