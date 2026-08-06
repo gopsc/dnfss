@@ -179,9 +179,8 @@ private:
     static std::string _sanitize_error(const std::string& msg) {
         if (msg.empty()) return msg;
         try {
-            // 匹配以 / 开头的绝对路径段，替换为 <redacted>
-            // 不返回函数堆栈、SQL、文件路径等内部细节给客户端
-            static const std::regex path_re(R"(/[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)*)");
+            // 匹配以 / 开头的绝对路径（含特殊字符如空格、括号、@、~ 等），替换为 <redacted>
+            static const std::regex path_re(R"(/\S+(?:/\S*)*)");
             return std::regex_replace(msg, path_re, "<redacted>");
         } catch (...) {
             return msg;  // 正则异常时返回原文

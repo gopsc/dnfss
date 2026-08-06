@@ -249,6 +249,7 @@ private:
         int fd;
         std::string addr;
         std::string message;
+        bool needs_recv = false;  // true: worker 负责 pmsg_recv；false: 消息已就绪
     };
 
     void _worker_loop() {
@@ -267,6 +268,19 @@ private:
                 }
             }
             if (!has_task) continue;
+
+            // workers > 0 模式下，消息接收在 worker 线程中完成（防事件循环阻塞 CWE-400）
+            if (task.needs_recv) {
+                try {
+                    task.message = pmsg_recv(task.fd, _config.recv_timeout);
+                } catch (const MsgException&) {
+                    std::lock_guard<std::mutex> flk(_failed_mtx);
+                    _failed.insert(task.fd);
+                    std::lock_guard<std::mutex> blk(_busy_mtx);
+                    _busy.erase(task.fd);
+                    continue;
+                }
+            }
 
             // 执行回调
             bool failed = false;
@@ -418,17 +432,15 @@ private:
             addr = it->second;
         }
 
-        std::string message;
-        try {
-            // deadline 模式：header+payload 共享总超时，防 Slowloris
-            message = pmsg_recv(fd, _config.recv_timeout);
-        } catch (const MsgException&) {
-            _remove_client(fd);
-            return;
-        }
-
         if (_config.workers == 0) {
-            // 同步模式：在主线程执行回调
+            // 同步模式：在主线程接收并执行回调
+            std::string message;
+            try {
+                message = pmsg_recv(fd, _config.recv_timeout);
+            } catch (const MsgException&) {
+                _remove_client(fd);
+                return;
+            }
             try {
                 _on_message(fd, addr, std::move(message));
             } catch (const MsgConnectionException&) {
@@ -441,7 +453,8 @@ private:
             return;
         }
 
-        // 线程池模式：标记 busy，提交任务
+        // 线程池模式：标记 busy，提交任务（由 worker 负责 recv + callback，
+        // 事件循环线程不阻塞接收，防 Slowloris DoS CWE-400）
         {
             std::lock_guard<std::mutex> blk(_busy_mtx);
             _busy.insert(fd);
@@ -455,7 +468,7 @@ private:
                 _remove_client(fd);
                 return;
             }
-            _pool_queue.push(Task{fd, std::move(addr), std::move(message)});
+            _pool_queue.push(Task{fd, std::move(addr), {}, true});
         }
         _pool_cv.notify_one();
     }
@@ -476,10 +489,24 @@ private:
     }
 
     void _remove_client(int fd) {
-        std::lock_guard<std::mutex> clk(_clients_mtx);
-        if (_clients.erase(fd) == 0) return;  // 已被移除，防止 double-close
-        _send_locks.erase(fd);
-        ::close(fd);
+        std::shared_ptr<std::mutex> send_lock;
+        {
+            std::lock_guard<std::mutex> clk(_clients_mtx);
+            if (_clients.erase(fd) == 0) return;  // 已被移除，防止 double-close
+            auto it = _send_locks.find(fd);
+            if (it != _send_locks.end()) {
+                send_lock = it->second;
+                _send_locks.erase(it);
+            }
+        }
+        // 持有 send_lock 后再关闭 fd：防止 broadcast/reply 在 fd 关闭后向 OS
+        // 复用的新连接发送数据（CWE-362）。
+        if (send_lock) {
+            std::lock_guard<std::mutex> slk(*send_lock);
+            ::close(fd);
+        } else {
+            ::close(fd);
+        }
     }
 
     void _close_all_clients() {
