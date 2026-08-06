@@ -1131,8 +1131,9 @@ function renderUserPanel() {
 		sp_effects_disabled = !sp_effects_disabled;
 		try { localStorage.setItem('sp_effects_disabled', sp_effects_disabled ? '1' : '0'); } catch (e) {}
 		effect_btn.textContent = sp_effects_disabled ? "无特效模式" : "特效模式";
-		/* 关闭时移除当前已运行的全部特效沙箱 */
-		if (sp_effects_disabled) clearAllEffects();
+		/* 切换时清除已有特效并按新状态重新渲染当前层卡片 */
+		clearAllEffects();
+		renderCards(current_children);
 	});
 	userpanel.appendChild(effect_btn);
 
