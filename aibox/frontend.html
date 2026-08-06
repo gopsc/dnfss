@@ -1355,6 +1355,8 @@
             let reconnectAttempts = 0;
             const MAX_RECONNECT_ATTEMPTS = 5;
             let manualDisconnect = false;
+            let heartbeatTimer = null;
+            const HEARTBEAT_INTERVAL = 10000;
             
             function connectWebSocket() {
                 const wsUrl = document.getElementById('ws-url').value.trim();
@@ -1379,6 +1381,13 @@
                     reconnectAttempts = 0;
                     updateConnectionStatus(true);
                     showSystemMessage(`✅ WebSocket 连接成功！服务器: ${wsUrl}`);
+                    // 启动心跳保活，防止前置代理空闲超时断连
+                    if (heartbeatTimer) clearInterval(heartbeatTimer);
+                    heartbeatTimer = setInterval(() => {
+                        if (webSocket.readyState === WebSocket.OPEN) {
+                            webSocket.send(JSON.stringify({ type: 'ping' }));
+                        }
+                    }, HEARTBEAT_INTERVAL);
                 };
                 
                 webSocket.onmessage = (event) => {
@@ -1399,6 +1408,7 @@
                 
                 webSocket.onclose = (event) => {
                     console.log('WebSocket 断开连接:', event.code, event.reason);
+                    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
                     updateConnectionStatus(false);
                     
                     if (!manualDisconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {

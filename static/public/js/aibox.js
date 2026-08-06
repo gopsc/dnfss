@@ -44,8 +44,8 @@ let ws = null;
 let manualClose = false;		/* 手动断开则抑制自动重连 */
 let reconnectDelay = RECONNECT_MIN;
 let reconnectTimer = null;
-let heartbeatTimer = null;		/* 心跳定时器，25s 发送 ping 保持 WS 连接 */
-const HEARTBEAT_INTERVAL = 25000;	/* 心跳间隔（< gateway 30s 空闲超时） */
+let heartbeatTimer = null;		/* 心跳定时器，10s 发送 ping 保持 WS 连接 */
+const HEARTBEAT_INTERVAL = 10000;	/* 心跳间隔：需低于前置代理（Nginx/CDN）的 proxy_read_timeout */
 
 function startHeartbeat() {
 	stopHeartbeat();
