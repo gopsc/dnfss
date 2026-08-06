@@ -1,0 +1,125 @@
+/* auth.css — 注册/重置密码页专属美化（在 theme.css 之后加载，视觉语言与首页 index.css 对齐） */
+
+::selection {
+    background: var(--accent-glow);
+    color: var(--fg);
+}
+
+/* ===== 页面背景：点阵底纹 + 暖色环境光（固定，不随滚动） ===== */
+body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background-image: radial-gradient(var(--border) 1.2px, transparent 1.2px);
+    background-size: 26px 26px;
+    -webkit-mask-image: radial-gradient(ellipse 78% 68% at 50% 38%, #000 18%, transparent 72%);
+    mask-image: radial-gradient(ellipse 78% 68% at 50% 38%, #000 18%, transparent 72%);
+    pointer-events: none;
+}
+body::after {
+    content: "";
+    position: fixed;
+    left: 50%;
+    top: 32%;
+    width: 560px;
+    height: 560px;
+    transform: translate(-50%, -50%);
+    z-index: -1;
+    background: radial-gradient(circle, var(--accent-glow), transparent 62%);
+    opacity: 0.35;
+    pointer-events: none;
+}
+
+/* ===== 卡片：顶部品牌渐变条 + 加深阴影 ===== */
+.card {
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 10px 30px rgba(74, 55, 40, 0.1);
+}
+.card::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-dark));
+}
+@media (prefers-color-scheme: dark) {
+    .card { box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35); }
+}
+
+/* ===== 品牌 eyebrow + 居中标题（渐变短杠，对齐首页章节标题） ===== */
+.auth-eyebrow {
+    text-align: center;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.26em;
+    text-indent: 0.26em; /* 视觉居中补偿字距 */
+    color: var(--accent);
+    margin-bottom: 0.4rem;
+}
+.card h2 {
+    text-align: center;
+}
+.card h2::after {
+    content: "";
+    display: block;
+    width: 40px;
+    height: 3px;
+    margin: 0.55rem auto 0;
+    border-radius: 2px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-dark));
+    opacity: 0.9;
+}
+
+/* ===== 按钮：主按钮品牌渐变 + 上浮；次按钮描边反馈 ===== */
+.card input[type="submit"] {
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-dark) 100%);
+    color: #fff;
+    box-shadow: 0 2px 10px rgba(232, 133, 58, 0.32);
+    transition: transform 0.18s, box-shadow 0.22s, opacity 0.15s;
+}
+.card input[type="submit"]:not(:disabled):hover {
+    opacity: 1;
+    transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(232, 133, 58, 0.4);
+}
+.card input[type="submit"]:not(:disabled):active { transform: scale(0.96); }
+
+.card input[type="button"] {
+    border: 1px solid var(--accent-glow);
+    transition: transform 0.18s, border-color 0.18s, opacity 0.15s;
+}
+.card input[type="button"]:not(:disabled):hover {
+    opacity: 1;
+    transform: translateY(-1px);
+    border-color: var(--accent);
+}
+.card input[type="button"]:not(:disabled):active { transform: scale(0.96); }
+
+.card input[type="reset"] { transition: transform 0.18s, color 0.18s, border-color 0.18s, opacity 0.15s; }
+.card input[type="reset"]:hover {
+    opacity: 1;
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+/* ===== 图形验证码：hover 描边 + 阴影 ===== */
+.code-box .captcha-img {
+    transition: border-color 0.18s, box-shadow 0.18s;
+}
+.code-box .captcha-img:hover {
+    border-color: var(--accent);
+    box-shadow: var(--shadow-md);
+}
+
+/* ===== 入场动画 ===== */
+@keyframes auth-in {
+    from { opacity: 0; transform: translateY(14px); }
+    to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: no-preference) {
+    .card { animation: auth-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both; }
+}
