@@ -58,3 +58,44 @@
 
 	checkLogin();
 })();
+
+/* ===== 视觉增强：滚动渐显 + 卡片光标光斑（装饰性，与登录逻辑解耦） ===== */
+(function () {
+	'use strict';
+
+	const reduceMotion = !window.matchMedia('(prefers-reduced-motion: no-preference)').matches;
+
+	/* 滚动进入视口渐显：由 JS 添加 .reveal 隐藏初始态，无 JS / 减弱动效时内容天然可见 */
+	if (!reduceMotion && 'IntersectionObserver' in window) {
+		const targets = document.querySelectorAll('.section-eyebrow, .section-title, .feature-card, .about .site-intro, .quick-links');
+		targets.forEach(function (el, i) {
+			el.classList.add('reveal');
+			el.style.transitionDelay = (i % 4) * 70 + 'ms';
+		});
+		const io = new IntersectionObserver(function (entries) {
+			entries.forEach(function (entry) {
+				if (!entry.isIntersecting) return;
+				const el = entry.target;
+				el.classList.add('reveal-in');
+				io.unobserve(el);
+				/* 动画结束后移除类与延迟，把 transition 控制权交还 hover 等交互样式 */
+				setTimeout(function () {
+					el.classList.remove('reveal', 'reveal-in');
+					el.style.transitionDelay = '';
+				}, 900);
+			});
+		}, { threshold: 0.15, rootMargin: '0px 0px -8% 0px' });
+		targets.forEach(function (el) { io.observe(el); });
+	}
+
+	/* 特性卡片光标光斑：鼠标位置写入 CSS 变量，由 index.css 径向渐变消费（仅精确指针设备） */
+	if (window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
+		document.querySelectorAll('.feature-card').forEach(function (card) {
+			card.addEventListener('mousemove', function (e) {
+				const rect = card.getBoundingClientRect();
+				card.style.setProperty('--mx', (e.clientX - rect.left) + 'px');
+				card.style.setProperty('--my', (e.clientY - rect.top) + 'px');
+			});
+		});
+	}
+})();

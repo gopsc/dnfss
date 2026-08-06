@@ -29,15 +29,46 @@
 
     <main id="main-page">
         <section class="hero">
-            <h2 class="hero-title">让知识像树一样<br><span class="accent-text">自然生长</span></h2>
-            <p class="hero-sub">每个节点都可以生长出子节点，像树枝一样层层延展</p>
-            <div class="hero-actions">
-                <button id="ctaBtn" class="btn btn-primary btn-lg">开始记录</button>
-                <a class="btn btn-ghost btn-lg" href="#features">了解更多</a>
+            <!-- 品牌装饰：节点树（生长动画见 index.css，纯装饰不影响交互） -->
+            <svg class="hero-tree" viewBox="0 0 640 360" fill="none" aria-hidden="true">
+                <g stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <path pathLength="100" d="M320 344 L320 262"/>
+                    <path pathLength="100" d="M320 262 C 282 236, 238 214, 202 184"/>
+                    <path pathLength="100" d="M320 262 C 358 236, 402 214, 438 184"/>
+                    <path pathLength="100" d="M202 184 C 178 156, 156 134, 142 104"/>
+                    <path pathLength="100" d="M202 184 C 222 156, 244 134, 258 104"/>
+                    <path pathLength="100" d="M438 184 C 414 156, 396 134, 382 104"/>
+                    <path pathLength="100" d="M438 184 C 462 156, 484 134, 498 104"/>
+                </g>
+                <g fill="currentColor">
+                    <circle cx="320" cy="344" r="6"/>
+                    <circle cx="320" cy="262" r="4.5"/>
+                    <circle cx="202" cy="184" r="4.5"/>
+                    <circle cx="438" cy="184" r="4.5"/>
+                    <circle cx="142" cy="104" r="4"/>
+                    <circle cx="258" cy="104" r="4"/>
+                    <circle cx="382" cy="104" r="4"/>
+                    <circle cx="498" cy="104" r="4"/>
+                </g>
+            </svg>
+
+            <div class="hero-inner">
+                <div class="hero-badge"><span class="badge-dot"></span>树状结构 · Markdown · 多媒体分享</div>
+                <h2 class="hero-title">让知识像树一样<br><span class="accent-text">自然生长</span></h2>
+                <p class="hero-sub">每个节点都可以生长出子节点，像树枝一样层层延展</p>
+                <div class="hero-actions">
+                    <button id="ctaBtn" class="btn btn-primary btn-lg">开始记录</button>
+                    <a class="btn btn-ghost btn-lg" href="#features">了解更多</a>
+                </div>
             </div>
+
+            <a class="scroll-hint" href="#features" aria-label="下滑了解特性">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </a>
         </section>
 
         <section id="features">
+            <p class="section-eyebrow">核心特性</p>
             <h2 class="section-title">为什么选择树状笔记</h2>
             <div class="features">
                 <div class="feature-card">
@@ -72,6 +103,7 @@
         </section>
 
         <section class="about">
+            <p class="section-eyebrow">我们的理念</p>
             <h2 class="section-title">关于本站</h2>
             <p class="site-intro">
                 DNFS 树状笔记是一个以树状结构组织内容的笔记社区：每个节点都可以生长出子节点，
