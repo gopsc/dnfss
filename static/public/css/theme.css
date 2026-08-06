@@ -640,6 +640,7 @@ code {
     border-radius: 5px;
     font-size: 0.88em;
 }
+/*
 pre > code {
     display: block;
     color: #f0e4d8;
@@ -647,7 +648,7 @@ pre > code {
     padding: 12px;
     border-radius: var(--radius-sm);
     overflow-x: auto;
-}
+} */
 blockquote {
     margin-right: 0;
     padding: 0.5rem 1rem;
