@@ -74,7 +74,14 @@ public:
         : _addr(addr), _port(port), _name(name),
           _timeout(timeout),
           _retry_on_refused(retry_on_refused),
-          _retry_interval(retry_interval) {}
+          _retry_interval(retry_interval) {
+        if (timeout <= 0 || timeout > 300.0) {
+            throw MsgException("invalid timeout: " + std::to_string(timeout));
+        }
+        if (retry_interval <= 0 || retry_interval > 60.0) {
+            throw MsgException("invalid retry_interval: " + std::to_string(retry_interval));
+        }
+    }
 
     // ---- RPC 调用 ----------------------------------------------------------
 

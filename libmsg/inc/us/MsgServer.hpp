@@ -86,7 +86,25 @@ public:
     using MessageCallback = std::function<void(int sockfd, const std::string& addr, const std::string& message)>;
 
     explicit MsgServer(const std::string& addr, int port, MsgServerConfig config = {})
-        : _addr(addr), _port(port), _config(config), _server_fd(-1), _running(false) {}
+        : _addr(addr), _port(port), _config(config), _server_fd(-1), _running(false) {
+        detail::validatePort(port);
+        if (config.workers < 0 || config.workers > 256) {
+            throw MsgException("invalid workers: " + std::to_string(config.workers) + " (must be in [0, 256])");
+        }
+        detail::validateTimeout(config.recv_timeout);
+        if (config.max_connections < 1 || config.max_connections > 100000) {
+            throw MsgException("invalid max_connections: " + std::to_string(config.max_connections));
+        }
+        if (config.max_queue_size < 1 || config.max_queue_size > 1000000) {
+            throw MsgException("invalid max_queue_size: " + std::to_string(config.max_queue_size));
+        }
+        if (config.listen_backlog < 1 || config.listen_backlog > 4096) {
+            throw MsgException("invalid listen_backlog: " + std::to_string(config.listen_backlog));
+        }
+        if (config.poll_timeout <= 0 || config.poll_timeout > 5.0) {
+            throw MsgException("invalid poll_timeout: " + std::to_string(config.poll_timeout));
+        }
+    }
 
     ~MsgServer() { stop(); }
 
@@ -510,12 +528,33 @@ private:
     }
 
     void _close_all_clients() {
-        std::lock_guard<std::mutex> clk(_clients_mtx);
-        for (auto& [fd, addr] : _clients) {
-            ::close(fd);
+        std::vector<std::pair<int, std::shared_ptr<std::mutex>>> to_close;
+        {
+            std::lock_guard<std::mutex> clk(_clients_mtx);
+            to_close.reserve(_clients.size());
+            for (auto& [fd, addr] : _clients) {
+                auto it = _send_locks.find(fd);
+                if (it != _send_locks.end()) {
+                    to_close.emplace_back(fd, it->second);
+                } else {
+                    to_close.emplace_back(fd, nullptr);
+                }
+            }
+            _clients.clear();
+            _send_locks.clear();
         }
-        _clients.clear();
-        _send_locks.clear();
+        // 持有每个连接的 send_lock 后再 close(fd)：防止 stop()/析构时
+        // reply/broadcast 正在发送，导致数据发到 OS 复用的新连接（CWE-362）
+        for (auto& [fd, send_lock] : to_close) {
+            if (send_lock) {
+                std::lock_guard<std::mutex> slk(*send_lock);
+                ::shutdown(fd, SHUT_RDWR);
+                ::close(fd);
+            } else {
+                ::shutdown(fd, SHUT_RDWR);
+                ::close(fd);
+            }
+        }
         std::lock_guard<std::mutex> blk(_busy_mtx);
         _busy.clear();
         std::lock_guard<std::mutex> flk(_failed_mtx);

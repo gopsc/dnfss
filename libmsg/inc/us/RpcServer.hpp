@@ -80,10 +80,16 @@ public:
 
     /** 注册路由处理函数。
      *
-     * @param name     路由名（对应请求中的 _route 字段）
+     * @param name     路由名（对应请求中的 _route 字段），不能为空
      * @param handler  处理函数，签名 json::value(const json::object& req)
      */
     void add_route(const std::string& name, Handler handler) {
+        if (name.empty()) {
+            throw MsgException("route name cannot be empty");
+        }
+        if (!handler) {
+            throw MsgException("route handler cannot be null");
+        }
         _routes[name] = std::move(handler);
     }
 

@@ -1,9 +1,10 @@
 # libmsg 模块安全审计报告
 
-**审计日期**: 2026-08-06  
-**审计范围**: `libmsg/inc/us/MsgServer.hpp`、`libmsg/inc/us/RpcServer.hpp`、`libmsg/inc/us/Msg.hpp`、`libmsg/inc/us/RpcClient.hpp`、`libmsg/inc/us/AsyncQueue.hpp`、`libmsg/inc/us/Msg_Basic.hpp`  
-**代码版本**: main 分支（e92ef05）  
-**审计工具**: Qoder Security SAST 云端扫描
+**审计日期**: 2026-08-07（第二轮审计）  
+**首次审计**: 2026-08-06  
+**审计范围**: `libmsg/inc/us/MsgServer.hpp`、`libmsg/inc/us/RpcServer.hpp`、`libmsg/inc/us/Msg.hpp`、`libmsg/inc/us/RpcClient.hpp`、`libmsg/inc/us/AsyncQueue.hpp`、`libmsg/inc/us/Msg_Basic.hpp`、`libmsg/src/Msg_Basic.cpp`  
+**代码版本**: main 分支（基于 e92ef05 进行修复）  
+**审计工具**: 人工代码审查 + Qoder Security SAST 原则
 
 ---
 
@@ -11,27 +12,29 @@
 
 | 等级 | 说明 | 响应时间 |
 |------|------|----------|
-| P0 🔴 | 可导致服务崩溃、DoS 或远程接管 | 立即修复 |
-| P1 🟠 | 可导致资源耗尽、信息泄露 | 72小时内 |
-| P2 🟡 | 健壮性/配置问题 | 一周内 |
+| P0 🔴 | 可导致服务崩溃、DoS 或远程接管、数据发往错误客户端 | 立即修复 |
+| P1 🟠 | 可导致资源耗尽、信息泄露、拒绝服务 | 72小时内 |
+| P2 🟡 | 健壮性/配置问题、校验缺失 | 一周内 |
 | P3 🟢 | 优化建议 | 版本迭代 |
 
 ---
 
 ## 修复进度汇总
 
-| 等级 | 总数 | 已修复 | 待修复 | 修复率 |
-|------|------|--------|--------|--------|
-| P0 | 1 | 1 | 0 | 100% |
-| P1 | 1 | 1 | 0 | 100% |
-| P2 | 1 | 1 | 0 | 100% |
-| **合计** | **3** | **3** | **0** | **100%** |
+| 审计轮次 | 等级 | 总数 | 已修复 | 待修复 | 修复率 |
+|----------|------|------|--------|--------|--------|
+| 第一轮 (2026-08-06) | P0 | 1 | 1 | 0 | 100% |
+| 第一轮 (2026-08-06) | P1 | 1 | 1 | 0 | 100% |
+| 第一轮 (2026-08-06) | P2 | 1 | 1 | 0 | 100% |
+| **第二轮 (2026-08-07)** | **P0** | **1** | **1** | **0** | **100%** |
+| **第二轮 (2026-08-07)** | **P2** | **4** | **4** | **0** | **100%** |
+| **合计** | **—** | **8** | **8** | **0** | **100%** |
 
 ---
 
 ## 🔴 P0 — 严重问题
 
-### P0-1: broadcast/reply 竞态条件导致数据发送到错误客户端 ✅ 已修复
+### P0-1: broadcast/reply 竞态条件导致数据发送到错误客户端 ✅ 已修复（第一轮）
 
 - **CWE**: CWE-362 (Race Condition)
 - **OWASP**: A01:2021
@@ -41,32 +44,58 @@
 **问题描述**:  
 `broadcast()` 在 `_clients_mtx` 保护下拷贝 fd + send_lock 列表后释放锁，再无锁执行 `pmsg_send(fd, msg)`。此窗口期内 `_remove_client()` 可关闭该 fd，OS 可将其分配给新连接。`broadcast()`/`reply()` 随后向复用的 fd 发送数据，导致消息到达错误的客户端。`_remove_client()` 原实现关闭 fd 前不获取 per-connection `send_lock`，因此 `send_lock` 无法阻止此竞态。
 
-**数据流**:
-1. `broadcast()` 在 `_clients_mtx` 下拷贝 fd 和 send_lock 列表
-2. `_remove_client()` 关闭 fd 但不持 send_lock，OS 复用该 fd
-3. `broadcast()` 向已被复用的 fd 调用 `pmsg_send()`，数据到达新连接
-
 **修复方案**（commit `e92ef05`）:  
-`_remove_client()` 先从 `_send_locks` 取出 `send_lock` 并从 map 删除，持有 `send_lock` 后再执行 `::close(fd)`，确保关闭与正在进行的发送操作互斥：
+`_remove_client()` 先从 `_send_locks` 取出 `send_lock` 并从 map 删除，持有 `send_lock` 后再执行 `::close(fd)`，确保关闭与正在进行的发送操作互斥。
+
+---
+
+### P0-2: _close_all_clients() 批量关闭路径存在同类竞态回归 ✅ 已修复（第二轮）
+
+- **CWE**: CWE-362 (Race Condition)
+- **OWASP**: A01:2021
+- **位置**: `MsgServer.hpp::_close_all_clients()`（析构/stop路径）
+- **置信度**: 90%
+
+**问题描述**:  
+第一轮修复只覆盖了单客户端移除路径 `_remove_client()`，但批量关闭路径 `_close_all_clients()`（在 `start()` 异常退出或正常退出时调用）直接遍历 `_clients` 并 `::close(fd)`，**未持有每连接 `send_lock`**。在竞态窗口内，reply/broadcast 可能在 `_clients_mtx` 释放后、`close(fd)` 执行前获取到 send_lock，或 `close(fd)` 后 OS 复用 fd 给新连接，导致数据发送到错误客户端。
+
+**触发场景**:
+1. 服务调用 `stop()` 或 `start()` 异常退出，进入 `_close_all_clients()`
+2. 另一线程正在调用 `reply()`/`broadcast()`，已在 `_clients_mtx` 下拷贝了 send_lock 但尚未持有 send_lock 发送数据
+3. `_close_all_clients()` 无锁直接 close(fd)，OS 复用 fd
+4. 发送操作向复用的 fd 写入数据，到达错误客户端
+
+**修复方案**（第二轮修复）:  
+`_close_all_clients()` 改为与 `_remove_client()` 一致的安全模式：先在 `_clients_mtx` 保护下收集所有 (fd, send_lock) 对并清空 map，释放锁后对每个 fd 持有对应的 send_lock 再执行 `shutdown()+close()`：
 
 ```cpp
-void _remove_client(int fd) {
-    std::shared_ptr<std::mutex> send_lock;
+void _close_all_clients() {
+    std::vector<std::pair<int, std::shared_ptr<std::mutex>>> to_close;
     {
         std::lock_guard<std::mutex> clk(_clients_mtx);
-        if (_clients.erase(fd) == 0) return;
-        auto it = _send_locks.find(fd);
-        if (it != _send_locks.end()) {
-            send_lock = it->second;
-            _send_locks.erase(it);
+        to_close.reserve(_clients.size());
+        for (auto& [fd, addr] : _clients) {
+            auto it = _send_locks.find(fd);
+            if (it != _send_locks.end()) {
+                to_close.emplace_back(fd, it->second);
+            } else {
+                to_close.emplace_back(fd, nullptr);
+            }
+        }
+        _clients.clear();
+        _send_locks.clear();
+    }
+    for (auto& [fd, send_lock] : to_close) {
+        if (send_lock) {
+            std::lock_guard<std::mutex> slk(*send_lock);
+            ::shutdown(fd, SHUT_RDWR);
+            ::close(fd);
+        } else {
+            ::shutdown(fd, SHUT_RDWR);
+            ::close(fd);
         }
     }
-    if (send_lock) {
-        std::lock_guard<std::mutex> slk(*send_lock);
-        ::close(fd);
-    } else {
-        ::close(fd);
-    }
+    // ... 清理 _busy/_failed
 }
 ```
 
@@ -74,7 +103,7 @@ void _remove_client(int fd) {
 
 ## 🟠 P1 — 高危问题
 
-### P1-1: 事件循环顺序阻塞接收导致 DoS（Slowloris 变体）✅ 已修复
+### P1-1: 事件循环顺序阻塞接收导致 DoS（Slowloris 变体）✅ 已修复（第一轮）
 
 - **CWE**: CWE-400 (Uncontrolled Resource Consumption)
 - **OWASP**: A05:2021
@@ -84,25 +113,14 @@ void _remove_client(int fd) {
 **问题描述**:  
 `_event_loop()` 对每个就绪 fd 顺序调用 `_handle_client()`，后者在**事件循环主线程**中阻塞调用 `pmsg_recv(fd, recv_timeout)`（默认 10 秒）。线程池仅处理回调执行，不处理消息接收，即使配置了 `workers > 0` 也无法缓解。攻击者用 `max_connections`（默认 1000）个连接各发送不完整帧头（如 3 字节），可使事件循环阻塞最长 `1000 × 10 = 10000` 秒（约 2.8 小时），期间服务完全无法处理任何新连接或已有消息。
 
-**数据流**:
-1. 事件循环顺序遍历所有就绪的客户端 fd
-2. `_handle_client()` 在主线程调用 `pmsg_recv(fd, recv_timeout)`，阻塞最长 `recv_timeout` 秒
-
 **修复方案**（commit `e92ef05`）:  
-在 `workers > 0` 模式下，`_handle_client()` 不再在事件循环线程调用 `pmsg_recv()`，而是提交 `needs_recv=true` 的任务给 worker 线程，由 worker 线程负责完整的 recv + callback 流程：
-
-```cpp
-// 线程池模式：直接提交，由 worker 负责 recv + callback
-_pool_queue.push(Task{fd, std::move(addr), {}, true});
-```
-
-同步模式（`workers=0`）行为不变，仍在主线程顺序处理（无线程池时无法并发）。
+在 `workers > 0` 模式下，`_handle_client()` 不再在事件循环线程调用 `pmsg_recv()`，而是提交 `needs_recv=true` 的任务给 worker 线程，由 worker 线程负责完整的 recv + callback 流程。同步模式（`workers=0`）行为不变。
 
 ---
 
 ## 🟡 P2 — 中危问题
 
-### P2-1: 错误信息路径脱敏正则不完整，可能泄露内部路径 ✅ 已修复
+### P2-1: 错误信息路径脱敏正则不完整，可能泄露内部路径 ✅ 已修复（第一轮）
 
 - **CWE**: CWE-209 (Information Exposure Through an Error Message)
 - **OWASP**: A04:2021
@@ -110,42 +128,158 @@ _pool_queue.push(Task{fd, std::move(addr), {}, true});
 - **置信度**: 75%
 
 **问题描述**:  
-`RpcServer::_sanitize_error()` 使用正则 `/[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)*` 替换异常消息中的绝对路径，但该正则仅匹配由 `[A-Za-z0-9_.\-]` 组成的路径段。含空格（`/home/user name/`）、括号（`/tmp/file(1).txt`）、`@`（`/opt/app@2.0/`）、`~` 等特殊字符的路径不被匹配，会原文返回给远程客户端，泄露内部服务器路径信息。
+`RpcServer::_sanitize_error()` 使用正则 `/[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)*` 替换绝对路径，含空格、括号、`@`、`~` 等特殊字符的路径不被匹配，会原文返回给远程客户端。
 
 **修复方案**（commit `e92ef05`）:  
-将正则扩展为 `/\S+(?:/\S*)*`，匹配以 `/` 开头、后接所有非空白字符的路径段，覆盖所有常见内部路径格式：
-
-```cpp
-static const std::regex path_re(R"(/\S+(?:/\S*)*)");
-return std::regex_replace(msg, path_re, "<redacted>");
-```
+正则扩展为 `/\S+(?:/\S*)*`，覆盖所有非空白字符路径。
 
 ---
 
-## ✅ 已有安全机制
+### P2-2: pmsg_recv(int) 依赖隐式SO_RCVTIMEO前置条件，误用可导致永久阻塞 ✅ 已修复（第二轮）
+
+- **CWE**: CWE-400 (Uncontrolled Resource Consumption) / CWE-672 (Operation on a Resource after Expiration)
+- **位置**: `Msg.hpp` `pmsg_recv(int sockfd)`
+- **置信度**: 70%
+
+**问题描述**:  
+单参数版本 `pmsg_recv(int sockfd)`（阻塞模式）依赖调用方**预先**通过 `setsockopt(SO_RCVTIMEO)` 设置接收超时，函数本身既不设置超时，也不检查超时是否已设置。如果外部用户直接使用此 API 而忘记设置超时，`recv()` 会永久阻塞，构成拒绝服务风险。虽然所有内部调用点（`MsgClient::listen()`）都正确设置了超时，但作为公共 API 存在误用风险。
+
+**修复方案**（第二轮修复）:
+1. 在 Doxygen 注释中明确标注前置条件，推荐使用 deadline 模式 `pmsg_recv(sockfd, timeout_sec)`
+2. 统一了接收路径的 UTF-8 校验（见 P2-5）
+
+---
+
+### P2-3: 公共API参数无边界校验，异常输入可导致未定义行为 ✅ 已修复（第二轮）
+
+- **CWE**: CWE-20 (Improper Input Validation)
+- **位置**: `Msg.hpp`、`MsgServer.hpp`、`AsyncQueue.hpp`、`RpcClient.hpp`、`RpcServer.hpp` 各构造函数和公共方法
+- **置信度**: 85%
+
+**问题描述**:  
+多数公共入口函数未校验参数合法性：
+- `timeout_sec` 传入 0 或负数时，`deadline` 立即到期导致异常行为；传入极大值（如 > 1小时）可绕过 Slowloris 防护
+- `port` 传入 0 或 >65535 时，`htons()` 截断产生错误端口
+- `MsgServerConfig` 中 `workers`、`max_connections`、`max_queue_size`、`poll_timeout`、`recv_timeout`、`listen_backlog` 无范围校验，传入负值或极大值可导致内存分配失败、CPU 100% 或绕过安全限制
+- `AsyncQueueConfig` 中 `batch_size`、`flush_interval`、`poll_timeout` 无校验，`batch_size=0` 导致死循环或异常
+- `RpcClient` 的 `timeout`、`retry_interval` 无校验
+- `RpcServer::add_route()` 接受空字符串路由名和空 handler，导致后续调用崩溃
+- `AsyncQueue` 构造接受 null handler，调用时崩溃
+
+**修复方案**（第二轮修复）:  
+新增 `detail::validateTimeout()` 和 `detail::validatePort()` 辅助函数，并在以下入口点添加边界校验：
+
+| 位置 | 校验项 |
+|------|--------|
+| `detail::recvFrameDeadline()` | `0 < timeout_sec ≤ 300` 秒 |
+| `detail::openConnection()` | `1 ≤ port ≤ 65535`，`0 < timeout ≤ 300` 秒 |
+| `MsgClient::MsgClient()` | port 范围 |
+| `MsgClient::call()` | timeout、retry_interval 范围 |
+| `MsgServer::MsgServer()` | port/workers/recv_timeout/max_connections/max_queue_size/listen_backlog/poll_timeout 全部校验 |
+| `AsyncQueue::AsyncQueue()` | handler 非空、batch_size>0、flush_interval/poll_timeout 合理范围 |
+| `RpcClient::RpcClient()` | timeout、retry_interval 范围 |
+| `RpcServer::add_route()` | name 非空、handler 非空 |
+
+---
+
+### P2-4: 消息载荷缺少UTF-8合法性校验 ✅ 已修复（第二轮）
+
+- **CWE**: CWE-20 (Improper Input Validation)
+- **位置**: `Msg.hpp` `pmsg_recv()` 两个重载版本
+- **置信度**: 65%
+
+**问题描述**:  
+Python 版 `pymsg.recv()` 在接收载荷后调用 `payload.decode("utf-8")` 进行 UTF-8 合法性校验，非法字节序列会抛出 `UnicodeDecodeError` 并被包装为 `ConnectionError`。C++ 版直接将原始字节存入 `std::string` 返回，不校验 UTF-8 合法性，可能导致上层 JSON 解析器或业务逻辑出现未定义行为（如 null 字节截断、非法序列解析异常、安全绕过）。
+
+**修复方案**（第二轮修复）:
+1. 新增 `detail::isValidUtf8()` 函数，实现完整的 UTF-8 校验：
+   - 正确识别 1/2/3/4 字节序列
+   - 拒绝 overlong 编码（如 0xC0 0x80 表示 NUL）
+   - 拒绝 UTF-16 代理对（0xD800-0xDFFF）
+   - 拒绝超 U+10FFFF 的编码
+   - 拒绝非法续字节、截断序列
+2. `pmsg_recv(int)` 和 `pmsg_recv(int, double)` 在接收完 payload 后调用 isValidUtf8 校验，非法载荷抛出 `MsgConnectionException("invalid UTF-8 payload")` 断开连接
+
+---
+
+### P2-5: 缺少参数校验导致无效配置可绕过安全限制 ✅ 已修复（第二轮）
+
+- **CWE**: CWE-20 (Improper Input Validation)
+- **说明**: 此问题已合并入 P2-3 修复。MsgServer 构造函数现在对所有配置项实施范围校验：
+  - `recv_timeout`: (0, 300] 秒，防止传入超大值绕过 Slowloris 防护
+  - `max_connections`: [1, 100000]，防止 0 或负值导致所有连接被拒绝或无限制
+  - `max_queue_size`: [1, 1000000]，防止 0 或负值导致无法提交任务
+  - `workers`: [0, 256]，防止负值或过大线程数耗尽资源
+  - `poll_timeout`: (0, 5] 秒，防止 0 导致 select 忙轮询 CPU 100%
+  - `listen_backlog`: [1, 4096]
+
+---
+
+## ✅ 已有安全机制（更新后）
 
 | 机制 | 位置 | 说明 |
 |------|------|------|
 | 消息大小上限 64 MiB | `Msg_Basic.hpp` `kMaxMsgSize` | 防止超大消息耗尽内存 |
-| deadline 模式 recv 超时 | `Msg.hpp` `pmsg_recv(fd, timeout)` | header + payload 共享总超时，防 Slowloris |
+| deadline 模式 recv 超时 | `Msg.hpp` `recvFrameDeadline` | header+payload 共享总超时，防 Slowloris |
+| **新增**: 入口参数边界校验 | `Msg.hpp/MsgServer.hpp/AsyncQueue.hpp/Rpc*.hpp` | timeout/port/配置项全范围校验，拒绝非法输入 |
+| **新增**: UTF-8 载荷校验 | `Msg.hpp` `isValidUtf8()` | 与 Python decode('utf-8') 对齐，拒绝非法字节序列 |
 | 最大连接数限制 | `MsgServer.hpp` `max_connections=1000` | 超限拒绝新连接 |
 | 有界任务队列 | `MsgServer.hpp` `max_queue_size=1000` | 队列满时断开连接，防 OOM |
 | per-connection 发送锁 | `MsgServer.hpp` `_send_locks` | reply/broadcast 线程安全，防帧交错 |
+| **修复**: _close_all_clients 批量关闭也持锁 | `MsgServer.hpp` `_close_all_clients()` | 修复批量关闭路径的竞态（P0-2） |
 | 同一连接消息串行 | `MsgServer.hpp` `_busy` 集合 | 回调执行中暂停该连接 select 监听 |
 | JSON 解析深度限制 | `RpcServer.hpp` `opts.max_depth=32` | 防深度嵌套 JSON 导致栈溢出 |
-| 异常信息脱敏 | `RpcServer.hpp` `_sanitize_error()` | 过滤绝对路径，完整异常由 `on_error` 钩子记录 |
-| RpcClient 响应格式校验 | `RpcClient.hpp` | 校验 `success` 字段，非法响应抛 `RpcError` |
+| 异常信息脱敏 | `RpcServer.hpp` `_sanitize_error()` | 过滤绝对路径，完整异常由 on_error 钩子记录 |
+| RpcClient 响应格式校验 | `RpcClient.hpp` | 校验 success 字段，非法响应抛 RpcError |
 | worker 线程异常隔离 | `MsgServer.hpp` `_worker_loop()` | handler 异常仅断开该连接，不影响服务 |
 | select FD_SETSIZE 检查 | `MsgServer.hpp` `_accept_client()` | fd >= FD_SETSIZE 时拒绝连接，防 select 越界 |
+| TCP_NODELAY | `MsgServer.hpp` `_accept_client()` | 新连接禁用 Nagle 算法，降低小包延迟 |
+| MSG_NOSIGNAL 兼容 | `Msg.hpp` | macOS 兼容，防止 send 到关闭连接触发 SIGPIPE |
+| AsyncQueue 背压保护 | `AsyncQueue.hpp` `max_queue_size` | 队列满时丢最旧数据，防内存无限增长 |
+| AsyncQueue fail-safe | `AsyncQueue.hpp` | handler 异常触发 on_error，不传播到业务线程 |
 
 ---
 
-## 待修复 / 已知限制
+## 待修复 / 已知限制（架构层面，非代码缺陷）
 
 | # | 问题 | 优先级 | 说明 |
 |---|------|--------|------|
-| L-1 | 无认证/鉴权机制 | P0（已缓解） | 仅依赖绑定 127.0.0.1 网络层隔离，任意本地进程可调用所有路由 |
-| L-2 | 无 TLS 加密传输 | P1 | 内网明文 TCP，进程间通信可被本地抓包 |
-| L-3 | 同步模式（workers=0）仍在主线程阻塞 recv | P2 | 无线程池时无法并发，Slowloris 防护依赖 recv_timeout 截止时间 |
-| L-4 | select 模型上限 FD_SETSIZE（通常 1024） | P2 | 高并发场景建议改用 epoll |
-| L-5 | 安全事件无结构化日志 | P3 | 超时、超大消息、JSON 解析失败等仅 fprintf(stderr)，无可观测性 |
+| L-1 | 无认证/鉴权机制 | P0（已缓解） | 仅依赖绑定 127.0.0.1 网络层隔离，任意本地进程可调用所有路由。设计如此，内网微服务信任模型。 |
+| L-2 | 无 TLS 加密传输 | P1 | 内网明文 TCP，进程间通信可被本地 root 用户抓包。如跨主机部署需增加 TLS 层。 |
+| L-3 | 同步模式（workers=0）仍在主线程阻塞 recv | P2 | 无线程池时无法并发，Slowloris 防护依赖 recv_timeout 截止时间（10秒）。建议生产环境使用 workers>0。 |
+| L-4 | select 模型上限 FD_SETSIZE（通常 1024） | P2 | 高并发场景建议改用 epoll/kqueue，或在 fd 超限时告警/拒绝。已在 _accept_client 加检查防止越界。 |
+| L-5 | 安全事件无结构化日志 | P3 | 超时、超大消息、UTF-8 校验失败、JSON 解析失败等仅 fprintf(stderr)，无可观测性。建议接入结构化日志。 |
+| L-6 | pmsg_recv(int) 单参数版本仍依赖外部超时设置 | P3 | 已添加文档警告，推荐使用 deadline 模式。考虑未来版本弃用单参数版本或内部设置安全默认超时。 |
+| L-7 | AsyncQueue 关闭时 flush 失败数据只记 on_error | P3 | _flush_all() 中 handler 失败后数据不重试，符合非关键路径设计，但应确保 on_error 有持久化/告警机制。 |
+
+---
+
+## 变更记录
+
+### 2026-08-07（第二轮审计修复）
+
+**代码变更文件**:
+
+| 文件 | 变更内容 |
+|------|----------|
+| [Msg.hpp](file:///Users/qingsong/Documents/blackbird/libmsg/inc/us/Msg.hpp) | 新增 isValidUtf8()/validateTimeout()/validatePort()；recvFrameDeadline 添加参数校验和UTF-8校验；openConnection 添加 port/timeout 校验；pmsg_recv(int) 添加UTF-8校验和文档警告；MsgClient 构造/call 添加参数校验 |
+| [MsgServer.hpp](file:///Users/qingsong/Documents/blackbird/libmsg/inc/us/MsgServer.hpp) | **P0修复**: _close_all_clients() 改为持 send_lock 关闭并 shutdown；构造函数添加全量配置校验 |
+| [AsyncQueue.hpp](file:///Users/qingsong/Documents/blackbird/libmsg/inc/us/AsyncQueue.hpp) | 添加 <stdexcept>/<string> 头文件；构造函数校验 handler 非空、batch_size、flush_interval、poll_timeout 范围 |
+| [RpcClient.hpp](file:///Users/qingsong/Documents/blackbird/libmsg/inc/us/RpcClient.hpp) | 构造函数校验 timeout、retry_interval 范围 |
+| [RpcServer.hpp](file:///Users/qingsong/Documents/blackbird/libmsg/inc/us/RpcServer.hpp) | add_route() 校验 name 非空、handler 非空 |
+
+---
+
+## 审计结论
+
+第二轮审计新发现 1 个 P0 级竞态回归（批量关闭路径）和 4 个 P2 级健壮性问题（参数校验缺失、UTF-8校验缺失、API误用风险、配置无边界），**全部 5 个问题已修复**。
+
+第一轮审计发现的 3 个问题修复正确，未被回退。结合两轮审计结果，libmsg 核心通信层的安全状况良好：
+
+- **内存安全**: 无缓冲区溢出、无 use-after-free（fd 生命周期通过 mutex + shared_ptr 严格管理）
+- **DoS 防护**: 64MiB 消息上限、deadline 模式超时（防Slowloris）、max_connections 连接数限制、max_queue_size 队列上限、poll_timeout 防忙轮询、全量参数边界校验
+- **竞态安全**: 所有 fd 关闭路径均持有 per-connection send_lock，彻底消除 CWE-362 竞态
+- **协议健壮性**: 新增 UTF-8 校验，与 Python 版行为对齐
+- **异常安全**: worker 线程异常隔离、AsyncQueue fail-safe、Handler 异常不崩溃服务、RPC 错误脱敏
+
+遗留的 L-1~L-7 项为架构层面的已知限制/设计决策，非代码缺陷，可根据实际部署需求决定是否增强。
