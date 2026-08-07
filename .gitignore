@@ -21,3 +21,4 @@ waf/certs/
 
 # 本地 IDE / 工具
 .qoder/
+.vscode/
