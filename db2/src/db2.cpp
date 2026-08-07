@@ -22,6 +22,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -341,6 +342,18 @@ public:
         _cleanup_running = true;
         _cleanup_thread = std::thread(&DB2Server::_cleanup_loop, this);
 
+        // RAII 作用域守卫：无论 rpc.start() 正常返回还是抛出（socket/bind/listen 失败、
+        // 事件循环异常），都停止并 join 清理线程。否则异常路径下 _cleanup_thread 保持
+        // joinable，栈展开时 std::thread 析构会触发 std::terminate() 硬崩溃，掩盖真实错误。
+        struct CleanupGuard {
+            DB2Server& s;
+            ~CleanupGuard() {
+                s._cleanup_running = false;
+                s._cleanup_cv.notify_all();
+                if (s._cleanup_thread.joinable()) s._cleanup_thread.join();
+            }
+        } guard{*this};
+
         // 启动 RPC 服务
         MsgServerConfig srv_cfg;
         srv_cfg.workers = _cfg.workers;
@@ -356,11 +369,6 @@ public:
         });
 
         rpc.start();
-
-        // rpc.start() 返回后停止清理线程
-        _cleanup_running = false;
-        _cleanup_cv.notify_all();
-        if (_cleanup_thread.joinable()) _cleanup_thread.join();
     }
 
 private:
@@ -470,7 +478,10 @@ private:
         } else if (jv.is_int64()) {
             sqlite3_bind_int64(stmt, idx, jv.as_int64());
         } else if (jv.is_uint64()) {
-            sqlite3_bind_int64(stmt, idx, static_cast<sqlite3_int64>(jv.as_uint64()));
+            std::uint64_t u = jv.as_uint64();
+            if (u > static_cast<std::uint64_t>(INT64_MAX))
+                throw std::runtime_error("uint64 value exceeds signed 64-bit integer range");
+            sqlite3_bind_int64(stmt, idx, static_cast<sqlite3_int64>(u));
         } else if (jv.is_double()) {
             sqlite3_bind_double(stmt, idx, jv.as_double());
         } else if (jv.is_bool()) {
@@ -545,7 +556,9 @@ private:
                         parts.push_back(col + " LIKE ?");
                         wc.params.push_back(_coerce_value(ci, op_val));
                     } else if (op == "in") {
-                        if (!op_val.is_array() || op_val.as_array().empty()) {
+                        if (!op_val.is_array())
+                            throw std::runtime_error("'in' operator requires an array value");
+                        if (op_val.as_array().empty()) {
                             parts.push_back("0");
                             continue;
                         }
@@ -611,6 +624,11 @@ private:
 
         std::vector<ColInfo> cols = _get_schema(table);
 
+        // 'where' 存在但非对象时立即报错，不静默忽略（与 action/columns 校验一致）
+        if (auto wit = req.find("where"); wit != req.end() && !wit->value().is_object()) {
+            throw std::runtime_error("'where' must be an object");
+        }
+
         if (action == "select") return _do_select(req, table, cols);
         if (action == "insert") return _do_insert(req, table, cols);
         if (action == "update") return _do_update(req, table, cols);
@@ -673,14 +691,18 @@ private:
             if (!order.empty()) sql += " ORDER BY " + order;
         }
 
-        // limit / offset
-        if (auto it = req.find("limit"); it != req.end() && it->value().is_int64()) {
+        // limit / offset（类型不符立即报错，不静默忽略，与 action 校验一致）
+        if (auto it = req.find("limit"); it != req.end()) {
+            if (!it->value().is_int64())
+                throw std::runtime_error("limit must be an integer");
             std::int64_t limit = it->value().as_int64();
             if (limit < 0)
                 throw std::runtime_error("limit must be non-negative");
             sql += " LIMIT " + std::to_string(limit);
         }
-        if (auto it = req.find("offset"); it != req.end() && it->value().is_int64()) {
+        if (auto it = req.find("offset"); it != req.end()) {
+            if (!it->value().is_int64())
+                throw std::runtime_error("offset must be an integer");
             std::int64_t offset = it->value().as_int64();
             if (offset < 0)
                 throw std::runtime_error("offset must be non-negative");

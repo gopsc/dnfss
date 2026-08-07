@@ -1,10 +1,10 @@
 # db2 模块安全审计报告
 
 **初次审计**: 2026-08-06  
-**最近复审**: 2026-08-07（第五轮审计，全部问题已修复，编译验证通过）  
+**最近复审**: 2026-08-07（第六轮审计，全部问题已修复，编译验证通过）  
 **审计范围**: `db2/src/db2.cpp`、`Makefile`、`docker-entrypoint.sh`  
 **对照基准**: Python 版 `db/dbv2.py`（接口兼容性对比）  
-**代码版本**: main 分支 e2f05f9 + 第五轮修复
+**代码版本**: main 分支 + 第六轮修复
 
 ---
 
@@ -14,9 +14,9 @@
 |--------|------|--------|--------|
 | P0 | 2 | 2 | 0 |
 | P1 | 1 | 1 | 0 |
-| P2 | 3 | 3 | 0 |
-| P3 | 16 | 16 | 0 |
-| **合计** | **22** | **22** | **0** |
+| P2 | 4 | 4 | 0 |
+| P3 | 20 | 20 | 0 |
+| **合计** | **26** | **26** | **0** |
 
 ---
 
@@ -117,6 +117,43 @@
 
 ---
 
+## 第六轮审计新增问题（2026-08-07）
+
+### ND-1（P2）: `start()` 异常路径导致 `std::terminate()` 硬崩溃
+
+- **位置**: `start()` [L341-355](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L341-L355)
+- **当前状态**: ✅ 已修复（2026-08-07，第六轮）
+- **问题**: 清理线程 [L343](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L343) 启动后，若 `rpc.start()` 抛出异常（socket/bind/listen 失败如端口被占用，或事件循环异常经 `MsgServer::start()` 重新抛出），原有的 `_cleanup_running=false; notify; join` 正常清理路径被跳过。栈展开时 `DB2Server` 析构，`std::thread` 成员仍 joinable → `std::terminate()` 进程硬崩溃，并掩盖真实错误（本应干净退出返回错误码）。
+- **修复**: 引入 RAII 作用域守卫 `CleanupGuard` [L348-355](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L348-L355)，析构时停止并 join 清理线程。无论 `rpc.start()` 正常返回还是抛出，清理线程都被优雅回收，异常沿调用链传播到 `main` 的 catch 返回错误码。
+
+### ND-4（P3）: `limit`/`offset`/`where` 类型不符被静默忽略
+
+- **位置**: `_do_select` limit/offset [L692-708](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L692-L708)、`_handle_execute` where [L626-630](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L626-L630)
+- **当前状态**: ✅ 已修复（2026-08-07，第六轮）
+- **问题**: `limit`/`offset` 仅当 `is_int64()` 才应用，`where` 仅当 `is_object()` 才解析；调用方传错类型（字符串/浮点/数组）时字段被静默丢弃，出现"看似生效实则未生效"的静默偏差，掩盖客户端错误。
+- **修复**: `limit`/`offset` 存在但非整型、`where` 存在但非对象时抛清晰错误（与 P3-15 action 校验一致）。
+
+### ND-5（P3）: `_bind_value` uint64 超 INT64_MAX 截断溢出
+
+- **位置**: `_bind_value` [L480-485](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L480-L485)
+- **当前状态**: ✅ 已修复（2026-08-07，第六轮）
+- **问题**: `jv.as_uint64()` 经 `static_cast<sqlite3_int64>` 直接截断，超出 INT64_MAX 的 uint64 值发生回绕，数值静默失真。
+- **修复**: [L480-483](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L480-L483) 绑定前校验 `u > INT64_MAX` 则抛错，防止静默数值截断。
+
+### ND-6（P3）: `in` 运算符非数组值被静默当作空数组
+
+- **位置**: `_build_where` in 分支 [L558-562](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L558-L562)
+- **当前状态**: ✅ 已修复（2026-08-07，第六轮）
+- **问题**: `in` 值为字符串/数字等非数组时被当作空数组 → 恒假条件，静默掩盖客户端错误。
+- **修复**: [L558-559](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L558-L559) 非数组立即抛 `"'in' operator requires an array value"`；仅空数组保留恒假 `0` 语义（与 Python 版 `column.in_([])` 一致）。
+
+### 已知限制（设计决策，非缺陷）
+
+- **ND-2（L-13）**: **`select` 无结果集上限** — 无 WHERE + 无 `limit` 时 `SELECT *` 返回全表并整体装入内存，恶意/异常客户端可触发内存耗尽 DoS。为使调用方零改动切换而不加隐式 limit，记录为已知限制；建议 gateway 侧对响应做大小/行数限制，或后续引入可配置 `max_result_rows`（默认关闭以保兼容）。
+- **ND-3（L-14）**: **`update`/`delete` 无 WHERE 时全表更新/删除，无内置防护** — 与 Python 版行为对齐，属兼容性权衡；调用方漏传 where 会静默作用于全表，属数据安全风险。建议调用方侧强制校验，或后续提供可选 `require_where` 开关。
+
+---
+
 ## 已有安全机制（正确实现）
 
 1. **表名校验** — [L558-562](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L558-L562)：仅允许 `[A-Za-z0-9_]`，防止表名级 SQL 注入
@@ -145,6 +182,10 @@
 24. **全量 JSON 字段类型校验** — `action`/`columns`/`order_by` 的 `column`+`desc` 字段均检查 JSON 类型，类型不符抛清晰错误而非 boost 原始异常（P3-9/P3-15/P3-16 修复）
 25. **日志写入失败可观测** — `_log_internal` catch 块记录 stderr，不再静默吞异常（P3-12 修复）
 26. **清理线程错误可观测** — `_do_cleanup` COUNT 查询 prepare 失败时记录 stderr（P3-13 修复）
+27. **清理线程 RAII 守卫** — `start()` 使用 `CleanupGuard`，`rpc.start()` 异常路径下清理线程被优雅回收，不触发 `std::terminate`（ND-1 修复）
+28. **select 输入类型全量校验** — `where`/`limit`/`offset` 类型不符抛清晰错误，不静默忽略（ND-4 修复）
+29. **uint64 溢出防护** — `_bind_value` 绑定前校验超出 INT64_MAX 抛错，防止静默数值截断（ND-5 修复）
+30. **`in` 运算符类型校验** — 非数组立即抛错，仅空数组保留恒假语义（ND-6 修复）
 
 ---
 
@@ -172,9 +213,13 @@
 - [x] **P3-14**: `order_by` 非法元素抛错而非静默跳过（第五轮）
 - [x] **P3-15**: `action` 非 string 抛错而非默认 "select"（第五轮）
 - [x] **P3-16**: `order_by` 的 `column`/`desc` 字段类型校验（第五轮）
+- [x] **ND-1**: `start()` 清理线程 RAII 守卫，`rpc.start()` 异常路径不 `std::terminate`（第六轮）
+- [x] **ND-4**: `where`/`limit`/`offset` 类型不符立即抛错，不静默忽略（第六轮）
+- [x] **ND-5**: `_bind_value` uint64 超 INT64_MAX 抛错，防止截断溢出（第六轮）
+- [x] **ND-6**: `in` 运算符非数组值抛错，仅空数组保留恒假语义（第六轮）
 
 ### 待修复
-无 — 全部 22 个问题已修复（100%）。
+无 — 全部 26 个问题已修复（100%）。新增 2 项已知限制（ND-2/ND-3）属兼容性设计决策，记录于"第六轮审计新增问题"章节。
 
 ---
 
@@ -223,6 +268,18 @@
 4. `clang++ -std=c++20 -O2 -Wall -Werror -c` 编译验证通过，零警告零错误
 5. 更新审计文档：修复进度（22/22）、问题状态、安全机制清单（26 项）、修复路线图、复审结论
 
+### 第六轮复审（2026-08-07，本次）
+1. 通读当前代码全部约 1000 行，逐函数审查
+2. 核查 libmsg `RpcServer`/`MsgServer` 依赖行为，确认 `start()` 在 socket/bind/listen 失败时抛出异常
+3. 新发现并修复 4 个问题：
+   - ND-1 (P2): `start()` 异常路径清理线程未回收 → `std::terminate()` 硬崩溃，引入 `CleanupGuard` RAII 守卫
+   - ND-4 (P3): `where`/`limit`/`offset` 类型不符静默忽略
+   - ND-5 (P3): `_bind_value` uint64 超 INT64_MAX 截断溢出
+   - ND-6 (P3): `in` 运算符非数组值静默当作空数组
+4. 记录 2 项已知限制 ND-2/ND-3（无结果集上限、无 WHERE 全表更新/删除，均属兼容性设计决策）
+5. `clang++ -std=c++20 -O2 -Wall -Werror -fsyntax-only` 与 `g++ -std=c++20 -O3 -Wall -Werror -c` 双重编译验证通过，零警告零错误
+6. 更新审计文档：修复进度（26/26）、问题状态、安全机制清单（30 项）、修复路线图、复审结论
+
 ---
 
 ## 并发性分析
@@ -269,7 +326,13 @@ Cleanup thread → thread_local DbConn (sqlite3*)
 
 ## 复审结论
 
-**当前状态**：五轮审计累计发现 **22 个问题，全部已修复（100%）**。P0/P1/P2 级问题在前四轮全部修复（6/6），第五轮修复了剩余 4 个遗留 P3 问题并新发现修复 5 个 P3 问题。SQL 注入防护机制完整，配置误操作风险已全部消除，所有 JSON 字段访问路径均有类型校验，异常路径均有错误日志。
+**当前状态**：六轮审计累计发现 **26 个问题，全部已修复（100%）**。P0/P1/P2 级问题在第六轮后全部修复（2 P0 / 1 P1 / 4 P2），第五轮修复了 9 个 P3 问题，第六轮新发现修复 1 个 P2（ND-1）与 3 个 P3（ND-4/ND-5/ND-6）。SQL 注入防护机制完整，配置误操作风险已全部消除，所有 JSON 字段访问路径均有类型校验，异常路径均有错误日志，启动异常路径不再触发进程硬崩溃。新增 2 项已知限制（ND-2/ND-3）属兼容性设计决策。
+
+**第六轮修复亮点**：
+- **启动健壮性**：`CleanupGuard` RAII 守卫确保 `rpc.start()` 无论返回还是抛出都回收清理线程，消除异常路径 `std::terminate()` 硬崩溃
+- **输入类型完备**：`where`/`limit`/`offset` 类型不符立即抛错，杜绝"看似生效实则未生效"的静默偏差
+- **数值保真**：`_bind_value` 对超 INT64_MAX 的 uint64 抛错，防止静默截断溢出
+- **运算符严格化**：`in` 运算符非数组值抛错，仅空数组保留恒假语义（对齐 Python 版）
 
 **第五轮修复亮点**：
 - **线程安全**：`utc_now()` 改用 `gmtime_r`，消除多线程并发写日志时的数据竞争
@@ -278,6 +341,6 @@ Cleanup thread → thread_local DbConn (sqlite3*)
 - **输入校验完整**：`action`/`columns`/`order_by` 全部 JSON 字段类型校验，类型不符抛清晰错误
 - **配置友好**：`safe_stoi` 包装全部 9 处 `std::stoi` 调用，失败时带字段名定位
 
-**与 Python 版对比**：安全基线已超越 Python 版——C++ 版新增了 schema 版本感知自动失效、空 values 校验、未知运算符报错、limit/offset 非负校验、WHERE/IN 输入规模上限、表名格式校验、日志截断、配置范围校验、线程安全时间函数、安全 sqlite3 关闭、全量 JSON 字段类型校验、异常可观测等防护，Python 版尚未实现这些。
+**与 Python 版对比**：安全基线已超越 Python 版——C++ 版新增了 schema 版本感知自动失效、空 values 校验、未知运算符报错、limit/offset 非负与类型校验、WHERE/IN 输入规模上限、表名格式校验、日志截断、配置范围校验、线程安全时间函数、安全 sqlite3 关闭、全量 JSON 字段类型校验、异常可观测、启动异常路径 RAII 守卫等防护，Python 版尚未实现这些。
 
-**生产可用性**：✅ **可用于生产**。全部 22 个问题已修复，26 项安全机制就位，核心安全与健壮性均有保障。
+**生产可用性**：✅ **可用于生产**。全部 26 个问题已修复，30 项安全机制就位，核心安全与健壮性均有保障。2 项已知限制（ND-2 无结果集上限、ND-3 无 WHERE 全表更新/删除）为兼容性权衡，建议在调用方（gateway）侧做相应防护。
