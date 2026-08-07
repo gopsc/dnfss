@@ -32,9 +32,8 @@ body::after {
 }
 
 /* ===== 节点卡片入场：逐张淡入（JS 动态插入时播放） =====
- * 注意：此处只能动画 opacity，不能带 transform——特效节点的全屏 iframe 是
- * position:fixed，祖先 transform 会成为 fixed 后代的包含块，把全屏特效困在卡片内
- *（in-node 特效是 relative 定位不受影响，故障表现为"部分特效不自动启动"） */
+ * 防御性约定：只动画 opacity、不带 transform——祖先 transform 会成为 fixed 后代的包含块。
+ * 全屏特效 iframe 现已直接挂载 body（见 dnfs.js renderSpJs），不再受卡片动画影响 */
 @keyframes card-in {
     from { opacity: 0; }
     to { opacity: 1; }
