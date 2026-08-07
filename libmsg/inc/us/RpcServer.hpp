@@ -132,8 +132,11 @@ private:
         if (auto it = req.find("_route"); it != req.end() && it->value().is_string()) {
             route = it->value().as_string().c_str();
             req.erase(it);  // 从业务参数中移除 _route
-        } else {
+        } else if (it == req.end()) {
             _reply_error(fd, "missing _route");
+            return;
+        } else {
+            _reply_error(fd, "_route must be a string");
             return;
         }
 

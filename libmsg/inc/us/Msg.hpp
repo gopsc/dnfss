@@ -286,6 +286,9 @@ inline int openConnection(const std::string& addr, int port, double timeout) {
 // ============================================================================
 
 /// 以 pymsg 协议发送一条字符串消息（长度前缀 + UTF-8 载荷）。
+/// 注意：sendAll() 依赖 socket 已设置的 SO_SNDTIMEO，否则慢客户端不读数据时
+/// send() 会永久阻塞。MsgClient 和 MsgServer 内部均已设置 SO_SNDTIMEO，
+/// 直接使用此公共 API 时需自行设置。
 inline void pmsg_send(int sockfd, const std::string &data) {
     size_t payload_size = data.size();
     if (payload_size > msg_constants::kMaxMsgSize) {
