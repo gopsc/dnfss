@@ -57,7 +57,7 @@
                 <h2 class="hero-title">让知识像树一样<br><span class="accent-text">自然生长</span></h2>
                 <p class="hero-sub">每个节点都可以生长出子节点，像树枝一样层层延展</p>
                 <div class="hero-actions">
-                    <button id="ctaBtn" class="btn btn-primary btn-lg">开始记录</button>
+                    <button class="btn btn-primary btn-lg" data-cta>开始记录</button>
                     <a class="btn btn-ghost btn-lg" href="#features">了解更多</a>
                 </div>
             </div>
@@ -70,13 +70,15 @@
         <section id="features">
             <p class="section-eyebrow">核心特性</p>
             <h2 class="section-title">为什么选择树状笔记</h2>
+            <p class="section-sub">从灵感到体系，四个理由让知识在树上自然生长</p>
             <div class="features">
                 <div class="feature-card">
                     <div class="feature-icon" aria-hidden="true">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="10.51" x2="15.42" y2="6.51"/><line x1="8.59" y1="13.49" x2="15.42" y2="17.49"/></svg>
                     </div>
                     <h3>树状结构组织</h3>
-                    <p>每个节点都能生长出子节点，像树枝般层层延展，让零散的想法自然汇聚成体系。</p>
+                    <p>每个节点都能生长出子节点，像树枝般层层延展，让零散的想法自然汇聚成体系，长成一棵属于你的知识树。</p>
+                    <span class="feature-tag">无限层级</span>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon" aria-hidden="true">
@@ -84,6 +86,7 @@
                     </div>
                     <h3>Markdown 写作</h3>
                     <p>原生支持 Markdown 渲染，代码块、引用、列表一应俱全，专注内容本身。</p>
+                    <span class="feature-tag">专注写作</span>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon" aria-hidden="true">
@@ -91,13 +94,15 @@
                     </div>
                     <h3>多媒体分享</h3>
                     <p>链接卡片、图片直显、文件下载，多种内容形态一站承载，分享更自由。</p>
+                    <span class="feature-tag">自由分享</span>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon" aria-hidden="true">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
                     </div>
                     <h3>深色模式</h3>
-                    <p>跟随系统偏好自动切换明暗主题，日夜皆宜的舒适阅读体验。</p>
+                    <p>跟随系统偏好自动切换明暗主题，深夜记录也不刺眼，日夜皆宜的舒适阅读体验。</p>
+                    <span class="feature-tag">日夜皆宜</span>
                 </div>
             </div>
         </section>
@@ -105,21 +110,72 @@
         <section class="about">
             <p class="section-eyebrow">我们的理念</p>
             <h2 class="section-title">关于本站</h2>
-            <p class="site-intro">
-                DNFS 树状笔记是一个以树状结构组织内容的笔记社区：每个节点都可以生长出子节点，
-                像树枝一样层层延展，让知识自然成体系。支持 Markdown 文本、链接卡片、图片与文件分享，
-                注册登录后即可创建属于你自己的知识树。
-            </p>
+            <div class="about-panel">
+                <p class="site-intro">
+                    DNFS 树状笔记是一个以树状结构组织内容的笔记社区：每个节点都可以生长出子节点，
+                    像树枝一样层层延展，让知识自然成体系。支持 Markdown 文本、链接卡片、图片与文件分享，
+                    注册登录后即可创建属于你自己的知识树。
+                </p>
+                <ul class="about-stats">
+                    <li><b>∞</b><span>节点层级无上限</span></li>
+                    <li><b>MD</b><span>原生 Markdown 渲染</span></li>
+                    <li><b>4+</b><span>内容形态一站承载</span></li>
+                </ul>
+            </div>
             <div class="quick-links">
                 <a href="allcolor.html">调色板</a>
                 <a href="games/">小游戏</a>
                 <a href="LICENSE.html">用户使用条例</a>
             </div>
         </section>
+
+        <section class="cta-section" aria-label="立即开始">
+            <div class="cta-band">
+                <!-- 品牌装饰：节点树水印（纯装饰） -->
+                <svg class="cta-tree" viewBox="0 0 640 360" fill="none" aria-hidden="true">
+                    <g stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <path d="M320 344 L320 262"/>
+                        <path d="M320 262 C 282 236, 238 214, 202 184"/>
+                        <path d="M320 262 C 358 236, 402 214, 438 184"/>
+                        <path d="M202 184 C 178 156, 156 134, 142 104"/>
+                        <path d="M202 184 C 222 156, 244 134, 258 104"/>
+                        <path d="M438 184 C 414 156, 396 134, 382 104"/>
+                        <path d="M438 184 C 462 156, 484 134, 498 104"/>
+                    </g>
+                    <g fill="currentColor">
+                        <circle cx="320" cy="344" r="6"/>
+                        <circle cx="320" cy="262" r="4.5"/>
+                        <circle cx="202" cy="184" r="4.5"/>
+                        <circle cx="438" cy="184" r="4.5"/>
+                        <circle cx="142" cy="104" r="4"/>
+                        <circle cx="258" cy="104" r="4"/>
+                        <circle cx="382" cy="104" r="4"/>
+                        <circle cx="498" cy="104" r="4"/>
+                    </g>
+                </svg>
+                <h2 class="cta-title">准备好让知识生长了吗？</h2>
+                <p class="cta-sub">注册一个账号，种下你的第一棵知识树</p>
+                <button class="btn btn-cta btn-lg" data-cta>立即开始</button>
+            </div>
+        </section>
     </main>
 
     <footer class="footer">
-        <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">蜀ICP备2024107064号-2</a>
+        <div class="footer-inner">
+            <div class="footer-brand">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="10.51" x2="15.42" y2="6.51"/><line x1="8.59" y1="13.49" x2="15.42" y2="17.49"/></svg>
+                <span>DNFS 树状笔记</span>
+            </div>
+            <nav class="footer-nav" aria-label="页脚导航">
+                <a href="dnfs.html">树状笔记</a>
+                <a href="allcolor.html">调色板</a>
+                <a href="games/">小游戏</a>
+                <a href="LICENSE.html">用户使用条例</a>
+            </nav>
+            <p class="footer-icp">
+                <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">蜀ICP备2024107064号-2</a>
+            </p>
+        </div>
     </footer>
     <script src="js/token_manager.js"></script>
     <script src="js/index.js"></script>

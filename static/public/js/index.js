@@ -13,7 +13,7 @@
 	const logoutBtn = document.getElementById('logoutBtn');
 	const loginBtn = document.getElementById('loginBtn');
 	const registerBtn = document.getElementById('registerBtn');
-	const ctaBtn = document.getElementById('ctaBtn');
+	const ctaBtns = document.querySelectorAll('[data-cta]'); // 首屏与页尾 CTA 按钮
 	const logoEl = document.getElementById('logo');
 
 	let loggedIn = false;
@@ -24,7 +24,9 @@
 	enterBtn.addEventListener('click', () => go('dnfs.html'));
 	loginBtn.addEventListener('click', () => go('login.html'));
 	registerBtn.addEventListener('click', () => go('register.html'));
-	ctaBtn.addEventListener('click', () => go(loggedIn ? 'dnfs.html' : 'login.html'));
+	ctaBtns.forEach(function (btn) {
+		btn.addEventListener('click', () => go(loggedIn ? 'dnfs.html' : 'login.html'));
+	});
 
 	async function checkLogin() {
 		try {
@@ -40,7 +42,7 @@
 				logoutBtn.style.display = '';
 				loginBtn.style.display = 'none';
 				registerBtn.style.display = 'none';
-				ctaBtn.textContent = '进入我的知识树';
+				ctaBtns.forEach(function (btn) { btn.textContent = '进入我的知识树'; });
 			}
 		} catch (e) {
 			console.warn('index: 登录态检测失败', e.message);
@@ -67,7 +69,7 @@
 
 	/* 滚动进入视口渐显：由 JS 添加 .reveal 隐藏初始态，无 JS / 减弱动效时内容天然可见 */
 	if (!reduceMotion && 'IntersectionObserver' in window) {
-		const targets = document.querySelectorAll('.section-eyebrow, .section-title, .feature-card, .about .site-intro, .quick-links');
+		const targets = document.querySelectorAll('.section-eyebrow, .section-title, .section-sub, .feature-card, .about .site-intro, .about-stats, .quick-links, .cta-band');
 		targets.forEach(function (el, i) {
 			el.classList.add('reveal');
 			el.style.transitionDelay = (i % 4) * 70 + 'ms';
