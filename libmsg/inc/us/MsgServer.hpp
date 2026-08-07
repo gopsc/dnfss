@@ -217,7 +217,10 @@ public:
         try {
             pmsg_send(sockfd, msg);
         } catch (const MsgException&) {
-            // 连接可能已断开，静默忽略
+            // 发送失败（连接断开或发送超时），标记为 failed 由主循环清理。
+            // 与 broadcast() 保持一致，避免连接残留。
+            std::lock_guard<std::mutex> flk(_failed_mtx);
+            _failed.insert(sockfd);
         }
     }
 
@@ -439,6 +442,16 @@ private:
         // 禁用 Nagle 算法，降低小包延迟
         int flag = 1;
         ::setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+
+        // 设置发送超时：防止慢客户端不读数据导致发送缓冲区填满，
+        // 使 reply()/broadcast() 的 send() 永久阻塞（拒绝服务）。
+        // 超时后 sendAll() 抛 MsgTimeoutException，被 reply/broadcast 捕获并标记 failed 清理。
+        struct timeval sndtv {};
+        constexpr double kServerSendTimeout = 5.0;  // 秒
+        sndtv.tv_sec = static_cast<time_t>(kServerSendTimeout);
+        sndtv.tv_usec = static_cast<long>(
+            (kServerSendTimeout - static_cast<double>(sndtv.tv_sec)) * 1'000'000.0);
+        ::setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &sndtv, sizeof(sndtv));
     }
 
     void _handle_client(int fd) {

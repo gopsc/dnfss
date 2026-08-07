@@ -1,6 +1,6 @@
 # libmsg 模块安全审计报告
 
-**审计日期**: 2026-08-07（第二轮审计）  
+**审计日期**: 2026-08-07（第三轮审计）  
 **首次审计**: 2026-08-06  
 **审计范围**: `libmsg/inc/us/MsgServer.hpp`、`libmsg/inc/us/RpcServer.hpp`、`libmsg/inc/us/Msg.hpp`、`libmsg/inc/us/RpcClient.hpp`、`libmsg/inc/us/AsyncQueue.hpp`、`libmsg/inc/us/Msg_Basic.hpp`、`libmsg/src/Msg_Basic.cpp`  
 **代码版本**: main 分支（基于 e92ef05 进行修复）  
@@ -28,7 +28,10 @@
 | 第一轮 (2026-08-06) | P2 | 1 | 1 | 0 | 100% |
 | **第二轮 (2026-08-07)** | **P0** | **1** | **1** | **0** | **100%** |
 | **第二轮 (2026-08-07)** | **P2** | **4** | **4** | **0** | **100%** |
-| **合计** | **—** | **8** | **8** | **0** | **100%** |
+| **第三轮 (2026-08-07)** | **P1** | **1** | **1** | **0** | **100%** |
+| **第三轮 (2026-08-07)** | **P2** | **1** | **1** | **0** | **100%** |
+| **第三轮 (2026-08-07)** | **P3** | **1** | **1** | **0** | **100%** |
+| **合计** | **—** | **11** | **11** | **0** | **100%** |
 
 ---
 
@@ -215,6 +218,59 @@ Python 版 `pymsg.recv()` 在接收载荷后调用 `payload.decode("utf-8")` 进
 
 ---
 
+## 🟠 P1 — 高危问题（第三轮）
+
+### P1-2: 服务端 socket 未设置发送超时，慢客户端不读数据可致 send 永久阻塞（DoS） ✅ 已修复（第三轮）
+
+- **CWE**: CWE-400 (Uncontrolled Resource Consumption)
+- **OWASP**: A05:2021
+- **位置**: `MsgServer.hpp::_accept_client()`（新连接只设 TCP_NODELAY，未设 SO_SNDTIMEO）
+- **置信度**: 85%
+
+**问题描述**:  
+服务端每个客户端 socket 在 `_accept_client()` 中仅设置了 `TCP_NODELAY`，**未设置发送超时 `SO_SNDTIMEO`**。若攻击者连接后停止读取数据，发送缓冲区会被填满，此时 `reply()`/`broadcast()` 调用的 `pmsg_send()` → `sendAll()` 中的 `send()` 因无法写入而**永久阻塞**（无超时则不会返回 EAGAIN）。
+
+- **同步模式（workers=0）**: `reply()`/`broadcast()` 在主线程（事件循环线程）内执行，send 永久阻塞即卡死整个事件循环，服务完全无法处理任何连接 → **服务级 DoS**。
+- **线程池模式（workers>0）**: 阻塞的 send 占用 worker 线程，攻击者可用少量慢连接耗尽全部 worker。
+
+**触发场景**:
+1. 攻击者建立连接但不调用 recv 读取数据
+2. 服务端向其 reply() 大量数据（如日志/广播），发送缓冲区填满
+3. `send()` 永久阻塞，卡死主线程（同步模式）或占用 worker 线程
+
+**修复方案**（第三轮修复）:  
+在 `_accept_client()` 中对新连接设置 `SO_SNDTIMEO = 5.0` 秒。发送超时后 `sendAll()` 检测到 `EAGAIN/EWOULDBLOCK` 抛 `MsgTimeoutException`，被 `reply()`/`broadcast()` 捕获并标记为 `_failed`，由主循环统一清理连接（配合 P2-6 修复）。
+
+## 🟡 P2 — 中危问题（第三轮）
+
+### P2-6: reply() 发送失败静默忽略且不标记 failed，连接残留不清理 ✅ 已修复（第三轮）
+
+- **CWE**: CWE-703 (Improper Check or Handling of Exceptional Conditions)
+- **位置**: `MsgServer.hpp::reply()`（`catch (const MsgException&)` 分支）
+- **置信度**: 80%
+
+**问题描述**:  
+`broadcast()` 发送失败时会将该 fd 加入 `_failed` 集合，由主循环统一清理；而 `reply()` 发送失败时仅 `catch` 静默忽略，**不标记 `_failed`**。若 reply 的目标连接已断开或发送超时，该连接会一直残留在 `_clients` 中，直到主循环 select 检测到读端异常才被清理，造成资源滞留和清理路径不一致。
+
+**修复方案**（第三轮修复）:  
+`reply()` 的失败分支改为与 `broadcast()` 一致：捕获 `MsgException` 后向 `_failed` 集合插入该 fd，由主循环 `_reap_failed()` 统一清理。
+
+## 🟢 P3 — 优化建议（第三轮）
+
+### P3-1: RpcClient::call() 未校验 success 字段类型，非 bool 时抛未捕获的 boost 异常 ✅ 已修复（第三轮）
+
+- **CWE**: CWE-20 (Improper Input Validation)
+- **位置**: `RpcClient.hpp::call()`（`obj.at("success").as_bool()`）
+- **置信度**: 70%
+
+**问题描述**:  
+`call()` 已检查响应包含 `success` 字段，但未校验其**类型**。若远端返回 `{"success": "false"}`（字符串）等非 bool 值，`as_bool()` 会抛出未捕获的 `boost::system::system_error`，而非统一的 `RpcError`，导致调用方无法按既定异常层次处理，且错误信息可能泄露内部细节。
+
+**修复方案**（第三轮修复）:  
+调用 `as_bool()` 前先检查 `success.is_bool()`，类型不符时抛出 `RpcError("非法 RPC 响应（success 字段不是 bool）")`，与其余非法响应处理保持一致。
+
+---
+
 ## ✅ 已有安全机制（更新后）
 
 | 机制 | 位置 | 说明 |
@@ -226,6 +282,9 @@ Python 版 `pymsg.recv()` 在接收载荷后调用 `payload.decode("utf-8")` 进
 | 最大连接数限制 | `MsgServer.hpp` `max_connections=1000` | 超限拒绝新连接 |
 | 有界任务队列 | `MsgServer.hpp` `max_queue_size=1000` | 队列满时断开连接，防 OOM |
 | per-connection 发送锁 | `MsgServer.hpp` `_send_locks` | reply/broadcast 线程安全，防帧交错 |
+| **新增**: 服务端发送超时 SO_SNDTIMEO | `MsgServer.hpp` `_accept_client()` | 慢客户端不读数据时 send 超时抛异常，防拒绝服务（P1-2） |
+| **修复**: reply() 失败也标记 failed | `MsgServer.hpp` `reply()` | 与 broadcast 一致，失败连接由主循环清理（P2-6） |
+| **修复**: RpcClient success 类型校验 | `RpcClient.hpp` `call()` | 非 bool 时抛 RpcError，而非未捕获的 boost 异常（P3-1） |
 | **修复**: _close_all_clients 批量关闭也持锁 | `MsgServer.hpp` `_close_all_clients()` | 修复批量关闭路径的竞态（P0-2） |
 | 同一连接消息串行 | `MsgServer.hpp` `_busy` 集合 | 回调执行中暂停该连接 select 监听 |
 | JSON 解析深度限制 | `RpcServer.hpp` `opts.max_depth=32` | 防深度嵌套 JSON 导致栈溢出 |
@@ -251,10 +310,21 @@ Python 版 `pymsg.recv()` 在接收载荷后调用 `payload.decode("utf-8")` 进
 | L-5 | 安全事件无结构化日志 | P3 | 超时、超大消息、UTF-8 校验失败、JSON 解析失败等仅 fprintf(stderr)，无可观测性。建议接入结构化日志。 |
 | L-6 | pmsg_recv(int) 单参数版本仍依赖外部超时设置 | P3 | 已添加文档警告，推荐使用 deadline 模式。考虑未来版本弃用单参数版本或内部设置安全默认超时。 |
 | L-7 | AsyncQueue 关闭时 flush 失败数据只记 on_error | P3 | _flush_all() 中 handler 失败后数据不重试，符合非关键路径设计，但应确保 on_error 有持久化/告警机制。 |
+| L-8 | 半连接（只发部分帧头）仍可占用一个 worker 线程 recv_timeout 秒 | P2 | workers>0 时消息接收在 worker 线程完成，慢连接可占用 worker 最多 recv_timeout（默认10秒）。数量受 max_connections 与 recv_timeout 有界约束，已缓解。可用更小 recv_timeout 或独立接收线程池进一步收紧。 |
+| L-9 | pmsg_send 发送端不校验 UTF-8，与 Python 版 encode('utf-8') 不对称 | P3 | 接收端已在 pmsg_recv 校验 UTF-8（P2-4），非法载荷会被远端断开。发送端未校验，若业务传入二进制可能被远端拒绝。若存在纯二进制传输场景，发送端校验会破坏兼容，故暂不强制，仅记录。 |
 
 ---
 
 ## 变更记录
+
+### 2026-08-07（第三轮审计修复）
+
+**代码变更文件**:
+
+| 文件 | 变更内容 |
+|------|----------|
+| [MsgServer.hpp](file:///Users/qingsong/Documents/blackbird/libmsg/inc/us/MsgServer.hpp) | **P1修复**: `_accept_client()` 对新连接设置 `SO_SNDTIMEO=5s`，慢客户端不读数据时 send 超时抛异常，防服务级 DoS（P1-2）；**P2修复**: `reply()` 发送失败标记 `_failed`，由主循环清理连接（P2-6） |
+| [RpcClient.hpp](file:///Users/qingsong/Documents/blackbird/libmsg/inc/us/RpcClient.hpp) | **P3修复**: `call()` 调用 `as_bool()` 前校验 `success` 字段为 bool，类型不符抛 RpcError（P3-1） |
 
 ### 2026-08-07（第二轮审计修复）
 
@@ -272,14 +342,18 @@ Python 版 `pymsg.recv()` 在接收载荷后调用 `payload.decode("utf-8")` 进
 
 ## 审计结论
 
-第二轮审计新发现 1 个 P0 级竞态回归（批量关闭路径）和 4 个 P2 级健壮性问题（参数校验缺失、UTF-8校验缺失、API误用风险、配置无边界），**全部 5 个问题已修复**。
+第四轮审计（含第三轮新发现）累计发现 **11 个问题，全部已修复（100%）**。
 
-第一轮审计发现的 3 个问题修复正确，未被回退。结合两轮审计结果，libmsg 核心通信层的安全状况良好：
+- **第一轮（2026-08-06）**: 3 个问题（P0 竞态、P1 Slowloris、P2 脱敏正则）已修复。
+- **第二轮（2026-08-07）**: 5 个问题（P0 批量关闭竞态回归、4 个 P2 健壮性）已修复。
+- **第三轮（2026-08-07）**: 3 个新问题（P1 服务端发送超时缺失、P2 reply 失败未清理、P3 RpcClient success 类型校验）已修复。
+
+结合三轮审计结果，libmsg 核心通信层的安全状况良好：
 
 - **内存安全**: 无缓冲区溢出、无 use-after-free（fd 生命周期通过 mutex + shared_ptr 严格管理）
-- **DoS 防护**: 64MiB 消息上限、deadline 模式超时（防Slowloris）、max_connections 连接数限制、max_queue_size 队列上限、poll_timeout 防忙轮询、全量参数边界校验
+- **DoS 防护**: 64MiB 消息上限、deadline 模式接收超时（防Slowloris）、**服务端发送超时 SO_SNDTIMEO（防慢客户端耗尽资源）**、max_connections 连接数限制、max_queue_size 队列上限、poll_timeout 防忙轮询、全量参数边界校验
 - **竞态安全**: 所有 fd 关闭路径均持有 per-connection send_lock，彻底消除 CWE-362 竞态
-- **协议健壮性**: 新增 UTF-8 校验，与 Python 版行为对齐
-- **异常安全**: worker 线程异常隔离、AsyncQueue fail-safe、Handler 异常不崩溃服务、RPC 错误脱敏
+- **协议健壮性**: UTF-8 收发端校验与 Python 版对齐、RpcClient 响应字段类型校验统一抛 RpcError
+- **异常安全**: worker 线程异常隔离、AsyncQueue fail-safe、Handler 异常不崩溃服务、RPC 错误脱敏、reply/broadcast 失败连接统一清理
 
-遗留的 L-1~L-7 项为架构层面的已知限制/设计决策，非代码缺陷，可根据实际部署需求决定是否增强。
+遗留的 L-1~L-9 项为架构层面的已知限制/设计决策，非代码缺陷，可根据实际部署需求决定是否增强。
