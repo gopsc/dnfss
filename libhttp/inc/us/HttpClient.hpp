@@ -65,6 +65,14 @@ public:
     void set_max_response_size(size_t bytes);
     size_t get_max_response_size() const;
 
+    // ===== 请求超时控制 =====
+    // 设置整体请求超时（秒，含连接+传输）。默认 30s。
+    void set_timeout(long seconds);
+    long get_timeout() const;
+    // 设置连接建立超时（秒）。默认 10s。
+    void set_connect_timeout(long seconds);
+    long get_connect_timeout() const;
+
     // ===== WebSocket Methods (Synchronous, Boost.Beast-based) =====
     bool ws_connect(const std::string& url, int timeout_ms = 5000);
     bool ws_connect(const std::string& host, const std::string& port,
@@ -84,6 +92,8 @@ private:
     std::map<std::string, std::string> response_headers_;
     long response_code_ = 0;
     size_t max_response_size_ = 10 * 1024 * 1024;  // 默认 10MB，对齐 WAF；0 表示不限制
+    long timeout_ = 30;          // 整体请求超时（秒），默认 30s
+    long connect_timeout_ = 10;  // 连接建立超时（秒），默认 10s
 
     struct WsState {
         asio::io_context ioc;

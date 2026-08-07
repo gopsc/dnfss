@@ -80,6 +80,8 @@ timeout = 5
 
 ## 已知限制（P2，设计决策不修复）
 
-- P2-12: 错误响应可能泄露信息（新实现已尽量脱敏）
-- P2-13: CORS 反射任意 Origin（内部服务绑 127.0.0.1，可接受）
-- P2-15: pid 判断已加严格类型校验，但未完全对齐 Python 语义
+- L-1: update_note 允许创建循环（需图遍历检测后代关系）
+- L-2: delete_note TOCTOU 残余（需 db2 事务支持）
+- L-4: 无速率限制（gateway/WAF 职责）
+- L-5: title/content 无最大长度校验
+- L-6: AI 审核不可用时阻断写入（fail-closed 设计决策）

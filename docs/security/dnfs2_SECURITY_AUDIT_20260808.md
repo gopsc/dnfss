@@ -17,8 +17,8 @@ dnfs2 是 Python dnfs 的 C++20 重实现，基于 libhttp + libmsg + boost::jso
 | 类别 | 数量 | 状态 |
 |------|------|------|
 | 计划修复的 P0/P1（继承自 dnfs） | 6 | 全部有效 ✓ |
-| 新发现问题 | 4 | 全部修复 ✓ |
-| 已知限制（架构性/继承性） | 6 | 记录 |
+| 新发现问题 | 5 | 全部修复 ✓ |
+| 已知限制（架构性/继承性） | 5 | 记录 |
 
 ---
 
@@ -130,6 +130,32 @@ if (!child_r.data.as_array().empty()) {
 if (cfg.threads < 1 || cfg.threads > 256) { ... exit(1); }
 ```
 
+### P2-N5: HttpClient 超时硬编码，配置值未生效 — ✓ 已修复
+
+**位置**: `libhttp/src/HttpClient.cpp` L92-93（原）、`dnfs2/src/dnfs2.cpp`  
+**问题**: HttpClient `request_stream_sync` 硬编码 `CURLOPT_TIMEOUT=30L` / `CURLOPT_CONNECTTIMEOUT=10L`，无接口可覆盖。dnfs2 的 `review_timeout` 和 `gateway_timeout` 配置加载并校验范围后从未使用，实际超时恒为 30s。
+
+**修复**:
+1. libhttp `HttpClient` 新增 `set_timeout()` / `set_connect_timeout()` 接口（默认值 30s/10s，向后兼容 gateway/core）
+2. `request_stream_sync` 使用成员变量替代硬编码值
+3. dnfs2 `decode_token()` 设置 `gateway_timeout`，`review_content()` 设置 `review_timeout`
+
+```cpp
+// libhttp/HttpClient.hpp
+void set_timeout(long seconds);
+long get_timeout() const;
+void set_connect_timeout(long seconds);
+long get_connect_timeout() const;
+long timeout_ = 30;          // 默认 30s
+long connect_timeout_ = 10;  // 默认 10s
+
+// dnfs2 decode_token
+http.set_timeout(static_cast<long>(_cfg.gateway_timeout));
+
+// dnfs2 review_content
+http.set_timeout(static_cast<long>(_cfg.review_timeout));
+```
+
 ---
 
 ## 4. 已知限制（不修复，架构性/继承性）
@@ -141,10 +167,6 @@ update_note 允许将节点的 pid 改为任意已存在的节点，包括自身
 ### L-2: delete_note TOCTOU 竞态（P0 级残余，继承自 dnfs）
 
 delete_note 在"检查无子节点"和"执行删除"之间存在 TOCTOU 窗口，并发请求可在检查后添加子节点。修复需要 db2 支持事务或原子条件删除。dnfs2 已通过 `_call_db()` 统一检查 success 修复了"未检查 success"部分，但 TOCTOU 窗口仍存在。
-
-### L-3: 配置的超时时间未使用（P2）
-
-`review_timeout` 和 `gateway_timeout` 已加载并校验范围，但 HttpClient 硬编码 30s 超时（libhttp 限制，未提供 `set_timeout()` 接口）。实际超时为 30s 而非配置值。
 
 ### L-4: 无速率限制（P2，继承自 dnfs）
 
@@ -191,18 +213,17 @@ dnfs 的错误消息泄露 IP 和用户名（如 `"未授权访问，从192.168.
 
 ## 6. 安全评级
 
-### 评级: A-
+### 评级: A
 
 **理由**:
 - 计划修复的 6 项 P0/P1 全部有效 ✓
-- 新发现 4 项问题全部修复 ✓ (2 P1 + 2 P2)
+- 新发现 5 项问题全部修复 ✓ (2 P1 + 3 P2)
 - IP/用户名泄露问题作为重写副效果已修复 ✓
-- 残余 6 项已知限制均为架构性/继承性问题，有明确修复路径
+- 残余 5 项已知限制均为架构性/继承性问题，有明确修复路径
 - 相比 Python dnfs（评级 B，多个 P0/P1 未修复），安全基线显著提升
 
 **扣分项**:
 - L-1/L-2 循环创建和 TOCTOU 未修复（需 db2 事务支持）
-- L-3 超时配置未生效（需 libhttp 增强）
 
 ---
 
@@ -215,5 +236,8 @@ dnfs 的错误消息泄露 IP 和用户名（如 `"未授权访问，从192.168.
 | dnfs2/src/dnfs2.cpp | P2-N3: delete_note 分离 db 错误和子节点检查 |
 | dnfs2/src/dnfs2.cpp | P2-N4: threads 上限 256 |
 | dnfs2/src/dnfs2.cpp | 新增 `#include <curl/curl.h>` |
+| libhttp/inc/us/HttpClient.hpp | P2-N5: 新增 set_timeout/set_connect_timeout 接口 + 成员变量 |
+| libhttp/src/HttpClient.cpp | P2-N5: 新增 set_timeout/set_connect_timeout 实现，request_stream_sync 使用成员变量 |
+| dnfs2/src/dnfs2.cpp | P2-N5: decode_token 设置 gateway_timeout，review_content 设置 review_timeout |
 
-编译验证: `g++ -std=c++20 -O3 -Wall -Werror` 通过，零错误零警告。
+编译验证: `g++ -std=c++20 -O3 -Wall -Werror` 通过，零错误零警告（libhttp + dnfs2 均重新编译）。

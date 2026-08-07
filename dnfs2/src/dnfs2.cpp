@@ -643,6 +643,7 @@ private:
 
         HttpClient http;
         http.set_max_response_size(kHttpMaxResponse);
+        http.set_timeout(static_cast<long>(_cfg.gateway_timeout));
         http.set_header("Content-Type: application/json");
         http.set_header("Authorization: Bearer " + token);
 
@@ -704,6 +705,7 @@ private:
     bool review_content(const std::string& content) {
         HttpClient http;
         http.set_max_response_size(kHttpMaxResponse);
+        http.set_timeout(static_cast<long>(_cfg.review_timeout));
         http.set_header("Content-Type: application/json");
 
         json::object payload;
