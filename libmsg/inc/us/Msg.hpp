@@ -51,6 +51,59 @@ namespace detail {
 
 using namespace msg_constants;
 
+// ---- UTF-8 合法性校验（对齐 Python decode('utf-8')）------------------------
+// 防御性校验：协议声明载荷为 UTF-8，非法字节序列表示协议错误或攻击，
+// 直接抛 MsgConnectionException 断开连接。
+inline bool isValidUtf8(const char* data, size_t len) noexcept {
+    const unsigned char* bytes = reinterpret_cast<const unsigned char*>(data);
+    size_t i = 0;
+    while (i < len) {
+        unsigned char c = bytes[i];
+        int num_extra;
+        uint32_t codepoint;
+        if (c <= 0x7F) {
+            ++i;
+            continue;
+        } else if ((c & 0xE0) == 0xC0) {
+            num_extra = 1;
+            codepoint = c & 0x1F;
+        } else if ((c & 0xF0) == 0xE0) {
+            num_extra = 2;
+            codepoint = c & 0x0F;
+        } else if ((c & 0xF8) == 0xF0) {
+            num_extra = 3;
+            codepoint = c & 0x07;
+        } else {
+            return false;
+        }
+        if (i + num_extra >= len) return false;
+        for (int j = 0; j < num_extra; ++j) {
+            ++i;
+            if ((bytes[i] & 0xC0) != 0x80) return false;
+            codepoint = (codepoint << 6) | (bytes[i] & 0x3F);
+        }
+        ++i;
+        // 拒绝 overlong 编码、代理对、超 U+10FFFF
+        if (num_extra == 1 && codepoint < 0x80) return false;                    // 2字节序列应>=U+0080
+        if (num_extra == 2 && (codepoint < 0x800 || (codepoint >= 0xD800 && codepoint <= 0xDFFF))) return false;  // 3字节序列>=U+0800且非代理对
+        if (num_extra == 3 && (codepoint < 0x10000 || codepoint > 0x10FFFF)) return false;  // 4字节序列U+10000~U+10FFFF
+    }
+    return true;
+}
+
+// ---- 参数校验辅助 --------------------------------------------------------
+inline void validateTimeout(double timeout_sec) {
+    if (timeout_sec <= 0 || timeout_sec > 300.0) {  // 最大 5 分钟
+        throw MsgException("invalid timeout: " + std::to_string(timeout_sec) + " seconds (must be in (0, 300])");
+    }
+}
+
+inline void validatePort(int port) {
+    if (port < 1 || port > 65535) {
+        throw MsgConnectionException("invalid port: " + std::to_string(port) + " (must be in [1, 65535])");
+    }
+}
+
 // ---- 4-byte big-endian 编码 / 解码 ----------------------------------------
 
 inline void writeUint32BE(char *buf, uint32_t val) noexcept {
@@ -149,6 +202,7 @@ inline void recvExactDeadline(int sockfd, char *buf, size_t n,
 
 // deadline 模式接收完整 pymsg 帧（header + payload）
 inline std::string recvFrameDeadline(int sockfd, double timeout_sec) {
+    validateTimeout(timeout_sec);
     const auto deadline = std::chrono::steady_clock::now()
         + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
             std::chrono::duration<double>(timeout_sec));
@@ -163,6 +217,10 @@ inline std::string recvFrameDeadline(int sockfd, double timeout_sec) {
     std::string payload(static_cast<size_t>(length), '\0');
     if (length > 0) {
         recvExactDeadline(sockfd, payload.data(), length, deadline);
+        // UTF-8 合法性校验（对齐 Python decode('utf-8')），非法载荷视为协议错误
+        if (!isValidUtf8(payload.data(), length)) {
+            throw MsgConnectionException("invalid UTF-8 payload");
+        }
     }
     return payload;
 }
@@ -188,6 +246,8 @@ inline void sendAll(int sockfd, const char *data, size_t len) {
 // ---- 短连接 helper：connect → action → close ------------------------------
 
 inline int openConnection(const std::string& addr, int port, double timeout) {
+    validatePort(port);
+    validateTimeout(timeout);
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         throw MsgConnectionException(
@@ -226,6 +286,9 @@ inline int openConnection(const std::string& addr, int port, double timeout) {
 // ============================================================================
 
 /// 以 pymsg 协议发送一条字符串消息（长度前缀 + UTF-8 载荷）。
+/// 注意：sendAll() 依赖 socket 已设置的 SO_SNDTIMEO，否则慢客户端不读数据时
+/// send() 会永久阻塞。MsgClient 和 MsgServer 内部均已设置 SO_SNDTIMEO，
+/// 直接使用此公共 API 时需自行设置。
 inline void pmsg_send(int sockfd, const std::string &data) {
     size_t payload_size = data.size();
     if (payload_size > msg_constants::kMaxMsgSize) {
@@ -240,7 +303,9 @@ inline void pmsg_send(int sockfd, const std::string &data) {
 }
 
 /// 以 pymsg 协议接收一条字符串消息（阻塞模式，依赖 socket 已设置的超时）。
-/// @throws MsgConnectionException  连接在收全消息前断开。
+/// 注意：调用方必须预先通过 setsockopt(SO_RCVTIMEO) 设置接收超时，否则可能永久阻塞。
+/// 推荐使用 pmsg_recv(sockfd, timeout_sec) deadline 模式，不依赖外部状态。
+/// @throws MsgConnectionException  连接在收全消息前断开、或载荷不是合法 UTF-8。
 /// @throws MsgTimeoutException     等待超时。
 inline std::string pmsg_recv(int sockfd) {
     char header[detail::kHeaderSize];
@@ -250,7 +315,13 @@ inline std::string pmsg_recv(int sockfd) {
         throw MsgException("message too large: " + std::to_string(length));
     }
     std::string payload(static_cast<size_t>(length), '\0');
-    detail::recvExact(sockfd, payload.data(), length);
+    if (length > 0) {
+        detail::recvExact(sockfd, payload.data(), length);
+        // UTF-8 合法性校验（对齐 Python decode('utf-8')），非法载荷视为协议错误
+        if (!detail::isValidUtf8(payload.data(), length)) {
+            throw MsgConnectionException("invalid UTF-8 payload");
+        }
+    }
     return payload;
 }
 
@@ -277,7 +348,9 @@ inline std::string pmsg_recv(int sockfd, double timeout_sec) {
 class MsgClient : public Msg_Basic {
 public:
     MsgClient(const std::string &addr, int port, const std::string &name)
-        : _addr(addr), _port(port), _name(name), _sockfd(-1), _running(false) {}
+        : _addr(addr), _port(port), _name(name), _sockfd(-1), _running(false) {
+        detail::validatePort(port);
+    }
 
     ~MsgClient() { stop(); }
 
@@ -325,6 +398,10 @@ public:
     std::string call(const std::string &msg, double timeout = static_cast<double>(msg_constants::kDefaultTimeout),
                      bool retry_on_refused = false,
                      double retry_interval = 1.0) {
+        detail::validateTimeout(timeout);
+        if (retry_interval <= 0 || retry_interval > 60.0) {
+            throw MsgException("invalid retry_interval: " + std::to_string(retry_interval) + " seconds (must be in (0, 60])");
+        }
         if (!retry_on_refused) {
             // 快速路径：不重试，直接执行一次
             int fd = detail::openConnection(_addr, _port, timeout);

@@ -76,6 +76,20 @@ struct MsgServerConfig {
 };
 
 // ============================================================================
+// ConnectionLock — 每连接发送锁 + 活跃标志
+// ============================================================================
+
+/// 每连接的发送锁和活跃标志。
+///
+/// active 标志用于防止 CWE-362 竞态：当 _remove_client() 先获取 send_mtx
+/// 并 close(fd) 后，reply/broadcast 后获取 send_mtx 时通过 active==false
+/// 得知 fd 已关闭，立即放弃发送，避免向 OS 复用的 fd 发送数据。
+struct ConnectionLock {
+    std::mutex send_mtx;
+    std::atomic<bool> active{true};
+};
+
+// ============================================================================
 // MsgServer
 // ============================================================================
 
@@ -86,7 +100,25 @@ public:
     using MessageCallback = std::function<void(int sockfd, const std::string& addr, const std::string& message)>;
 
     explicit MsgServer(const std::string& addr, int port, MsgServerConfig config = {})
-        : _addr(addr), _port(port), _config(config), _server_fd(-1), _running(false) {}
+        : _addr(addr), _port(port), _config(config), _server_fd(-1), _running(false) {
+        detail::validatePort(port);
+        if (config.workers < 0 || config.workers > 256) {
+            throw MsgException("invalid workers: " + std::to_string(config.workers) + " (must be in [0, 256])");
+        }
+        detail::validateTimeout(config.recv_timeout);
+        if (config.max_connections < 1 || config.max_connections > 100000) {
+            throw MsgException("invalid max_connections: " + std::to_string(config.max_connections));
+        }
+        if (config.max_queue_size < 1 || config.max_queue_size > 1000000) {
+            throw MsgException("invalid max_queue_size: " + std::to_string(config.max_queue_size));
+        }
+        if (config.listen_backlog < 1 || config.listen_backlog > 4096) {
+            throw MsgException("invalid listen_backlog: " + std::to_string(config.listen_backlog));
+        }
+        if (config.poll_timeout <= 0 || config.poll_timeout > 5.0) {
+            throw MsgException("invalid poll_timeout: " + std::to_string(config.poll_timeout));
+        }
+    }
 
     ~MsgServer() { stop(); }
 
@@ -104,38 +136,41 @@ public:
      *                   回调内可安全调用 reply()/broadcast()/stop()。
      */
     void start(MessageCallback on_message) {
+        if (!on_message) {
+            throw MsgException("MsgServer::start(): on_message callback must not be null");
+        }
         _on_message = std::move(on_message);
         _running = true;
 
         // 创建监听 socket
-        _server_fd = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (_server_fd < 0) {
+        _server_fd.store(::socket(AF_INET, SOCK_STREAM, 0));
+        if (_server_fd.load() < 0) {
             throw MsgConnectionException(std::string("socket() failed: ") + ::strerror(errno));
         }
 
         int optval = 1;
-        ::setsockopt(_server_fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
+        ::setsockopt(_server_fd.load(), SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
 
         struct sockaddr_in serv_addr {};
         serv_addr.sin_family = AF_INET;
         serv_addr.sin_port = htons(static_cast<uint16_t>(_port));
         if (::inet_pton(AF_INET, _addr.c_str(), &serv_addr.sin_addr) <= 0) {
-            ::close(_server_fd);
-            _server_fd = -1;
+            int fd = _server_fd.exchange(-1);
+            if (fd >= 0) ::close(fd);
             throw MsgConnectionException("invalid bind address: " + _addr);
         }
 
-        if (::bind(_server_fd, reinterpret_cast<struct sockaddr*>(&serv_addr), sizeof(serv_addr)) < 0) {
+        if (::bind(_server_fd.load(), reinterpret_cast<struct sockaddr*>(&serv_addr), sizeof(serv_addr)) < 0) {
             int saved_errno = errno;
-            ::close(_server_fd);
-            _server_fd = -1;
+            int fd = _server_fd.exchange(-1);
+            if (fd >= 0) ::close(fd);
             throw MsgConnectionException(std::string("bind() failed: ") + ::strerror(saved_errno));
         }
 
-        if (::listen(_server_fd, _config.listen_backlog) < 0) {
+        if (::listen(_server_fd.load(), _config.listen_backlog) < 0) {
             int saved_errno = errno;
-            ::close(_server_fd);
-            _server_fd = -1;
+            int fd = _server_fd.exchange(-1);
+            if (fd >= 0) ::close(fd);
             throw MsgConnectionException(std::string("listen() failed: ") + ::strerror(saved_errno));
         }
 
@@ -157,13 +192,15 @@ public:
             _running = false;
             _shutdown_pool(pool_threads);
             _close_all_clients();
-            if (_server_fd >= 0) { ::close(_server_fd); _server_fd = -1; }
+            int fd = _server_fd.exchange(-1);
+            if (fd >= 0) { ::shutdown(fd, SHUT_RDWR); ::close(fd); }
             throw;
         }
 
         _shutdown_pool(pool_threads);
         _close_all_clients();
-        if (_server_fd >= 0) { ::close(_server_fd); _server_fd = -1; }
+        int fd = _server_fd.exchange(-1);
+        if (fd >= 0) { ::shutdown(fd, SHUT_RDWR); ::close(fd); }
     }
 
     // ---- 停止 --------------------------------------------------------------
@@ -173,10 +210,10 @@ public:
     void stop() noexcept {
         bool expected = true;
         if (!_running.compare_exchange_strong(expected, false)) return;
-        if (_server_fd >= 0) {
-            ::shutdown(_server_fd, SHUT_RDWR);
-            ::close(_server_fd);
-            _server_fd = -1;
+        int fd = _server_fd.exchange(-1);
+        if (fd >= 0) {
+            ::shutdown(fd, SHUT_RDWR);
+            ::close(fd);
         }
     }
 
@@ -188,18 +225,24 @@ public:
      * 如果连接已断开则静默忽略（fail-safe，不抛异常）。
      */
     void reply(int sockfd, const std::string& msg) {
-        std::shared_ptr<std::mutex> send_lock;
+        std::shared_ptr<ConnectionLock> conn_lock;
         {
             std::lock_guard<std::mutex> lock(_clients_mtx);
             auto it = _send_locks.find(sockfd);
             if (it == _send_locks.end()) return;  // 连接已断开
-            send_lock = it->second;
+            conn_lock = it->second;
         }
-        std::lock_guard<std::mutex> lock(*send_lock);
+        std::lock_guard<std::mutex> lock(conn_lock->send_mtx);
+        // 检查 active：防止 _remove_client 先获取 send_mtx 并 close(fd) 后，
+        // reply 向已关闭/被 OS 复用的 fd 发送数据（CWE-362）
+        if (!conn_lock->active.load()) return;
         try {
             pmsg_send(sockfd, msg);
         } catch (const MsgException&) {
-            // 连接可能已断开，静默忽略
+            // 发送失败（连接断开或发送超时），标记为 failed 由主循环清理。
+            // 与 broadcast() 保持一致，避免连接残留。
+            std::lock_guard<std::mutex> flk(_failed_mtx);
+            _failed.insert(sockfd);
         }
     }
 
@@ -209,8 +252,8 @@ public:
      * @param except_fd   排除的 fd（通常是发送者自己），默认 -1 表示不排除。
      */
     void broadcast(const std::string& msg, int except_fd = -1) {
-        // 先拷贝一份 fd 列表，避免持锁期间发送
-        std::vector<std::pair<int, std::shared_ptr<std::mutex>>> targets;
+        // 先拷贝一份 fd + conn_lock 列表，避免持锁期间发送
+        std::vector<std::pair<int, std::shared_ptr<ConnectionLock>>> targets;
         {
             std::lock_guard<std::mutex> lock(_clients_mtx);
             targets.reserve(_clients.size());
@@ -222,8 +265,10 @@ public:
                 }
             }
         }
-        for (auto& [fd, send_lock] : targets) {
-            std::lock_guard<std::mutex> slock(*send_lock);
+        for (auto& [fd, conn_lock] : targets) {
+            std::lock_guard<std::mutex> slock(conn_lock->send_mtx);
+            // 检查 active：防止 _remove_client 先 close(fd) 后向复用 fd 发送（CWE-362）
+            if (!conn_lock->active.load()) continue;
             try {
                 pmsg_send(fd, msg);
             } catch (const MsgException&) {
@@ -333,9 +378,10 @@ private:
             FD_ZERO(&exceptfds);
             int maxfd = -1;
 
-            if (_server_fd >= 0) {
-                FD_SET(_server_fd, &readfds);
-                maxfd = _server_fd;
+            int srv_fd = _server_fd.load();
+            if (srv_fd >= 0) {
+                FD_SET(srv_fd, &readfds);
+                maxfd = srv_fd;
             }
 
             std::vector<int> watched_clients;
@@ -375,8 +421,9 @@ private:
                 }
             }
 
-            // 处理新连接
-            if (_server_fd >= 0 && FD_ISSET(_server_fd, &readfds)) {
+            // 处理新连接（重新加载 srv_fd，防止 stop() 期间关闭）
+            srv_fd = _server_fd.load();
+            if (srv_fd >= 0 && FD_ISSET(srv_fd, &readfds)) {
                 _accept_client();
             }
 
@@ -397,14 +444,29 @@ private:
     void _accept_client() {
         struct sockaddr_in client_addr {};
         socklen_t addrlen = sizeof(client_addr);
-        int client_fd = ::accept(_server_fd, reinterpret_cast<struct sockaddr*>(&client_addr), &addrlen);
+        int srv_fd = _server_fd.load();
+        int client_fd = ::accept(srv_fd, reinterpret_cast<struct sockaddr*>(&client_addr), &addrlen);
         if (client_fd < 0) {
             // EINVAL/EBADF: server_fd 已被 stop() 关闭；其他错误忽略
             return;
         }
         if (client_fd >= FD_SETSIZE) { ::close(client_fd); return; }
 
-        // 检查连接数上限
+        // 禁用 Nagle 算法和设置发送超时（在加入 _clients 之前，确保连接配置完整）
+        int flag = 1;
+        ::setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+
+        // 设置发送超时：防止慢客户端不读数据导致发送缓冲区填满，
+        // 使 reply()/broadcast() 的 send() 永久阻塞（拒绝服务）。
+        // 超时后 sendAll() 抛 MsgTimeoutException，被 reply/broadcast 捕获并标记 failed 清理。
+        struct timeval sndtv {};
+        constexpr double kServerSendTimeout = 5.0;  // 秒
+        sndtv.tv_sec = static_cast<time_t>(kServerSendTimeout);
+        sndtv.tv_usec = static_cast<long>(
+            (kServerSendTimeout - static_cast<double>(sndtv.tv_sec)) * 1'000'000.0);
+        ::setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &sndtv, sizeof(sndtv));
+
+        // 检查连接数上限并注册
         {
             std::lock_guard<std::mutex> lock(_clients_mtx);
             if (static_cast<int>(_clients.size()) >= _config.max_connections) {
@@ -415,12 +477,8 @@ private:
             ::inet_ntop(AF_INET, &client_addr.sin_addr, ip_str, sizeof(ip_str));
             std::string addr = std::string(ip_str) + ":" + std::to_string(ntohs(client_addr.sin_port));
             _clients[client_fd] = addr;
-            _send_locks[client_fd] = std::make_shared<std::mutex>();
+            _send_locks[client_fd] = std::make_shared<ConnectionLock>();
         }
-
-        // 禁用 Nagle 算法，降低小包延迟
-        int flag = 1;
-        ::setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
     }
 
     void _handle_client(int fd) {
@@ -489,33 +547,59 @@ private:
     }
 
     void _remove_client(int fd) {
-        std::shared_ptr<std::mutex> send_lock;
+        std::shared_ptr<ConnectionLock> conn_lock;
         {
             std::lock_guard<std::mutex> clk(_clients_mtx);
             if (_clients.erase(fd) == 0) return;  // 已被移除，防止 double-close
             auto it = _send_locks.find(fd);
             if (it != _send_locks.end()) {
-                send_lock = it->second;
+                conn_lock = it->second;
                 _send_locks.erase(it);
             }
         }
-        // 持有 send_lock 后再关闭 fd：防止 broadcast/reply 在 fd 关闭后向 OS
-        // 复用的新连接发送数据（CWE-362）。
-        if (send_lock) {
-            std::lock_guard<std::mutex> slk(*send_lock);
+        // 持有 send_mtx 后设置 active=false 再 close(fd)：
+        // 1. 防止 broadcast/reply 在 fd 关闭后向 OS 复用的新连接发送数据（CWE-362）
+        // 2. active=false 让 reply/broadcast 在获取锁后得知 fd 已关闭，放弃发送
+        if (conn_lock) {
+            std::lock_guard<std::mutex> slk(conn_lock->send_mtx);
+            conn_lock->active.store(false);
+            ::shutdown(fd, SHUT_RDWR);
             ::close(fd);
         } else {
+            ::shutdown(fd, SHUT_RDWR);
             ::close(fd);
         }
     }
 
     void _close_all_clients() {
-        std::lock_guard<std::mutex> clk(_clients_mtx);
-        for (auto& [fd, addr] : _clients) {
-            ::close(fd);
+        std::vector<std::pair<int, std::shared_ptr<ConnectionLock>>> to_close;
+        {
+            std::lock_guard<std::mutex> clk(_clients_mtx);
+            to_close.reserve(_clients.size());
+            for (auto& [fd, addr] : _clients) {
+                auto it = _send_locks.find(fd);
+                if (it != _send_locks.end()) {
+                    to_close.emplace_back(fd, it->second);
+                } else {
+                    to_close.emplace_back(fd, nullptr);
+                }
+            }
+            _clients.clear();
+            _send_locks.clear();
         }
-        _clients.clear();
-        _send_locks.clear();
+        // 持有每个连接的 send_mtx 后设置 active=false 再 close(fd)：
+        // 防止 stop()/析构时 reply/broadcast 正在发送，导致数据发到 OS 复用的新连接（CWE-362）
+        for (auto& [fd, conn_lock] : to_close) {
+            if (conn_lock) {
+                std::lock_guard<std::mutex> slk(conn_lock->send_mtx);
+                conn_lock->active.store(false);
+                ::shutdown(fd, SHUT_RDWR);
+                ::close(fd);
+            } else {
+                ::shutdown(fd, SHUT_RDWR);
+                ::close(fd);
+            }
+        }
         std::lock_guard<std::mutex> blk(_busy_mtx);
         _busy.clear();
         std::lock_guard<std::mutex> flk(_failed_mtx);
@@ -527,14 +611,14 @@ private:
     std::string _addr;
     int _port;
     MsgServerConfig _config;
-    int _server_fd;
+    std::atomic<int> _server_fd;  ///< 监听 socket fd（atomic 防止 stop() 与 _event_loop 数据竞争）
     std::atomic<bool> _running;
     MessageCallback _on_message;
 
     // 客户端管理
     mutable std::mutex _clients_mtx;
     std::unordered_map<int, std::string> _clients;           ///< fd -> "ip:port"
-    std::unordered_map<int, std::shared_ptr<std::mutex>> _send_locks;  ///< fd -> 发送锁
+    std::unordered_map<int, std::shared_ptr<ConnectionLock>> _send_locks;  ///< fd -> 发送锁+活跃标志
 
     // 同连接串行
     std::mutex _busy_mtx;

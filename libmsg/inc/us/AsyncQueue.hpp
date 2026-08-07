@@ -41,6 +41,8 @@
 #include <exception>
 #include <functional>
 #include <mutex>
+#include <stdexcept>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -87,7 +89,20 @@ public:
           _running(false),
           _stop(false),
           _wakeup(false),
-          _dropped(0) {}
+          _dropped(0) {
+        if (!_handler) {
+            throw std::invalid_argument("AsyncQueue: handler must not be null");
+        }
+        if (config.batch_size == 0) {
+            throw std::invalid_argument("AsyncQueue: batch_size must be > 0");
+        }
+        if (config.flush_interval <= 0 || config.flush_interval > 300.0) {
+            throw std::invalid_argument("AsyncQueue: flush_interval must be in (0, 300] seconds");
+        }
+        if (config.poll_timeout <= 0 || config.poll_timeout > 5.0) {
+            throw std::invalid_argument("AsyncQueue: poll_timeout must be in (0, 5] seconds");
+        }
+    }
 
     /// 析构函数：自动 shutdown()，保证队列中剩余数据被 flush。
     ~AsyncQueue() { shutdown(); }

@@ -165,6 +165,7 @@ public:
     }
 
     void run();
+    void close();  // 关闭 acceptor，停止接受新连接
 
 private:
     void initAcceptor(tcp::endpoint ep);

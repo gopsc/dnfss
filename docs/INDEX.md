@@ -19,6 +19,7 @@ docs/
 | 文档 | 路径 | 说明 |
 |------|------|------|
 | 项目 README | [../README.md](../README.md) | 架构总览、服务说明、安装运行指南 |
+| 更新日志 | [../CHANGELOG.md](../CHANGELOG.md) | 版本变更记录、安全修复、功能更新 |
 
 ---
 
@@ -37,7 +38,8 @@ docs/
 | 模块 | 文档 | 审计范围 |
 |------|------|----------|
 | waf | [waf_SECURITY_AUDIT_20260801.md](security/waf_SECURITY_AUDIT_20260801.md) | Go WAF 网关（TLS、coraza、反向代理） |
-| gateway | [gateway_SECURITY_AUDIT_20260801.md](security/gateway_SECURITY_AUDIT_20260801.md) | C++20 应用网关（鉴权、Token、反向代理） |
+| gateway | [gateway_SECURITY_AUDIT_20260801.md](security/gateway_SECURITY_AUDIT_20260801.md) | C++20 应用网关（鉴权、Token、反向代理）初版 |
+| gateway | [gateway_SECURITY_AUDIT_20260807.md](security/gateway_SECURITY_AUDIT_20260807.md) | C++20 应用网关复审版（P0全部修复，进程退出bug修复） |
 | core | [core_SECURITY_AUDIT_20260801.md](security/core_SECURITY_AUDIT_20260801.md) | C++20 进程托管服务（PMC/Nidus） |
 | db | [db_SECURITY_AUDIT_20260801.md](security/db_SECURITY_AUDIT_20260801.md) | Python 数据库服务（pymsg、SQLAlchemy、日志收集） |
 | db2 | [db2_SECURITY_AUDIT_20260806.md](security/db2_SECURITY_AUDIT_20260806.md) | C++20 数据库 RPC 服务（db 的 C++ 重实现，SQLite C API） |

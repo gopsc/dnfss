@@ -74,7 +74,14 @@ public:
         : _addr(addr), _port(port), _name(name),
           _timeout(timeout),
           _retry_on_refused(retry_on_refused),
-          _retry_interval(retry_interval) {}
+          _retry_interval(retry_interval) {
+        if (timeout <= 0 || timeout > 300.0) {
+            throw MsgException("invalid timeout: " + std::to_string(timeout));
+        }
+        if (retry_interval <= 0 || retry_interval > 60.0) {
+            throw MsgException("invalid retry_interval: " + std::to_string(retry_interval));
+        }
+    }
 
     // ---- RPC 调用 ----------------------------------------------------------
 
@@ -119,7 +126,12 @@ public:
         if (!obj.contains("success")) {
             throw RpcError("非法 RPC 响应（缺少 success 字段）: " + resp_str.substr(0, 200));
         }
-        if (!obj.at("success").as_bool()) {
+        const json::value& success = obj.at("success");
+        if (!success.is_bool()) {
+            // 类型不符时不要调用 as_bool()（会抛未捕获的 boost system_error），统一抛 RpcError
+            throw RpcError("非法 RPC 响应（success 字段不是 bool）");
+        }
+        if (!success.as_bool()) {
             std::string err = "未知错误";
             if (auto it = obj.find("error"); it != obj.end() && it->value().is_string()) {
                 err = it->value().as_string().c_str();
