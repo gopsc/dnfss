@@ -173,7 +173,13 @@ static Config load_config(int argc, char* argv[]) {
 
     // 1. confs 引导地址
     if (const char* h = std::getenv("CONFS_HOST")) cfg.confs_host = h;
-    if (const char* p = std::getenv("CONFS_PORT")) cfg.confs_port = safe_stoi(p, "CONFS_PORT");
+    if (const char* p = std::getenv("CONFS_PORT")) {
+        cfg.confs_port = safe_stoi(p, "CONFS_PORT");
+        if (cfg.confs_port < 1 || cfg.confs_port > 65535) {
+            std::fprintf(stderr, "[dnfs2] invalid CONFS_PORT: %d (must be 1-65535)\n", cfg.confs_port);
+            std::exit(1);
+        }
+    }
 
     // 2. 从 confs 拉取 dnfs.ini（retry_on_refused=true，等待 confs 就绪）
     std::string ini_text;
@@ -617,7 +623,7 @@ private:
         }
     }
 
-    // 查询节点是否存在
+    // 查询节点是否存在（P2-N6 修复：db 业务错误抛 500，不误判为"不存在"）
     bool _note_exists(int64_t id) {
         json::object payload;
         payload["action"] = "select";
@@ -626,7 +632,11 @@ private:
         payload["limit"]  = 1;
 
         DbResult r = _call_db(payload);
-        if (!r.success) return false;
+        if (!r.success) {
+            _log("ERROR", "dnfs2", "查询节点存在性失败 id=" + std::to_string(id)
+                 + " err=" + r.error);
+            throw DnfsExp("查询节点失败", 500);
+        }
         return r.data.is_array() && !r.data.as_array().empty();
     }
 
@@ -989,7 +999,12 @@ private:
             owner_payload["where"]  = json::object{{"id", note_id}};
 
             DbResult owner_r = _call_db(owner_payload);
-            if (!owner_r.success || !owner_r.data.is_array() || owner_r.data.as_array().empty()) {
+            if (!owner_r.success) {
+                _log("ERROR", "dnfs2", "delete_note 查询节点失败 id=" + std::to_string(note_id)
+                     + " err=" + owner_r.error);
+                throw DnfsExp("查询节点失败", 500);
+            }
+            if (!owner_r.data.is_array() || owner_r.data.as_array().empty()) {
                 throw DnfsExp("节点不存在", 404);
             }
 
@@ -1067,7 +1082,12 @@ private:
             owner_payload["where"]  = json::object{{"id", id}};
 
             DbResult owner_r = _call_db(owner_payload);
-            if (!owner_r.success || !owner_r.data.is_array() || owner_r.data.as_array().empty()) {
+            if (!owner_r.success) {
+                _log("ERROR", "dnfs2", "update_note 查询节点失败 id=" + std::to_string(id)
+                     + " err=" + owner_r.error);
+                throw DnfsExp("查询节点失败", 500);
+            }
+            if (!owner_r.data.is_array() || owner_r.data.as_array().empty()) {
                 throw DnfsExp("节点不存在", 404);
             }
 
@@ -1158,6 +1178,7 @@ int main(int argc, char* argv[]) {
     // curl_global_init 必须在多线程启动前调用（libcurl 要求，防首次 curl_easy_init 竞态）
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
+    int ret = 0;
     try {
         Config cfg = load_config(argc, argv);
 
@@ -1172,7 +1193,8 @@ int main(int argc, char* argv[]) {
         server.run();
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[dnfs2] fatal: %s\n", e.what());
-        return 1;
+        ret = 1;
     }
-    return 0;
+    curl_global_cleanup();
+    return ret;
 }

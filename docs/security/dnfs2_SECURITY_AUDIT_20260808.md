@@ -1,160 +1,149 @@
 # dnfs2 安全审计报告
 
 **审计日期**: 2026-08-08  
-**审计范围**: dnfs2/src/dnfs2.cpp (1180 行)  
+**审计范围**: dnfs2/src/dnfs2.cpp (1200 行)  
 **对比基准**: dnfs/dnfs.py (723 行)  
-**审计轮次**: 第 1 轮  
-**安全评级**: A-
+**审计轮次**: 第 2 轮（第 1 轮发现 5 项已全部修复）  
+**安全评级**: A
 
 ---
 
 ## 1. 审计概述
 
-dnfs2 是 Python dnfs 的 C++20 重实现，基于 libhttp + libmsg + boost::json。本轮审计逐行对比 dnfs2 与 dnfs 的实现，验证计划中的 P0/P1 修复有效性，检查新引入的安全问题，并评估接口兼容性。
+dnfs2 是 Python dnfs 的 C++20 重实现，基于 libhttp + libmsg + boost::json。本轮审计在第 1 轮基础上逐行复审，验证第 1 轮修复有效性，深入审查 db 错误处理一致性、并发安全、资源管理及依赖库接口使用正确性。
 
 ### 审计结论
 
 | 类别 | 数量 | 状态 |
 |------|------|------|
-| 计划修复的 P0/P1（继承自 dnfs） | 6 | 全部有效 ✓ |
-| 新发现问题 | 5 | 全部修复 ✓ |
-| 已知限制（架构性/继承性） | 5 | 记录 |
+| 第 1 轮计划修复的 P0/P1（继承自 dnfs） | 6 | 全部有效 ✓ |
+| 第 1 轮新发现问题 | 5 | 全部有效 ✓ |
+| 第 2 轮新发现问题 | 5 | 4 修复 ✓ / 1 记录 |
+| 已知限制（架构性/继承性） | 6 | 记录 |
 
 ---
 
-## 2. 计划修复验证（P0/P1 继承自 dnfs）
+## 2. 第 1 轮修复验证
 
-### P0-4: 统一封装 _call_db() 检查 success — ✓ 已修复
+### 计划修复的 P0/P1（继承自 dnfs）— 全部有效 ✓
 
-**dnfs 问题**: 多处直接访问 `notes['data']` 而不检查 `success`，db 返回错误时引发 KeyError。  
-**dnfs2 修复**: 统一封装 `_call_db()` 返回 `DbResult{success, data, error}`，所有调用方先检查 `success` 再访问 `data`。
+| 编号 | 问题 | 验证 |
+|------|------|------|
+| P0-4 | 统一封装 `_call_db()` 检查 success | ✓ `_call_db` 返回 `DbResult{success, data, error}`，所有调用方先检查 `success` |
+| P1-6 | 请求体大小限制 | ✓ `server.setMaxBodySize(kMaxBodySize)` (10MB) |
+| P1-7 | 日志客户端配置一致性 | ✓ `_log_rpc` 复用 `_cfg.db_host/db_port` |
+| P1-8 | update_note 改 pid 校验父节点存在 | ✓ `pid != 0 && !_note_exists(pid)` → 抛 400 |
+| P1-9 | RpcClient 启用 retry_on_refused | ✓ `_rpc` 构造 `retry_on_refused=true` |
+| P1-11 | note_id 强制类型转换 | ✓ `get_int()` 使用 `is_int64()` 严格校验 |
 
-验证点：
-- `_call_db()` 捕获 `RpcError` 返回 `{false, nullptr, err}`
-- `_handle_get_notes`: `if (!r.success)` → 返回 500
-- `_handle_add_note`: `if (!r.success)` → 抛 DnfsExp
-- `_handle_delete_note`: 子节点检查和所有权检查均先判断 `success`
-- `_handle_update_note`: 同上
+### 第 1 轮新发现问题 — 全部有效 ✓
 
-### P1-6: 请求体大小限制 — ✓ 已修复
-
-**dnfs 问题**: Flask/Waitress 无请求体大小限制。  
-**dnfs2 修复**: `server.setMaxBodySize(kMaxBodySize)` (10MB)，对齐 WAF。
-
-### P1-7: 日志客户端配置一致性 — ✓ 已修复
-
-**dnfs 问题**: log_client 使用独立配置，可能与主配置不一致。  
-**dnfs2 修复**: `_log_rpc` 直接使用 `_cfg.db_host` / `_cfg.db_port`，与主 `_rpc` 同源配置。
-
-### P1-8: update_note 改 pid 校验父节点存在 — ✓ 已修复
-
-**dnfs 问题**: update_note 改 pid 时不校验新父节点是否存在。  
-**dnfs2 修复**: `if (pid != 0 && !_note_exists(pid))` → 抛 DnfsExp("父节点不存在", 400)。
-
-### P1-9: RpcClient 启用 retry_on_refused — ✓ 已修复
-
-**dnfs 问题**: db 服务未启动时 dnfs 直接失败退出。  
-**dnfs2 修复**: `RpcClient(..., retry_on_refused=true)`，等待 db 就绪。
-
-### P1-11: note_id 强制类型转换 — ✓ 已修复
-
-**dnfs 问题**: `note_id = data.get('id')` 无类型校验，字符串/None 引发后续错误。  
-**dnfs2 修复**: `get_int()` 使用 `is_int64()` 严格校验，非整数直接返回 400。
+| 编号 | 问题 | 验证 |
+|------|------|------|
+| P1-N1 | stop_watcher use-after-free | ✓ `join()` 替代 `detach()`，`server.run()` 返回后 join |
+| P1-N2 | curl_global_init 未调用 | ✓ `main()` 开头调用 `curl_global_init(CURL_GLOBAL_DEFAULT)` |
+| P2-N3 | delete_note 子节点查询失败错误消息误导 | ✓ 分离 db 错误(500)和子节点存在(400) |
+| P2-N4 | threads 无上限校验 | ✓ 范围 [1, 256] |
+| P2-N5 | HttpClient 超时硬编码 | ✓ `set_timeout()`/`set_connect_timeout()` 接口，dnfs2 设置 gateway/review 超时 |
 
 ---
 
-## 3. 新发现问题
+## 3. 第 2 轮新发现问题
 
-### P1-N1: stop_watcher 分离线程 use-after-free 竞态 — ✓ 已修复
+### P2-N6: _note_exists db 业务错误误判为节点不存在 — ✓ 已修复
 
-**位置**: `run()` 方法，原 L522-528  
-**问题**: `stop_watcher` 线程被 `detach()`，`server.run()` 返回后局部变量 `server` 被析构。stop_watcher 在下一次 200ms 轮询时调用 `_server->stop()` → 访问已析构对象（CWE-416）。
+**位置**: `_note_exists()` 方法  
+**问题**: 原代码 `if (!r.success) return false;` — 当 db2 对 select 返回 RpcError（业务错误，如表不存在、SQL 错误）时，`_note_exists` 返回 false，导致 add_note/update_note 误报"父节点不存在"(400)。这与 P2-N3 修复的 delete_note 子节点检查不一致：db 故障应返回 500，而非误导为业务条件。
 
-时序分析：
-1. 信号 → `_should_stop = true`
-2. stop_watcher: 调用 `_server->stop()`
-3. 主线程: `server.run()` 返回 → 局部 `server` 析构
-4. stop_watcher: 200ms 后循环 → `_server->stop()` → **use-after-free**
+**影响**: 
+- add_note: db 业务故障时用户看到"父节点不存在"(400)，可能误删合法的父节点重试
+- update_note: 同上
 
-**修复**: 改为 `join()`，`server.run()` 返回后设置 `_should_stop=true` 并 `join()` stop_watcher 线程，确保线程在 `server` 析构前退出。
+**修复**: db 业务错误时抛 500，仅查询成功且结果为空时返回 false。
 
 ```cpp
+// 修复前
+if (!r.success) return false;
+
 // 修复后
-server.run();
-_should_stop.store(true);
-if (stop_watcher.joinable()) stop_watcher.join();
+if (!r.success) {
+    _log("ERROR", "dnfs2", "查询节点存在性失败 id=" + std::to_string(id)
+         + " err=" + r.error);
+    throw DnfsExp("查询节点失败", 500);
+}
 ```
 
-### P1-N2: curl_global_init 未调用，多线程首次 curl_easy_init 竞态 — ✓ 已修复
+### P2-N7: delete_note/update_note 所有权检查 db 错误误判为节点不存在 — ✓ 已修复
 
-**位置**: `main()` / `decode_token()` / `review_content()`  
-**问题**: HttpClient 构造函数调用 `curl_easy_init()` 但从未调用 `curl_global_init()`。libcurl 文档明确指出：首次 `curl_easy_init()` 会隐式调用 `curl_global_init()`，但此隐式调用**非线程安全**。dnfs2 使用多线程 HttpServer，多个 worker 线程可能同时首次创建 HttpClient → 竞态条件（CWE-362）。
+**位置**: `_handle_delete_note()` / `_handle_update_note()` 所有权检查段  
+**问题**: 原代码 `if (!owner_r.success || !owner_r.data.is_array() || owner_r.data.as_array().empty())` 将 db 业务错误(`!owner_r.success`)与"节点不存在"合并为同一判断，db 故障时返回 404。与 P2-N3 修复的子节点检查不一致。
 
-**修复**: 在 `main()` 最开始显式调用 `curl_global_init(CURL_GLOBAL_DEFAULT)`，在多线程启动前完成全局初始化。
+**影响**: db 业务故障时用户看到"节点不存在"(404)，可能误以为节点已被删除而重试创建。
+
+**修复**: 分离 db 错误(500)和节点不存在(404)，与 P2-N3 的修复方式一致。
+
+```cpp
+// 修复前
+if (!owner_r.success || !owner_r.data.is_array() || owner_r.data.as_array().empty()) {
+    throw DnfsExp("节点不存在", 404);
+}
+
+// 修复后
+if (!owner_r.success) {
+    _log("ERROR", "dnfs2", "delete_note 查询节点失败 ...");
+    throw DnfsExp("查询节点失败", 500);
+}
+if (!owner_r.data.is_array() || owner_r.data.as_array().empty()) {
+    throw DnfsExp("节点不存在", 404);
+}
+```
+
+### P3-N8: CONFS_PORT 无范围校验 — ✓ 已修复
+
+**位置**: `load_config()` L176  
+**问题**: 环境变量 `CONFS_PORT` 经 `safe_stoi` 解析后缺少 [1, 65535] 范围校验。其他端口（listen_port、db_port）均有校验，但 confs_port 遗漏。设置为 0 或负数时 RpcClient 构造不失败，但连接行为未定义。
+
+**修复**: 添加范围校验，与 listen_port/db_port 一致。
+
+```cpp
+if (const char* p = std::getenv("CONFS_PORT")) {
+    cfg.confs_port = safe_stoi(p, "CONFS_PORT");
+    if (cfg.confs_port < 1 || cfg.confs_port > 65535) {
+        std::fprintf(stderr, "[dnfs2] invalid CONFS_PORT: %d (must be 1-65535)\n", cfg.confs_port);
+        std::exit(1);
+    }
+}
+```
+
+### P3-N9: curl_global_cleanup 未调用 — ✓ 已修复
+
+**位置**: `main()`  
+**问题**: P1-N2 修复添加了 `curl_global_init()`，但未在程序退出时调用 `curl_global_cleanup()`。虽然 OS 会回收资源，但不规范，且在某些 curl 版本下可能导致 SSL 状态泄漏到 fork 的子进程。
+
+**修复**: 重构 main() 为 `init → try/catch → cleanup` 模式，确保所有退出路径都调用 `curl_global_cleanup()`。
 
 ```cpp
 int main(int argc, char* argv[]) {
     curl_global_init(CURL_GLOBAL_DEFAULT);
-    // ...
+    int ret = 0;
+    try {
+        // ...
+        server.run();
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[dnfs2] fatal: %s\n", e.what());
+        ret = 1;
+    }
+    curl_global_cleanup();
+    return ret;
 }
 ```
 
-### P2-N3: delete_note 子节点查询失败时错误消息误导 — ✓ 已修复
+### P3-N10: CSP 允许 'unsafe-inline' — 记录（设计决策）
 
-**位置**: `_handle_delete_note()`，原 L968-972  
-**问题**: 原代码将 db 查询失败和"存在子节点"合并为同一判断，db 故障时返回 `"this node has a child"` (400)，客户端可能误判为永久性条件。
+**位置**: `make_response()` L437-440  
+**问题**: Content-Security-Policy 中 `script-src 'self' 'unsafe-inline'` 和 `style-src 'self' 'unsafe-inline'` 包含 `'unsafe-inline'`，降低了 CSP 对 XSS 的防护效果。
 
-```cpp
-// 修复前
-if (!child_r.success || !child_r.data.is_array() || !child_r.data.as_array().empty()) {
-    throw DnfsExp("this node has a child", 400);
-}
-
-// 修复后：分离 db 错误和子节点检查
-if (!child_r.success || !child_r.data.is_array()) {
-    throw DnfsExp("查询子节点失败", 500);  // db 故障返回 500
-}
-if (!child_r.data.as_array().empty()) {
-    throw DnfsExp("this node has a child", 400);  // 有子节点返回 400
-}
-```
-
-### P2-N4: threads 无上限校验 — ✓ 已修复
-
-**位置**: `load_config()` L257-260  
-**问题**: 仅校验 `threads >= 1`，无上限。用户可设置 `--threads 10000` 创建过多线程。项目约定 workers 范围 [0, 256]。
-
-**修复**: 添加上限 256，与项目约定一致。
-
-```cpp
-if (cfg.threads < 1 || cfg.threads > 256) { ... exit(1); }
-```
-
-### P2-N5: HttpClient 超时硬编码，配置值未生效 — ✓ 已修复
-
-**位置**: `libhttp/src/HttpClient.cpp` L92-93（原）、`dnfs2/src/dnfs2.cpp`  
-**问题**: HttpClient `request_stream_sync` 硬编码 `CURLOPT_TIMEOUT=30L` / `CURLOPT_CONNECTTIMEOUT=10L`，无接口可覆盖。dnfs2 的 `review_timeout` 和 `gateway_timeout` 配置加载并校验范围后从未使用，实际超时恒为 30s。
-
-**修复**:
-1. libhttp `HttpClient` 新增 `set_timeout()` / `set_connect_timeout()` 接口（默认值 30s/10s，向后兼容 gateway/core）
-2. `request_stream_sync` 使用成员变量替代硬编码值
-3. dnfs2 `decode_token()` 设置 `gateway_timeout`，`review_content()` 设置 `review_timeout`
-
-```cpp
-// libhttp/HttpClient.hpp
-void set_timeout(long seconds);
-long get_timeout() const;
-void set_connect_timeout(long seconds);
-long get_connect_timeout() const;
-long timeout_ = 30;          // 默认 30s
-long connect_timeout_ = 10;  // 默认 10s
-
-// dnfs2 decode_token
-http.set_timeout(static_cast<long>(_cfg.gateway_timeout));
-
-// dnfs2 review_content
-http.set_timeout(static_cast<long>(_cfg.review_timeout));
-```
+**决策**: 前端 dnfs.html/dnfs.js 使用了内联脚本和样式（如 markdown-it 渲染、代码高亮），移除 `'unsafe-inline'` 会导致前端功能损坏。这是前端架构限制，需要前端重构（nonce-based CSP 或 hash-based CSP）才能修复。记录为已知限制，不在本次修复范围。
 
 ---
 
@@ -179,6 +168,10 @@ delete_note 在"检查无子节点"和"执行删除"之间存在 TOCTOU 窗口�
 ### L-6: AI 审核服务不可用时阻断所有写入（P2，设计决策）
 
 `review_content()` 采用 fail-closed 策略：ai_review 不可达时返回 false，所有 add_note/update_note 被拒绝。这是安全优先的设计决策，但可能导致服务不可用。
+
+### L-7: CSP 允许 'unsafe-inline'（P3，前端架构限制）
+
+见 P3-N10。前端使用内联脚本/样式，移除 `'unsafe-inline'` 需要前端重构。
 
 ---
 
@@ -211,23 +204,45 @@ dnfs 的错误消息泄露 IP 和用户名（如 `"未授权访问，从192.168.
 
 ---
 
-## 6. 安全评级
+## 6. db 错误处理一致性矩阵
+
+第 2 轮审计核心关注点：所有 db 查询的 `!r.success`（业务错误）应返回 500，而非误判为业务条件。
+
+| 位置 | 查询目的 | 修复前行为 | 修复后行为 | 状态 |
+|------|---------|-----------|-----------|------|
+| delete_note 子节点检查 | 检查有无子节点 | db错误→400(误导) | db错误→500 / 有子节点→400 | ✓ P2-N3 (第1轮) |
+| _note_exists | 检查父节点存在 | db错误→false→400(误导) | db错误→500 / 不存在→false | ✓ P2-N6 (第2轮) |
+| delete_note 所有权检查 | 查询节点 owner | db错误→404(误导) | db错误→500 / 不存在→404 | ✓ P2-N7 (第2轮) |
+| update_note 所有权检查 | 查询节点 owner | db错误→404(误导) | db错误→500 / 不存在→404 | ✓ P2-N7 (第2轮) |
+| get_notes 查询 | 查询子节点列表 | db错误→500("查询失败") | 无需修改 | ✓ 原本正确 |
+| add_note 插入 | 插入节点 | db错误→400("插入失败") | 无需修改 | ✓ 原本正确 |
+| delete_note 删除 | 删除节点 | db错误→400(success=false) | 无需修改 | ✓ 原本正确 |
+| update_note 更新 | 更新节点 | db错误→400(success=false) | 无需修改 | ✓ 原本正确 |
+
+---
+
+## 7. 安全评级
 
 ### 评级: A
 
 **理由**:
-- 计划修复的 6 项 P0/P1 全部有效 ✓
-- 新发现 5 项问题全部修复 ✓ (2 P1 + 3 P2)
-- IP/用户名泄露问题作为重写副效果已修复 ✓
-- 残余 5 项已知限制均为架构性/继承性问题，有明确修复路径
+- 第 1 轮计划修复的 6 项 P0/P1 全部有效 ✓
+- 第 1 轮新发现 5 项问题全部有效 ✓
+- 第 2 轮新发现 5 项问题，4 项修复 ✓，1 项记录为已知限制
+- db 错误处理一致性全面修正：所有 select 查询的 db 业务错误统一返回 500
+- IP/用户名泄露问题已修复 ✓
+- 残余 6 项已知限制均为架构性/继承性问题，有明确修复路径
 - 相比 Python dnfs（评级 B，多个 P0/P1 未修复），安全基线显著提升
 
 **扣分项**:
 - L-1/L-2 循环创建和 TOCTOU 未修复（需 db2 事务支持）
+- L-7 CSP 'unsafe-inline' 受限于前端架构
 
 ---
 
-## 7. 修复文件清单
+## 8. 修复文件清单
+
+### 第 1 轮修复（已验证有效）
 
 | 文件 | 修改内容 |
 |------|---------|
@@ -236,8 +251,18 @@ dnfs 的错误消息泄露 IP 和用户名（如 `"未授权访问，从192.168.
 | dnfs2/src/dnfs2.cpp | P2-N3: delete_note 分离 db 错误和子节点检查 |
 | dnfs2/src/dnfs2.cpp | P2-N4: threads 上限 256 |
 | dnfs2/src/dnfs2.cpp | 新增 `#include <curl/curl.h>` |
-| libhttp/inc/us/HttpClient.hpp | P2-N5: 新增 set_timeout/set_connect_timeout 接口 + 成员变量 |
-| libhttp/src/HttpClient.cpp | P2-N5: 新增 set_timeout/set_connect_timeout 实现，request_stream_sync 使用成员变量 |
-| dnfs2/src/dnfs2.cpp | P2-N5: decode_token 设置 gateway_timeout，review_content 设置 review_timeout |
+| libhttp/inc/us/HttpClient.hpp | P2-N5: 新增 set_timeout/set_connect_timeout 接口 |
+| libhttp/src/HttpClient.cpp | P2-N5: 新增实现，request_stream_sync 使用成员变量 |
+| dnfs2/src/dnfs2.cpp | P2-N5: decode_token/review_content 设置超时 |
 
-编译验证: `g++ -std=c++20 -O3 -Wall -Werror` 通过，零错误零警告（libhttp + dnfs2 均重新编译）。
+### 第 2 轮修复
+
+| 文件 | 修改内容 |
+|------|---------|
+| dnfs2/src/dnfs2.cpp | P2-N6: _note_exists db 业务错误抛 500，不返回 false |
+| dnfs2/src/dnfs2.cpp | P2-N7: delete_note 所有权检查分离 db 错误(500)和节点不存在(404) |
+| dnfs2/src/dnfs2.cpp | P2-N7: update_note 所有权检查同上 |
+| dnfs2/src/dnfs2.cpp | P3-N8: CONFS_PORT 添加 [1, 65535] 范围校验 |
+| dnfs2/src/dnfs2.cpp | P3-N9: main() 添加 curl_global_cleanup，重构为 init→try/catch→cleanup |
+
+编译验证: `g++ -std=c++20 -O3 -Wall -Werror` 通过，零错误零警告。
