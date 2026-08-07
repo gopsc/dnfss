@@ -2,9 +2,9 @@
 
 **初次审计**: 2026-08-06  
 **最近复审**: 2026-08-07（P2 修复后全量重审，新增 P3-5/P3-6）  
-**审计范围**: `db2/src/db2.cpp`（全部实现 903 行）、`Makefile`、`docker-entrypoint.sh`  
+**审计范围**: `db2/src/db2.cpp`（全部实现 926 行）、`Makefile`、`docker-entrypoint.sh`  
 **对照基准**: Python 版 `db/dbv2.py`（接口兼容性对比）  
-**代码版本**: main 分支 ec626dc + P3-1 修复
+**代码版本**: main 分支 ec626dc + P3 全量修复
 
 ---
 
@@ -15,8 +15,8 @@
 | P0 | 2 | 2 | 0 |
 | P1 | 1 | 1 | 0 |
 | P2 | 2 | 2 | 0 |
-| P3 | 6 | 4 | 2 |
-| **合计** | **11** | **9** | **2** |
+| P3 | 6 | 6 | 0 |
+| **合计** | **11** | **11** | **0** |
 
 ---
 
@@ -131,8 +131,8 @@
 |---|------|------|------|
 | P3-1 | schema 缓存永不失效 | L341-392 | ✅ 已修复：缓存项携带 `PRAGMA schema_version`，每次取 schema 前比对版本号；DDL 变更后自动失效并重新反射，无需重启 db2 |
 | P3-2 | `_coerce_value` 对 null 返回 `""`（注释误导） | L387-393 | ✅ 已修复（2026-08-06）：`_coerce_value` 改为返回 `json::value`，null 保持为 null，不再返回空字符串；`is_null` 向量已删除 |
-| P3-3 | `limit`/`offset` 未校验负值 | L581-584 | `as_int64()` 可为负，SQLite 对负 LIMIT 返回全表。非安全问题但行为可能意外 |
-| P3-4 | WHERE 条件数 / IN 数组大小无上限 | L431-495 | 恶意客户端可发送数千 WHERE 条件或百万 IN 元素耗尽资源。Python 版同样存在（既有问题） |
+| P3-3 | `limit`/`offset` 未校验负值 | L620-632 | ✅ 已修复：提取 `limit`/`offset` 后校验非负，负值直接抛出 `"limit/offset must be non-negative"` |
+| P3-4 | WHERE 条件数 / IN 数组大小无上限 | L458-512 | ✅ 已修复：`_build_where` 入口校验 `where.size() <= 64`，`in` 分支校验数组元素 `<= 1000`，超限立即报错 |
 | P3-5 | 空 `values` 对象导致 INSERT/UPDATE 语法错误 | L628-671 | ✅ 已修复（2026-08-07）：`_do_insert` 和 `_do_update` 新增 `vals.empty()` 前置校验，空 `values` 直接抛出 `"insert/update requires non-empty 'values'"` 错误，不再生成无效 SQL |
 | P3-6 | 未知 WHERE 运算符被静默跳过 | L446-485 | ✅ 已修复（2026-08-07）：运算符分支末尾新增 `else throw "unknown operator: X"`，非法运算符立即报错，不再静默跳过导致条件失效 |
 
@@ -155,6 +155,8 @@
 13. **后台清理线程** — 条件变量优雅停止，时间戳格式 T 对齐，按时间+条数双策略清理
 14. **空 values 前置校验** — `_do_insert`/`_do_update` 检测空 `values` 立即报错，不生成无效 SQL
 15. **WHERE 运算符白名单** — 未知运算符立即抛出 `"unknown operator"` 错误，不再静默跳过
+16. **`limit`/`offset` 非负校验** — 负值直接报错，避免 SQLite 负 LIMIT 返回全表的意外行为
+17. **WHERE / IN 输入规模上限** — 单请求最多 64 个 WHERE 条件、单个 `IN` 最多 1000 个元素，防止恶意大请求耗尽资源
 
 ---
 
@@ -171,8 +173,8 @@
 ### 中期
 - [x] **P2-1**: 清理时间戳格式统一为 T 分隔
 - [x] **P3-1**: schema 缓存失效机制（基于 `PRAGMA schema_version` 自动失效并重新反射）
-- [ ] **P3-3**: limit/offset 负值校验
-- [ ] **P3-4**: WHERE 条件数 / IN 数组大小上限
+- [x] **P3-3**: limit/offset 非负校验
+- [x] **P3-4**: WHERE 条件数 / IN 数组大小上限（64 / 1000）
 - [x] **P3-5**: 空 `values` 对象前置校验（`values` 为空时直接返回错误，避免生成无效 SQL）
 - [x] **P3-6**: 未知 WHERE 运算符校验（遇到非合法运算符时抛出错误而非静默跳过）
 
@@ -207,6 +209,15 @@
 3. 确认 `_get_schema` 在加锁前读取当前版本，缓存命中时严格比对版本号；版本不一致则重新执行 `PRAGMA table_info` 并更新缓存
 4. 编译通过，无新增告警
 5. 更新审计文档：修复进度、P3-1 状态、修复路线图、安全机制清单、并发性分析与复审结论
+
+### 本次 P3-3 / P3-4 修复验证
+
+1. 审查 `_do_select` 中 `limit`/`offset` 分支，确认提取 `int64` 值后校验 `>= 0`，负值抛 `"limit/offset must be non-negative"`
+2. 审查 `_build_where` 入口，确认校验 `where.size() <= kMaxWhereConditions`（64），超限抛 `"too many where conditions"`
+3. 审查 `in` 运算符分支，确认校验数组元素 `<= kMaxInElements`（1000），超限抛 `"too many elements in 'in' operator"`
+4. 确认常量 `kMaxWhereConditions` / `kMaxInElements` 位于文件顶部，便于统一调整
+5. 编译通过，无新增告警
+6. 更新审计文档：修复进度、P3-3/P3-4 状态、修复路线图、安全机制清单与复审结论
 
 ---
 
@@ -285,4 +296,4 @@ thread 3: BEGIN → INSERT → 等锁... → COMMIT
 
 ## 复审结论
 
-P0/P1/P2 级问题已全部修复（6 项），P3 级修复 4 项（P3-1/P3-2/P3-5/P3-6），合计 9/11 已修复。剩余 2 项均为 P3 级低危既有问题（limit 负值、条件数上限），非安全回归，可在后续迭代中逐步修复。当前版本安全基线已超越 Python 版（C++ 版新增了 schema 缓存失效、空 values 校验和未知运算符校验，Python 版尚无），可用于生产部署。
+P0/P1/P2/P3 级问题已全部修复（11/11）。当前版本安全基线已超越 Python 版（C++ 版新增了 schema 缓存失效、空 values 校验、未知运算符校验、limit/offset 非负校验、WHERE/IN 输入规模上限，Python 版尚无），可用于生产部署。

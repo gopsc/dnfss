@@ -47,6 +47,10 @@ using namespace pmc::net;
 static constexpr size_t kMaxMessage = 8192;
 static constexpr size_t kMaxExtra   = 4096;
 
+// 输入规模限制（防资源耗尽）
+static constexpr size_t kMaxWhereConditions = 64;   // 单请求 WHERE 条件数上限
+static constexpr size_t kMaxInElements      = 1000; // 单个 IN 运算符元素上限
+
 // ============================================================================
 // 工具：当前 UTC 时间 ISO 8601
 // ============================================================================
@@ -456,6 +460,12 @@ private:
         WhereClause wc;
         std::vector<std::string> parts;
 
+        if (where.size() > kMaxWhereConditions) {
+            throw std::runtime_error("too many where conditions: "
+                                     + std::to_string(where.size())
+                                     + " (max " + std::to_string(kMaxWhereConditions) + ")");
+        }
+
         // 建立列名 -> ColInfo 映射
         std::unordered_map<std::string, ColInfo> col_map;
         for (auto& c : cols) col_map[c.name] = c;
@@ -493,6 +503,11 @@ private:
                         if (!op_val.is_array() || op_val.as_array().empty()) {
                             parts.push_back("0");
                             continue;
+                        }
+                        if (op_val.as_array().size() > kMaxInElements) {
+                            throw std::runtime_error("too many elements in 'in' operator: "
+                                                     + std::to_string(op_val.as_array().size())
+                                                     + " (max " + std::to_string(kMaxInElements) + ")");
                         }
                         std::string placeholders;
                         for (auto& item : op_val.as_array()) {
@@ -603,10 +618,18 @@ private:
         }
 
         // limit / offset
-        if (auto it = req.find("limit"); it != req.end() && it->value().is_int64())
-            sql += " LIMIT " + std::to_string(it->value().as_int64());
-        if (auto it = req.find("offset"); it != req.end() && it->value().is_int64())
-            sql += " OFFSET " + std::to_string(it->value().as_int64());
+        if (auto it = req.find("limit"); it != req.end() && it->value().is_int64()) {
+            std::int64_t limit = it->value().as_int64();
+            if (limit < 0)
+                throw std::runtime_error("limit must be non-negative");
+            sql += " LIMIT " + std::to_string(limit);
+        }
+        if (auto it = req.find("offset"); it != req.end() && it->value().is_int64()) {
+            std::int64_t offset = it->value().as_int64();
+            if (offset < 0)
+                throw std::runtime_error("offset must be non-negative");
+            sql += " OFFSET " + std::to_string(offset);
+        }
 
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(conn.get(), sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
