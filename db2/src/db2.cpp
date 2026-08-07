@@ -151,6 +151,25 @@ static Config load_config(int argc, char* argv[]) {
 
     // 3. 解析 INI（白名单字段）
     IniMap ini = parse_ini(ini_text);
+
+    // 校验必需配置项（confs 提供的 db.ini 必须包含完整配置）
+    static const std::pair<const char*, const char*> required_keys[] = {
+        {"server",   "host"},
+        {"server",   "port"},
+        {"server",   "workers"},
+        {"database", "url"},
+        {"logs",     "retention_days"},
+        {"logs",     "max_records"},
+        {"logs",     "cleanup_interval"},
+    };
+    for (auto& [sec, key] : required_keys) {
+        auto si = ini.find(sec);
+        if (si == ini.end() || si->second.find(key) == si->second.end()) {
+            std::fprintf(stderr, "[db2] missing required config: [%s] %s\n", sec, key);
+            std::exit(1);
+        }
+    }
+
     auto get = [&](const std::string& sec, const std::string& key,
                    const std::string& def = "") -> std::string {
         auto si = ini.find(sec);
@@ -790,7 +809,7 @@ private:
 
             // 1. 删除超过 retention_days 的记录
             std::string cutoff_sql =
-                "DELETE FROM Logs WHERE ts < datetime('now', '-"
+                "DELETE FROM Logs WHERE ts < strftime('%Y-%m-%dT%H:%M:%S','now', '-"
                 + std::to_string(_cfg.retention_days) + " days')";
             conn.exec(cutoff_sql);
             int expired = sqlite3_changes(conn.get());
