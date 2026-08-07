@@ -262,6 +262,12 @@ struct ColInfo {
     std::string type;  // 原始类型字符串，大写，如 "DATETIME" "TEXT" "INTEGER"
 };
 
+// 表 schema 缓存项，携带 PRAGMA schema_version 以感知 DDL 变更
+struct SchemaCacheEntry {
+    int schema_version;
+    std::vector<ColInfo> cols;
+};
+
 // ============================================================================
 // DB2Server
 // ============================================================================
@@ -314,7 +320,7 @@ private:
 
     // 表列信息缓存
     std::mutex _schema_mtx;
-    std::unordered_map<std::string, std::vector<ColInfo>> _schema_cache;
+    std::unordered_map<std::string, SchemaCacheEntry> _schema_cache;
 
     // 后台清理线程
     std::atomic<bool>       _cleanup_running{false};
@@ -332,15 +338,32 @@ private:
 
     // ---- 列 schema 反射 --------------------------------------------------------
 
+    static int _get_schema_version(sqlite3* db) {
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, "PRAGMA schema_version", -1, &stmt, nullptr) != SQLITE_OK) {
+            throw std::runtime_error("PRAGMA schema_version failed");
+        }
+        int version = -1;
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            version = sqlite3_column_int(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+        return version;
+    }
+
     std::vector<ColInfo> _get_schema(const std::string& table) {
+        DbConn& conn = _get_conn();
+        const int current_version = _get_schema_version(conn.get());
+
         {
             std::lock_guard<std::mutex> lk(_schema_mtx);
             auto it = _schema_cache.find(table);
-            if (it != _schema_cache.end()) return it->second;
+            if (it != _schema_cache.end() && it->second.schema_version == current_version) {
+                return it->second.cols;
+            }
         }
 
         // PRAGMA table_info 返回: cid, name, type, notnull, dflt_value, pk
-        DbConn& conn = _get_conn();
         std::string sql = "PRAGMA table_info(" + table + ")";
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(conn.get(), sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
@@ -365,8 +388,8 @@ private:
         }
 
         std::lock_guard<std::mutex> lk(_schema_mtx);
-        _schema_cache[table] = cols;
-        return cols;
+        _schema_cache[table] = SchemaCacheEntry{current_version, std::move(cols)};
+        return _schema_cache[table].cols;
     }
 
     // 判断列是否为日期时间类型

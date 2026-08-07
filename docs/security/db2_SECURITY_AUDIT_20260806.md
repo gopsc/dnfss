@@ -2,9 +2,9 @@
 
 **初次审计**: 2026-08-06  
 **最近复审**: 2026-08-07（P2 修复后全量重审，新增 P3-5/P3-6）  
-**审计范围**: `db2/src/db2.cpp`（全部实现 875 行）、`Makefile`、`docker-entrypoint.sh`  
+**审计范围**: `db2/src/db2.cpp`（全部实现 903 行）、`Makefile`、`docker-entrypoint.sh`  
 **对照基准**: Python 版 `db/dbv2.py`（接口兼容性对比）  
-**代码版本**: main 分支 ec626dc
+**代码版本**: main 分支 ec626dc + P3-1 修复
 
 ---
 
@@ -15,8 +15,8 @@
 | P0 | 2 | 2 | 0 |
 | P1 | 1 | 1 | 0 |
 | P2 | 2 | 2 | 0 |
-| P3 | 6 | 3 | 3 |
-| **合计** | **11** | **8** | **3** |
+| P3 | 6 | 4 | 2 |
+| **合计** | **11** | **9** | **2** |
 
 ---
 
@@ -129,7 +129,7 @@
 
 | # | 问题 | 位置 | 说明 |
 |---|------|------|------|
-| P3-1 | schema 缓存永不失效 | L335-370 | 运行时 `ALTER TABLE ADD COLUMN` 后缓存过期，可能导致查询/写入用错误列信息。两版均存在，实际影响低（运行时改表罕见） |
+| P3-1 | schema 缓存永不失效 | L341-392 | ✅ 已修复：缓存项携带 `PRAGMA schema_version`，每次取 schema 前比对版本号；DDL 变更后自动失效并重新反射，无需重启 db2 |
 | P3-2 | `_coerce_value` 对 null 返回 `""`（注释误导） | L387-393 | ✅ 已修复（2026-08-06）：`_coerce_value` 改为返回 `json::value`，null 保持为 null，不再返回空字符串；`is_null` 向量已删除 |
 | P3-3 | `limit`/`offset` 未校验负值 | L581-584 | `as_int64()` 可为负，SQLite 对负 LIMIT 返回全表。非安全问题但行为可能意外 |
 | P3-4 | WHERE 条件数 / IN 数组大小无上限 | L431-495 | 恶意客户端可发送数千 WHERE 条件或百万 IN 元素耗尽资源。Python 版同样存在（既有问题） |
@@ -148,7 +148,7 @@
 6. **仅操作已有表** — `PRAGMA table_info` 反射，无法建表/删表
 7. **空 `in` 恒假条件** — L470-473：空 `in` 数组生成 `"0"` 使 WHERE 匹配零行
 8. **SQLite PRAGMA 优化** — WAL + synchronous=NORMAL + foreign_keys=ON + busy_timeout=5000 + mmap_size=256MB，与 Python 版一致
-9. **schema 缓存加锁** — `_schema_mtx` L316 保护 `_schema_cache`，线程安全
+9. **schema 缓存加锁 + 版本感知失效** — `_schema_mtx` L316 保护 `_schema_cache`；缓存项携带 `PRAGMA schema_version`，每次取 schema 前比对版本号，DDL 变更后自动重新反射
 10. **配置完整性校验** — L155-171：7 个必需字段缺失则 `exit(1)`，不再用默认值静默运行
 11. **confs 引导重试** — `retry_on_refused=true`，不要求启动顺序
 12. **日志内部直写** — `_log_internal` L762-791 绕过 RPC 防递归，异常静默不阻塞业务
@@ -170,13 +170,11 @@
 
 ### 中期
 - [x] **P2-1**: 清理时间戳格式统一为 T 分隔
+- [x] **P3-1**: schema 缓存失效机制（基于 `PRAGMA schema_version` 自动失效并重新反射）
 - [ ] **P3-3**: limit/offset 负值校验
 - [ ] **P3-4**: WHERE 条件数 / IN 数组大小上限
 - [x] **P3-5**: 空 `values` 对象前置校验（`values` 为空时直接返回错误，避免生成无效 SQL）
 - [x] **P3-6**: 未知 WHERE 运算符校验（遇到非合法运算符时抛出错误而非静默跳过）
-
-### 低优先级
-- [ ] **P3-1**: schema 缓存失效机制（可选 TTL 或版本计数，实际影响极低）
 
 ---
 
@@ -201,6 +199,14 @@
 5. 全量逐函数扫描发现 P3-5（空 values）、P3-6（未知运算符）两个新既有问题
 6. 对照 Python `dbv2.py` 确认新增问题在两版中行为一致（非回归）
 7. 更新安全机制清单行号引用至当前代码
+
+### 本次 P3-1 修复验证
+
+1. 审查 `SchemaCacheEntry` 结构，确认缓存项同时保存 `schema_version` 与 `cols`
+2. 确认 `_get_schema_version` 通过 `PRAGMA schema_version` 读取当前数据库 schema 版本
+3. 确认 `_get_schema` 在加锁前读取当前版本，缓存命中时严格比对版本号；版本不一致则重新执行 `PRAGMA table_info` 并更新缓存
+4. 编译通过，无新增告警
+5. 更新审计文档：修复进度、P3-1 状态、修复路线图、安全机制清单、并发性分析与复审结论
 
 ---
 
@@ -259,11 +265,7 @@ thread 3: BEGIN → INSERT → 等锁... → COMMIT
 
 后台清理线程的 `DELETE FROM Logs`（L806-851）和业务 worker 的 `INSERT INTO Logs` 可能同时争用写锁。清理操作涉及大量删除，持锁时间可能达数百毫秒，期间业务写入被阻塞。
 
-**4. schema 缓存无失效机制（P3-1）**
-
-运行时 `ALTER TABLE ADD COLUMN` 后，缓存中的列信息过期。新列在 `where`/`values` 中会被 `_validate_col` 拒绝（`"unknown column"`），需重启 db2 刷新缓存。
-
-**5. `_schema_mtx` 锁粒度**
+**4. `_schema_mtx` 锁粒度**
 
 全局互斥锁保护整个 `_schema_cache`。极端高并发（数百 QPS 首次请求不同表）时可能短暂排队，但实际影响极低（缓存命中后锁外快路径，仅首次 miss 持锁）。
 
@@ -283,4 +285,4 @@ thread 3: BEGIN → INSERT → 等锁... → COMMIT
 
 ## 复审结论
 
-P0/P1/P2 级问题已全部修复（6 项），P3 级修复 3 项（P3-2/P3-5/P3-6），合计 8/11 已修复。剩余 3 项均为 P3 级低危既有问题（schema 缓存失效、limit 负值、条件数上限），非安全回归，可在后续迭代中逐步修复。当前版本安全基线已超越 Python 版（C++ 版新增了空 values 校验和未知运算符校验，Python 版尚无），可用于生产部署。
+P0/P1/P2 级问题已全部修复（6 项），P3 级修复 4 项（P3-1/P3-2/P3-5/P3-6），合计 9/11 已修复。剩余 2 项均为 P3 级低危既有问题（limit 负值、条件数上限），非安全回归，可在后续迭代中逐步修复。当前版本安全基线已超越 Python 版（C++ 版新增了 schema 缓存失效、空 values 校验和未知运算符校验，Python 版尚无），可用于生产部署。
