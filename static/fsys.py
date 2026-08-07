@@ -49,7 +49,11 @@ apply_security_headers(app)
 
 # 引导配置：confs 连接地址（不依赖 confs 本身）
 _confs_host = os.environ.get('CONFS_HOST', '127.0.0.1')
-_confs_port = int(os.environ.get('CONFS_PORT', '8010'))
+try:
+    _confs_port = int(os.environ.get('CONFS_PORT', '8010'))
+except ValueError:
+    print('[static] 致命错误: CONFS_PORT 不是合法整数', file=sys.stderr)
+    sys.exit(1)
 
 # 白名单结构：_merge_ini 仅覆盖此处列出的 section/key，防止意外字段
 file_config = {
@@ -181,13 +185,15 @@ def get_media_mime_type(filename):
 
 def safe_path_join(base_dir, user_path):
     if not user_path or user_path.strip() == '' or user_path.strip() == '/':
-        return base_dir
+        return os.path.realpath(base_dir)
     if user_path.startswith('/'):
         user_path = user_path[1:]
     full_path = os.path.normpath(os.path.join(base_dir, user_path))
     base_dir_real = os.path.realpath(base_dir)
     full_path_real = os.path.realpath(full_path)
-    if not full_path_real.startswith(base_dir_real):
+    # 边界校验：必须等于 base_dir 或以 base_dir + 路径分隔符开头，
+    # 防止 /app/public_secret 绕过 /app/public 前缀校验（NEW-5）
+    if full_path_real != base_dir_real and not full_path_real.startswith(base_dir_real + os.sep):
         return None
     return full_path_real
 
@@ -271,10 +277,14 @@ def stream_video(file_path):
 
         if range_header:
             byte_range = range_header.replace('bytes=', '').split('-')
-            start = int(byte_range[0]) if byte_range[0] else 0
-            end = int(byte_range[1]) if len(byte_range) > 1 and byte_range[1] else file_size - 1
+            try:
+                start = int(byte_range[0]) if byte_range[0] else 0
+                end = int(byte_range[1]) if len(byte_range) > 1 and byte_range[1] else file_size - 1
+            except (ValueError, IndexError):
+                return jsonify({'error': '无效的 Range 请求'}), 400
 
-            if start >= file_size:
+            # 边界校验（P2-1）：start/end 必须在 [0, file_size-1] 且 end >= start
+            if start < 0 or start >= file_size or end >= file_size or end < start:
                 return jsonify({'error': '请求范围超出文件大小'}), 416
 
             length = end - start + 1
@@ -298,9 +308,18 @@ def stream_video(file_path):
         return jsonify({'error': str(e)}), 500
 
 # db 服务 RPC 调用辅助函数（替代直连 SQLite）
+# NEW-9：模块级单例 client + 环境变量 + retry_on_refused，避免每次调用新建连接
+_db_host = os.environ.get('DB_HOST', '127.0.0.1')
+try:
+    _db_port = int(os.environ.get('DB_PORT', '8005'))
+except ValueError:
+    print('[static] 致命错误: DB_PORT 不是合法整数', file=sys.stderr)
+    sys.exit(1)
+
+from pymsg import RpcClient as _RpcClient, RpcError as _RpcError
+_db_client = _RpcClient(_db_host, _db_port, 'static', timeout=5, retry_on_refused=True)
+
 def _db_call(action, table, where=None, values=None, columns=None):
-    from pymsg import RpcClient, RpcError
-    client = RpcClient('127.0.0.1', 8005, 'static', timeout=5)
     data = {"action": action, "table": table}
     if where is not None:
         data["where"] = where
@@ -308,18 +327,54 @@ def _db_call(action, table, where=None, values=None, columns=None):
         data["values"] = values
     if columns is not None:
         data["columns"] = columns
-    result = client.call('execute', data)
+    result = _db_client.call('execute', data)
     if not result.get('success'):
-        raise RpcError(f"db execute failed: {result.get('error', 'unknown')}")
+        raise _RpcError(f"db execute failed: {result.get('error', 'unknown')}")
     return result.get('data', [])
+
+
+# ==================== 速率限制（P1-1：内存滑动窗口，无需外部依赖） ====================
+import time
+import threading
+
+_rate_limit_lock = threading.Lock()
+_rate_limit_store = {}  # key -> list of timestamps
+
+def _check_rate_limit(key, max_requests, window_seconds):
+    """滑动窗口限速。返回 True 表示允许，False 表示超限。"""
+    now = time.time()
+    cutoff = now - window_seconds
+    with _rate_limit_lock:
+        timestamps = _rate_limit_store.get(key, [])
+        # 清理过期记录
+        timestamps = [t for t in timestamps if t > cutoff]
+        if len(timestamps) >= max_requests:
+            _rate_limit_store[key] = timestamps
+            return False
+        timestamps.append(now)
+        _rate_limit_store[key] = timestamps
+        return True
+
+def _client_ip():
+    """获取客户端 IP（gateway 反代场景取 X-Forwarded-For 首段）。"""
+    xff = request.headers.get('X-Forwarded-For', '')
+    if xff:
+        return xff.split(',')[0].strip()
+    return request.remote_addr or 'unknown'
 
 
 @app.route('/api/hash', methods=['POST'])
 def api_hash():
-    from flask import request, jsonify
     import hashlib
-    data = request.get_json(force=True)
-    h = hashlib.sha256(data.get('password','').encode()).hexdigest()
+    # P1-1：哈希预言机限速，每 IP 每分钟 20 次
+    if not _check_rate_limit(f"hash:{_client_ip()}", max_requests=20, window_seconds=60):
+        return jsonify({"error": "rate limit exceeded"}), 429
+    # NEW-8：移除 force=True，增加类型校验
+    data = request.get_json(silent=True) or {}
+    password = data.get('password', '')
+    if not isinstance(password, str):
+        return jsonify({"error": "invalid input"}), 400
+    h = hashlib.sha256(password.encode()).hexdigest()
     return jsonify({"hash": h})
 
 
@@ -343,16 +398,20 @@ def api_hash():
 
 @app.route('/api/check_user', methods=['POST'])
 def api_check_user():
-    from flask import request, jsonify
-    data = request.get_json(force=True)
-    email = data.get('email', '').strip()
-    if not email:
+    # P1-1：邮箱枚举防护，每 IP 每分钟 10 次
+    if not _check_rate_limit(f"check_user:{_client_ip()}", max_requests=10, window_seconds=60):
+        return jsonify({"success": False, "error": "rate limit exceeded"}), 429
+    data = request.get_json(silent=True) or {}
+    email = data.get('email', '')
+    if not isinstance(email, str) or not email.strip():
         return jsonify({"success": False, "error": "missing email"}), 400
+    email = email.strip()
     try:
         rows = _db_call('select', 'Users', where={'email': email}, columns=['email'])
         return jsonify({"success": True, "found": len(rows) > 0})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        logs.warning("static", "check_user 查询失败", extra={"error": str(e)})
+        return jsonify({"success": False, "error": "query failed"}), 500
 
 
 
@@ -478,73 +537,66 @@ import urllib.request as _urlreq, json as _json
 
 DNFS_URL = "http://127.0.0.1:8006"
 
+# dnfs 代理路由通用错误响应（NEW-6：不泄露内部异常细节）
+_DNFS_PROXY_ERROR = _json.dumps({"error": "upstream unavailable"}).encode()
+
 def _cors(resp):
-    resp.headers["Access-Control-Allow-Origin"] = "*"
+    """dnfs 代理路由 CORS：按白名单回显 Origin，不再通配 *（NEW-3）。"""
+    origin = request.headers.get("Origin")
+    if origin and origin in _cors_origins:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Vary"] = "Origin"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     return resp
+
+def _proxy_to_dnfs(route_name):
+    """dnfs 代理通用逻辑：转发 JSON + Authorization，返回响应。"""
+    data = request.get_json(force=True)
+    h = {"Content-Type": "application/json"}
+    if "Authorization" in request.headers:
+        h["Authorization"] = request.headers["Authorization"]
+    elif request.cookies.get("q4_token"):
+        h["Authorization"] = f"Bearer {request.cookies['q4_token']}"  # HttpOnly Cookie 模式：Cookie 转 Bearer
+    req = _urlreq.Request(f"{DNFS_URL}/{route_name}", data=_json.dumps(data).encode(), headers=h, method="POST")
+    with _urlreq.urlopen(req, timeout=15) as r:
+        return _cors(make_response(r.read().decode(), 200, {"Content-Type": "application/json"}))
 
 @app.route('/get_notes', methods=['POST', 'OPTIONS'])
 def proxy_get_notes():
     if request.method == "OPTIONS": return _cors(make_response("", 204))
     try:
-        data = request.get_json(force=True)
-        h = {"Content-Type": "application/json"}
-        if "Authorization" in request.headers: h["Authorization"] = request.headers["Authorization"]
-        elif request.cookies.get("q4_token"): h["Authorization"] = f"Bearer {request.cookies['q4_token']}"  # HttpOnly Cookie 模式：Cookie 转 Bearer
-        req = _urlreq.Request(f"{DNFS_URL}/get_notes", data=_json.dumps(data).encode(), headers=h, method="POST")
-        with _urlreq.urlopen(req, timeout=15) as r:
-            return _cors(make_response(r.read().decode(), 200, {"Content-Type": "application/json"}))
+        return _proxy_to_dnfs("get_notes")
     except Exception as e:
-        logs.warning("static", "dnfs get_notes 代理失败",
-                      extra={"error": str(e)})
-        return _cors(make_response(_json.dumps({"error": str(e)}), 502, {"Content-Type": "application/json"}))
+        logs.warning("static", "dnfs get_notes 代理失败", extra={"error": str(e)})
+        return _cors(make_response(_DNFS_PROXY_ERROR, 502, {"Content-Type": "application/json"}))
 
 @app.route('/add_note', methods=['POST', 'OPTIONS'])
 def proxy_add_note():
     if request.method == "OPTIONS": return _cors(make_response("", 204))
     try:
-        data = request.get_json(force=True)
-        h = {"Content-Type": "application/json"}
-        if "Authorization" in request.headers: h["Authorization"] = request.headers["Authorization"]
-        elif request.cookies.get("q4_token"): h["Authorization"] = f"Bearer {request.cookies['q4_token']}"  # HttpOnly Cookie 模式：Cookie 转 Bearer
-        req = _urlreq.Request(f"{DNFS_URL}/add_note", data=_json.dumps(data).encode(), headers=h, method="POST")
-        with _urlreq.urlopen(req, timeout=15) as r:
-            return _cors(make_response(r.read().decode(), 200, {"Content-Type": "application/json"}))
+        return _proxy_to_dnfs("add_note")
     except Exception as e:
         logs.warning("static", "dnfs add_note 代理失败", extra={"error": str(e)})
-        return _cors(make_response(_json.dumps({"error": str(e)}), 502, {"Content-Type": "application/json"}))
+        return _cors(make_response(_DNFS_PROXY_ERROR, 502, {"Content-Type": "application/json"}))
 
 @app.route('/delete_note', methods=['POST', 'OPTIONS'])
 def proxy_delete_note():
     if request.method == "OPTIONS": return _cors(make_response("", 204))
     try:
-        data = request.get_json(force=True)
-        h = {"Content-Type": "application/json"}
-        if "Authorization" in request.headers: h["Authorization"] = request.headers["Authorization"]
-        elif request.cookies.get("q4_token"): h["Authorization"] = f"Bearer {request.cookies['q4_token']}"  # HttpOnly Cookie 模式：Cookie 转 Bearer
-        req = _urlreq.Request(f"{DNFS_URL}/delete_note", data=_json.dumps(data).encode(), headers=h, method="POST")
-        with _urlreq.urlopen(req, timeout=15) as r:
-            return _cors(make_response(r.read().decode(), 200, {"Content-Type": "application/json"}))
+        return _proxy_to_dnfs("delete_note")
     except Exception as e:
         logs.warning("static", "dnfs delete_note 代理失败", extra={"error": str(e)})
-        return _cors(make_response(_json.dumps({"error": str(e)}), 502, {"Content-Type": "application/json"}))
+        return _cors(make_response(_DNFS_PROXY_ERROR, 502, {"Content-Type": "application/json"}))
 
 @app.route('/update_note', methods=['POST', 'OPTIONS'])
 def proxy_update_note():
     if request.method == "OPTIONS": return _cors(make_response("", 204))
     try:
-        data = request.get_json(force=True)
-        h = {"Content-Type": "application/json"}
-        if "Authorization" in request.headers: h["Authorization"] = request.headers["Authorization"]
-        elif request.cookies.get("q4_token"): h["Authorization"] = f"Bearer {request.cookies['q4_token']}"  # HttpOnly Cookie 模式：Cookie 转 Bearer
-        req = _urlreq.Request(f"{DNFS_URL}/update_note", data=_json.dumps(data).encode(), headers=h, method="POST")
-        with _urlreq.urlopen(req, timeout=15) as r:
-            return _cors(make_response(r.read().decode(), 200, {"Content-Type": "application/json"}))
+        return _proxy_to_dnfs("update_note")
     except Exception as e:
-        logs.warning("static", "dnfs update_note 代理失败",
-                      extra={"error": str(e)})
-        return _cors(make_response(_json.dumps({"error": str(e)}), 502, {"Content-Type": "application/json"}))
+        logs.warning("static", "dnfs update_note 代理失败", extra={"error": str(e)})
+        return _cors(make_response(_DNFS_PROXY_ERROR, 502, {"Content-Type": "application/json"}))
 
 
 # @app.route('/api/proxy_send_code', methods=['POST'])
@@ -620,6 +672,9 @@ def api_favicon():
         return jsonify({'error': 'bad url'}), 400
     if parsed.scheme not in ('http', 'https') or not parsed.hostname:
         return jsonify({'error': 'bad url'}), 400
+    # NEW-10：校验端口范围，防止端口扫描
+    if parsed.port is not None and not (1 <= parsed.port <= 65535):
+        return jsonify({'error': 'bad port'}), 400
     if _is_private_host(parsed.hostname):
         return jsonify({'error': 'forbidden host'}), 403
 
@@ -677,9 +732,7 @@ def serve_file(path):
             if is_video_file(full_path) or is_audio_file(full_path):
                 return send_file(full_path, mimetype=get_media_mime_type(full_path))
 
-            # 普通文件
-            with open(full_path, 'rb') as f:
-                content = f.read()
+            # 普通文件：使用 send_file 流式传输，避免大文件全量读入内存（NEW-7）
             ext = os.path.splitext(full_path)[1].lower()
             mime_map = {
                 '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css',
@@ -687,7 +740,7 @@ def serve_file(path):
                 '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.txt': 'text/plain',
                 '.pdf': 'application/pdf', '.svg': 'image/svg+xml', '.ico': 'image/x-icon'
             }
-            return Response(content, mimetype=mime_map.get(ext, 'application/octet-stream'))
+            return send_file(full_path, mimetype=mime_map.get(ext, 'application/octet-stream'))
 
         # 目录处理：返回 __view.html，由前端 JS 根据 URL 路径调用 /api/filelist 拉取文件列表
         view_path = os.path.join(HTML_ROOT_DIR, VIEW_FILE)
@@ -711,7 +764,11 @@ def health_check():
 
 if __name__ == '__main__':
     host = file_config['server']['host']
-    port = int(file_config['server']['port'])
+    try:
+        port = int(file_config['server']['port'])
+    except (ValueError, TypeError):
+        print('[static] 致命错误: server.port 不是合法整数', file=sys.stderr)
+        sys.exit(1)
 
     print("\n" + "="*50)
     print("📁 文件托管服务器 (极简版)")
@@ -723,8 +780,11 @@ if __name__ == '__main__':
     print("\n")
 
     if SSL_ENABLED and os.path.exists(SSL_CERT_FILE) and os.path.exists(SSL_KEY_FILE):
-        # Waitress 不支持 TLS，SSL 场景回退到 Flask 内置服务器
-        logger.warning("SSL enabled: falling back to Flask built-in server (Waitress has no TLS support)")
+        # NEW-12（已知限制）：Waitress 不支持 TLS，SSL 场景回退到 Flask 内置开发服务器。
+        # 生产环境应在 waf/gateway 层终止 TLS，不应在此处启用 SSL。
+        # 若运维启用此处 SSL，将面临单线程、无并发、调试信息泄露等风险。
+        logger.error("SSL enabled at static layer: using Flask dev server (NOT production-safe). "
+                     "TLS should be terminated at waf/gateway, not here.")
         app.run(host=host, port=port, ssl_context=(SSL_CERT_FILE, SSL_KEY_FILE), debug=False)
     else:
         from waitress import serve
