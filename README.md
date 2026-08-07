@@ -172,6 +172,7 @@
 | [libhttp](libhttp/) | HTTP/WebSocket 库：`HttpServer`（含 WebSocket 服务/代理）、`HttpClient`（含 WebSocket 客户端，基于 Boost.Beast） |
 | [libcrypt](libcrypt/) | 加密库：`AES_CBC`、`MyRSA`、`SHA256`、`Base64`、`Crypto_Basic` |
 | [libsqlite3](libsqlite3/) | SQLite3 C++ 封装（Header-only） |
+| [libmsg](libmsg/) | 消息通信库：pymsg 协议 C++ 实现（4B 大端长度前缀 + UTF-8 载荷），提供 `MsgClient`/`MsgServer`/`AsyncQueue`/`RpcClient`/`RpcServer`，与 Python pymsg 字节级兼容 |
 | [libtry](libtry/) | 嵌入式脚本解释器（~741 行 C），手写递归下降词法/语法/执行引擎，支持变量/数组/函数/控制流，宽字符（中文标识符），用于嵌入式操作界面 shell |
 
 ### Python 共享组件
