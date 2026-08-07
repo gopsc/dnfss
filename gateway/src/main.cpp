@@ -1315,7 +1315,7 @@ http::response<http::string_body> handleLogin(
 		auto jv_db_r = DbC::call_msg(jv_select);
 		auto obj_r = jv_db_r.as_object();
 		auto success = obj_r["success"].as_bool();
-		if (!success) THROW_EX_CUSTOM(HttpException, 2102, "Login (Query Step) Failed", 500, "/login");
+		if (!success) THROW_EX_CUSTOM(HttpException, 2102, "Login failed, please try again later", 500, "/login");
 		auto obj_rd = obj_r.at("data").as_array();
 		/* 用户不存在时 data 为空数组：直接 at(0) 会抛异常被 wrapper 兜底成 500，
 		 * 此处保持 stored_hash 为空，统一走下面的 401 分支 */
@@ -1378,7 +1378,7 @@ http::response<http::string_body> handleLogin(
 	};
 	auto jv_upd_r = DbC::call_msg(jv_upd);
 	if (!jv_upd_r.as_object()["success"].as_bool())
-		THROW_EX_CUSTOM(HttpException, 2102, "Login (Update Step) Failed", 500, "/login");
+		THROW_EX_CUSTOM(HttpException, 2102, "Login failed, please try again later", 500, "/login");
 
 
 	/* 生成令牌 */
@@ -1879,7 +1879,7 @@ http::response<http::string_body> handleRegister(
 	auto jv_result = DbC::call_msg(jv_insert);
 	auto obj_r = jv_result.as_object();
 	auto success = obj_r["success"].as_bool();
-	if (!success) THROW_EX_CUSTOM(HttpException, 2202, "Registe Failed", 400, "/register");
+	if (!success) THROW_EX_CUSTOM(HttpException, 2202, "Registration failed, please try again later", 500, "/register");
 	auto jv_r = json::value{{"success", success}};
 
 	logs().info("gateway", "注册成功: " + username, std::nullopt,
@@ -2202,7 +2202,7 @@ http::response<http::string_body> handleResetPassword(
 	auto jv_result = DbC::call_msg(jv_update);
 	auto obj_r = jv_result.as_object();
 	if (!obj_r["success"].as_bool())
-		THROW_EX_CUSTOM(HttpException, 2202, "Reset Failed", 500, "/reset_password");
+		THROW_EX_CUSTOM(HttpException, 2202, "Password reset failed, please try again later", 500, "/reset_password");
 
 	/* 重置密码成功：吊销该用户所有已签发的 Token（版本号递增，全设备失效，需重新登录） */
 	revoke_all_user_tokens(username);
