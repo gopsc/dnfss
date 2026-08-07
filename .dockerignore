@@ -51,6 +51,9 @@ bot4cj/
 core/
 gateway/
 lib*/
+# dnfs2 多阶段构建需要 libhttp/libmsg 源码编译
+!libhttp/
+!libmsg/
 waf/
 captcha/
 smtp/

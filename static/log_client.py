@@ -120,7 +120,11 @@ class LogClient:
     # ── 内部实现 ────────────────────────────────────────────────────────
 
     def _send_batch(self, batch: list):
-        """后台线程回调：逐条 INSERT 到 db（与旧版行为一致：网络错误放弃本批剩余）。"""
+        """后台线程回调：逐条 INSERT 到 db。
+
+        NEW-13：单条失败仅跳过该条，不再因网络异常放弃整批剩余日志。
+        RpcError 视为可重试的业务错误（如 db 临时拒绝），继续处理下一条。
+        """
         for entry in batch:
             extra_val = entry.get("extra")
             try:
@@ -141,11 +145,9 @@ class LogClient:
             }
             try:
                 self._client.call("execute", payload, timeout=_TIMEOUT)
-            except RpcError as e:
-                print(f"[log_client] INSERT 失败: {e}", file=_sys.stderr)
             except Exception as e:
-                print(f"[log_client] 发送失败（放弃本批剩余）: {e}", file=_sys.stderr)
-                break
+                print(f"[log_client] INSERT 失败（跳过本条）: {e}", file=_sys.stderr)
+                continue
 
     def _on_error(self, e: Exception, batch: list):
         """异常安全网：handler 外的异常也不会崩溃线程。"""

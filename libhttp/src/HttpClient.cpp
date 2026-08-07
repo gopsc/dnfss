@@ -42,6 +42,22 @@ size_t HttpClient::get_max_response_size() const {
     return max_response_size_;
 }
 
+void HttpClient::set_timeout(long seconds) {
+    timeout_ = seconds;
+}
+
+long HttpClient::get_timeout() const {
+    return timeout_;
+}
+
+void HttpClient::set_connect_timeout(long seconds) {
+    connect_timeout_ = seconds;
+}
+
+long HttpClient::get_connect_timeout() const {
+    return connect_timeout_;
+}
+
 void HttpClient::set_header(const std::string& header) {
     headers_ = curl_slist_append(headers_, header.c_str());
 }
@@ -89,8 +105,8 @@ void HttpClient::request_stream_sync(
     curl_easy_setopt(curl_, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl_, CURLOPT_WRITEDATA, &write_ctx);
 
-    curl_easy_setopt(curl_, CURLOPT_TIMEOUT, 30L);
-    curl_easy_setopt(curl_, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl_, CURLOPT_TIMEOUT, timeout_);
+    curl_easy_setopt(curl_, CURLOPT_CONNECTTIMEOUT, connect_timeout_);
 
     CURLcode res = curl_easy_perform(curl_);
 

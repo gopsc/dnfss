@@ -2,7 +2,7 @@
 # micro_servers
 
 一套 DIY 的轻量级微服务架构（UniServe Framework），由 C++、Python、Go 与仓颉(Cangjie) 混合实现。
-`core` 作为进程托管服务负责拉起并守护各业务子进程，`waf` 作为前置 WAF 网关终止 TLS 并做规则匹配，`gateway` 作为应用层网关统一鉴权与反向代理，`db` 提供通用数据库访问与集中式日志收集，`confs` 提供统一配置分发，`ai_review` 提供 AI 内容审核，`static` 与 `dnfs` 作为业务服务对外提供能力。此外包含独立的机器人硬件控制模块 `bot4cj` 和嵌入式脚本引擎 `libtry`。
+`core` 作为进程托管服务负责拉起并守护各业务子进程，`redirect80` 将 80 端口流量重定向到 443，`waf` 作为前置 WAF 网关终止 TLS 并做规则匹配，`gateway` 作为应用层网关统一鉴权与反向代理，`db` 提供通用数据库访问与集中式日志收集，`confs` 提供统一配置分发，`ai_review` 提供 AI 内容审核，`static` 与 `dnfs` 作为业务服务对外提供能力。`db2` / `dnfs2` 分别为 `db` / `dnfs` 的 C++20 重实现，接口完全兼容可平替。此外包含 aibox 的终端前端 `BotOps`、独立的机器人硬件控制模块 `bot4cj`、嵌入式帧缓冲图形界面 `lci` 和嵌入式脚本引擎 `libtry`。
 
 ## 架构总览
 
@@ -22,39 +22,51 @@
  │ coraza+反代  │  │ 鉴权 + 反代  │  │静态/媒体│  │  节点CRUD    │  │ pymsg/TCP    │  │ DeepSeek+RAG │
  └──────┬───────┘  └──────┬───────┘  └───┬────┘  └──────┬───────┘  └──────▲───────┘  └──────▲───────┘
         │ HTTPS终止         │ 反向代理     │ 代理笔记请求   │ pymsg           │ pymsg           │ HTTP
-        └──────────────────►│             ├─────────────►│─────────────────┘                 │
-                            ├────────────►│              └─────── HTTP /review ──────────────┘
-                            └────────────►│
- 日志链路: waf / gateway / static / dnfs / ai_review / captcha / smtp / aibox / confs ──(log_client, pymsg)──► db:8005 (Logs 表)
+        ▲                   └─────────────►│             ├─────────────►│─────────────────┘                 │
+        │                                  ├────────────►│              └─────── HTTP /review ──────────────┘
+        │                                  └────────────►│
+        │
+  ┌─────┴──────┐
+  │ redirect80 │  :80 → :443（GET/HEAD 301 / 其余 308，重定向到 waf）
+  └────────────┘
+ 日志链路: waf / gateway / static / dnfs / ai_review / captcha / smtp / aibox / confs / redirect80 ──(log_client, pymsg)──► db:8005 (Logs 表)
  配置链路: static 等业务服务 ──(pymsg get)──► confs:8010（配置统一存放于 confs/configs/，mtime 变化自动重载）
 ```
 
+> `db2` / `dnfs2` 分别是 `db` / `dnfs` 的 C++20 重实现（接口完全兼容，可平替），架构位置与 Python 版一致。`BotOps` 为 aibox 的终端前端（WebSocket 客户端），`lci` 为嵌入式帧缓冲图形界面，均不在上图中。
+
 ### 请求链路
 
-1. 客户端所有请求先打到 `waf:443`（HTTPS），WAF 终止 TLS、运行 coraza 规则匹配，命中则直接返回 403。
-2. 未命中规则的请求由 WAF 以明文 HTTP 转发到 `gateway:8443`，并设置 `X-Forwarded-For` / `X-Forwarded-Proto` 头。
-3. `gateway` 对 `/login`、`/register` 做账号鉴权（PBKDF2 密码哈希 + RSA 签名 Token + 可选 CAPTCHA + 速率限制；注册需邮箱验证码，经 pymsg/TCP 调 `smtp:8008` 发送与校验），用户数据通过 pymsg/TCP 调用 `db:8005` 存取。
-4. 其余请求携带 Token，经 `gateway` 校验后反向代理到 `Proxy.opened` 中放开的内部服务（`static:9200` / `dnfs:8006`）。
-5. `db:8005` 与 `ai_review:8007` 在 `Proxy.closed` 中，仅允许内部服务间调用，不对外暴露。
-6. `dnfs` 处理节点增删改查时，通过 pymsg/TCP 调用 `db` 服务完成数据持久化，新增节点前调用 `ai_review` 进行内容审核。
-7. 各服务通过 `log_client.py` SDK 异步批量推送运行日志（pymsg/TCP 写入 db 的 `Logs` 表），实现集中式日志收集（fail-safe，db 不可用时静默丢弃）。
+1. 客户端若以 HTTP 访问 `:80`，由 `redirect80` 重定向到 HTTPS `:443`（GET/HEAD 返回 301，其余方法返回 308 保留 body）。
+2. 客户端所有请求先打到 `waf:443`（HTTPS），WAF 终止 TLS、运行 coraza 规则匹配，命中则直接返回 403。
+3. 未命中规则的请求由 WAF 以明文 HTTP 转发到 `gateway:8443`，并设置 `X-Forwarded-For` / `X-Forwarded-Proto` 头。
+4. `gateway` 对 `/login`、`/register` 做账号鉴权（PBKDF2 密码哈希 + RSA 签名 Token + 可选 CAPTCHA + 速率限制；注册需邮箱验证码，经 pymsg/TCP 调 `smtp:8008` 发送与校验），用户数据通过 pymsg/TCP 调用 `db:8005` 存取。
+5. 其余请求携带 Token，经 `gateway` 校验后反向代理到 `Proxy.opened` 中放开的内部服务（`static:9200` / `dnfs:8006`）。
+6. `db:8005` 与 `ai_review:8007` 在 `Proxy.closed` 中，仅允许内部服务间调用，不对外暴露。
+7. `dnfs` 处理节点增删改查时，通过 pymsg/TCP 调用 `db` 服务完成数据持久化，新增节点前调用 `ai_review` 进行内容审核。
+8. 各服务通过 `log_client.py` SDK 异步批量推送运行日志（pymsg/TCP 写入 db 的 `Logs` 表），实现集中式日志收集（fail-safe，db 不可用时静默丢弃）。
 
 ## 各服务说明
 
 | 服务 | 语言 | 端口 | 职责 |
 |------|------|------|------|
 | [core](core/) | C++20 | 5200 | 进程托管服务（PMC），创建/列举/杀死/执行子进程，读取自启动列表守护业务进程，提供 HTTP 管理接口 |
+| [redirect80](redirect80/) | Python | 80 | HTTP→HTTPS 重定向服务，将 80 端口请求重定向到 443（GET/HEAD 301 / 其余 308），纯标准库实现 |
 | [waf](waf/) | Go | 443 | WAF 网关（入口），终止 TLS、coraza 规则匹配（SecLang）、反向代理到 gateway，支持 SIGHUP 热加载规则 |
 | [gateway](gateway/) | C++20 | 8443 | 应用层网关（内部 HTTP），用户注册/登录鉴权、Token 签发与校验、反向代理到内部服务 |
 | [static](static/) | Python(Flask) | 9200 | 前端托管服务，社区首页、静态页面与文件浏览、视频/音频流媒体播放、路径遍历防护 |
 | [dnfs](dnfs/) | Python(Flask) | 8006 | 树状网络文件系统（Dendrachy Network File-System），基于父子 pid 的节点树增删改查，集成 AI 内容审核 |
+| [dnfs2](dnfs2/) | C++20 | 8006 | dnfs 的 C++20 重实现（libhttp + libmsg），接口与 Python 版完全兼容，修复 P0/P1 安全问题，可平替 |
 | [db](db/) | Python(pymsg) | 8005 | 通用数据库服务，基于 pymsg 协议（TCP 长度前缀帧 + JSON）的 SQL-over-TCP，SQLAlchemy Core 参数化查询防注入；内置集中式日志收集（Logs 表 + 自动清理） |
+| [db2](db2/) | C++20 | 8005 | db 的 C++20 重实现（libmsg + boost::json + libsqlite3），execute 路由/where 语法/响应格式完全对齐 Python 版，可平替 |
 | [ai_review](ai_review/) | Python(Flask) | 8007 | AI 内容审核服务，DeepSeek LLM + ChromaDB RAG，支持人工反馈纠偏 |
 | [captcha](captcha/) | Python(pymsg) | 8009 | 验证码服务（pymsg/TCP），生成图形验证码（5 分钟过期、一次性），经 gateway 的 `GET /captcha/image` 代理给浏览器 |
 | [smtp](smtp/) | Python(pymsg) | 8008 | 邮件服务，发送/校验邮箱验证码（pymsg 路由 send_email/verify_email/health），注册流程的邮件验证码后端，SMTP 账号配置在 .env |
 | [confs](confs/) | Python(pymsg) | 8010 | 统一配置服务，集中存放并分发各服务配置文件（pymsg 路由 get/list/reload/health），内存缓存 + mtime 自动重载，路径遍历防护 |
 | [aibox](aibox/) | Python | 8765 | 独立 AI 智能体系统（DeepSeek + WebSocket），自带技能系统/记忆/任务调度，由 core 拉起但与主干微服务无调用关系 |
+| [BotOps](BotOps/) | Python | — | aibox 智能体 TUI 前端（Textual），WebSocket 连接 aibox，支持 Markdown 增量流式渲染、思考模式展示、任务独立侧栏、自动重连 |
 | [bot4cj](bot4cj/) | 仓颉(Cangjie) | — | 机器人硬件脚本解析器，解析 .mt 矩阵脚本通过 I2C 驱动 PCA9685 舵机 / MPU6050 陀螺仪，面向树莓派 Dashun 蜘蛛机器人平台（独立硬件项目） |
+| [lci](lci/) | C++ | — | 嵌入式帧缓冲图形界面（LCI），基于 `/dev/fb0` 直接操作显存，无需 X11/Wayland，矢量字体、图片渲染、实时数据可视化，面向树莓派等嵌入式环境 |
 
 ### core（核心模块 · 进程托管服务）
 
@@ -104,6 +116,16 @@
 - 数据持久化通过 pymsg/TCP 调用 `db` 服务（`127.0.0.1:8005`，execute 路由），不再直接操作数据库。
 - 新增节点前调用 `ai_review` 服务（`http://127.0.0.1:8007/review`）进行内容审核，审核不通过则拒绝写入。
 
+### dnfs2（树状菜单服务 · C++20 重实现）
+
+- dnfs 的 C++20 重实现，基于 [libhttp](libhttp/) + [libmsg](libmsg/) + boost::json，接口与 Python dnfs 完全兼容，前端零改动。
+- 修复 Python 版的 P0/P1 安全问题（Token 验签 fail-closed、所有权校验、子节点检查、错误响应脱敏避免 IP/用户名泄露）。
+- Token 验签：HttpClient POST gateway `/whoami`，验签失败返回 503（fail-closed）。
+- 数据操作：libmsg `RpcClient` 调 db2 `execute` 路由（与 Python 版调 db 路径一致）。
+- 内容审核：HttpClient POST ai_review `/review`，fail-closed。
+- 异步日志：libmsg `AsyncQueue` 写入 db2 Logs 表。
+- 配置从 confs 拉取 `dnfs.ini`，环境变量覆盖，命令行参数最高优先级；详见 [dnfs2/README.md](dnfs2/README.md)。
+
 ### db（通用数据库服务）
 
 - 基于自研 [pymsg](pymsg/) 协议（TCP 长度前缀帧 + JSON），单一路由 `_route: "execute"`，接收结构化 JSON（action + table + where + values），翻译为 SQL 执行。
@@ -118,6 +140,14 @@
   - `_log_internal()` — db 进程内部直接写 Logs 表，无网络往返，防递归设计。
   - 后台守护线程每小时自动清理：保留 30 天 / 上限 100 万条。
 - **统一日志客户端 SDK**（各服务目录下的 `log_client.py`，如 [dnfs/log_client.py](dnfs/log_client.py)）：各服务复制即用，纯标准库实现，异步非阻塞（内存队列 + 后台线程，50 条/2 秒批量 flush），fail-safe 设计（db 不可用时静默丢弃，不影响业务）。
+
+### db2（通用数据库服务 · C++20 重实现）
+
+- db 的 C++20 重实现，基于 [libmsg](libmsg/) + boost::json + [libsqlite3](libsqlite3/)，`execute` 路由 / `where` 语法 / 响应格式 / `$now` 哨兵均与 Python 版完全对齐，gateway 的 `DbC::call_msg()` 及所有 pymsg 调用方**零改动**即可切换。
+- per-thread 连接：每个 worker 线程持有独立 `sqlite3*`（`thread_local`），列 schema 加锁缓存；SQLite PRAGMA 对齐 Python 版（WAL / NORMAL / busy_timeout=5000）。
+- 内置 Logs 表（启动自动建表 + 索引）与后台清理线程（保留 30 天 / 上限 100 万条），设计与 Python db 一致。
+- 安全机制：表名白名单（字母数字下划线）、`sqlite3_bind_text` 参数绑定、仅反射已有表无法建删表、RpcServer 异常脱敏。
+- 配置从 confs 拉取 `db.ini`（强依赖，confs 未就绪自动重试），环境变量（`LISTEN_ADDR`/`LISTEN_PORT`/`WORKERS`/`DATABASE_URL`）覆盖，命令行参数最高优先级；详见 [db2/README.md](db2/README.md)。
 
 ### ai_review（AI 内容审核服务）
 
@@ -143,6 +173,16 @@
 - pymsg 路由：`send_email`（生成 6 位验证码并经 SMTP_SSL 发送，10 分钟有效，发送失败自动作废；同一邮箱 60 秒发送冷却，冷却期拒绝并返回 `retry_after`，不覆盖已发出的有效验证码，发送失败不计入冷却）、`verify_email`（校验，通过即一次性消费防重放，连续失败 5 次自动作废并返回 `invalidated`，兼容旧字段 `input_captcha`）、`health`。
 - 验证码存于进程内存（锁保护 + 惰性过期清理），SMTP 账号通过 `.env` 配置（`SMTP_SERVER` / `SMTP_PORT` / `SMTP_USER` / `__PASSWORD`，`__PASSWORD` 兼容别名 `SMTP_PASSWORD`）。
 
+### redirect80（HTTP→HTTPS 重定向服务）
+
+- 极简 HTTP 重定向服务，监听 80 端口，将所有请求重定向到 HTTPS（443），实现浏览器与搜索引擎友好的 HTTP→HTTPS 无缝升级。
+- 零 Web 框架依赖：纯 Python 标准库 `http.server` + `ThreadingMixIn` 多线程并发。
+- 智能重定向：GET/HEAD → 301（搜索引擎友好永久重定向），POST/PUT/DELETE/PATCH → 308（保留方法与 body）。
+- Host 保留：读取请求 `Host` 头构造重定向 URL（剥离端口），回退用配置的监听地址。
+- 日志集成：通过 `log_client.py` 异步批量推送运行日志到 db 的 Logs 表（fail-safe）。
+- 配置分层：confs 强依赖（`confs/configs/redirect80.ini`，启动时 pymsg 阻塞等待拉取，confs 不可用时直接退出不做本地回退），环境变量（`REDIRECT80_*`）优先级最高。
+- 80 端口为 Linux 特权端口（<1024），需 `CAP_NET_BIND_SERVICE` 或 root；`_run.sh` 自动尝试 `setcap`，或用 systemd `AmbientCapabilities`；详见 [redirect80/README.md](redirect80/README.md)。
+
 ### confs（统一配置服务）
 
 - 集中存放各微服务的配置文件（`confs/configs/`），基于 pymsg（RpcServer，TCP 长度前缀帧 + JSON）分发，监听 127.0.0.1:8010。
@@ -156,6 +196,14 @@
 - 自带技能系统（`skills/`）、任务调度器、记忆管理、前端页面与语音客户端（`voice_client.py`）。
 - 默认模型 `deepseek-v4-flash`，配置在 `config.json`；详见 [aibox/README.md](aibox/README.md)。
 
+### BotOps（aibox 智能体 TUI 前端）
+
+- aibox 的终端 UI 前端，基于 [Textual](https://textual.textualize.io/) 框架，WebSocket 连接 aibox（默认 `ws://localhost:8765`），复刻并增强 [aibox/client.py](aibox/client.py)。
+- **Markdown 增量流式渲染**：AI 回复无闪烁增量拼接，支持 DeepSeek 思考模式（`reasoning_start`/`reasoning`/`reasoning_end` 灰色斜体区域，超长自动折叠）。
+- **任务独立侧栏**：`task_process` / `task_status` / `task_error` 路由到侧栏，不混入对话流。
+- **自动重连**：指数退避 2s→30s，`/disconnect` 抑制；快捷键 Ctrl+C 中断 / Ctrl+Q 退出 / Ctrl+L 清屏。
+- 协议与 aibox 服务端完全兼容；可 Nuitka 编译为独立二进制（`botops.bin`）；详见 [BotOps/README.md](BotOps/README.md)。
+
 ### bot4cj（机器人硬件脚本解析器）
 
 - 基于仓颉(Cangjie)编程语言和 Linux I2C 接口的机器人动作脚本解析器，面向树莓派 Dashun 蜘蛛机器人平台（10 舵机 + 2 云台）。
@@ -163,6 +211,18 @@
 - 硬件层通过 I2C 驱动 PCA9685（PWM 舵机控制，50Hz，脉宽 0.5–2.5ms）、MPU6050（陀螺仪/加速度计，10ms 采样 + 卡尔曼滤波）、Speaker（正弦波发声）。
 - 附带数学库（矩阵运算、NN/CNN、Adam 优化器）、CUDA GPU 加速 kernel 和 Lua 硬件模块（ADS1115 / ADS1256 / SPI）。
 - 与主干微服务完全独立，需部署在树莓派上独立运行。
+
+### lci（嵌入式帧缓冲图形界面）
+
+- LCI（Linux Chinese Interface）是基于 Linux 帧缓冲设备（`/dev/fb0`）的图形界面系统，**无需 X11 或 Wayland**，直接 `mmap` 操作显存，专为树莓派等嵌入式环境设计。
+- **绘制层**：`Drawable` 抽象基类提供 point/line/rectangle/rectangle_fill 原语（内置 0/90/180/270 旋转）；`FrameBuf` 映射 `/dev/fb0`，支持 16-bit(RGB565) 与 32-bit(RGB888)；`Area` 代理绘制叠加坐标偏移。
+- **布局层**：`PoolArea`（命名子区域容器）、`ShapeArea`（形状集合）、`Shape`/`CharShape`（矢量字符）。
+- **交互组件**：`CmdArea`（ANSI 转义码解析、自动换行、触底滚动）、`InputBox`（输入框 + 光标）、`KeyboardEvent`（`/dev/input/event*` 非阻塞轮询）。
+- **矢量字体系统**：内置 GB2312 中文字库（`src/lci/ku500.cpp`，约 20k 行），`drawvfont()` 查找码点定位笔画数据逐段绘制；`utf8`/`ansi` 负责 UTF-8↔GB18030 转换与字符宽度判断。
+- **图片渲染**：基于 CImg 库，支持 JPEG/PNG，按区域长宽比自适应缩放，彩色转灰度后逐像素绘制。
+- **实时数据可视化**：每秒采集 CPU/内存使用率绘制折线图，保留最近 40 个数据点平滑滚动。
+- **中文化编程**：`include/cn/中文化.hpp` 提供 C++ 关键字的中文宏定义（`类`/`公开的`/`如果`/`否则`/`返回` 等）。
+- 运行需 `/dev/fb0` 帧缓冲设备，启动时 `chvt` 切到 tty8，退出切回 tty1；构建依赖 `-ljpeg -lpng`；详见 [lci/README.md](lci/README.md)。
 
 ## 共享基础库
 
@@ -187,6 +247,7 @@
 
 | 端口 | 服务 | 绑定地址 | 说明 |
 |------|------|----------|------|
+| 80 | redirect80 | 0.0.0.0 | HTTP 入口，301/308 重定向到 HTTPS :443 |
 | 443 | waf | 0.0.0.0 | HTTPS 对外入口（终止 TLS + coraza 规则匹配） |
 | 8443 | gateway | 127.0.0.1 | 应用层网关（内部 HTTP，由 waf 转发） |
 | 5200 | core | — | PMC HTTP 管理接口 |
@@ -199,6 +260,8 @@
 | 8010 | confs | 127.0.0.1 | 统一配置服务（pymsg/TCP，仅内部调用） |
 | 8765 | aibox | 127.0.0.1 | AI 智能体（WebSocket，独立产品） |
 | — | bot4cj | — (树莓派 I2C) | 机器人硬件脚本解析器（独立硬件项目，不联网） |
+| — | lci | — (树莓派 /dev/fb0) | 嵌入式帧缓冲图形界面（独立硬件项目，不联网） |
+| — | BotOps | — | aibox 智能体 TUI 前端（WebSocket 客户端，连接 aibox:8765） |
 
 ## 测试
 
@@ -230,7 +293,7 @@ bash _setup.deb.sh        # Debian/Ubuntu
 # 或
 bash _setup.rhel.sh       # RHEL/CentOS/Rocky/Fedora
 
-# 2. 依次安装各模块（libth -> libhttp -> libcrypt -> libsqlite3 -> gateway -> waf -> static -> dnfs -> db -> smtp -> captcha -> confs -> core）
+# 2. 依次安装各模块（libth -> libhttp -> libcrypt -> libsqlite3 -> libmsg -> gateway -> waf -> static -> dnfs -> db -> smtp -> captcha -> confs -> ai_review -> aibox -> redirect80 -> core）
 bash _inst.sh
 ```
 
@@ -249,7 +312,7 @@ bash _run.sh   # 运行
 
 ## 运行
 
-由 `core` 守护的子进程通过 `init.txt` 自启动（顺序很重要，waf 必须先于 gateway）：
+由 `core` 守护的子进程通过 `init.txt` 自启动（顺序很重要，redirect80 先于 waf、waf 先于 gateway）：
 
 ```
 bash /opt/micro_servers/db/_run.sh
@@ -258,6 +321,7 @@ bash /opt/micro_servers/ai_review/_run.sh
 bash /opt/micro_servers/dnfs/_run.sh
 bash /opt/micro_servers/smtp/_run.sh
 bash /opt/micro_servers/static/_run.sh
+bash /opt/micro_servers/redirect80/_run.sh
 bash /opt/micro_servers/waf/_run.sh
 bash /opt/micro_servers/gateway/_run.sh
 bash /opt/micro_servers/captcha/_run.sh
@@ -292,7 +356,7 @@ gateway 改为内部 HTTP 模式（[example.ini](gateway/example.ini) 中 `tls =
 - **服务按业务能力拆分**：WAF 网关、应用网关、前端托管、节点树、数据库、内容审核各自独立、独立端口、独立数据存储。
 - **API 网关模式**：`waf` 作为边缘网关统一入口，`gateway` 承担鉴权与反向代理，内部服务通过 `closed` 列表隔离。
 - **进程编排/守护**：`core` 作为服务管理器拉起并守护子进程，类似简易版 supervisor。
-- **多语言异构**：C++（core / gateway）、Python（static / dnfs / db / ai_review）、Go（waf）、仓颉/Cangjie（bot4cj）混合，对外 HTTP、内部数据访问走 pymsg/TCP。
+- **多语言异构**：C++（core / gateway / db2 / dnfs2）、Python（static / dnfs / db / ai_review / redirect80 / BotOps）、Go（waf）、仓颉/Cangjie（bot4cj）混合，对外 HTTP、内部数据访问走 pymsg/TCP。
 - **数据访问层解耦**：`db` 服务将数据库操作收敛为统一的 pymsg/TCP 接口，业务服务无需直连数据库。
 - **AI 能力集成**：`ai_review` 以 RAG 增强的 LLM 审核为业务层提供内容安全能力，支持人工反馈闭环。
 - **集中式可观测性**：`db` 内置日志表与自动清理，各服务通过 `log_client.py` SDK 异步推送日志（pymsg），实现全链路汇聚，无需引入额外中间件。

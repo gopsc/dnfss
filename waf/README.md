@@ -333,20 +333,34 @@ WAF 支持透明代理 WebSocket 连接（如 aibox 的 WebSocket 接口）。�
 
 ## 已知限制
 
-- 响应头检测（`ProcessResponseHeaders`）当前仅做审计日志，命中后不执行拦截（响应头已发送无法撤销状态码）。如需响应头拦截需引入 buffered response writer。
+- 响应头检测（`ProcessResponseHeaders`）命中后仅记录 WARNING 告警日志，不执行拦截（响应头已发送无法撤销状态码）。如需响应头拦截需引入 buffered response writer。
 - **响应体检测未启用**（未 `ProcessResponseBody`，缓冲整个响应延迟成本高）。SQL 报错回显等响应体泄漏检测缺失。
 - **WebSocket 帧内容不检测**：升级后二进制帧直接转发，不经过 WAF 规则引擎（适用于内部可信服务如 aibox）。
 - 限流/黑白名单未实现，可后续作为 coraza 规则或独立中间件加。
-- TLS 仅设 `MinVersion: TLS1.2`，未限定 cipher suites，允许弱加密套件。
-- `X-Forwarded-For` 直接覆盖原值（`Header.Set`），未按 RFC 7239 追加；当前 gateway 也只取第一个 IP，无实际影响，但语义不严格。注意：IPv6 地址在 X-Forwarded-For 中可能带方括号（待修复，使用 `LastIndexByte` 无法正确处理 IPv6 格式）。
+- `X-Forwarded-For` 直接覆盖原值（`Header.Set`），未按 RFC 7239 追加；当前 gateway 也只取第一个 IP，无实际影响，但语义不严格。
 - CSP 仍含 `'unsafe-inline'`（为兼容 forgot.html 与 games/*.html 的内联脚本），待前端清理后可收紧。
 - HSTS 已启用（半年期，不含子域），站点全量 HTTPS 覆盖后可按需收紧。
-- logclient 日志推送每次新建 TCP 短连接，高并发拦截场景可能产生较多 TIME_WAIT；db 地址硬编码 `127.0.0.1:8005`，不支持环境变量配置。
 - **默认规则全部注释**：`rules/local/custom.conf` 中自定义规则默认注释，需手动取消注释或拉取 OWASP CRS 后才有实际拦截效果。启动时无 warning 提示。**注意：CRS 规则目录不入库，需先在部署机执行 `_fetch_crs.sh`；未拉取 CRS 时 WAF 开箱无拦截能力。**
-- 缺少 SIGINT/SIGTERM 优雅关闭，进程终止时进行中的请求被暴力中断，logclient 队列中未发送的日志可能丢失。
-- 标准日志（`log.SetOutput`）被静默到 `io.Discard`，net/http 的 panic 堆栈和 TLS 错误不可见。
 
 ## 版本日志
+
+### v1.5（2026-08-08）— P3 安全修复
+
+- **fix(P3-1)**: logclient 复用 TCP 长连接，失败时重建一次，消除高并发拦截场景下的 TIME_WAIT 短连接堆积
+- **fix(P3-2)**: TLS 显式限定 CipherSuites（TLS 1.3 三套 + TLS 1.2 ECDHE 六套，全部 AEAD + 前向保密）与 CurvePreferences（X25519/P256/P384），排除弱加密套件
+- **fix(P3-3)**: CheckInput 的 query 编码改用 `url.Parse` + `Query().Encode()`，正确处理无值 key、重复 key、嵌套结构
+- 修复率从 76% 提升至 94%（P3 全部修复，仅剩 P0-3 默认规则注释为设计依赖）
+
+### v1.4（2026-08-08）— P1/P2 安全修复
+
+- **fix(P1-1)**: IPv6 地址解析改用 `net.SplitHostPort`，修复 `[::1]:54321` 等 IPv6 地址在 X-Forwarded-For 中带方括号导致 gateway 限流失效
+- **fix(P1-2)**: `ProcessResponseHeaders` 返回值不再被丢弃，命中规则时记录 WARNING 告警日志（响应头已发送无法拦截状态码）
+- **fix(P1-4)**: 增加 SIGINT/SIGTERM 优雅关闭，`server.Shutdown` 等待进行中请求完成（10s 宽限期），退出前 `logclient.Flush()` 刷新队列日志
+- **fix(P1-5)**: 标准日志输出到 stderr（`log.SetOutput(os.Stderr)`），保留 net/http 的 panic 堆栈与 TLS 错误，便于 journalctl 排查
+- **fix(P2-1)**: 规则文件加载前校验大小（上限 1 MiB），防止超大 `.conf` 文件导致 OOM
+- **fix(P2-2)**: logclient db 地址支持环境变量 `LOG_DB_ADDR`（默认 `127.0.0.1:8005`）
+- **fix(P2-5)**: logclient 日志失败输出到 stderr 而非 stdout
+- 修复率从 35% 提升至 76%（P1 全部修复、P2 全部修复）
 
 ### v1.3（2026-08-04）— 启用 OWASP CRS 异常评分制自动拦截
 

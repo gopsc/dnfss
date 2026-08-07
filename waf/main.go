@@ -12,11 +12,11 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -62,8 +62,8 @@ func main() {
 	}
 
 	eng, err := engine.New(&engine.Config{
-		RulesDir:       cfg.RulesDir,
-		ErrorCallback:  engine.LogError,
+		RulesDir:      cfg.RulesDir,
+		ErrorCallback: engine.LogError,
 	})
 	if err != nil {
 		log.Fatalf("引擎初始化失败: %v", err)
@@ -86,7 +86,8 @@ func main() {
 
 	// 服务模式
 	logclient.Init()
-	log.SetOutput(io.Discard) // 静默标准 log
+	// 标准日志输出到 stderr（systemd/journalctl 可捕获），保留 net/http 的 panic 堆栈与 TLS 错误
+	log.SetOutput(os.Stderr)
 
 	p, err := proxy.New(cfg.Upstream, eng)
 	if err != nil {
@@ -96,10 +97,10 @@ func main() {
 	}
 
 	// SIGHUP 热加载
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGHUP)
+	hupCh := make(chan os.Signal, 1)
+	signal.Notify(hupCh, syscall.SIGHUP)
 	go func() {
-		for range sigCh {
+		for range hupCh {
 			if err := eng.Reload(); err != nil {
 				logclient.Error("waf", fmt.Sprintf("热加载失败，保留旧规则: %v", err), nil)
 			} else {
@@ -118,16 +119,56 @@ func main() {
 		MaxHeaderBytes:    1 << 20, // 1MB
 		TLSConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
+			// 显式限定安全 CipherSuites，排除弱加密套件（RC4/3DES/CBC 等）
+			CipherSuites: []uint16{
+				// TLS 1.3 套件（Go 自动选择，显式列出便于审计）
+				tls.TLS_AES_128_GCM_SHA256,
+				tls.TLS_AES_256_GCM_SHA384,
+				tls.TLS_CHACHA20_POLY1305_SHA256,
+				// TLS 1.2 ECDHE 套件（前向保密 + AEAD）
+				tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+			},
+			// 优先使用高性能且安全的椭圆曲线
+			CurvePreferences: []tls.CurveID{
+				tls.X25519,
+				tls.CurveP256,
+				tls.CurveP384,
+			},
 		},
 	}
+
+	// SIGINT/SIGTERM 优雅关闭：等待进行中的请求完成后再退出，并 flush 队列日志
+	termCh := make(chan os.Signal, 1)
+	signal.Notify(termCh, syscall.SIGINT, syscall.SIGTERM)
 
 	logclient.Info("waf", fmt.Sprintf("服务启动 listen=%s upstream=%s rules=%s pid=%d",
 		cfg.Listen, cfg.Upstream, cfg.RulesDir, os.Getpid()), nil)
 
-	if err := server.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey); err != nil {
-		logclient.Error("waf", fmt.Sprintf("TLS 监听失败: %v", err), nil)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey)
+	}()
+
+	select {
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			logclient.Error("waf", fmt.Sprintf("TLS 监听失败: %v", err), nil)
+			logclient.Flush()
+			os.Exit(1)
+		}
+	case <-termCh:
+		logclient.Info("waf", "收到终止信号，开始优雅关闭", nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			logclient.Error("waf", fmt.Sprintf("优雅关闭超时: %v", err), nil)
+		}
 		logclient.Flush()
-		os.Exit(1)
 	}
 }
 
