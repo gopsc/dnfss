@@ -1,10 +1,10 @@
 # db2 模块安全审计报告
 
 **初次审计**: 2026-08-06  
-**最近复审**: 2026-08-07（P2-3 + P3-8 修复完成，编译验证通过）  
+**最近复审**: 2026-08-07（第五轮审计，全部问题已修复，编译验证通过）  
 **审计范围**: `db2/src/db2.cpp`、`Makefile`、`docker-entrypoint.sh`  
 **对照基准**: Python 版 `db/dbv2.py`（接口兼容性对比）  
-**代码版本**: main 分支 761cfd4 + P2-3/P3-8 修复
+**代码版本**: main 分支 e2f05f9 + 第五轮修复
 
 ---
 
@@ -15,8 +15,8 @@
 | P0 | 2 | 2 | 0 |
 | P1 | 1 | 1 | 0 |
 | P2 | 3 | 3 | 0 |
-| P3 | 11 | 7 | 4 |
-| **合计** | **17** | **13** | **4** |
+| P3 | 16 | 16 | 0 |
+| **合计** | **22** | **22** | **0** |
 
 ---
 
@@ -104,11 +104,16 @@
 | P3-4 | WHERE 条件数 / IN 数组大小无上限 | 历史版本 | ✅ 已修复：[L463-467](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L463-L467) 64 条件上限、[L507-511](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L507-L511) IN 元素 1000 上限 |
 | P3-5 | 空 `values` 对象导致 INSERT/UPDATE 语法错误 | 历史版本 | ✅ 已修复：[L680-682](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L680-L682)、[L724-726](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L724-L726) 前置校验 |
 | P3-6 | 未知 WHERE 运算符被静默跳过 | 历史版本 | ✅ 已修复：[L519-521](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L519-L521) 未知运算符抛错 |
-| **P3-7**（新） | **`utc_now()` 使用非线程安全的 `gmtime()`** | [L62](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L62) | ❌ 未修复：POSIX `gmtime()` 返回指向静态缓冲区的指针，多线程并发调用（worker线程+cleanup线程同时写日志时）存在数据竞争。虽然时间精度只到秒，实际数据损坏概率极低，但应使用线程安全版本 `gmtime_r(&t, &tm)` |
-| **P3-8**（新） | **其他数值配置无范围校验** | [L186-L191](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L186-L191) | ✅ 已修复（2026-08-07，与 P2-3 一同）：[L207-L227](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L207-L227) 所有数值配置项范围校验覆盖：port 1-65535、workers ≥1、cleanup_interval ≥1、retention_days ≥0、max_records ≥1 |
-| **P3-9**（新） | **`columns` 数组中非字符串元素未检查类型** | [L588-589](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L588-L589) | ❌ 未修复：`columns` 数组包含非字符串元素（数字、对象、null）时，直接调用 `c.as_string()` 抛出 boost::json 原始异常，错误信息不友好（对比 `order_by` 分支有 `if (!ob.is_object()) continue;` 防御）。建议增加：`if (!c.is_string()) continue;` 或显式校验类型抛清晰错误 |
-| **P3-10**（新） | **`DbConn` 析构使用 `sqlite3_close` 而非 `sqlite3_close_v2`** | [L231](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L231) | ❌ 未修复：若异常路径存在未 finalize 的 prepared statement，`sqlite3_close` 返回 `SQLITE_BUSY` 导致连接泄漏；`sqlite3_close_v2` 标记连接为 zombie，等所有 stmt 释放后自动关闭，更鲁棒（与 libsqlite3 审计 P0-2 修复建议一致）。当前所有正常路径都正确 finalize 了 stmt，但改用 close_v2 是防御性最佳实践 |
-| **P3-11**（新） | **`std::stoi/stoll` 解析配置失败无友好错误提示** | [L140](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L140)、[L186-L191](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L186-L191)、[L195-L197](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L195-L197)、[L203-L204](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L203-L204) | ❌ 未修复：配置项（端口、workers、数值日志参数）为非法数字时，`std::stoi` 抛出 `std::invalid_argument`，异常 `what()` 仅显示 "stoi"，无法定位哪个配置项出错，排查困难。建议 try/catch 后包装为带字段名的明确错误信息 |
+| **P3-7** | **`utc_now()` 使用非线程安全的 `gmtime()`** | [L58-66](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L58-L66) | ✅ 已修复（2026-08-07，第五轮）：改用 `gmtime_r(&t, &tmbuf)` 线程安全版本，消除多线程并发调用时的静态缓冲区数据竞争 |
+| **P3-8** | **其他数值配置无范围校验** | [L186-L191](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L186-L191) | ✅ 已修复（2026-08-07，与 P2-3 一同）：[L207-L227](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L207-L227) 所有数值配置项范围校验覆盖：port 1-65535、workers ≥1、cleanup_interval ≥1、retention_days ≥0、max_records ≥1 |
+| **P3-9** | **`columns` 数组中非字符串元素未检查类型** | [L633-636](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L633-L636) | ✅ 已修复（2026-08-07，第五轮）：添加 `if (!c.is_string()) throw "columns array must contain only strings"` 类型校验，非字符串元素抛清晰错误而非 boost 原始异常 |
+| **P3-10** | **`DbConn` 析构使用 `sqlite3_close` 而非 `sqlite3_close_v2`** | [L254-256](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L254-L256) | ✅ 已修复（2026-08-07，第五轮）：改用 `sqlite3_close_v2`，异常路径存在未 finalize 的 stmt 时标记为 zombie 状态，等所有 stmt 释放后自动关闭，更鲁棒 |
+| **P3-11** | **`std::stoi/stoll` 解析配置失败无友好错误提示** | [L72-87](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L72-L87)、[L163](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L163)、[L208-214](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L208-L214)、[L218-219](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L218-L219)、[L226-227](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L226-L227) | ✅ 已修复（2026-08-07，第五轮）：引入 `safe_stoi(s, field_name)` 辅助函数，所有 `std::stoi` 调用点（CONFS_PORT、INI 配置、环境变量、命令行参数共 9 处）替换为 `safe_stoi`，失败时抛带字段名的友好错误（如 `"invalid [server] port: 'abc' (stoi)"`） |
+| **P3-12**（新） | **`_log_internal` 静默吞掉所有异常** | [L898-900](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L898-L900) | ✅ 已修复（2026-08-07，第五轮）：`catch (...)` 改为 `catch (const std::exception& e)`，并 `fprintf(stderr, "[db2] _log_internal failed: %s", e.what())`，便于排查日志写入失败原因，仍不阻塞业务 |
+| **P3-13**（新） | **`_do_cleanup` COUNT 查询 prepare 失败静默跳过** | [L947-951](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L947-L951) | ✅ 已修复（2026-08-07，第五轮）：prepare 失败时 `fprintf(stderr, ...)` 记录 sqlite3_errmsg，同时简化 finalize 逻辑为单一出口 `if (stmt) sqlite3_finalize(stmt)`，避免重复 finalize 风险 |
+| **P3-14**（新） | **`order_by` 非法元素静默跳过** | [L654-671](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L654-L671) | ✅ 已修复（2026-08-07，第五轮）：非 object 元素、缺少 `column` 字段、`column` 非 string、`desc` 非 bool 均改为抛 `runtime_error` 明确报错，不再静默跳过，避免掩盖客户端错误 |
+| **P3-15**（新） | **`action` 字段非 string 静默默认为 "select"** | [L596-600](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L596-L600) | ✅ 已修复（2026-08-07，第五轮）：`action` 字段存在但非 string 类型时抛 `"'action' must be a string"`，不再静默回退为 "select" 导致意外执行查询 |
+| **P3-16**（新） | **`order_by` 的 `column`/`desc` 字段类型未校验** | [L658-668](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L658-L668) | ✅ 已修复（2026-08-07，第五轮，与 P3-14 一同）：`column` 字段检查 `is_string()`，`desc` 字段检查 `is_bool()`，类型不符时抛清晰错误而非 boost 原始异常 |
 
 ---
 
@@ -134,6 +139,12 @@
 18. **日志截断** — `kMaxMessage=8192`、`kMaxExtra=4096`，防止超长日志耗尽内存
 19. **不可拷贝连接** — `DbConn` 显式 `= delete` 拷贝构造/赋值，防止 double free
 20. **数值配置范围校验** — [L207-L227](file:///Users/qingsong/Documents/blackbird/db2/src/db2.cpp#L207-L227)：listen_port 1-65535、workers ≥1、cleanup_interval ≥1、retention_days ≥0、max_records ≥1，非法值立即 `exit(1)`，防止误配置导致 busy loop/绑定失败等异常行为
+21. **线程安全时间函数** — `utc_now()` 使用 `gmtime_r` 而非 `gmtime`，消除多线程并发写日志时的静态缓冲区数据竞争（P3-7 修复）
+22. **安全 sqlite3 关闭** — `DbConn` 析构使用 `sqlite3_close_v2`，异常路径未 finalize 的 stmt 不会导致连接泄漏（P3-10 修复）
+23. **友好配置解析错误** — `safe_stoi(s, field_name)` 包装所有 `std::stoi` 调用点，失败时抛带字段名的错误信息（P3-11 修复）
+24. **全量 JSON 字段类型校验** — `action`/`columns`/`order_by` 的 `column`+`desc` 字段均检查 JSON 类型，类型不符抛清晰错误而非 boost 原始异常（P3-9/P3-15/P3-16 修复）
+25. **日志写入失败可观测** — `_log_internal` catch 块记录 stderr，不再静默吞异常（P3-12 修复）
+26. **清理线程错误可观测** — `_do_cleanup` COUNT 查询 prepare 失败时记录 stderr（P3-13 修复）
 
 ---
 
@@ -152,13 +163,18 @@
 - [x] **P3-4**: WHERE/IN 输入规模上限
 - [x] **P3-5**: 空 values 前置校验
 - [x] **P3-6**: 未知 WHERE 运算符报错
-- [x] **P3-8**: 数值配置范围校验（与 P2-3 合并完成）
+- [x] **P3-7**: `utc_now()` 改用 `gmtime_r` 保证线程安全（第五轮）
+- [x] **P3-9**: `columns` 数组元素类型检查，非字符串抛清晰错误（第五轮）
+- [x] **P3-10**: `DbConn` 析构改用 `sqlite3_close_v2`（第五轮）
+- [x] **P3-11**: `safe_stoi` 包装所有 `std::stoi` 调用，带字段名友好错误（第五轮）
+- [x] **P3-12**: `_log_internal` catch 块记录 stderr（第五轮）
+- [x] **P3-13**: `_do_cleanup` COUNT prepare 失败记录 stderr（第五轮）
+- [x] **P3-14**: `order_by` 非法元素抛错而非静默跳过（第五轮）
+- [x] **P3-15**: `action` 非 string 抛错而非默认 "select"（第五轮）
+- [x] **P3-16**: `order_by` 的 `column`/`desc` 字段类型校验（第五轮）
 
-### 待修复（建议中期内完成）
-- [ ] **P3-7**: `utc_now()` 改用 `gmtime_r` 保证线程安全
-- [ ] **P3-9**: `columns` 数组元素类型检查（非字符串跳过或报错）
-- [ ] **P3-10**: `DbConn` 析构改用 `sqlite3_close_v2`
-- [ ] **P3-11**: `std::stoi` 解析配置时 try/catch 包装为带字段名的友好错误
+### 待修复
+无 — 全部 22 个问题已修复（100%）。
 
 ---
 
@@ -184,12 +200,28 @@
 6. 对照 libsqlite3 审计最佳实践，发现 `sqlite3_close` 可改进（P3-10）
 7. 更新行号引用至当前代码
 
-### P2-3 / P3-8 修复验证（2026-08-07，本次）
+### P2-3 / P3-8 修复验证（2026-08-07，第四次复审）
 1. 在 `load_config` 末尾（命令行参数解析之后）新增 5 项数值范围校验：port 1-65535、workers ≥1、cleanup_interval ≥1、retention_days ≥0、max_records ≥1
 2. 非法配置立即 `fprintf` 带字段名的明确错误信息后 `exit(1)`，与已有配置必填校验风格一致
 3. 修复 error handler lambda 未使用的 `this` 捕获，消除 `-Wunused-lambda-capture` 警告
 4. `g++ -std=c++20 -O3 -Wall -Werror` 编译通过，零警告零错误
 5. 更新审计文档：修复进度、问题状态、安全机制清单、修复路线图、复审结论
+
+### 第五轮复审（2026-08-07，本次）
+1. 通读当前代码全部 960 行，逐函数审查
+2. 修复 4 个遗留 P3 问题：
+   - P3-7: `utc_now()` 改用 `gmtime_r` 线程安全版本
+   - P3-9: `columns` 数组元素添加 `is_string()` 类型校验
+   - P3-10: `DbConn` 析构改用 `sqlite3_close_v2`
+   - P3-11: 引入 `safe_stoi(s, field_name)` 辅助函数，替换全部 9 处 `std::stoi` 调用
+3. 新发现并修复 5 个 P3 问题：
+   - P3-12: `_log_internal` 的 `catch (...)` 改为 `catch (const std::exception& e)` 并记录 stderr
+   - P3-13: `_do_cleanup` COUNT 查询 prepare 失败时记录 stderr，简化 finalize 逻辑为单一出口
+   - P3-14: `order_by` 非法元素（非 object、缺 column、类型不符）改为抛错而非静默跳过
+   - P3-15: `action` 非 string 类型时抛错而非默认 "select"
+   - P3-16: `order_by` 的 `column`/`desc` 字段添加 `is_string()`/`is_bool()` 类型校验
+4. `clang++ -std=c++20 -O2 -Wall -Werror -c` 编译验证通过，零警告零错误
+5. 更新审计文档：修复进度（22/22）、问题状态、安全机制清单（26 项）、修复路线图、复审结论
 
 ---
 
@@ -237,12 +269,15 @@ Cleanup thread → thread_local DbConn (sqlite3*)
 
 ## 复审结论
 
-**当前状态**：P0/P1/P2 级问题已全部修复（6/6），仅剩 P3 级 4 个低危健壮性改进项。SQL 注入防护机制完整，配置误操作风险已全部消除，核心安全有保障。剩余 P3 问题均不直接导致安全漏洞：
-- P3-7 `gmtime()` 线程安全：实际数据损坏概率极低（只有多线程同时写日志时竞争静态缓冲区，时间精度只到秒）
-- P3-9 columns 类型检查：仅影响错误信息友好度，不会注入或崩溃
-- P3-10 `sqlite3_close_v2`：异常路径防御性改进，当前正常路径全部正确 finalize
-- P3-11 友好错误信息：仅影响配置排错效率
+**当前状态**：五轮审计累计发现 **22 个问题，全部已修复（100%）**。P0/P1/P2 级问题在前四轮全部修复（6/6），第五轮修复了剩余 4 个遗留 P3 问题并新发现修复 5 个 P3 问题。SQL 注入防护机制完整，配置误操作风险已全部消除，所有 JSON 字段访问路径均有类型校验，异常路径均有错误日志。
 
-**与 Python 版对比**：安全基线已超越 Python 版——C++ 版新增了 schema 版本感知自动失效、空 values 校验、未知运算符报错、limit/offset 非负校验、WHERE/IN 输入规模上限、表名格式校验、日志截断、配置范围校验等防护，Python 版尚未实现这些。
+**第五轮修复亮点**：
+- **线程安全**：`utc_now()` 改用 `gmtime_r`，消除多线程并发写日志时的数据竞争
+- **资源安全**：`sqlite3_close_v2` 替代 `sqlite3_close`，异常路径不泄漏连接
+- **错误可观测**：`_log_internal` 和 `_do_cleanup` 不再静默吞异常，均有 stderr 输出
+- **输入校验完整**：`action`/`columns`/`order_by` 全部 JSON 字段类型校验，类型不符抛清晰错误
+- **配置友好**：`safe_stoi` 包装全部 9 处 `std::stoi` 调用，失败时带字段名定位
 
-**生产可用性**：✅ **可用于生产**。当前版本在配置正确（默认配置全部合法）的前提下运行稳定。剩余 P3 问题可按需排期修复。
+**与 Python 版对比**：安全基线已超越 Python 版——C++ 版新增了 schema 版本感知自动失效、空 values 校验、未知运算符报错、limit/offset 非负校验、WHERE/IN 输入规模上限、表名格式校验、日志截断、配置范围校验、线程安全时间函数、安全 sqlite3 关闭、全量 JSON 字段类型校验、异常可观测等防护，Python 版尚未实现这些。
+
+**生产可用性**：✅ **可用于生产**。全部 22 个问题已修复，26 项安全机制就位，核心安全与健壮性均有保障。

@@ -58,9 +58,32 @@ static constexpr size_t kMaxInElements      = 1000; // 单个 IN 运算符元素
 static std::string utc_now() {
     auto now = std::chrono::system_clock::now();
     std::time_t t = std::chrono::system_clock::to_time_t(now);
+    struct tm tmbuf;
+    gmtime_r(&t, &tmbuf);
     char buf[32];
-    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", std::gmtime(&t));
+    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tmbuf);
     return buf;
+}
+
+// ============================================================================
+// 工具：安全字符串转 int（失败时抛出带字段名的友好错误）
+// ============================================================================
+
+static int safe_stoi(const std::string& s, const char* field_name) {
+    try {
+        size_t pos = 0;
+        int val = std::stoi(s, &pos);
+        if (pos != s.size()) {
+            throw std::runtime_error(std::string("invalid ") + field_name
+                                     + ": '" + s + "' (trailing characters)");
+        }
+        return val;
+    } catch (const std::runtime_error&) {
+        throw;  // 已有友好信息，直接传播
+    } catch (const std::exception& e) {
+        throw std::runtime_error(std::string("invalid ") + field_name
+                                 + ": '" + s + "' (" + e.what() + ")");
+    }
 }
 
 // ============================================================================
@@ -137,7 +160,7 @@ static Config load_config(int argc, char* argv[]) {
 
     // 1. 从环境变量读取 confs 引导地址
     if (const char* h = std::getenv("CONFS_HOST")) cfg.confs_host = h;
-    if (const char* p = std::getenv("CONFS_PORT")) cfg.confs_port = std::stoi(p);
+    if (const char* p = std::getenv("CONFS_PORT")) cfg.confs_port = safe_stoi(p, "CONFS_PORT");
 
     // 2. 从 confs 服务拉取 db.ini（retry_on_refused=true，等待 confs 就绪）
     std::string ini_text;
@@ -183,25 +206,25 @@ static Config load_config(int argc, char* argv[]) {
     };
 
     cfg.listen_host      = get("server",   "host",             cfg.listen_host);
-    cfg.listen_port      = std::stoi(get("server",   "port",   std::to_string(cfg.listen_port)));
-    cfg.workers          = std::stoi(get("server",   "workers",std::to_string(cfg.workers)));
+    cfg.listen_port      = safe_stoi(get("server",   "port",   std::to_string(cfg.listen_port)), "[server] port");
+    cfg.workers          = safe_stoi(get("server",   "workers",std::to_string(cfg.workers)),     "[server] workers");
     cfg.db_url           = get("database", "url",              cfg.db_url);
-    cfg.retention_days   = std::stoi(get("logs", "retention_days",  std::to_string(cfg.retention_days)));
-    cfg.max_records      = std::stoi(get("logs", "max_records",      std::to_string(cfg.max_records)));
-    cfg.cleanup_interval = std::stoi(get("logs", "cleanup_interval", std::to_string(cfg.cleanup_interval)));
+    cfg.retention_days   = safe_stoi(get("logs", "retention_days",  std::to_string(cfg.retention_days)), "[logs] retention_days");
+    cfg.max_records      = safe_stoi(get("logs", "max_records",      std::to_string(cfg.max_records)), "[logs] max_records");
+    cfg.cleanup_interval = safe_stoi(get("logs", "cleanup_interval", std::to_string(cfg.cleanup_interval)), "[logs] cleanup_interval");
 
     // 4. 环境变量最高优先级覆盖（Docker 兼容）
     if (const char* v = std::getenv("LISTEN_ADDR"))   cfg.listen_host = v;
-    if (const char* v = std::getenv("LISTEN_PORT"))   cfg.listen_port = std::stoi(v);
-    if (const char* v = std::getenv("WORKERS"))       cfg.workers     = std::stoi(v);
+    if (const char* v = std::getenv("LISTEN_PORT"))   cfg.listen_port = safe_stoi(v, "LISTEN_PORT");
+    if (const char* v = std::getenv("WORKERS"))       cfg.workers     = safe_stoi(v, "WORKERS");
     if (const char* v = std::getenv("DATABASE_URL"))  cfg.db_url      = v;
 
     // 5. 命令行参数（最高优先级）
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if ((arg == "--addr"    || arg == "-a") && i + 1 < argc) cfg.listen_host = argv[++i];
-        else if ((arg == "--port" || arg == "-p") && i + 1 < argc) cfg.listen_port = std::stoi(argv[++i]);
-        else if ((arg == "--workers" || arg == "-w") && i + 1 < argc) cfg.workers = std::stoi(argv[++i]);
+        else if ((arg == "--port" || arg == "-p") && i + 1 < argc) cfg.listen_port = safe_stoi(argv[++i], "--port");
+        else if ((arg == "--workers" || arg == "-w") && i + 1 < argc) cfg.workers = safe_stoi(argv[++i], "--workers");
     }
 
     // 6. 数值配置范围校验（防误配置导致异常行为）
@@ -250,7 +273,7 @@ public:
     }
 
     ~DbConn() {
-        if (_db) { sqlite3_close(_db); _db = nullptr; }
+        if (_db) { sqlite3_close_v2(_db); _db = nullptr; }
     }
 
     sqlite3* get() const { return _db; }
@@ -570,8 +593,11 @@ private:
     json::value _handle_execute(const json::object& req) {
         // 提取公共字段
         std::string action = "select";
-        if (auto it = req.find("action"); it != req.end() && it->value().is_string())
+        if (auto it = req.find("action"); it != req.end()) {
+            if (!it->value().is_string())
+                throw std::runtime_error("'action' must be a string");
             action = std::string(it->value().as_string());
+        }
 
         if (!req.contains("table") || !req.at("table").is_string())
             throw std::runtime_error("missing required field: table");
@@ -608,6 +634,8 @@ private:
             it != req.end() && it->value().is_array() && !it->value().as_array().empty()) {
             col_expr.clear();
             for (auto& c : it->value().as_array()) {
+                if (!c.is_string())
+                    throw std::runtime_error("columns array must contain only strings");
                 std::string col_name = std::string(c.as_string());
                 _validate_col(col_name, col_map);
                 if (!col_expr.empty()) col_expr += ", ";
@@ -627,14 +655,20 @@ private:
             it != req.end() && it->value().is_array()) {
             std::string order;
             for (auto& ob : it->value().as_array()) {
-                if (!ob.is_object()) continue;
+                if (!ob.is_object())
+                    throw std::runtime_error("order_by array must contain only objects");
                 auto& o = ob.as_object();
-                if (!o.contains("column")) continue;
+                if (!o.contains("column") || !o.at("column").is_string())
+                    throw std::runtime_error("order_by entry requires 'column' string field");
                 std::string col_name = std::string(o.at("column").as_string());
                 _validate_col(col_name, col_map);
                 if (!order.empty()) order += ", ";
                 order += col_name;
-                if (o.contains("desc") && o.at("desc").as_bool()) order += " DESC";
+                if (o.contains("desc")) {
+                    if (!o.at("desc").is_bool())
+                        throw std::runtime_error("order_by 'desc' must be boolean");
+                    if (o.at("desc").as_bool()) order += " DESC";
+                }
             }
             if (!order.empty()) sql += " ORDER BY " + order;
         }
@@ -861,7 +895,9 @@ private:
 
             sqlite3_step(stmt);
             sqlite3_finalize(stmt);
-        } catch (...) {}
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[db2] _log_internal failed: %s\n", e.what());
+        }
     }
 
     // ---- 后台日志清理线程 -------------------------------------------------------
@@ -899,19 +935,20 @@ private:
                         if (total > _cfg.max_records) {
                             int to_delete = total - _cfg.max_records;
                             sqlite3_finalize(stmt);
+                            stmt = nullptr;
                             std::string trim_sql =
                                 "DELETE FROM Logs WHERE id IN "
                                 "(SELECT id FROM Logs ORDER BY id ASC LIMIT "
                                 + std::to_string(to_delete) + ")";
                             conn.exec(trim_sql);
                             trimmed = sqlite3_changes(conn.get());
-                        } else {
-                            sqlite3_finalize(stmt);
                         }
-                    } else {
-                        sqlite3_finalize(stmt);
                     }
+                } else {
+                    std::fprintf(stderr, "[db2] cleanup COUNT prepare failed: %s\n",
+                                 sqlite3_errmsg(conn.get()));
                 }
+                if (stmt) sqlite3_finalize(stmt);
             }
 
             if (expired > 0 || trimmed > 0) {
