@@ -9,6 +9,16 @@ void HttpServer::Listener::run() {
     if (acceptor_.is_open()) doAccept();
 }
 
+void HttpServer::Listener::close() {
+    beast::error_code ec;
+    if (acceptor_.is_open()) {
+        acceptor_.close(ec);
+        if (ec) {
+            std::cerr << "[Listener] Close acceptor error: " << ec.message() << std::endl;
+        }
+    }
+}
+
 void HttpServer::Listener::initAcceptor(tcp::endpoint ep) {
     beast::error_code ec;
     acceptor_.open(ep.protocol(), ec);
@@ -40,10 +50,17 @@ void HttpServer::Listener::doAccept() {
                 session->setRemoteInfo(ip, port);
                 self->server_->addSession(session);
                 session->run();
+                // 继续接受下一个连接
+                if (self->acceptor_.is_open()) {
+                    self->doAccept();
+                }
             } else {
-                std::cerr << "[Listener] Accept error: " << ec.message() << std::endl;
+                // acceptor 关闭或操作取消时不再递归（正常关闭流程）
+                if (ec != asio::error::operation_aborted && self->acceptor_.is_open()) {
+                    std::cerr << "[Listener] Accept error: " << ec.message() << std::endl;
+                    self->doAccept();
+                }
             }
-            self->doAccept();
         });
 }
 

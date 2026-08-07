@@ -18,7 +18,9 @@
 
 > 对比 2026-08-01 版本：修复率从 18% 提升至 56%，**所有P0严重问题已全部修复**，核心安全机制（Token吊销、错误信息脱敏）已落地。
 >
-> **更新日志**（2026-08-07 P0修复）：完成P0-3修复，将4处暴露内部步骤的错误消息替换为用户友好文案，修正拼写错误和状态码错误。
+> **更新日志**：
+> - 2026-08-07 P0修复：完成P0-3修复，将4处暴露内部步骤的错误消息替换为用户友好文案，修正拼写错误和状态码错误。
+> - 2026-08-07 稳定性修复：修复进程无法正常退出（"杀不死"）问题，包括信号处理安全、Listener无限递归CPU 100%、关闭超时保护等多个关键bug。
 
 ---
 
@@ -277,6 +279,37 @@ gateway:8443 [鉴权 + Token + 限流 + 代理白名单 + 路径校验]
 - [ ] 确认 `.env` 文件权限 0600，SMTP密码未硬编码
 - [ ] 确认 gateway 配置 `tls = off`、`address = 127.0.0.1`
 - [ ] 回归测试：登录/注册/代理/Token刷新/吊销全链路正常
+
+---
+
+## 🟢 稳定性修复（2026-08-07）
+
+在安全审计过程中发现并修复了 gateway 进程"杀不死"问题，这是一个严重影响服务可靠性的bug：
+
+### 修复的问题
+
+| # | 问题 | 严重程度 | 位置 | 修复方式 |
+|---|------|----------|------|----------|
+| 1 | 信号处理函数调用非 async-signal-safe 函数（std::cout、_SERVE->stop()、锁），可能死锁 | 高 | `main.cpp:763-767` | 改为仅设置 `volatile sig_atomic_t` 标志，主线程轮询后安全关闭 |
+| 2 | 未处理 SIGPIPE，写关闭socket时进程可能被内核意外终止 | 中 | `main.cpp` | 新增 SIGPIPE 忽略处理 |
+| 3 | Listener::doAccept() acceptor关闭后仍无条件递归，导致CPU 100%空转 | **严重** | `HttpServer_Listener.cpp:46` | 检查acceptor状态，关闭或operation_aborted时停止递归 |
+| 4 | stop()未先关闭acceptor，停止过程中仍接受新连接 | 中 | `HttpServer.cpp:98-113` | 新增Listener::close()方法，stop()先关acceptor再停ioc |
+| 5 | stop()/shutdown()无超时保护，网络IO阻塞时join线程永久挂起 | 高 | `main.cpp` | stop() 8秒超时，日志flush 3秒超时，超时强制exit保证进程退出 |
+| 6 | 主线程直接运行ioc->run()，无法安全响应信号 | 中 | `main.cpp` | 服务器在独立线程运行，主线程负责信号检测和关闭协调 |
+
+### 修复后的关闭保证
+
+- **进程绝不挂死**：双重超时保护，极端情况下最多11秒内必定退出
+- **信号处理安全**：杜绝信号处理函数中的死锁风险
+- **资源正确清理**：acceptor→WS客户端→ioc→worker线程 有序关闭
+- **SIGPIPE防护**：写关闭连接不再导致进程意外终止
+
+### 修改文件
+
+- `gateway/src/main.cpp` - 信号处理安全重构、超时保护、独立服务器线程
+- `libhttp/src/HttpServer.cpp` - 改进stop()流程顺序
+- `libhttp/src/HttpServer_Listener.cpp` - 修复无限递归bug，新增close()
+- `libhttp/inc/us/detail/HttpServerImpl.hpp` - 添加Listener::close()声明
 
 ---
 

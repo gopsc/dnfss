@@ -12,6 +12,10 @@
 #include <csignal>
 #include <random>
 #include <regex>
+#include <thread>
+#include <future>
+#include <chrono>
+#include <unistd.h>
 #include <boost/json.hpp>
 #include <boost/program_options.hpp>
 #include <openssl/evp.h>
@@ -759,21 +763,44 @@ TokenInfo verify_token(const std::string& raw_token) {
 	return info;
 }
 
-/* -------- 信号处理回调函数 -------- */
-void signalHandler(int signum) {
+/* -------- 信号处理 --------
+ *
+ * 安全设计原则：
+ * 1. 信号处理函数中只做 async-signal-safe 操作：设置 volatile sig_atomic_t 标志
+ * 2. 绝不调用 std::cout、malloc、锁、ioc_->stop() 等非安全函数（可能导致死锁）
+ * 3. 主线程在安全点检测标志后再执行完整的关闭流程
+ * 4. 忽略 SIGPIPE（写已关闭 socket 时内核默认发送该信号终止进程）
+ */
+static volatile std::sig_atomic_t _stop_requested = 0;
 
-	std::cout << "Receive close signal, prepare to shutdown...\n";
-	if (_SERVE) _SERVE->stop();
+void signalHandler(int signum) {
+	// 仅设置标志，不做其他操作（write 是 async-signal-safe 的，用于输出提示）
+	const char msg[] = "\n[gateway] 收到关闭信号，准备退出...\n";
+	::write(STDERR_FILENO, msg, sizeof(msg) - 1);
+	_stop_requested = 1;
+}
+
+void sigpipeHandler(int signum) {
+	// 忽略 SIGPIPE，write 调用会返回 EPIPE 错误而非终止进程
 }
 
 /* -------- 注册信号处理钩子 -------- */
 void set_signal_action() {
 	struct sigaction sa;
+
+	// SIGINT / SIGTERM：安全设置关闭标志
 	sa.sa_handler = signalHandler;
 	sigemptyset(&sa.sa_mask);
 	sa.sa_flags = 0;
 	sigaction(SIGINT, &sa, nullptr);
 	sigaction(SIGTERM, &sa, nullptr);
+
+	// SIGPIPE：忽略，防止写关闭的 socket 时进程意外终止
+	struct sigaction sa_pipe;
+	sa_pipe.sa_handler = sigpipeHandler;
+	sigemptyset(&sa_pipe.sa_mask);
+	sa_pipe.sa_flags = 0;
+	sigaction(SIGPIPE, &sa_pipe, nullptr);
 }
 
 /* -------- 入口 --------*/
@@ -976,19 +1003,81 @@ int main(int argc, char **argv) {
 	/* */
 	set_signal_action();
 
-	/* 获取资源 */
-	_SERVE->start();
+	std::cout << "Gateway " << _VER << " starting..." << std::endl;
 
+	/* 在独立线程中运行服务器（start + run）
+	 * 原因：
+	 * 1. 信号处理函数只能安全设置 atomic 标志，不能直接调用 stop()
+	 * 2. 主线程轮询检测关闭信号后，在安全上下文调用 stop()
+	 * 3. 避免在信号处理函数中操作非 async-signal-safe 的 io_context、锁、iostream
+	 */
+	std::atomic<bool> server_exited{false};
+	std::thread server_thread([&]() {
+		try {
+			_SERVE->run();  // run() 内部会调用 start() 启动 listener 和 worker 线程
+		} catch (const std::exception& e) {
+			std::cerr << "[gateway] Server thread exception: " << e.what() << std::endl;
+		}
+		server_exited = true;
+	});
 
+	// 等待服务器启动完成（简单延迟，确保started日志打印后再输出提示）
+	std::this_thread::sleep_for(std::chrono::milliseconds(200));
 	std::cout << "Gateway " << _VER << " started" << std::endl;
 	logs().info("gateway", std::string("Gateway ") + _VER + " started");
 
-	/* 开始监听 */
-	_SERVE->run();
+	/* 主线程：等待关闭信号，带超时轮询 */
+	while (!_stop_requested && !server_exited) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(200));
+	}
 
-	/* 收到停止信号后的收尾：记录并 flush 剩余日志 */
+	/* 收到信号或服务器异常退出：安全执行关闭流程 */
+	if (!server_exited && _SERVE) {
+		std::cerr << "[gateway] 正在停止服务器..." << std::endl;
+
+		// 给服务器 5 秒时间优雅关闭，防止挂死
+		std::thread stop_thread([&]() {
+			try {
+				_SERVE->stop();
+			} catch (const std::exception& e) {
+				std::cerr << "[gateway] Stop exception: " << e.what() << std::endl;
+			}
+		});
+
+		// 最多等待 8 秒，超时则 detach 让系统回收（极端情况下保证进程退出）
+		if (stop_thread.joinable()) {
+			auto future = std::async(std::launch::async, &std::thread::join, &stop_thread);
+			if (future.wait_for(std::chrono::seconds(8)) == std::future_status::timeout) {
+				std::cerr << "[gateway] 警告：服务器停止超时，强制退出" << std::endl;
+				stop_thread.detach();
+				std::exit(1);  // 极端情况：8秒还没停完，强制退出（日志可能丢失但进程不挂死）
+			}
+		}
+	}
+
+	if (server_thread.joinable()) {
+		server_thread.join();
+	}
+
+	/* 收到停止信号后的收尾：记录并 flush 剩余日志（最多等待3秒） */
+	std::cerr << "[gateway] 正在刷新日志..." << std::endl;
 	logs().info("gateway", "Gateway shutdown");
-	logs().shutdown();
+	{
+		std::thread log_flush_thread([]() {
+			logs().shutdown();
+		});
+		auto future = std::async(std::launch::async, &std::thread::join, &log_flush_thread);
+		if (future.wait_for(std::chrono::seconds(3)) == std::future_status::timeout) {
+			std::cerr << "[gateway] 警告：日志刷新超时，退出" << std::endl;
+			log_flush_thread.detach();
+		} else {
+			log_flush_thread.join();
+		}
+	}
+
+	std::cerr << "[gateway] 已退出" << std::endl;
+	_SERVE.reset();
+	_KEYGEN.reset();
 }
 
 //void db_init() {

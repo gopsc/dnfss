@@ -99,17 +99,38 @@ void HttpServer::stop() {
     if (!running_) return;
     running_ = false;
 
+    std::cerr << "[HttpServer] 正在停止服务器..." << std::endl;
+
+    // 1. 先关闭 acceptor，停止接受新连接
+    if (listener_) {
+        listener_->close();
+    }
+
+    // 2. 清空 WebSocket 客户端（触发它们的关闭回调）
     {
         std::lock_guard<std::mutex> lock(ws_clients_mutex_);
         ws_clients_.clear();
     }
 
+    // 3. 清空 session 列表（weak_ptr，session 会在异步操作完成后自动析构）
     closeAllSessions();
-    if (ioc_) ioc_->stop();
-    for (auto& t : worker_threads_) if (t.joinable()) t.join();
+
+    // 4. 停止 io_context 事件循环（取消所有挂起的异步操作）
+    if (ioc_) {
+        ioc_->stop();
+    }
+
+    // 5. 等待所有 worker 线程退出
+    for (auto& t : worker_threads_) {
+        if (t.joinable()) t.join();
+    }
     worker_threads_.clear();
+
+    // 6. 重置 listener
     listener_.reset();
-    std::cout << (ssl_enabled_ ? "HTTPS" : "HTTP") << " Server stopped\n";
+
+    std::cerr << "[HttpServer] " << (ssl_enabled_ ? "HTTPS" : "HTTP")
+              << " Server stopped" << std::endl;
 }
 
 void HttpServer::run() {
