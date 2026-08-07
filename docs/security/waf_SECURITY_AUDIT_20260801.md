@@ -334,7 +334,7 @@ ServeHTTP 中 defer 只关闭了 WAF 事务 `tx`，但没有显式关闭/耗尽 
 
 ## 代码验证记录
 
-**验证日期**: 2026-08-03  
+**验证日期**: 2026-08-08（二次验证，P1/P2 全量修复）  
 **验证方式**: 逐条对照审计报告与当前代码
 
 ### 验证结果汇总
@@ -342,29 +342,43 @@ ServeHTTP 中 defer 只关闭了 WAF 事务 `tx`，但没有显式关闭/耗尽 
 | 等级 | 总数 | 已修复 | 未修复 | 修复率 |
 |------|------|--------|--------|--------|
 | P0 | 3 | 2 | 1 | 67% |
-| P1 | 5 | 1 | 4 | 20% |
-| P2 | 6 | 3 | 3 | 50% |
+| P1 | 5 | 5 | 0 | 100% |
+| P2 | 6 | 6 | 0 | 100% |
 | P3 | 3 | 0 | 3 | 0% |
-| **合计** | **17** | **6** | **11** | **35%** |
+| **合计** | **17** | **13** | **4** | **76%** |
 
 ### 逐条验证
 
 | 编号 | 状态 | 代码位置 |
 |------|------|----------|
 | P0-1 | ✅ 已修复 | `proxy.go` L22-23 `maxRequestBodySize`，L128-151 `io.LimitReader` + 413 |
-| P0-2 | ✅ 已修复 | `main.go` L111-122 五项超时/大小限制已设置 |
-| **P0-3** | ❌ 未修复 | `custom.conf` 全部 6 条规则仍被 `#` 注释 |
-| **P1-1** | ❌ 未修复 | `proxy.go` L47-48 仍用 `LastIndexByte(':')`，未用 `net.SplitHostPort` |
-| **P1-2** | ❌ 未修复 | `proxy.go` L194 `ProcessResponseHeaders` 返回值被丢弃 |
+| P0-2 | ✅ 已修复 | `main.go` L112-123 五项超时/大小限制已设置 |
+| **P0-3** | ❌ 未修复 | `custom.conf` 全部 6 条规则仍被 `#` 注释（依赖拉取 CRS 生效） |
+| P1-1 | ✅ 已修复 | `proxy.go` L45-49、L102-105 改用 `net.SplitHostPort`，正确处理 IPv6 |
+| P1-2 | ✅ 已修复 | `proxy.go` L194-204 捕获 `ProcessResponseHeaders` 返回值，命中记录 WARNING 告警 |
 | P1-3 | ✅ 已修复 | `proxy.go` L130-135 读取错误已记录日志并返回 |
-| **P1-4** | ❌ 未修复 | `main.go` L99-109 只处理 SIGHUP，无 SIGINT/SIGTERM |
-| **P1-5** | ❌ 未修复 | `main.go` L89 `log.SetOutput(io.Discard)` 仍在 |
-| **P2-1** | ❌ 未修复 | `engine.go` L157 `os.ReadFile` 无前置大小检查 |
-| **P2-2** | ❌ 未修复 | `logclient.go` L24 `const dbAddr = "127.0.0.1:8005"` 硬编码 |
+| P1-4 | ✅ 已修复 | `main.go` L125-152 SIGINT/SIGTERM 优雅关闭 + `logclient.Flush()` |
+| P1-5 | ✅ 已修复 | `main.go` L89-90 `log.SetOutput(os.Stderr)`，保留 panic 堆栈 |
+| P2-1 | ✅ 已修复 | `engine.go` L18-31 `checkRuleFileSize`（1 MiB 上限），Reload/TestFile/ListRules 均校验 |
+| P2-2 | ✅ 已修复 | `logclient.go` L25-40 支持 `LOG_DB_ADDR` 环境变量 |
 | P2-3 | ✅ 已修复 | `proxy.go` L194 改为 `r.Proto` |
 | P2-4 | ✅ 已修复 | `proxy.go` L254-269 完整实现 `Hijack()` |
-| **P2-5** | ❌ 未修复 | `logclient.go` L223 `fmt.Printf` 到 stdout |
+| P2-5 | ✅ 已修复 | `logclient.go` L233 `fmt.Fprintf(os.Stderr, ...)` |
 | P2-6 | ✅ 已修复 | `proxy.go` L93-97 defer 中 drain + close |
-| P3-1 | ❌ 未修复 | `logclient.go` L229 每条日志 `net.DialTimeout` 短连接 |
-| P3-2 | ❌ 未修复 | `main.go` L119-121 仅设置 MinVersion，未限定 CipherSuites |
-| P3-3 | ❌ 未修复 | `engine.go` L103-129 CheckInput 编码逻辑未变 |
+| P3-1 | ❌ 未修复 | `logclient.go` 每条日志 `net.DialTimeout` 短连接（TIME_WAIT） |
+| P3-2 | ❌ 未修复 | `main.go` L120-122 仅设置 MinVersion，未限定 CipherSuites |
+| P3-3 | ❌ 未修复 | `engine.go` CheckInput 编码逻辑未变（CLI 工具，不影响线上） |
+
+### 二次修复说明（2026-08-08）
+
+本轮修复 P1 全部 4 项 + P2 剩余 3 项，P1/P2 清零，修复率 35% → 76%。
+
+- **P1-1**：`X-Forwarded-For` 与 `ProcessConnection` 的 IP 解析统一改用 `net.SplitHostPort`，IPv6 地址（如 `[::1]:54321`）不再带方括号，gateway RateLimiter 限流恢复正确。
+- **P1-2**：`ProcessResponseHeaders` 返回值不再被丢弃。受限于响应头已发送无法撤销状态码，命中后仅记录 WARNING 告警日志（含 rule_id/ip/method/path/status），不执行拦截。
+- **P1-4**：新增 SIGINT/SIGTERM 监听，`server.Shutdown(ctx)` 给进行中请求 10s 宽限期，退出前 `logclient.Flush()` 刷新队列日志，避免日志丢失。
+- **P1-5**：标准 `log` 输出由 `io.Discard` 改为 `os.Stderr`，net/http 的 panic 堆栈与 TLS 握手错误可被 journalctl 捕获。
+- **P2-1**：新增 `checkRuleFileSize`（1 MiB 上限），`Reload` 中主配置/local/CRS 每个文件加载前校验，超限返回错误并保留旧实例；`ListRules` 跳过超大文件不中断列举；`TestFile` 校验目标文件。
+- **P2-2**：logclient db 地址支持环境变量 `LOG_DB_ADDR`（默认 `127.0.0.1:8005`），非标准部署可配置。
+- **P2-5**：日志 INSERT 失败由 `fmt.Printf`（stdout）改为 `fmt.Fprintf(os.Stderr, ...)`，带时间戳/级别可被守护进程捕获。
+
+剩余未修复：P0-3（默认规则注释，设计上依赖拉取 CRS）、P3-1/2/3（低优先级优化）。

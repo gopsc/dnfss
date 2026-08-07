@@ -16,18 +16,28 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"time"
 )
 
 const (
-	dbAddr        = "127.0.0.1:8005"
+	defaultDBAddr = "127.0.0.1:8005"
 	batchSize     = 50
 	flushInterval = 2 * time.Second
 	socketTimeout = 5 * time.Second
 	// 消息大小安全上限（64 MiB），与 Python / C++ 端保持一致。
 	maxMsgSize = 64 * 1024 * 1024
 )
+
+// dbAddr 通过环境变量 LOG_DB_ADDR 配置（默认 127.0.0.1:8005），支持非标准部署场景。
+var dbAddr = defaultDBAddr
+
+func init() {
+	if v := os.Getenv("LOG_DB_ADDR"); v != "" {
+		dbAddr = v
+	}
+}
 
 // Entry 单条日志。
 type Entry struct {
@@ -220,7 +230,7 @@ func (c *Client) sendOne(entry Entry, ts string) {
 
 	var r dbV2Response
 	if json.Unmarshal(resp, &r) != nil || !r.Success {
-		fmt.Printf("[logclient] INSERT failed: %s\n", r.Error)
+		fmt.Fprintf(os.Stderr, "[logclient] INSERT failed: %s\n", r.Error)
 	}
 }
 
