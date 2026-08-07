@@ -136,28 +136,16 @@ func (e *Engine) CheckInput(input string) []int {
 		uri = "/" + uri
 	}
 
-	// 分离 path 与 query，对 query 做合法 URL 编码（空格等非法字符需转义）
+	// 用 net/url 解析并重新编码 query，正确处理无值 key、重复 key、特殊字符
 	// 这样 coraza ProcessURI 内部的 url.ParseRequestURI 不会失败，ARGS 才能被正确提取
-	fullURI := uri
-	if idx := strings.Index(uri, "?"); idx >= 0 {
-		path := uri[:idx]
-		rawQuery := uri[idx+1:]
-		// 用 net/url 编码 query：保留 & = ，其他特殊字符转义
-		var parts []string
-		for _, kv := range strings.Split(rawQuery, "&") {
-			eq := strings.Index(kv, "=")
-			if eq < 0 {
-				parts = append(parts, url.QueryEscape(kv))
-			} else {
-				parts = append(parts, url.QueryEscape(kv[:eq])+"="+url.QueryEscape(kv[eq+1:]))
-			}
-		}
-		fullURI = path + "?" + strings.Join(parts, "&")
+	if u, err := url.Parse(uri); err == nil && u.RawQuery != "" {
+		u.RawQuery = u.Query().Encode()
+		uri = u.String()
 	}
 
 	// 照搬 coraza/http/middleware.go 的 processRequest 流程
 	tx.ProcessConnection("127.0.0.1", 8080, "127.0.0.1", 12345)
-	tx.ProcessURI(fullURI, "GET", "HTTP/1.1")
+	tx.ProcessURI(uri, "GET", "HTTP/1.1")
 	tx.AddRequestHeader("Host", "localhost")
 	tx.SetServerName("localhost")
 	if it := tx.ProcessRequestHeaders(); it != nil {

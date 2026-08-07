@@ -334,7 +334,7 @@ ServeHTTP 中 defer 只关闭了 WAF 事务 `tx`，但没有显式关闭/耗尽 
 
 ## 代码验证记录
 
-**验证日期**: 2026-08-08（二次验证，P1/P2 全量修复）  
+**验证日期**: 2026-08-08（三次验证，P3 全量修复）  
 **验证方式**: 逐条对照审计报告与当前代码
 
 ### 验证结果汇总
@@ -344,8 +344,8 @@ ServeHTTP 中 defer 只关闭了 WAF 事务 `tx`，但没有显式关闭/耗尽 
 | P0 | 3 | 2 | 1 | 67% |
 | P1 | 5 | 5 | 0 | 100% |
 | P2 | 6 | 6 | 0 | 100% |
-| P3 | 3 | 0 | 3 | 0% |
-| **合计** | **17** | **13** | **4** | **76%** |
+| P3 | 3 | 3 | 0 | 100% |
+| **合计** | **17** | **16** | **1** | **94%** |
 
 ### 逐条验证
 
@@ -365,9 +365,9 @@ ServeHTTP 中 defer 只关闭了 WAF 事务 `tx`，但没有显式关闭/耗尽 
 | P2-4 | ✅ 已修复 | `proxy.go` L254-269 完整实现 `Hijack()` |
 | P2-5 | ✅ 已修复 | `logclient.go` L233 `fmt.Fprintf(os.Stderr, ...)` |
 | P2-6 | ✅ 已修复 | `proxy.go` L93-97 defer 中 drain + close |
-| P3-1 | ❌ 未修复 | `logclient.go` 每条日志 `net.DialTimeout` 短连接（TIME_WAIT） |
-| P3-2 | ❌ 未修复 | `main.go` L120-122 仅设置 MinVersion，未限定 CipherSuites |
-| P3-3 | ❌ 未修复 | `engine.go` CheckInput 编码逻辑未变（CLI 工具，不影响线上） |
+| P3-1 | ✅ 已修复 | `logclient.go` pymsgCall 改为方法，复用长连接，失败时重建一次 |
+| P3-2 | ✅ 已修复 | `main.go` L120-142 显式限定 CipherSuites + CurvePreferences |
+| P3-3 | ✅ 已修复 | `engine.go` CheckInput 改用 `url.Parse` + `Query().Encode()` 重构编码 |
 
 ### 二次修复说明（2026-08-08）
 
@@ -381,4 +381,10 @@ ServeHTTP 中 defer 只关闭了 WAF 事务 `tx`，但没有显式关闭/耗尽 
 - **P2-2**：logclient db 地址支持环境变量 `LOG_DB_ADDR`（默认 `127.0.0.1:8005`），非标准部署可配置。
 - **P2-5**：日志 INSERT 失败由 `fmt.Printf`（stdout）改为 `fmt.Fprintf(os.Stderr, ...)`，带时间戳/级别可被守护进程捕获。
 
-剩余未修复：P0-3（默认规则注释，设计上依赖拉取 CRS）、P3-1/2/3（低优先级优化）。
+### 三次修复说明（2026-08-08）
+
+本轮修复 P3 全部 3 项，P3 清零，修复率 76% → 94%。仅剩 P0-3（默认规则注释，设计上依赖拉取 CRS 生效，非代码缺陷）。
+
+- **P3-1**：`pymsgCall` 由包级函数改为 `Client` 方法，复用 `c.conn` 长连接；首次发送失败时 `closeConn` 后重建一次，避免高并发拦截场景下每条日志新建 TCP 短连接导致 TIME_WAIT 堆积。`send` 仅在 `flushLoop` 单 goroutine 调用，无需额外加锁。
+- **P3-2**：`TLSConfig` 显式限定 `CipherSuites`（TLS 1.3 三套 + TLS 1.2 ECDHE 六套，全部 AEAD + 前向保密）与 `CurvePreferences`（X25519/P256/P384），排除 RC4/3DES/CBC 等弱加密套件。
+- **P3-3**：`CheckInput` 的 query 编码逻辑由手动 `Split("&")` + `Index("=")` 改为 `url.Parse` + `Query().Encode()`，正确处理无值 key、重复 key、嵌套结构等边界情况。

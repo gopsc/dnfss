@@ -119,6 +119,26 @@ func main() {
 		MaxHeaderBytes:    1 << 20, // 1MB
 		TLSConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
+			// 显式限定安全 CipherSuites，排除弱加密套件（RC4/3DES/CBC 等）
+			CipherSuites: []uint16{
+				// TLS 1.3 套件（Go 自动选择，显式列出便于审计）
+				tls.TLS_AES_128_GCM_SHA256,
+				tls.TLS_AES_256_GCM_SHA384,
+				tls.TLS_CHACHA20_POLY1305_SHA256,
+				// TLS 1.2 ECDHE 套件（前向保密 + AEAD）
+				tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+			},
+			// 优先使用高性能且安全的椭圆曲线
+			CurvePreferences: []tls.CurveID{
+				tls.X25519,
+				tls.CurveP256,
+				tls.CurveP384,
+			},
 		},
 	}
 

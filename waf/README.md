@@ -337,14 +337,19 @@ WAF 支持透明代理 WebSocket 连接（如 aibox 的 WebSocket 接口）。�
 - **响应体检测未启用**（未 `ProcessResponseBody`，缓冲整个响应延迟成本高）。SQL 报错回显等响应体泄漏检测缺失。
 - **WebSocket 帧内容不检测**：升级后二进制帧直接转发，不经过 WAF 规则引擎（适用于内部可信服务如 aibox）。
 - 限流/黑白名单未实现，可后续作为 coraza 规则或独立中间件加。
-- TLS 仅设 `MinVersion: TLS1.2`，未限定 cipher suites，允许弱加密套件。
 - `X-Forwarded-For` 直接覆盖原值（`Header.Set`），未按 RFC 7239 追加；当前 gateway 也只取第一个 IP，无实际影响，但语义不严格。
 - CSP 仍含 `'unsafe-inline'`（为兼容 forgot.html 与 games/*.html 的内联脚本），待前端清理后可收紧。
 - HSTS 已启用（半年期，不含子域），站点全量 HTTPS 覆盖后可按需收紧。
-- logclient 日志推送每次新建 TCP 短连接，高并发拦截场景可能产生较多 TIME_WAIT（已支持通过环境变量 `LOG_DB_ADDR` 配置 db 地址）。
 - **默认规则全部注释**：`rules/local/custom.conf` 中自定义规则默认注释，需手动取消注释或拉取 OWASP CRS 后才有实际拦截效果。启动时无 warning 提示。**注意：CRS 规则目录不入库，需先在部署机执行 `_fetch_crs.sh`；未拉取 CRS 时 WAF 开箱无拦截能力。**
 
 ## 版本日志
+
+### v1.5（2026-08-08）— P3 安全修复
+
+- **fix(P3-1)**: logclient 复用 TCP 长连接，失败时重建一次，消除高并发拦截场景下的 TIME_WAIT 短连接堆积
+- **fix(P3-2)**: TLS 显式限定 CipherSuites（TLS 1.3 三套 + TLS 1.2 ECDHE 六套，全部 AEAD + 前向保密）与 CurvePreferences（X25519/P256/P384），排除弱加密套件
+- **fix(P3-3)**: CheckInput 的 query 编码改用 `url.Parse` + `Query().Encode()`，正确处理无值 key、重复 key、嵌套结构
+- 修复率从 76% 提升至 94%（P3 全部修复，仅剩 P0-3 默认规则注释为设计依赖）
 
 ### v1.4（2026-08-08）— P1/P2 安全修复
 
