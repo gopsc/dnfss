@@ -204,6 +204,28 @@ static Config load_config(int argc, char* argv[]) {
         else if ((arg == "--workers" || arg == "-w") && i + 1 < argc) cfg.workers = std::stoi(argv[++i]);
     }
 
+    // 6. 数值配置范围校验（防误配置导致异常行为）
+    if (cfg.listen_port < 1 || cfg.listen_port > 65535) {
+        std::fprintf(stderr, "[db2] invalid listen_port: %d (must be 1-65535)\n", cfg.listen_port);
+        std::exit(1);
+    }
+    if (cfg.workers < 1) {
+        std::fprintf(stderr, "[db2] invalid workers: %d (must be >= 1)\n", cfg.workers);
+        std::exit(1);
+    }
+    if (cfg.cleanup_interval < 1) {
+        std::fprintf(stderr, "[db2] invalid cleanup_interval: %d (must be >= 1 second)\n", cfg.cleanup_interval);
+        std::exit(1);
+    }
+    if (cfg.retention_days < 0) {
+        std::fprintf(stderr, "[db2] invalid retention_days: %d (must be >= 0)\n", cfg.retention_days);
+        std::exit(1);
+    }
+    if (cfg.max_records < 1) {
+        std::fprintf(stderr, "[db2] invalid max_records: %d (must be >= 1)\n", cfg.max_records);
+        std::exit(1);
+    }
+
     return cfg;
 }
 
@@ -301,7 +323,7 @@ public:
         srv_cfg.workers = _cfg.workers;
 
         RpcServer rpc(_cfg.listen_host, _cfg.listen_port, srv_cfg,
-            [this](const std::string& route, const std::exception& e) {
+            [](const std::string& route, const std::exception& e) {
                 std::fprintf(stderr, "[db2] handler error route=%s: %s\n",
                              route.c_str(), e.what());
             });
