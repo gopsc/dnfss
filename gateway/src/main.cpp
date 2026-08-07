@@ -28,7 +28,7 @@ using namespace qing;
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-constexpr const char *_VER = "0.7.0";
+constexpr const char *_VER = "0.8.0";
 
 //////////////////////////////////
 #include <sstream>
@@ -341,6 +341,43 @@ bool is_special_header(const std::string &header);
 /* 请求路径安全性校验（防路径遍历/协议注入/空字节） */
 bool is_safe_target(const std::string& target);
 
+/* ===== Token 吊销机制 ===== */
+// Token 验签结果结构体
+struct TokenInfo {
+	bool valid = false;
+	std::string username;
+	std::string jti;       // Token 唯一标识（用于单 Token 吊销）
+	int ver = 1;           // 用户 Token 版本号（用于全设备吊销）
+	bool is_admin = false;
+	int keep_time = 3600;
+	int refresh_count = 0;
+	int max_refresh = 10;
+	std::string iat;
+	std::string created_at;
+	int http_status = 401;  // 验签失败时的推荐 HTTP 状态码
+};
+
+// 生成 128-bit 随机 JTI（hex 字符串，32 字符）
+std::string generate_jti();
+
+// 获取用户当前 Token 版本号（不存在则初始化为 1）
+int get_user_ver(const std::string& username);
+
+// 吊销单个 Token（将 jti 加入黑名单直到其过期）
+void revoke_jti(const std::string& jti, int keep_time);
+
+// 吊销用户所有 Token（递增版本号，使该用户所有旧 Token 失效）
+void revoke_all_user_tokens(const std::string& username);
+
+// 从请求中提取原始 Token 字符串（Authorization: Bearer 优先，回退 Cookie q4_token）
+// 返回值：原始 "base64_signature" 格式字符串；提取失败返回空串
+// out_cookie_token：如果 Token 来自 Cookie，回填 cookie_token 值（供下游 Authorization 注入）
+std::string extract_token_from_request(const http::request<http::string_body>& req, std::string& out_cookie_token);
+
+// 统一 Token 验签：RSA 验签 + 过期检查 + jti 黑名单检查 + 版本号检查
+// 参数 raw_token："base64data_signature" 格式（不含 "Bearer " 前缀）
+TokenInfo verify_token(const std::string& raw_token);
+
 /* configure items */
 static std::string		_ADDR;
 static int			_PORT;
@@ -402,6 +439,26 @@ struct CaptchaEntry {
 };
 static std::unordered_map<std::string, CaptchaEntry> _CAPTCHA_STORE;
 static std::mutex _CAPTCHA_MTX;
+
+/* Token 吊销机制（P1：Token 吊销缺失修复）
+ *
+ * 双轨纯内存方案：
+ * 1. jti_denylist：单 Token 吊销（logout），key=jti，val=过期时间（steady_clock），到期自动清理
+ * 2. user_ver_map：用户级版本号（改密/封禁），key=username，val=当前版本号，签发新 Token 时读取
+ *
+ * 设计优势：
+ * - 零 DB 改动：黑名单和版本号全在 gateway 进程内存中
+ * - 重启自动清空：gateway 每次重启 RSA 密钥对重新生成，旧 Token 签名天然验签失败
+ * - O(1) 验签：unordered_set/map 查找均摊 O(1)，对代理转发性能无影响
+ * - 内存有界：jti_denylist 定期清理过期条目；user_ver_map 按需清理
+ */
+struct JtiDenylistEntry {
+	std::chrono::steady_clock::time_point expire_at;
+};
+static std::unordered_map<std::string, JtiDenylistEntry> _JTI_DENYLIST;
+static std::unordered_map<std::string, int> _USER_VER_MAP;
+static std::mutex _TOKEN_REVOKE_MTX;
+static constexpr size_t _JTI_DENYLIST_MAX_SIZE = 5000;  // 超过此阈值触发批量清理
 
 /* 集中式日志客户端：推送 gateway 运行日志到 db 模块 Logs 表（异步批量，fail-safe） */
 static inline LogC& logs() { return LogC::instance(); }
@@ -476,6 +533,230 @@ bool verify_email_code_remote(const std::string& email, const std::string& code)
 	} catch (const std::exception&) {
 		return false;
 	}
+}
+
+/* ===== Token 吊销机制实现 ===== */
+
+std::string generate_jti() {
+	unsigned char jti_bytes[16];
+	RAND_bytes(jti_bytes, 16);
+	std::string jti;
+	static const char hex[] = "0123456789abcdef";
+	jti.reserve(32);
+	for (int i = 0; i < 16; i++) {
+		jti += hex[jti_bytes[i] >> 4];
+		jti += hex[jti_bytes[i] & 0x0F];
+	}
+	return jti;
+}
+
+int get_user_ver(const std::string& username) {
+	std::lock_guard<std::mutex> lock(_TOKEN_REVOKE_MTX);
+	auto it = _USER_VER_MAP.find(username);
+	if (it == _USER_VER_MAP.end()) {
+		_USER_VER_MAP[username] = 1;
+		return 1;
+	}
+	return it->second;
+}
+
+void revoke_jti(const std::string& jti, int keep_time) {
+	if (jti.empty()) return;
+	std::lock_guard<std::mutex> lock(_TOKEN_REVOKE_MTX);
+	auto expire = std::chrono::steady_clock::now() + std::chrono::seconds(keep_time);
+	_JTI_DENYLIST[jti] = {expire};
+
+	// 超过阈值时批量清理过期条目
+	if (_JTI_DENYLIST.size() > _JTI_DENYLIST_MAX_SIZE) {
+		auto now = std::chrono::steady_clock::now();
+		for (auto it = _JTI_DENYLIST.begin(); it != _JTI_DENYLIST.end(); ) {
+			if (now > it->second.expire_at)
+				it = _JTI_DENYLIST.erase(it);
+			else
+				++it;
+		}
+	}
+}
+
+void revoke_all_user_tokens(const std::string& username) {
+	if (username.empty()) return;
+	std::lock_guard<std::mutex> lock(_TOKEN_REVOKE_MTX);
+	auto it = _USER_VER_MAP.find(username);
+	if (it == _USER_VER_MAP.end()) {
+		_USER_VER_MAP[username] = 2;  // 初始版本1，吊销后为2
+	} else {
+		it->second++;
+	}
+	logs().info("gateway", "用户所有Token已吊销: " + username, std::nullopt,
+		json::serialize(json::value{{"new_ver", _USER_VER_MAP[username]}}));
+}
+
+std::string extract_token_from_request(const http::request<http::string_body>& req, std::string& out_cookie_token) {
+	out_cookie_token.clear();
+	std::string raw;
+
+	// 1. 优先从 Authorization: Bearer 头获取
+	auto it_auth = req.base().find("Authorization");
+	if (it_auth != req.base().end()) {
+		raw = std::string(it_auth->value());
+	}
+
+	// 2. 回退从 Cookie q4_token 获取
+	if (raw.empty()) {
+		auto cit = req.base().find("Cookie");
+		if (cit != req.base().end()) {
+			std::string cookie_token = get_cookie_value(std::string(cit->value()), "q4_token");
+			if (!cookie_token.empty()) {
+				raw = "Bearer " + cookie_token;
+				out_cookie_token = cookie_token;
+			}
+		}
+	}
+
+	// 去掉 "Bearer " 前缀
+	if (raw.size() >= 7 && raw.substr(0, 7) == "Bearer ") {
+		return raw.substr(7);
+	}
+	return raw;  // 可能为空或不含前缀，由调用方处理
+}
+
+// 清理 denylist 中指定 jti（如果已过期则删除）
+static void cleanup_jti_if_expired(const std::string& jti) {
+	auto now = std::chrono::steady_clock::now();
+	auto it = _JTI_DENYLIST.find(jti);
+	if (it != _JTI_DENYLIST.end() && now > it->second.expire_at) {
+		_JTI_DENYLIST.erase(it);
+	}
+}
+
+TokenInfo verify_token(const std::string& raw_token) {
+	TokenInfo info;
+	info.valid = false;
+
+	if (raw_token.empty()) {
+		info.http_status = 401;
+		return info;
+	}
+
+	// 解析 base64data_signature
+	size_t idx = raw_token.find("_");
+	if (idx == std::string::npos) {
+		info.http_status = 400;
+		return info;
+	}
+
+	std::string data = raw_token.substr(0, idx);
+	std::string sign = raw_token.substr(idx + 1);
+	std::string auth;
+	try {
+		auth = Base64::base64_decode_to_string(data);
+	} catch (const std::exception&) {
+		info.http_status = 400;
+		return info;
+	}
+
+	// RSA 验签
+	auto publ = MyRSA::Public_Key::from_pem(_KEYGEN->get_public_key_pem());
+	if (!publ.Verify(auth, sign)) {
+		info.http_status = 401;
+		return info;
+	}
+
+	// 解析 payload
+	json::value jv_t;
+	try {
+		jv_t = json::parse(auth);
+	} catch (const std::exception&) {
+		info.http_status = 400;
+		return info;
+	}
+	if (!jv_t.is_object()) {
+		info.http_status = 400;
+		return info;
+	}
+
+	json::object& obj = jv_t.as_object();
+
+	// 提取字段（兼容旧 Token 缺失 jti/ver 字段的情况）
+	try {
+		info.username = json::value_to<std::string>(obj.at("user"));
+	} catch (...) {
+		info.http_status = 400;
+		return info;
+	}
+
+	// 过期检查
+	auto it_created = obj.find("created_at");
+	if (it_created != obj.end() && it_created->value().is_string()) {
+		info.created_at = json::value_to<std::string>(it_created->value());
+	}
+	auto it_keep = obj.find("keep_time");
+	if (it_keep != obj.end() && it_keep->value().is_int64()) {
+		info.keep_time = static_cast<int>(it_keep->value().as_int64());
+	}
+	if (!info.created_at.empty()) {
+		auto created_tp = LocalTime::parse(info.created_at);
+		if (created_tp) {
+			auto now = std::chrono::system_clock::now();
+			auto expire_tp = *created_tp + std::chrono::seconds(info.keep_time);
+			if (now > expire_tp) {
+				info.http_status = 401;
+				return info;
+			}
+		}
+	}
+
+	// is_admin
+	auto it_admin = obj.find("is_admin");
+	if (it_admin != obj.end() && it_admin->value().is_bool()) {
+		info.is_admin = it_admin->value().as_bool();
+	}
+
+	// refresh_count / max_refresh / iat
+	auto it_rc = obj.find("refresh_count");
+	if (it_rc != obj.end() && it_rc->value().is_int64())
+		info.refresh_count = static_cast<int>(it_rc->value().as_int64());
+	auto it_mr = obj.find("max_refresh");
+	if (it_mr != obj.end() && it_mr->value().is_int64())
+		info.max_refresh = static_cast<int>(it_mr->value().as_int64());
+	auto it_iat = obj.find("iat");
+	if (it_iat != obj.end() && it_iat->value().is_string())
+		info.iat = json::value_to<std::string>(it_iat->value());
+
+	// jti 黑名单检查（单 Token 吊销）
+	auto it_jti = obj.find("jti");
+	if (it_jti != obj.end() && it_jti->value().is_string()) {
+		info.jti = json::value_to<std::string>(it_jti->value());
+		std::lock_guard<std::mutex> lock(_TOKEN_REVOKE_MTX);
+		cleanup_jti_if_expired(info.jti);  // 惰性清理
+		if (_JTI_DENYLIST.count(info.jti)) {
+			info.http_status = 401;
+			return info;
+		}
+	}
+
+	// 版本号检查（全设备吊销：改密后版本号递增）
+	// 兼容旧 Token 无 ver 字段：视为 ver=1
+	auto it_ver = obj.find("ver");
+	int token_ver = 1;
+	if (it_ver != obj.end() && it_ver->value().is_int64()) {
+		token_ver = static_cast<int>(it_ver->value().as_int64());
+	}
+	info.ver = token_ver;
+	{
+		std::lock_guard<std::mutex> lock(_TOKEN_REVOKE_MTX);
+		auto it_uv = _USER_VER_MAP.find(info.username);
+		int current_ver = (it_uv != _USER_VER_MAP.end()) ? it_uv->second : 1;
+		if (token_ver < current_ver) {
+			info.http_status = 401;
+			return info;
+		}
+	}
+
+	// 全部通过
+	info.valid = true;
+	info.http_status = 200;
+	return info;
 }
 
 /* -------- 信号处理回调函数 -------- */
@@ -757,66 +1038,23 @@ static bool verifyWsAdminToken(const http::request<http::string_body>& req,
                                 std::string& out_target) {
 	out_target.clear();
 	try {
-		std::string raw;
-		auto it = req.base().find(http::field::authorization);
-		if (it != req.base().end()) {
-			raw = std::string(it->value());
-		} else {
-			auto cit = req.base().find(http::field::cookie);
-			if (cit != req.base().end()) {
-				std::string cookie_token = get_cookie_value(std::string(cit->value()), "q4_token");
-				if (!cookie_token.empty())
-					raw = "Bearer " + cookie_token;
-			}
-		}
-		if (raw.empty() || raw.substr(0, 7) != "Bearer ")
-			return false;
+		/* 提取 Token（Authorization 优先，回退 Cookie） */
+		std::string cookie_token;
+		std::string raw_token = extract_token_from_request(req, cookie_token);
+		if (raw_token.empty()) return false;
 
-		raw = raw.substr(7);
-		size_t idx = raw.find("_");
-		if (idx == std::string::npos) return false;
-
-		std::string data = raw.substr(0, idx);
-		std::string sign = raw.substr(idx + 1);
-		std::string auth = Base64::base64_decode_to_string(data);
-
-		auto publ = MyRSA::Public_Key::from_pem(_KEYGEN->get_public_key_pem());
-		if (!publ.Verify(auth, sign)) return false;
-
-		json::value jv_t;
-		try { jv_t = json::parse(auth); }
-		catch (...) { return false; }
-		if (!jv_t.is_object()) return false;
-		json::object& obj = jv_t.as_object();
-
-		auto t = json::value_to<std::string>(obj["created_at"]);
-		auto keep_time_val = json::value_to<int>(obj["keep_time"]);
-		auto created_tp = LocalTime::parse(t);
-		if (created_tp) {
-			auto now = std::chrono::system_clock::now();
-			auto expire_tp = *created_tp + std::chrono::seconds(keep_time_val);
-			if (now > expire_tp) return false;
-		}
+		/* 统一验签（RSA + 过期 + jti黑名单 + 版本号） */
+		TokenInfo ti = verify_token(raw_token);
+		if (!ti.valid) return false;
 
 		// 必须是管理员
-		bool is_admin = false;
-		if (obj.contains("is_admin")) {
-			auto& v = obj["is_admin"];
-			if (v.is_bool()) is_admin = v.as_bool();
-		}
-		if (!is_admin) {
+		if (!ti.is_admin) {
 			logs().warning("gateway", "WS proxy rejected: non-admin user",
 				std::nullopt, std::string(req.target()));
 			return false;
 		}
 
 		out_target = target_url;
-		// 将客户端请求路径附加到目标URL后（支持子路径）
-		std::string req_path = std::string(req.target());
-		auto qpos = req_path.find('?');
-		if (qpos != std::string::npos) req_path = req_path.substr(0, qpos);
-		// 不追加路径：代理直接使用配置中指定的完整目标URL
-		(void)req_path;
 		return true;
 	}
 	catch (const std::exception& e) {
@@ -1150,8 +1388,14 @@ http::response<http::string_body> handleLogin(
 	 * 下游服务（dnfs 等）直接读取该字段豁免所有权校验，无需各自维护名单 */
 	bool is_admin = std::find(_ADMIN_USERS.begin(), _ADMIN_USERS.end(), username) != _ADMIN_USERS.end();
 
+	/* Token 吊销支持：签发新 jti + 当前版本号 */
+	std::string jti = generate_jti();
+	int user_ver = get_user_ver(username);
+
 	json::value jv_t = {
 		{"user", username},
+		{"jti", jti},
+		{"ver", user_ver},
 		{"iat", LocalTime::getCurrent()},
 		{"created_at", LocalTime::getCurrent()},
 		{"keep_time", _TOKEN_KEEP_TIME},
@@ -1191,13 +1435,25 @@ http::response<http::string_body> handleLogin(
 	return res;
 }
 
-/* 退出登录 /logout：清除 q4_token Cookie */
+/* 退出登录 /logout：吊销当前 Token（加入 jti 黑名单）并清除 q4_token Cookie */
 http::response<http::string_body> handleLogout(
 	const http::request<http::string_body>& req,
 	const std::unordered_map<std::string, std::string>& params)
 {
 	http::response<http::string_body> res;
 	res.version(req.version());
+
+	/* 提取并吊销当前 Token：将 jti 加入黑名单（单设备退出） */
+	std::string cookie_token;
+	std::string raw_token = extract_token_from_request(req, cookie_token);
+	if (!raw_token.empty()) {
+		TokenInfo ti = verify_token(raw_token);
+		if (ti.valid && !ti.jti.empty()) {
+			revoke_jti(ti.jti, ti.keep_time);
+			logs().info("gateway", "Token 已吊销: " + ti.username, std::nullopt,
+				json::serialize(json::value{{"jti_prefix", ti.jti.substr(0, 8)}}));
+		}
+	}
 
 	res.set("Set-Cookie",
 		"q4_token=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0");
@@ -1220,114 +1476,40 @@ http::response<http::string_body> handleWhoami(
 	http::response<http::string_body> res;
 	res.version(req.version());
 
-	auto _PUBL = MyRSA::Public_Key::from_pem(_KEYGEN->get_public_key_pem());
+	res.set(http::field::content_type, "application/json");
+	res.set("Connection", "close");
 
-	/* 获取 Token：Authorization 头优先，回退 Cookie */
-	std::string raw;
-	auto it_auth = req.base().find("Authorization");
-	if (it_auth != req.base().end()) {
-		raw = std::string(it_auth->value());
-	} else {
-		auto cit = req.base().find("Cookie");
-		if (cit != req.base().end()) {
-			std::string cookie_token = get_cookie_value(std::string(cit->value()), "q4_token");
-			if (!cookie_token.empty())
-				raw = "Bearer " + cookie_token;
-		}
-	}
+	/* 提取 Token（Authorization 优先，回退 Cookie） */
+	std::string cookie_token;
+	std::string raw_token = extract_token_from_request(req, cookie_token);
 
-	/* 无 Token 或格式错误：返回未登录 */
-	if (raw.empty() || raw.substr(0, 7) != "Bearer ") {
-		res.set(http::field::content_type, "application/json");
-		res.set("Connection", "close");
+	if (raw_token.empty()) {
 		res.result(http::status::ok);
 		res.body() = R"({"login": false})";
 		res.prepare_payload();
 		return res;
 	}
 
-	raw = raw.substr(7);
-	size_t idx = raw.find("_");
-	if (idx == std::string::npos) {
-		res.set(http::field::content_type, "application/json");
-		res.set("Connection", "close");
+	/* 统一验签（RSA + 过期 + jti黑名单 + 版本号） */
+	TokenInfo ti = verify_token(raw_token);
+	if (!ti.valid) {
 		res.result(http::status::ok);
 		res.body() = R"({"login": false})";
 		res.prepare_payload();
 		return res;
 	}
-
-	std::string data = raw.substr(0, idx);
-	std::string sign = raw.substr(idx + 1);
-	std::string auth;
-	try { auth = Base64::base64_decode_to_string(data); }
-	catch (const std::exception&) {
-		res.set(http::field::content_type, "application/json");
-		res.set("Connection", "close");
-		res.result(http::status::ok);
-		res.body() = R"({"login": false})";
-		res.prepare_payload();
-		return res;
-	}
-
-	/* RSA 验签：失败按未登录处理 */
-	if (!_PUBL.Verify(auth, sign)) {
-		res.set(http::field::content_type, "application/json");
-		res.set("Connection", "close");
-		res.result(http::status::ok);
-		res.body() = R"({"login": false})";
-		res.prepare_payload();
-		return res;
-	}
-
-	/* 解析 Token payload */
-	json::value jv_t;
-	try { jv_t = json::parse(auth); }
-	catch (const std::exception&) {
-		res.set(http::field::content_type, "application/json");
-		res.set("Connection", "close");
-		res.result(http::status::ok);
-		res.body() = R"({"login": false})";
-		res.prepare_payload();
-		return res;
-	}
-	if (!jv_t.is_object()) {
-		res.set(http::field::content_type, "application/json");
-		res.set("Connection", "close");
-		res.result(http::status::ok);
-		res.body() = R"({"login": false})";
-		res.prepare_payload();
-		return res;
-	}
-
-	json::object& obj = jv_t.as_object();
-	std::string username = json::value_to<std::string>(obj.at("user"));
-
-	/* is_admin：旧 Token 未携带时默认为 false */
-	bool is_admin = false;
-	auto it_admin = obj.find("is_admin");
-	if (it_admin != obj.end() && it_admin->value().is_bool())
-		is_admin = it_admin->value().as_bool();
 
 	json::value jv_r = {
 		{"login", true},
-		{"user", username},
-		{"is_admin", is_admin}
+		{"user", ti.username},
+		{"is_admin", ti.is_admin}
 	};
 
 	/* 附加 Token 生命周期信息，供前端 Token 管理器估算过期时间 */
-	auto it_iat = obj.find("iat");
-	if (it_iat != obj.end() && it_iat->value().is_string())
-		jv_r.as_object()["iat"] = it_iat->value();
-	auto it_created = obj.find("created_at");
-	if (it_created != obj.end() && it_created->value().is_string())
-		jv_r.as_object()["created_at"] = it_created->value();
-	auto it_keep = obj.find("keep_time");
-	if (it_keep != obj.end() && it_keep->value().is_int64())
-		jv_r.as_object()["keep_time"] = it_keep->value();
+	if (!ti.iat.empty())       jv_r.as_object()["iat"] = ti.iat;
+	if (!ti.created_at.empty()) jv_r.as_object()["created_at"] = ti.created_at;
+	if (ti.keep_time > 0)      jv_r.as_object()["keep_time"] = ti.keep_time;
 
-	res.set(http::field::content_type, "application/json");
-	res.set("Connection", "close");
 	res.result(http::status::ok);
 	res.body() = json::serialize(jv_r);
 	res.prepare_payload();
@@ -1354,105 +1536,30 @@ http::response<http::string_body> handleAdminVerify(
 	res.set(http::field::content_type, "application/json");
 	res.set("Connection", "close");
 
-	auto _PUBL = MyRSA::Public_Key::from_pem(_KEYGEN->get_public_key_pem());
+	/* 提取 Token（Authorization 优先，回退 Cookie） */
+	std::string cookie_token;
+	std::string raw_token = extract_token_from_request(req, cookie_token);
 
-	/* 获取 Token：Authorization 头优先，回退 Cookie */
-	std::string raw;
-	auto it_auth = req.base().find("Authorization");
-	if (it_auth != req.base().end()) {
-		raw = std::string(it_auth->value());
-	} else {
-		auto cit = req.base().find("Cookie");
-		if (cit != req.base().end()) {
-			std::string cookie_token = get_cookie_value(std::string(cit->value()), "q4_token");
-			if (!cookie_token.empty())
-				raw = "Bearer " + cookie_token;
-		}
-	}
-
-	/* 无 Token 或格式错误：按未授权处理 */
-	if (raw.empty() || raw.substr(0, 7) != "Bearer ") {
+	if (raw_token.empty()) {
 		res.result(http::status::unauthorized);
 		res.body() = R"({"success": false, "is_admin": false})";
 		res.prepare_payload();
 		return res;
 	}
 
-	raw = raw.substr(7);
-	size_t idx = raw.find("_");
-	if (idx == std::string::npos) {
+	/* 统一验签（RSA + 过期 + jti黑名单 + 版本号） */
+	TokenInfo ti = verify_token(raw_token);
+	if (!ti.valid) {
 		res.result(http::status::unauthorized);
 		res.body() = R"({"success": false, "is_admin": false})";
 		res.prepare_payload();
 		return res;
 	}
-
-	std::string data = raw.substr(0, idx);
-	std::string sign = raw.substr(idx + 1);
-	std::string auth;
-	try { auth = Base64::base64_decode_to_string(data); }
-	catch (const std::exception&) {
-		res.result(http::status::unauthorized);
-		res.body() = R"({"success": false, "is_admin": false})";
-		res.prepare_payload();
-		return res;
-	}
-
-	/* RSA 验签：失败按未授权处理 */
-	if (!_PUBL.Verify(auth, sign)) {
-		res.result(http::status::unauthorized);
-		res.body() = R"({"success": false, "is_admin": false})";
-		res.prepare_payload();
-		return res;
-	}
-
-	/* 解析 Token payload */
-	json::value jv_t;
-	try { jv_t = json::parse(auth); }
-	catch (const std::exception&) {
-		res.result(http::status::unauthorized);
-		res.body() = R"({"success": false, "is_admin": false})";
-		res.prepare_payload();
-		return res;
-	}
-	if (!jv_t.is_object()) {
-		res.result(http::status::unauthorized);
-		res.body() = R"({"success": false, "is_admin": false})";
-		res.prepare_payload();
-		return res;
-	}
-	json::object& obj = jv_t.as_object();
-
-	/* 过期检查：created_at + keep_time 超过当前时间按无效处理 */
-	auto t = json::value_to<std::string>(obj["created_at"]);
-	auto keep_time_val = json::value_to<int>(obj["keep_time"]);
-	auto created_tp = LocalTime::parse(t);
-	if (created_tp) {
-		auto now = std::chrono::system_clock::now();
-		auto expire_tp = *created_tp + std::chrono::seconds(keep_time_val);
-		if (now > expire_tp) {
-			res.result(http::status::unauthorized);
-			res.body() = R"({"success": false, "is_admin": false})";
-			res.prepare_payload();
-			return res;
-		}
-	}
-
-	/* 管理员判定：旧 Token 未携带 is_admin 时默认为 false */
-	bool is_admin = false;
-	if (obj.contains("is_admin")) {
-		auto& v = obj["is_admin"];
-		if (v.is_bool()) is_admin = v.as_bool();
-	}
-
-	std::string username;
-	try { username = json::value_to<std::string>(obj["user"]); }
-	catch (...) {}
 
 	json::value jv_r = {
 		{"success", true},
-		{"is_admin", is_admin},
-		{"user", username}
+		{"is_admin", ti.is_admin},
+		{"user", ti.username}
 	};
 	res.result(http::status::ok);
 	res.body() = json::serialize(jv_r);
@@ -1489,59 +1596,84 @@ http::response<http::string_body> handleRefreshToken(
 		THROW_EX_CUSTOM(HttpException, 4001, "Too many refresh attempts. Please try again later.",
 			429, "/refresh_token");
 
-	auto _PUBL = MyRSA::Public_Key::from_pem(_KEYGEN->get_public_key_pem());
+	/* 获取并验证 Token（含 jti 黑名单 + 版本号检查） */
+	std::string cookie_token;
+	std::string raw_token = extract_token_from_request(req, cookie_token);
+	if (raw_token.empty())
+		THROW_EX_CUSTOM(HttpException, 4002, "No token provided", 400, "/refresh_token");
 
-	/* 获取 Token：Authorization 头优先，回退 Cookie */
-	std::string raw;
-	auto it_auth = req.base().find("Authorization");
-	if (it_auth != req.base().end()) {
-		raw = std::string(it_auth->value());
-	} else {
-		auto cit = req.base().find("Cookie");
-		if (cit != req.base().end()) {
-			std::string cookie_token = get_cookie_value(std::string(cit->value()), "q4_token");
-			if (!cookie_token.empty())
-				raw = "Bearer " + cookie_token;
+	/* 正常过期（非吊销/版本错误）才允许宽限期刷新：
+	 * - jti 在黑名单（logout/refresh后旧token）→ 401 拒绝
+	 * - 版本号落后（改密后旧token）→ 401 拒绝
+	 * 注意：verify_token 不区分"过期"和"吊销"，统一返回 valid=false。
+	 * 我们需要区分"正常过期可刷新"和"被吊销不可刷新"。
+	 * 策略：先做 RSA+黑名单+版本号检查（通过则可刷新），过期检查在后面宽限期逻辑中处理。 */
+
+	// 重新做一次不含过期检查的验签（判断是否被吊销）
+	bool token_revoked = false;
+	std::string old_jti;
+	std::string username;
+	std::string iat_str;
+	int keep_time = _TOKEN_KEEP_TIME;
+	int refresh_count = 0;
+	int max_refresh = _TOKEN_MAX_REFRESH;
+	bool is_admin = false;
+	int user_ver = 1;
+	{
+		if (raw_token.find("_") == std::string::npos)
+			THROW_EX_CUSTOM(HttpException, 4002, "Invalid token format", 400, "/refresh_token");
+		size_t idx2 = raw_token.find("_");
+		std::string data = raw_token.substr(0, idx2);
+		std::string sign = raw_token.substr(idx2 + 1);
+		std::string auth;
+		try { auth = Base64::base64_decode_to_string(data); }
+		catch (const std::exception&) {
+			THROW_EX_CUSTOM(HttpException, 4002, "Invalid token format", 400, "/refresh_token");
+		}
+		auto _PUBL = MyRSA::Public_Key::from_pem(_KEYGEN->get_public_key_pem());
+		if (!_PUBL.Verify(auth, sign))
+			THROW_EX_CUSTOM(HttpException, 4003, "Invalid token signature", 401, "/refresh_token");
+		json::value jv_t;
+		try { jv_t = json::parse(auth); }
+		catch (const std::exception&) {
+			THROW_EX_CUSTOM(HttpException, 4004, "Bad token payload", 400, "/refresh_token");
+		}
+		if (!jv_t.is_object())
+			THROW_EX_CUSTOM(HttpException, 4004, "Bad token payload", 400, "/refresh_token");
+		json::object& obj = jv_t.as_object();
+		username = json::value_to<std::string>(obj.at("user"));
+		iat_str = json::value_to<std::string>(obj.at("iat"));
+		keep_time = json::value_to<int>(obj.at("keep_time"));
+		refresh_count = json::value_to<int>(obj.at("refresh_count"));
+		max_refresh = json::value_to<int>(obj.at("max_refresh"));
+		auto it_admin = obj.find("is_admin");
+		if (it_admin != obj.end() && it_admin->value().is_bool())
+			is_admin = it_admin->value().as_bool();
+		// 检查 jti 黑名单
+		auto it_jti = obj.find("jti");
+		if (it_jti != obj.end() && it_jti->value().is_string()) {
+			old_jti = json::value_to<std::string>(it_jti->value());
+			std::lock_guard<std::mutex> lock(_TOKEN_REVOKE_MTX);
+			if (_JTI_DENYLIST.count(old_jti))
+				token_revoked = true;
+		}
+		// 检查版本号
+		auto it_ver = obj.find("ver");
+		int token_ver = 1;
+		if (it_ver != obj.end() && it_ver->value().is_int64())
+			token_ver = static_cast<int>(it_ver->value().as_int64());
+		{
+			std::lock_guard<std::mutex> lock(_TOKEN_REVOKE_MTX);
+			auto it_uv = _USER_VER_MAP.find(username);
+			user_ver = (it_uv != _USER_VER_MAP.end()) ? it_uv->second : 1;
+			if (token_ver < user_ver)
+				token_revoked = true;
 		}
 	}
 
-	if (raw.empty())
-		THROW_EX_CUSTOM(HttpException, 4002, "No token provided", 400, "/refresh_token");
-
-	/* 解析 Bearer <base64>_<signature> */
-	if (raw.substr(0, 7) != "Bearer ")
-		THROW_EX_CUSTOM(HttpException, 4002, "Invalid token format", 400, "/refresh_token");
-	raw = raw.substr(7);
-
-	size_t idx = raw.find("_");
-	if (idx == std::string::npos)
-		THROW_EX_CUSTOM(HttpException, 4002, "Invalid token format", 400, "/refresh_token");
-
-	std::string data = raw.substr(0, idx);
-	std::string sign = raw.substr(idx + 1);
-	std::string auth = Base64::base64_decode_to_string(data);
-
-	/* RSA 验签 */
-	if (!_PUBL.Verify(auth, sign))
-		THROW_EX_CUSTOM(HttpException, 4003, "Invalid token signature", 401, "/refresh_token");
-
-	/* 解析 Token payload */
-	json::value jv_t;
-	try { jv_t = json::parse(auth); }
-	catch (const std::exception&) {
-		THROW_EX_CUSTOM(HttpException, 4004, "Bad token payload", 400, "/refresh_token");
-	}
-	if (!jv_t.is_object())
-		THROW_EX_CUSTOM(HttpException, 4004, "Bad token payload", 400, "/refresh_token");
-
-	json::object& obj = jv_t.as_object();
-
-	/* 提取关键字段 */
-	std::string username  = json::value_to<std::string>(obj.at("user"));
-	std::string iat_str   = json::value_to<std::string>(obj.at("iat"));
-	int         keep_time = json::value_to<int>(obj.at("keep_time"));
-	int         refresh_count = json::value_to<int>(obj.at("refresh_count"));
-	int         max_refresh   = json::value_to<int>(obj.at("max_refresh"));
+	if (token_revoked)
+		THROW_EX_CUSTOM(HttpException, 4003, "Token has been revoked. Please re-login.",
+			401, "/refresh_token");
 
 	/* 刷新次数检查 */
 	if (refresh_count >= max_refresh)
@@ -1559,16 +1691,18 @@ http::response<http::string_body> handleRefreshToken(
 		THROW_EX_CUSTOM(HttpException, 4006, "Token expired beyond refresh window. Please re-login.",
 			401, "/refresh_token");
 
-	/* 保留 is_admin（旧 Token 未携带时默认为 false） */
-	bool is_admin = false;
-	auto it_admin = obj.find("is_admin");
-	if (it_admin != obj.end() && it_admin->value().is_bool())
-		is_admin = it_admin->value().as_bool();
+	/* 吊销旧 Token 的 jti（防止旧 refresh_token 被重放） */
+	if (!old_jti.empty()) {
+		revoke_jti(old_jti, keep_time * _TOKEN_REFRESH_GRACE_MULTIPLIER);
+	}
 
-	/* 签发新 Token：iat 不变，created_at 更新，refresh_count++ */
+	/* 签发新 Token：iat 不变，created_at 更新，refresh_count++，新 jti，当前版本号 */
+	std::string new_jti = generate_jti();
 	auto _PRIV = MyRSA::Private_Key::from_pem(_KEYGEN->get_private_key_pem());
 	json::value jv_new = {
 		{"user", username},
+		{"jti", new_jti},
+		{"ver", user_ver},
 		{"iat", iat_str},
 		{"created_at", LocalTime::getCurrent()},
 		{"keep_time", keep_time},
@@ -2070,6 +2204,9 @@ http::response<http::string_body> handleResetPassword(
 	if (!obj_r["success"].as_bool())
 		THROW_EX_CUSTOM(HttpException, 2202, "Reset Failed", 500, "/reset_password");
 
+	/* 重置密码成功：吊销该用户所有已签发的 Token（版本号递增，全设备失效，需重新登录） */
+	revoke_all_user_tokens(username);
+
 	// 防枚举：用户不存在（rowcount=0）时仍统一返回成功，不泄露邮箱是否已注册
 	logs().info("gateway", "重置密码成功: " + username, std::nullopt,
 		json::serialize(json::value{{"ip", client_ip}}));
@@ -2089,18 +2226,11 @@ http::response<http::string_body> handleProxy(
 	http::response<http::string_body> res;
 	res.version(req.version());
 
-	auto _PUBL = MyRSA::Public_Key::from_pem(_KEYGEN->get_public_key_pem());
-
 	std::string t_url = "";
 	std::string url = "";
-	std::string auth = "";
 	std::string cookie_token = "";	/* 从 Cookie 提取的 Token（用于向下游注入 Authorization） */
-	json::value jv_t;
+	bool is_public_target = false;
 	{
-		auto flag = false;
-
-
-
 		/* 大写的Target-Url */
 		auto it = req.base().find("Target-Url");
 		if (it != req.base().end()) {
@@ -2116,7 +2246,7 @@ http::response<http::string_body> handleProxy(
 		/* 如果请求没设置Target-Url头，就自动设置为默认的 */
 		if (t_url == "") {
 			t_url =  _DEFT_URL;
-			flag = true;
+			is_public_target = true;
 		}
 
 		// 路径规范化校验（P1-1）：防止路径遍历、协议注入、空字节等
@@ -2132,55 +2262,19 @@ http::response<http::string_body> handleProxy(
 			url += "/";
 		url += target_path;
 
-		std::string raw = "";
-		it = req.base().find("Authorization");
-		if (it != req.base().end()) {
-			raw = std::string(it->value());
-		} else {
-			/* 回退：从 HttpOnly Cookie 读取 q4_token（浏览器同源请求自动携带） */
-			auto cit = req.base().find("Cookie");
-			if (cit != req.base().end()) {
-				cookie_token = get_cookie_value(std::string(cit->value()), "q4_token");
-				if (!cookie_token.empty())
-					raw = "Bearer " + cookie_token;
-			}
-		}
-		if (raw.empty() && !flag)
-			THROW_EX_CUSTOM(HttpException, 2301, "Unauthorization", 401, "*");
+		/* 提取 Token（Authorization 优先，回退 Cookie） */
+		std::string raw_token = extract_token_from_request(req, cookie_token);
 
-		if (!flag) {
-			/* 仅在需要鉴权的目标上校验凭证。
-			 * 默认目标（公开静态资源）必须跳过校验：
-			 * 浏览器会给每个请求自动携带 q4_token Cookie，
-			 * gateway 重启（内存 RSA 密钥对轮换）或 Token 过期后，
-			 * 旧 Cookie 验签失败会让公开页面也误返回 401 */
-			if (raw.substr(0, 7) == "Bearer ") {
-				raw = raw.substr(7, raw.size() - 7);
-				size_t idx  = raw.find("_");
-				if (idx == std::string::npos)
-					THROW_EX_CUSTOM(HttpException, 2301, "Unauthorization", 400, "*");
-				std::string data = raw.substr(0, idx);
-				std::string sign = raw.substr(idx+1, raw.size()-idx-1);
-				auth = Base64::base64_decode_to_string(data);
-				if (!_PUBL.Verify(auth, sign))
-					THROW_EX_CUSTOM(HttpException, 2301, "Unauthorization", 401, "*");
-			}
+		if (!is_public_target) {
+			/* 需要鉴权的目标：统一验签（RSA + 过期 + jti黑名单 + 版本号） */
+			if (raw_token.empty())
+				THROW_EX_CUSTOM(HttpException, 2301, "Unauthorization", 401, "*");
 
-			/* 是否过期 */
-			try { jv_t = json::parse(auth); }
-			catch (const boost::wrapexcept<boost::system::system_error>& e) {
-				THROW_EX_CUSTOM(HttpException, 2302, "Bad token", 400, "*");
-			}
-			if (!jv_t.is_object()) THROW_EX_CUSTOM(HttpException, 2302, "Bad token", 400, "*");
-			json::object& obj = jv_t.as_object();
-
-			auto t = json::value_to<std::string>(obj["created_at"]);
-			auto keep_time_val = json::value_to<int>(obj["keep_time"]);
-			auto created_tp = LocalTime::parse(t);
-			if (created_tp) {
-				auto now = std::chrono::system_clock::now();
-				auto expire_tp = *created_tp + std::chrono::seconds(keep_time_val);
-				if (now > expire_tp) THROW_EX_CUSTOM(HttpException, 2000, "Authorization Expired", 401, "*");
+			TokenInfo ti = verify_token(raw_token);
+			if (!ti.valid) {
+				if (ti.http_status == 400)
+					THROW_EX_CUSTOM(HttpException, 2302, "Bad token", 400, "*");
+				THROW_EX_CUSTOM(HttpException, 2301, "Unauthorization", 401, "*");
 			}
 		} else {
 			/* 公开目标不做凭证校验，也不向下游注入 Authorization */
@@ -2204,11 +2298,8 @@ http::response<http::string_body> handleProxy(
 	}
 
 	/*
-	 * 这是用于读数据的HTTP客户端回调函数
-	 *
-	 * FIXME: 增加长度限制
-	 * FIXME: 试试流式输出
-	 * */
+	 * HTTP客户端回调函数
+	 * 响应体大小限制由 HttpClient 默认 10MB 上限保证（libhttp P1-2 已修复） */
 	auto callback = [&res](const auto& ret) {
 		res.body() += ret;
 	};
