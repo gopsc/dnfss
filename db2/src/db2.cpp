@@ -478,6 +478,8 @@ private:
                             wc.params.push_back(_coerce_value(ci, item));
                         }
                         parts.push_back(col + " IN (" + placeholders + ")");
+                    } else {
+                        throw std::runtime_error("unknown operator: " + op);
                     }
                 }
             } else {
@@ -630,6 +632,8 @@ private:
 
         DbConn& conn = _get_conn();
         const json::object& vals = req.at("values").as_object();
+        if (vals.empty())
+            throw std::runtime_error("insert requires non-empty 'values'");
 
         // 建列名 -> ColInfo 映射
         std::unordered_map<std::string, ColInfo> col_map;
@@ -672,6 +676,8 @@ private:
 
         DbConn& conn = _get_conn();
         const json::object& vals = req.at("values").as_object();
+        if (vals.empty())
+            throw std::runtime_error("update requires non-empty 'values'");
 
         std::unordered_map<std::string, ColInfo> col_map;
         for (auto& c : cols) col_map[c.name] = c;
