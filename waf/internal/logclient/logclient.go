@@ -16,18 +16,28 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"time"
 )
 
 const (
-	dbAddr        = "127.0.0.1:8005"
+	defaultDBAddr = "127.0.0.1:8005"
 	batchSize     = 50
 	flushInterval = 2 * time.Second
 	socketTimeout = 5 * time.Second
 	// 消息大小安全上限（64 MiB），与 Python / C++ 端保持一致。
 	maxMsgSize = 64 * 1024 * 1024
 )
+
+// dbAddr 通过环境变量 LOG_DB_ADDR 配置（默认 127.0.0.1:8005），支持非标准部署场景。
+var dbAddr = defaultDBAddr
+
+func init() {
+	if v := os.Getenv("LOG_DB_ADDR"); v != "" {
+		dbAddr = v
+	}
+}
 
 // Entry 单条日志。
 type Entry struct {
@@ -53,12 +63,14 @@ type dbV2Response struct {
 }
 
 // Client 异步批量日志推送客户端。
+// send 仅在 flushLoop 单 goroutine 中调用，conn 复用无需额外加锁。
 type Client struct {
 	ch      chan Entry
 	stop    chan struct{}
 	wg      sync.WaitGroup
 	stopped bool
 	mu      sync.Mutex
+	conn    net.Conn // 复用的 pymsg 长连接，失败时重建
 }
 
 // global 全局单例。
@@ -212,26 +224,36 @@ func (c *Client) sendOne(entry Entry, ts string) {
 		return
 	}
 
-	// pymsg 协议：4 字节 big-endian 长度 + UTF-8 载荷
-	resp, err := pymsgCall(data)
+	// pymsg 协议：4 字节 big-endian 长度 + UTF-8 载荷（复用长连接，失败时重连一次）
+	resp, err := c.pymsgCall(data)
 	if err != nil {
 		return // fail-safe
 	}
 
 	var r dbV2Response
 	if json.Unmarshal(resp, &r) != nil || !r.Success {
-		fmt.Printf("[logclient] INSERT failed: %s\n", r.Error)
+		fmt.Fprintf(os.Stderr, "[logclient] INSERT failed: %s\n", r.Error)
 	}
 }
 
-// pymsgCall 发送一条 pymsg 请求并读取响应（短连接模式）。
-func pymsgCall(payload []byte) ([]byte, error) {
-	conn, err := net.DialTimeout("tcp", dbAddr, socketTimeout)
+// pymsgCall 复用长连接发送一条 pymsg 请求并读取响应。
+// 首次失败时关闭旧连接重建一次，避免高并发拦截场景下大量 TIME_WAIT 短连接。
+func (c *Client) pymsgCall(payload []byte) ([]byte, error) {
+	resp, err := c.doPymsg(payload)
+	if err == nil {
+		return resp, nil
+	}
+	// 旧连接可能已断开（db 重启等），关闭后重连一次
+	c.closeConn()
+	return c.doPymsg(payload)
+}
+
+// doPymsg 在当前连接上执行一次请求-响应交互。
+func (c *Client) doPymsg(payload []byte) ([]byte, error) {
+	conn, err := c.getConn()
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
-
 	conn.SetDeadline(time.Now().Add(socketTimeout))
 
 	// 发送：4 字节长度前缀 + 载荷
@@ -260,6 +282,27 @@ func pymsgCall(payload []byte) ([]byte, error) {
 	return resp, nil
 }
 
+// getConn 返回当前复用连接，不存在时建立。
+func (c *Client) getConn() (net.Conn, error) {
+	if c.conn != nil {
+		return c.conn, nil
+	}
+	conn, err := net.DialTimeout("tcp", dbAddr, socketTimeout)
+	if err != nil {
+		return nil, err
+	}
+	c.conn = conn
+	return conn, nil
+}
+
+// closeConn 关闭并置空复用连接。
+func (c *Client) closeConn() {
+	if c.conn != nil {
+		_ = c.conn.Close()
+		c.conn = nil
+	}
+}
+
 func (c *Client) flush() {
 	c.mu.Lock()
 	if c.stopped {
@@ -271,4 +314,5 @@ func (c *Client) flush() {
 
 	close(c.stop)
 	c.wg.Wait()
+	c.closeConn()
 }

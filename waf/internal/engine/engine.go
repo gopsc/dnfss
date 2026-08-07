@@ -15,6 +15,21 @@ import (
 	"github.com/micro_servers/waf/internal/logclient"
 )
 
+// maxRuleFileSize 单个规则文件大小上限（1 MiB），防止超大文件导致 OOM
+const maxRuleFileSize = 1 << 20
+
+// checkRuleFileSize 校验单个规则文件大小是否超限，超限返回错误。
+func checkRuleFileSize(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.Size() > maxRuleFileSize {
+		return fmt.Errorf("规则文件过大: %s (%d bytes, 上限 %d)", path, info.Size(), maxRuleFileSize)
+	}
+	return nil
+}
+
 // Engine 持有当前生效的 WAF 实例，支持通过 Reload 热替换。
 type Engine struct {
 	mu  sync.RWMutex
@@ -54,6 +69,9 @@ func (e *Engine) Reload() error {
 	if _, err := os.Stat(mainFile); err != nil {
 		return fmt.Errorf("主规则文件不存在: %w", err)
 	}
+	if err := checkRuleFileSize(mainFile); err != nil {
+		return err
+	}
 
 	builder := coraza.NewWAFConfig()
 	if e.cfg.ErrorCallback != nil {
@@ -66,15 +84,24 @@ func (e *Engine) Reload() error {
 	// 2. 本地规则（local/*.conf，按字母序）
 	localFiles, _ := filepath.Glob(filepath.Join(e.cfg.RulesDir, "local", "*.conf"))
 	for _, f := range localFiles {
+		if err := checkRuleFileSize(f); err != nil {
+			return err
+		}
 		builder = builder.WithDirectivesFromFile(f)
 	}
 
 	// 3. OWASP CRS（可选，crs/coraza.conf + crs/rules/*.conf）
 	crsEntry := filepath.Join(e.cfg.RulesDir, "crs", "coraza.conf")
 	if _, err := os.Stat(crsEntry); err == nil {
+		if err := checkRuleFileSize(crsEntry); err != nil {
+			return err
+		}
 		builder = builder.WithDirectivesFromFile(crsEntry)
 		crsRuleFiles, _ := filepath.Glob(filepath.Join(e.cfg.RulesDir, "crs", "rules", "*.conf"))
 		for _, f := range crsRuleFiles {
+			if err := checkRuleFileSize(f); err != nil {
+				return err
+			}
 			builder = builder.WithDirectivesFromFile(f)
 		}
 	}
@@ -109,28 +136,16 @@ func (e *Engine) CheckInput(input string) []int {
 		uri = "/" + uri
 	}
 
-	// 分离 path 与 query，对 query 做合法 URL 编码（空格等非法字符需转义）
+	// 用 net/url 解析并重新编码 query，正确处理无值 key、重复 key、特殊字符
 	// 这样 coraza ProcessURI 内部的 url.ParseRequestURI 不会失败，ARGS 才能被正确提取
-	fullURI := uri
-	if idx := strings.Index(uri, "?"); idx >= 0 {
-		path := uri[:idx]
-		rawQuery := uri[idx+1:]
-		// 用 net/url 编码 query：保留 & = ，其他特殊字符转义
-		var parts []string
-		for _, kv := range strings.Split(rawQuery, "&") {
-			eq := strings.Index(kv, "=")
-			if eq < 0 {
-				parts = append(parts, url.QueryEscape(kv))
-			} else {
-				parts = append(parts, url.QueryEscape(kv[:eq])+"="+url.QueryEscape(kv[eq+1:]))
-			}
-		}
-		fullURI = path + "?" + strings.Join(parts, "&")
+	if u, err := url.Parse(uri); err == nil && u.RawQuery != "" {
+		u.RawQuery = u.Query().Encode()
+		uri = u.String()
 	}
 
 	// 照搬 coraza/http/middleware.go 的 processRequest 流程
 	tx.ProcessConnection("127.0.0.1", 8080, "127.0.0.1", 12345)
-	tx.ProcessURI(fullURI, "GET", "HTTP/1.1")
+	tx.ProcessURI(uri, "GET", "HTTP/1.1")
 	tx.AddRequestHeader("Host", "localhost")
 	tx.SetServerName("localhost")
 	if it := tx.ProcessRequestHeaders(); it != nil {
@@ -152,6 +167,10 @@ func (e *Engine) ListRules() ([]Rule, error) {
 			return err
 		}
 		if !strings.HasSuffix(path, ".conf") {
+			return nil
+		}
+		// 超大规则文件跳过，不中断整个列举
+		if fi, err := os.Stat(path); err == nil && fi.Size() > maxRuleFileSize {
 			return nil
 		}
 		data, err := os.ReadFile(path)
@@ -238,6 +257,9 @@ func TestFile(file string) error {
 	}
 	if _, err := os.Stat(abs); err != nil {
 		return fmt.Errorf("文件不存在: %w", err)
+	}
+	if err := checkRuleFileSize(abs); err != nil {
+		return err
 	}
 
 	tmp, err := os.CreateTemp("", "waf-test-*.conf")

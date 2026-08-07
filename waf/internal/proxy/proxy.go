@@ -11,7 +11,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/micro_servers/waf/internal/engine"
@@ -41,13 +40,13 @@ func New(upstream string, waf *engine.Engine) (*Proxy, error) {
 	origDirector := rp.Director
 	rp.Director = func(req *http.Request) {
 		origDirector(req)
-		// RemoteAddr 形如 "1.2.3.4:54321"，剥离端口只保留 IP，
-		// 否则 gateway RateLimiter 会把同 IP 不同端口的连接当成不同客户端
-		clientIP := req.RemoteAddr
-		if idx := strings.LastIndexByte(req.RemoteAddr, ':'); idx != -1 {
-			clientIP = req.RemoteAddr[:idx]
+		// 剥离 RemoteAddr 端口只保留 IP，否则 gateway RateLimiter 会把同 IP 不同端口的连接当成不同客户端
+		// 用 net.SplitHostPort 正确处理 IPv6（如 [::1]:54321 / 2001:db8::1:54321）
+		if host, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
+			req.Header.Set("X-Forwarded-For", host)
+		} else {
+			req.Header.Set("X-Forwarded-For", req.RemoteAddr)
 		}
-		req.Header.Set("X-Forwarded-For", clientIP)
 		req.Header.Set("X-Forwarded-Proto", "https")
 	}
 	// 透传错误，不暴露内部堆栈
@@ -97,12 +96,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// 解析 RemoteAddr 中的 IP 与端口
+	// 解析 RemoteAddr 中的 IP 与端口（用 net.SplitHostPort 正确处理 IPv6）
 	client := r.RemoteAddr
 	cport := 0
-	if idx := strings.LastIndexByte(r.RemoteAddr, ':'); idx != -1 {
-		client = r.RemoteAddr[:idx]
-		cport, _ = strconv.Atoi(r.RemoteAddr[idx+1:])
+	if host, port, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		client = host
+		cport, _ = strconv.Atoi(port)
 	}
 
 	// 请求阶段：照搬 coraza/http/middleware.go 的 processRequest 流程
@@ -186,12 +185,23 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 响应阶段：把 upstream 的 header 喂给 WAF
+	// 注：响应头已发送无法撤销状态码，此处仅记录命中告警，不执行拦截
 	for k, vs := range rw.headers {
 		for _, v := range vs {
 			tx.AddResponseHeader(k, v)
 		}
 	}
-	tx.ProcessResponseHeaders(rw.status, r.Proto)
+	if it := tx.ProcessResponseHeaders(rw.status, r.Proto); it != nil {
+		logclient.Warning("waf", fmt.Sprintf("response_header_hit rule_id=%d %s %s",
+			it.RuleID, r.Method, r.URL.Path),
+			map[string]any{
+				"rule_id": it.RuleID,
+				"ip":      r.RemoteAddr,
+				"method":  r.Method,
+				"path":    r.URL.Path,
+				"status":  rw.status,
+			})
+	}
 }
 
 // block 命中规则时统一返回 403，并将关键输入推送到日志库。

@@ -23,6 +23,9 @@ def apply_security_headers(app, csp_policy=None):
         response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=()'
 
         # Content Security Policy
+        # 注：script-src 含 'unsafe-inline' 因 dnfs 特殊节点"前端代码"功能需要内联脚本。
+        # NEW-11（已知限制）：若发生 HTML 注入，CSP 无法阻止 XSS 执行。
+        # 后续改进方向：改用 CSP nonce（'nonce-{random}'），需同步改造 dnfs 前端注入逻辑。
         if csp_policy:
             response.headers['Content-Security-Policy'] = csp_policy
         else:
