@@ -42,6 +42,7 @@
       <tr data-t="filelist_sub"><td class="name">GET /api/filelist?path=test%2F（编码子目录）</td><td class="st pending">—</td><td class="detail"></td></tr>
       <tr data-t="filelist_traverse"><td class="name">GET /api/filelist?path=..%2F..（遍历应 403）</td><td class="st pending">—</td><td class="detail"></td></tr>
       <tr data-t="static_file"><td class="name">GET /test/hello.txt（静态文件）</td><td class="st pending">—</td><td class="detail"></td></tr>
+      <tr data-t="video_range"><td class="name">GET /video/test/sample.mp4（Range 206/416）</td><td class="st pending">—</td><td class="detail"></td></tr>
       <tr data-t="download"><td class="name">GET /test/hello.txt?download=true（附件头）</td><td class="st pending">—</td><td class="detail"></td></tr>
       <tr data-t="utf8_path"><td class="name">GET 中文文件名（URL 解码）</td><td class="st pending">—</td><td class="detail"></td></tr>
       <tr data-t="hash"><td class="name">POST /api/hash（sha256("test123")）</td><td class="st pending">—</td><td class="detail"></td></tr>
@@ -108,6 +109,17 @@ const tests = {
     const { res, text } = await j('/test/hello.txt');
     const ok = res.status === 200 && text.includes('hello fsys');
     setRow('static_file', ok, `HTTP ${res.status}, ${(res.headers.get('content-type') || '').split(';')[0]}`);
+  },
+  async video_range() {
+    const full = await fetch('/video/test/sample.mp4');
+    const partial = await fetch('/video/test/sample.mp4', { headers: { Range: 'bytes=0-99' } });
+    const bad = await fetch('/video/test/sample.mp4', { headers: { Range: 'bytes=999999-' } });
+    const cr = partial.headers.get('content-range') || '';
+    const ok = full.status === 200 && full.headers.get('accept-ranges') === 'bytes'
+            && partial.status === 206 && cr.startsWith('bytes 0-99/')
+            && partial.headers.get('content-length') === '100'
+            && bad.status === 416;
+    setRow('video_range', ok, `full=${full.status}, range=${partial.status} ${cr}, bad=${bad.status}（期望 416）`);
   },
   async download() {
     const { res } = await j('/test/hello.txt?download=true');

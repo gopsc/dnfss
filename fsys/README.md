@@ -2,7 +2,7 @@
 
 基于 libhttp + libmsg 的 C++20 静态文件托管与前端页面服务，监听 `127.0.0.1:9200`。
 
-Python/Flask `static` 模块的生产级 C++ 重写，接口 100% 兼容，前端零改动。
+Python/Flask `static` 模块的生产级 C++ 重写，前端零改动兼容（改进性差异：上游状态码透传使前端 401 跳转首次生效，详见审计报告 D-1）。
 
 ## 架构
 
@@ -39,7 +39,7 @@ fsys :9200 (libhttp 异步多线程 + CORS)
 |------|------|
 | `POST /api/hash` | SHA-256 密码哈希（限速 20/min/IP） |
 | `POST /api/check_user` | 检查用户是否已注册（限速 10/min/IP） |
-| `GET /api/favicon?url=` | favicon SSRF 防护代理（512KB 上限，1 天缓存） |
+| `GET /api/favicon?url=` | favicon SSRF 防护代理（512KB 上限，仅浏览器侧 Cache-Control 缓存 1 天，无服务端缓存） |
 
 ### dnfs2 代理路由
 

@@ -27,6 +27,7 @@ fsys 是 Python `static` 模块的 C++20 重实现（libhttp + libmsg + boost::j
 - **位置**: `load_config()` 步骤 8（原 L347-369）
 - **问题**: 相对路径 `static_root` 通过 `/proc/self/exe` 基于可执行文件目录解析。二进制位于 `fsys/build/fsys`，而 `public` 符号链接位于 `fsys/public`，因此 `./public` 解析为 `fsys/build/./public`（不存在）。更严重的是构造函数 `fs::create_directories()` 会**静默创建空目录**，服务启动正常但所有路由返回 404/500，无告警。
 - **修复**: 相对路径改为基于 `fs::current_path()` 解析（`_run.sh` 以模块目录为 cwd 启动，与 Python 版 `BASE_DIR` 语义一致；Docker 使用绝对路径 `STATIC_ROOT=/app/public`，不受影响）。SSL 证书路径同样修复。
+- **勘误（2026-08-08 后）**: 原描述中 `fsys/public` 为指向 `../static/public` 的符号链接；现已改为真实目录，内含自检测试页（`index.html` 等），不再与 static 共享内容。
 
 ### F-2: favicon 代理 `CURLOPT_FOLLOWLOCATION` 盲跟重定向绕过 SSRF 校验（回归） ✅ 已修复
 
@@ -191,6 +192,9 @@ macOS/Linux 双开发环境约定，Linux 编译需覆盖 `INCS/LIBS/RPATH`（�
 | `POST /api/hash` | ✓ 哈希值与 Python 版逐位一致 |
 | `POST /api/check_user` | ✓ 与 Python 版行为一致（当前环境 db Users 查询失败，两版同返 500 query failed，非 fsys 缺陷） |
 | dnfs 代理 `/get_notes` | ✓ 透传（上游自身 500，直连上游同果，非代理缺陷） |
+| `/video/*` 无 Range 200 / Range 206（Content-Range/Content-Length）/ 越界 416 | ✓（2026-08-08 补测，见下） |
+
+> **补充（2026-08-08）**: 初轮冒烟未覆盖 `/video/*` Range 路径（当时无测试媒体文件）。后在 `fsys/public/` 内置自检测试页（`index.html`，15 项自动检查）及 `test/sample.mp4`（1KB），补齐 Range 用例：全量 200 + `Accept-Ranges: bytes`、`bytes=0-99` → 206 + `Content-Range: bytes 0-99/1024` + `Content-Length: 100`、`bytes=999999-` → 416，均验证通过（F-4 的 416 分支同时覆盖）。
 
 ---
 
