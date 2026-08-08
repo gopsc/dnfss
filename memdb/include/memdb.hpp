@@ -1,0 +1,60 @@
+#pragma once
+#include <memory>
+#include <list>
+#include <unordered_map>
+#include <chrono>
+#include <queue>
+
+
+
+template <typename T, typename U>
+
+class Memdb {
+
+
+struct memdb_column {
+    T key;
+    U value;
+    std::chrono::system_clock::time_point timestamp;
+    bool be_del = false;
+};
+
+struct index_keys {
+    T key;
+    std::list <memdb_column>::iterator item;
+};
+
+struct index_timestamp {
+    std::list <memdb_column>::iterator item;
+
+    bool operator<(const index_timestamp& a) const;
+};
+
+
+private:
+    std::list <memdb_column> db;
+    std::unordered_map <T, index_keys> keys;
+    std::priority_queue <index_timestamp> time_touch;
+    size_t __size;
+    void flush();
+
+
+public:
+    using key_t = T;
+    using value_t = U;
+    static constexpr int npos = -1;
+
+    Memdb();
+    Memdb& operator=(const Memdb& to_be_cp_memdb);
+    ~Memdb();
+
+    size_t size() const;
+    const std::unordered_map <T, index_keys>& get_keys() const;
+    const std::list <memdb_column>& get_db() const;
+    const std::priority_queue <index_timestamp>& get_time_touch() const;
+
+    void insert(key_t to_be_ins_k, value_t ins_v);                                  //TODO 要加返回值
+    void remove(key_t to_be_del_k);                                                 //TODO 要加返回值
+    void update(key_t to_be_udt_k, value_t udt_v, bool need_to_udt_timetouch=false);//TODO 要加返回值
+    value_t search(key_t to_be_sch_k) const;
+};
