@@ -6,7 +6,7 @@ from typing import Optional
 @dataclass
 class DataConfig:
     image_size: int = 64
-    action_dim: int = 8
+    action_dim: int = 18
     history_len: int = 5
     data_dir: str = "./data"
     normalize_actions: bool = False

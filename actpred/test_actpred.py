@@ -60,28 +60,28 @@ class TestActionPredictor(unittest.TestCase):
     """测试模型前向传播"""
 
     def test_forward_simple_mlp(self):
-        data_cfg = DataConfig(image_size=64, action_dim=8, history_len=5)
+        data_cfg = DataConfig(image_size=64, action_dim=18, history_len=5)
         model_cfg = ModelConfig(cnn_backbone="simple", history_encoder="mlp")
         model = ActionPredictor(model_cfg, data_cfg)
         model.eval()
 
         image = torch.randn(2, 3, 64, 64)
-        history = torch.randn(2, 5, 8)
+        history = torch.randn(2, 5, 18)
         with torch.no_grad():
             out = model(image, history)
-        self.assertEqual(out.shape, (2, 8))
+        self.assertEqual(out.shape, (2, 18))
 
     def test_forward_simple_gru(self):
-        data_cfg = DataConfig(image_size=64, action_dim=8, history_len=5)
+        data_cfg = DataConfig(image_size=64, action_dim=18, history_len=5)
         model_cfg = ModelConfig(cnn_backbone="simple", history_encoder="gru")
         model = ActionPredictor(model_cfg, data_cfg)
         model.eval()
 
         image = torch.randn(2, 3, 64, 64)
-        history = torch.randn(2, 5, 8)
+        history = torch.randn(2, 5, 18)
         with torch.no_grad():
             out = model(image, history)
-        self.assertEqual(out.shape, (2, 8))
+        self.assertEqual(out.shape, (2, 18))
 
     def test_forward_dynamic_batch(self):
         data_cfg = DataConfig(image_size=32, action_dim=4, history_len=3)
@@ -186,7 +186,7 @@ class TestConfig(unittest.TestCase):
     def test_default_config(self):
         cfg = Config()
         self.assertEqual(cfg.data.image_size, 64)
-        self.assertEqual(cfg.data.action_dim, 8)
+        self.assertEqual(cfg.data.action_dim, 18)
         self.assertEqual(cfg.data.history_len, 5)
         self.assertEqual(cfg.model.cnn_backbone, "simple")
         self.assertEqual(cfg.model.history_encoder, "mlp")

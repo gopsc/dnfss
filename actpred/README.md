@@ -21,11 +21,11 @@
 cd actpred && bash _set.sh
 
 # 训练
-bash _run.sh train --data-dir ./data --epochs 100 --action-dim 8
+bash _run.sh train --data-dir ./data --epochs 100 --action-dim 18
 
 # 推理（--action-history 格式：冒号分隔各步，每步 action_dim 个值，共 history_len 步）
 bash _run.sh --model checkpoints/best_inference.pt --image frame.jpg \
-    --action-history "0,0,0,0,0,0,0,0:1,0,0,0,0,0,0,0:0,1,0,0,0,0,0,0:0,0,1,0,0,0,0,0:0,0,0,1,0,0,0,0"
+    --action-history "45,0,45,0,45,0,45,0,90,90,10,200,0,0,0,0,0,0:45,0,45,0,45,0,45,0,90,90,0,20,0,0,0,0,0,0:45,0,45,0,45,0,45,0,90,90,0,0,0,0,0,0,0,0:45,0,45,0,45,0,45,0,90,90,0,0,0,0,0,0,0,0:45,0,45,0,45,0,45,0,90,90,0,0,0,0,0,0,0,0"
 
 # 导出 ONNX（如安装了 onnxruntime，导出后自动验证一致性）
 bash _run.sh export --model checkpoints/best_inference.pt --output model.onnx
@@ -33,6 +33,26 @@ bash _run.sh export --model checkpoints/best_inference.pt --output model.onnx
 # 运行单元测试
 python test_actpred.py
 ```
+
+## 预训练（从 .mt 脚本，无需图像）
+
+从 bot4cj 的 `.mt` 动作脚本中提取 `@Action` 矩阵，用零图像占位预训练动作动力学（history → next action），
+保存的 checkpoint 与正常训练格式完全兼容，可直接用于推理或作为微调起点。
+
+```bash
+# 预训练（解析 ../bot4cj/scripts/*.mt）
+bash _run.sh pretrain --mt-dir ../bot4cj/scripts --epochs 200 --noise-std 1.0
+
+# 用预训练权重作为微调起点（需修改 train.py 加载逻辑，或手动加载）
+bash _run.sh train --data-dir ./data --epochs 50
+```
+
+| 参数 | 说明 |
+|------|------|
+| `--mt-dir` | .mt 脚本目录（如 `../bot4cj/scripts`） |
+| `--noise-std` | 高斯噪声标准差（数据增强，建议 0.5~2.0） |
+
+> **注意**：.mt 脚本列数（12）与 `action_dim`（18）不一致时自动补零。预训练保存到 `checkpoints/pretrain_best_inference.pt`。
 
 ## 数据格式
 
@@ -55,7 +75,7 @@ data/
 ```python
 from dataset import DataRecorder
 
-recorder = DataRecorder("./data", action_dim=8)
+recorder = DataRecorder("./data", action_dim=18)
 for image, action in robot_loop():
     recorder.record(image, action)
 recorder.flush()
@@ -68,7 +88,7 @@ recorder.flush()
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--image-size` | 64 | 图像缩放尺寸 |
-| `--action-dim` | 8 | 动作向量维度 |
+| `--action-dim` | 18 | 动作向量维度（对齐 bot4cj 18 列：10 舵机 + 2 云台 + 扬声器频率 + 延时 + 4 预留）|
 | `--history-len` | 5 | 历史动作窗口长度 |
 | `--backbone` | simple | CNN 类型 (simple/mobilenet) |
 | `--history-encoder` | mlp | 历史编码器 (mlp/gru) |
