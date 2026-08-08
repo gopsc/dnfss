@@ -1,5 +1,6 @@
 import json
 import os
+import random
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Subset
@@ -19,7 +20,7 @@ def split_episodes(data_dir: str, val_ratio: float, seed: int = 42):
     return indices[val_count:], indices[:val_count]
 
 
-def train_one_epoch(model, loader, optimizer, device):
+def train_one_epoch(model, loader, optimizer, device, max_grad_norm: float = None):
     model.train()
     total_loss = 0.0
     count = 0
@@ -31,6 +32,8 @@ def train_one_epoch(model, loader, optimizer, device):
         pred = model(image, history)
         loss = torch.nn.functional.mse_loss(pred, target)
         loss.backward()
+        if max_grad_norm:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
         optimizer.step()
         total_loss += loss.item() * image.size(0)
         count += image.size(0)
@@ -50,7 +53,9 @@ def validate(model, loader, device):
         loss = torch.nn.functional.mse_loss(pred, target)
         total_loss += loss.item() * image.size(0)
         count += image.size(0)
-    return total_loss / max(count, 1)
+    if count == 0:
+        return float("inf")  # 空验证集不参与比较，避免假 best
+    return total_loss / count
 
 
 def main():
@@ -59,6 +64,13 @@ def main():
     cfg = apply_overrides(Config(), args)
 
     os.makedirs(cfg.train.checkpoint_dir, exist_ok=True)
+
+    # 全局随机种子，保证训练可复现
+    random.seed(cfg.train.seed)
+    np.random.seed(cfg.train.seed)
+    torch.manual_seed(cfg.train.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(cfg.train.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
@@ -71,15 +83,27 @@ def main():
         cfg.data.data_dir, cfg.data.history_len, cfg.data.action_dim,
         cfg.data.image_size, cfg.data.normalize_actions,
         cfg.data.action_stats_path, train_indices)
+    if cfg.data.normalize_actions and not cfg.data.action_stats_path:
+        # 归一化统计量必须只用训练集计算，再供验证集复用，否则 val loss 不可信
+        stats_path = os.path.join(cfg.train.checkpoint_dir, "action_stats.npy")
+        np.save(stats_path, train_ds.get_action_stats())
+        print(f"Action stats saved to: {stats_path}")
+        cfg.data.action_stats_path = stats_path
     val_ds = ActionDataset(
         cfg.data.data_dir, cfg.data.history_len, cfg.data.action_dim,
         cfg.data.image_size, cfg.data.normalize_actions,
         cfg.data.action_stats_path, val_indices)
 
     print(f"Samples: {len(train_ds)} train, {len(val_ds)} val")
+    if len(val_ds) == 0:
+        print("WARNING: validation set is empty (episodes too short/few); "
+              "model selection is disabled, last epoch will be saved.")
 
+    loader_gen = torch.Generator()
+    loader_gen.manual_seed(cfg.train.seed)
     train_loader = DataLoader(train_ds, batch_size=cfg.train.batch_size,
-                              shuffle=True, num_workers=cfg.train.num_workers)
+                              shuffle=True, num_workers=cfg.train.num_workers,
+                              generator=loader_gen)
     val_loader = DataLoader(val_ds, batch_size=cfg.train.batch_size,
                             shuffle=False, num_workers=cfg.train.num_workers)
 
@@ -97,7 +121,8 @@ def main():
 
     for epoch in range(1, cfg.train.epochs + 1):
         print(f"\nEpoch {epoch}/{cfg.train.epochs}  lr={optimizer.param_groups[0]['lr']:.6f}")
-        train_loss = train_one_epoch(model, train_loader, optimizer, device)
+        train_loss = train_one_epoch(model, train_loader, optimizer, device,
+                                     cfg.train.max_grad_norm)
         val_loss = validate(model, val_loader, device)
         scheduler.step()
         print(f"  train_loss={train_loss:.6f}  val_loss={val_loss:.6f}")
@@ -125,13 +150,16 @@ def main():
                 break
 
     print(f"\nTraining done. Best val_loss={best_val_loss:.6f}")
-    print(f"Best model saved to: {best_path}")
 
-    action_stats = train_ds.get_action_stats()
-    if action_stats is not None:
-        stats_path = os.path.join(cfg.train.checkpoint_dir, "action_stats.npy")
-        np.save(stats_path, action_stats)
-        print(f"Action stats saved to: {stats_path}")
+    if best_val_loss == float("inf"):
+        # 验证集为空时无 best 可选，保底保存最终权重
+        torch.save({
+            "model_state_dict": model.state_dict(),
+            "config": cfg.to_dict(),
+        }, os.path.join(cfg.train.checkpoint_dir, "best_inference.pt"))
+        print("WARNING: saved final weights as best_inference.pt (no valid validation loss)")
+    else:
+        print(f"Best model saved to: {best_path}")
 
     if args.save_config:
         with open(args.save_config, "w") as f:

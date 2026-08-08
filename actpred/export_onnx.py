@@ -20,10 +20,7 @@ def main():
     model.eval()
 
     dummy_image = torch.randn(1, 3, data_cfg.image_size, data_cfg.image_size)
-    if model_cfg.history_encoder == "gru":
-        dummy_history = torch.randn(1, data_cfg.history_len, data_cfg.action_dim)
-    else:
-        dummy_history = torch.randn(1, data_cfg.history_len, data_cfg.action_dim)
+    dummy_history = torch.randn(1, data_cfg.history_len, data_cfg.action_dim)
 
     torch.onnx.export(
         model, (dummy_image, dummy_history),

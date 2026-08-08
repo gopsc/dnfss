@@ -35,7 +35,8 @@ class ActionDataset(Dataset):
                 continue
             actions = np.load(actions_path).astype(np.float32)
             n_frames = len(actions)
-            image_files = sorted(images_dir.glob("*.jpg")) + sorted(images_dir.glob("*.png"))
+            image_files = sorted(list(images_dir.glob("*.jpg")) + list(images_dir.glob("*.png")),
+                                 key=lambda p: p.name)
             n_images = len(image_files)
             n = min(n_frames, n_images)
             for t in range(history_len, n):
@@ -73,9 +74,15 @@ class ActionDataset(Dataset):
         return None
 
     @staticmethod
-    def get_episode_count(data_dir: str) -> int:
+    def _valid_episode_dirs(data_dir: str) -> list:
         data_path = Path(data_dir)
-        return len([d for d in data_path.iterdir() if d.is_dir()])
+        return sorted([d for d in data_path.iterdir()
+                       if d.is_dir() and (d / "actions.npy").exists() and (d / "images").is_dir()])
+
+    @staticmethod
+    def get_episode_count(data_dir: str) -> int:
+        # 与 __init__ 的过滤条件保持一致，避免 split_episodes 索引错位
+        return len(ActionDataset._valid_episode_dirs(data_dir))
 
 
 class DataRecorder:

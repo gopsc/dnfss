@@ -33,6 +33,8 @@ class TrainConfig:
     checkpoint_dir: str = "./checkpoints"
     patience: int = 15
     num_workers: int = 2
+    seed: int = 42
+    max_grad_norm: float = 1.0
 
 
 @dataclass
@@ -75,6 +77,8 @@ def build_argparser(description: str = "") -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint-dir", type=str, default=None)
     parser.add_argument("--patience", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--max-grad-norm", type=float, default=None)
     parser.add_argument("--save-config", type=str, default=None, help="保存配置到 JSON 文件")
     return parser
 
@@ -101,6 +105,8 @@ def apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         "checkpoint_dir": ("train", "checkpoint_dir"),
         "patience": ("train", "patience"),
         "num_workers": ("train", "num_workers"),
+        "seed": ("train", "seed"),
+        "max_grad_norm": ("train", "max_grad_norm"),
     }
     args_dict = vars(args)
     for arg_name, (section, field) in mapping.items():

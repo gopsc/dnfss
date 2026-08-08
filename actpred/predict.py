@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import numpy as np
 import torch
 from PIL import Image
@@ -32,7 +33,8 @@ class ActionPredictorInference:
 
         self._action_mean = None
         self._action_std = None
-        stats_path = checkpoint_path.rsplit("/", 1)[0] + "/action_stats.npy"
+        stats_path = os.path.join(os.path.dirname(os.path.abspath(checkpoint_path)),
+                                  "action_stats.npy")
         try:
             stats = np.load(stats_path)
             self._action_mean = stats[0]
