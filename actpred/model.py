@@ -30,7 +30,16 @@ class MobileNetEncoder(nn.Module):
     def __init__(self, feature_dim: int = 128):
         super().__init__()
         from torchvision.models import mobilenet_v2, MobileNet_V2_Weights
-        backbone = mobilenet_v2(weights=MobileNet_V2_Weights.DEFAULT)
+        try:
+            backbone = mobilenet_v2(weights=MobileNet_V2_Weights.DEFAULT)
+        except Exception as e:
+            raise RuntimeError(
+                "MobileNetV2 预训练权重下载失败，可能是网络受限。"
+                "请在联网环境中预下载权重"
+                "（运行 torchvision.models.mobilenet_v2(weights='IMAGENET1K_V1')），"
+                "并将 ~/.cache/torch/hub/checkpoints/ 下的权重文件"
+                "拷贝到目标机器同路径。"
+            ) from e
         self.features = backbone.features
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.proj = nn.Linear(1280, feature_dim)

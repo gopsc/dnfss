@@ -95,6 +95,10 @@ def main():
         cfg.data.action_stats_path, val_indices)
 
     print(f"Samples: {len(train_ds)} train, {len(val_ds)} val")
+    if len(train_ds) == 0:
+        raise ValueError(
+            f"训练集为空（0 样本）。请检查 data_dir={cfg.data.data_dir} "
+            f"及 episode 数据完整性。")
     if len(val_ds) == 0:
         print("WARNING: validation set is empty (episodes too short/few); "
               "model selection is disabled, last epoch will be saved.")

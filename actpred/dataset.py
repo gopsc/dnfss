@@ -1,4 +1,5 @@
 import os
+import re
 import numpy as np
 from pathlib import Path
 from PIL import Image
@@ -6,6 +7,11 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
+
+
+def _natural_key(p):
+    """自然排序键：'1.jpg' < '2.jpg' < ... < '10.jpg'"""
+    return [int(t) if t.isdigit() else t for t in re.split(r'(\d+)', p.name)]
 
 
 class ActionDataset(Dataset):
@@ -22,8 +28,7 @@ class ActionDataset(Dataset):
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         ])
 
-        data_path = Path(data_dir)
-        episodes = sorted([d for d in data_path.iterdir() if d.is_dir()])
+        episodes = ActionDataset._valid_episode_dirs(data_dir)
         if episode_indices is not None:
             episodes = [episodes[i] for i in episode_indices]
 
@@ -36,7 +41,7 @@ class ActionDataset(Dataset):
             actions = np.load(actions_path).astype(np.float32)
             n_frames = len(actions)
             image_files = sorted(list(images_dir.glob("*.jpg")) + list(images_dir.glob("*.png")),
-                                 key=lambda p: p.name)
+                                 key=_natural_key)
             n_images = len(image_files)
             n = min(n_frames, n_images)
             for t in range(history_len, n):
@@ -45,11 +50,18 @@ class ActionDataset(Dataset):
         self._action_mean = None
         self._action_std = None
         if normalize_actions:
-            if action_stats_path and os.path.exists(action_stats_path):
+            if action_stats_path:
+                if not os.path.exists(action_stats_path):
+                    raise FileNotFoundError(
+                        f"指定的 action_stats_path 不存在: {action_stats_path}")
                 stats = np.load(action_stats_path)
                 self._action_mean = stats[0]
                 self._action_std = stats[1]
             else:
+                if not self.samples:
+                    raise ValueError(
+                        f"数据集为空（0 样本），无法计算归一化统计量。"
+                        f"请检查 data_dir={data_dir} 中的 episode 数据。")
                 all_actions = np.stack([s[2] for s in self.samples])
                 self._action_mean = all_actions.mean(axis=0)
                 self._action_std = all_actions.std(axis=0) + 1e-8
@@ -92,8 +104,11 @@ class DataRecorder:
         self._frame_idx = 0
         self._actions = []
         ep_idx = 0
-        while (self.output_dir / f"episode_{ep_idx:04d}").exists():
-            ep_idx += 1
+        for d in self.output_dir.glob("episode_*"):
+            try:
+                ep_idx = max(ep_idx, int(d.name.split("_")[1]) + 1)
+            except (ValueError, IndexError):
+                pass
         self.episode_dir = self.output_dir / f"episode_{ep_idx:04d}"
         self.images_dir = self.episode_dir / "images"
         self.images_dir.mkdir(parents=True, exist_ok=True)

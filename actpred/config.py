@@ -61,7 +61,7 @@ def build_argparser(description: str = "") -> argparse.ArgumentParser:
     parser.add_argument("--action-dim", type=int, default=None)
     parser.add_argument("--history-len", type=int, default=None)
     parser.add_argument("--data-dir", type=str, default=None)
-    parser.add_argument("--normalize-actions", action="store_true", default=None)
+    parser.add_argument("--normalize-actions", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--action-stats-path", type=str, default=None)
     parser.add_argument("--backbone", type=str, default=None, choices=["simple", "mobilenet"])
     parser.add_argument("--cnn-feature-dim", type=int, default=None)

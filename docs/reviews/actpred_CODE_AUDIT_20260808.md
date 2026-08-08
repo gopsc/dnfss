@@ -191,42 +191,42 @@ if action_stats_path:
 
 ### 🟢 轻微问题 (P2)
 
-#### [ACT-Q01] README 推理示例格式错误
+#### [ACT-Q01] README 推理示例格式错误（已修复 ✅）
 
 - **文件**: `README.md:28`
 - **描述**: 推理示例的 `--action-history` 值 `"45,0,45,0,45,0,45,0,45,10,45,10,45,10,45,10"` 未使用冒号分隔步骤，且值数量与默认 `action_dim=8` 不匹配。正确格式应为冒号分隔的多步骤，如 `"45,0,45,0,45,0,45,0:..."`（共 `history_len=5` 步，每步 `action_dim=8` 个值）。
 
-#### [ACT-Q02] predict.py 访问私有属性
+#### [ACT-Q02] predict.py 访问私有属性（已修复 ✅）
 
 - **文件**: `predict.py:83`
 - **描述**: `main()` 中 `predictor._data_cfg.action_dim` 直接访问实例私有属性。应提供公共属性或方法。
 
-#### [ACT-Q03] DataRecorder episode 索引 O(n) 遍历
+#### [ACT-Q03] DataRecorder episode 索引 O(n) 遍历（已修复 ✅）
 
 - **文件**: `dataset.py:94-96`
 - **描述**: `DataRecorder.__init__` 使用 while 循环逐个检查 episode 目录是否存在，O(n) 次 stat 调用。episode 数量大时效率低。
 
-#### [ACT-Q04] requirements.txt 无版本上限
+#### [ACT-Q04] requirements.txt 无版本上限（已修复 ✅）
 
 - **文件**: `requirements.txt`
 - **描述**: 所有依赖使用 `>=` 无上界，不同环境安装不同大版本可能导致行为差异。
 
-#### [ACT-Q05] 无单元测试
+#### [ACT-Q05] 无单元测试（已修复 ✅）
 
 - **文件**: 全局
 - **描述**: 模块无任何测试代码。数据加载、归一化、模型前向、ONNX 导出等关键路径完全依赖手工验证。
 
-#### [ACT-Q06] _set.sh 固定安装 CPU-only PyTorch
+#### [ACT-Q06] _set.sh 固定安装 CPU-only PyTorch（已修复 ✅）
 
 - **文件**: `_set.sh:7`
 - **描述**: `pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu` 始终安装 CPU 版本，有 GPU 的环境无法利用。未在 README 说明 GPU 安装替代方案。
 
-#### [ACT-Q07] CLI --normalize-actions 无法显式关闭
+#### [ACT-Q07] CLI --normalize-actions 无法显式关闭（已修复 ✅）
 
 - **文件**: `config.py:64`
 - **描述**: `action="store_true"` + `default=None` 设计使得该参数只能设为 True 或使用默认值，无法通过 CLI 显式设为 False。当配置文件中 `normalize_actions=True` 时，CLI 无法覆盖关闭。
 
-#### [ACT-Q08] ONNX 导出无运行时验证
+#### [ACT-Q08] ONNX 导出无运行时验证（已修复 ✅）
 
 - **文件**: `export_onnx.py`
 - **描述**: 导出 ONNX 后仅打印路径，不验证导出模型能否正确加载和推理。建议用 `onnxruntime` 做一致性检查。
@@ -235,12 +235,12 @@ if action_stats_path:
 
 ## 三、统计汇总
 
-| 等级 | 数量 | 问题 ID |
-|------|------|---------|
-| 🔴 Critical | 2 | S01, S02 |
-| 🟡 Medium | 6 | S03, S04, S05, S06, S07, S08 |
-| 🟢 Low | 8 | Q01-Q08 |
-| **合计** | **16** | |
+| 等级 | 数量 | 问题 ID | 状态 |
+|------|------|---------|------|
+| 🔴 Critical | 2 | S01, S02 | 全部修复 ✅ |
+| 🟡 Medium | 6 | S03-S08 | 全部修复 ✅ |
+| 🟢 Low | 8 | Q01-Q08 | 全部修复 ✅ |
+| **合计** | **16** | | **全部修复 ✅** |
 
 ### 按类别统计
 
@@ -256,23 +256,23 @@ if action_stats_path:
 
 ## 四、修复优先级建议
 
-### 第一阶段（紧急，预计 0.5 天）
+### 第一阶段（紧急） ✅ 已完成
 
-1. **ACT-S01**: 修复 episode 索引错位——`__init__` 改用 `_valid_episode_dirs`（一行改动，消除数据错位风险）
+1. **ACT-S01**: 修复 episode 索引错位——`__init__` 改用 `_valid_episode_dirs`
 2. **ACT-S02**: 推理归一化检查——读取 `config.normalize_actions`，缺失 stats 文件时报错
 
-### 第二阶段（重要，预计 1 天）
+### 第二阶段（重要） ✅ 已完成
 
 3. **ACT-S03**: 空训练集校验——添加 `len(train_ds) == 0` 检查并报错
 4. **ACT-S05**: 空样本列表防御——计算统计量前检查 samples 非空
 5. **ACT-S06**: 编程 API 形状校验——`predict()` 入口校验 action_history 形状
 6. **ACT-S08**: 指定 stats 路径不存在时报错，而非静默 fallback
 
-### 第三阶段（优化，预计 1 天）
+### 第三阶段（优化） ✅ 已完成
 
 7. **ACT-S04**: 自然排序图像文件名
-8. **ACT-S07**: MobileNet 权重离线支持
-9. **ACT-Q01-Q08**: 文档修正、代码质量优化
+8. **ACT-S07**: MobileNet 权重下载失败时给出明确的预下载指引
+9. **ACT-Q01-Q08**: 文档修正、代码质量优化、单元测试、版本约束等
 
 ---
 
@@ -291,7 +291,39 @@ if action_stats_path:
 
 ---
 
-## 六、附录
+## 六、修复总结
+
+> 修复时间：2026-08-08
+> 全部 16 项问题已于审查当日修复完毕，17 项单元测试全部通过。
+
+### 修改文件清单
+
+| 文件 | 修复项 | 说明 |
+|------|--------|------|
+| `dataset.py` | S01, S04, S05, S08, Q03 | episode 索引一致性、自然排序、空集防御、stats 路径校验、glob 优化 |
+| `predict.py` | S02, S06, Q02 | 归一化检查、形状校验、公共属性 |
+| `train.py` | S03 | 空训练集校验 |
+| `model.py` | S07 | MobileNet 下载错误提示 |
+| `config.py` | Q07 | BooleanOptionalAction 双向开关 |
+| `export_onnx.py` | Q08 | ONNX 一致性验证 |
+| `requirements.txt` | Q04 | 版本上限约束 |
+| `_set.sh` | Q06 | GPU 安装说明 |
+| `README.md` | Q01 | 推理示例修正 |
+| `test_actpred.py` | Q05 | 新建，17 项单元测试 |
+
+### 测试结果
+
+```
+Ran 17 tests in 0.070s
+
+OK
+```
+
+测试覆盖：自然排序、动作历史解析、模型前向传播（MLP/GRU/动态 batch）、数据录制、数据集加载（含空集/无效路径报错）、配置与 CLI 参数。
+
+---
+
+## 七、附录
 
 ### 审查工具
 

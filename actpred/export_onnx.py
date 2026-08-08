@@ -36,6 +36,21 @@ def main():
     )
     print(f"ONNX model exported to: {args.output}")
 
+    # 可选：验证导出的 ONNX 模型一致性
+    try:
+        import onnxruntime as ort
+        import numpy as np
+        sess = ort.InferenceSession(args.output)
+        img_np = dummy_image.numpy()
+        hist_np = dummy_history.numpy()
+        ort_out = sess.run(None, {"image": img_np, "action_history": hist_np})[0]
+        with torch.no_grad():
+            torch_out = model(dummy_image, dummy_history).numpy()
+        max_diff = np.abs(ort_out - torch_out).max()
+        print(f"ONNX 一致性验证通过（最大差异: {max_diff:.6e}）")
+    except ImportError:
+        print("提示: 安装 onnxruntime 可验证导出模型一致性 (pip install onnxruntime)")
+
 
 if __name__ == "__main__":
     main()

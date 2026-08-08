@@ -25,6 +25,9 @@ class ActionPredictorInference:
         self._model.load_state_dict(checkpoint["model_state_dict"])
         self._model.eval()
 
+        self.action_dim = self._data_cfg.action_dim
+        self.history_len = self._data_cfg.history_len
+
         self._transform = transforms.Compose([
             transforms.Resize((self._data_cfg.image_size, self._data_cfg.image_size)),
             transforms.ToTensor(),
@@ -35,15 +38,20 @@ class ActionPredictorInference:
         self._action_std = None
         stats_path = os.path.join(os.path.dirname(os.path.abspath(checkpoint_path)),
                                   "action_stats.npy")
-        try:
+        if self._data_cfg.normalize_actions:
+            if not os.path.exists(stats_path):
+                raise FileNotFoundError(
+                    f"模型训练时启用了动作归一化，但未找到统计文件: {stats_path}")
             stats = np.load(stats_path)
             self._action_mean = stats[0]
             self._action_std = stats[1]
-        except (FileNotFoundError, ValueError):
-            pass
 
     @torch.no_grad()
     def predict(self, image: np.ndarray, action_history: np.ndarray) -> np.ndarray:
+        expected_shape = (self._data_cfg.history_len, self._data_cfg.action_dim)
+        if action_history.shape != expected_shape:
+            raise ValueError(
+                f"action_history 形状应为 {expected_shape}，实际为 {action_history.shape}")
         img = Image.fromarray(image) if isinstance(image, np.ndarray) else image
         img_tensor = self._transform(img).unsqueeze(0).to(self._device)
         history = torch.tensor(action_history, dtype=torch.float32)
@@ -72,7 +80,8 @@ def main():
     parser.add_argument("--model", required=True, help="checkpoint path")
     parser.add_argument("--image", required=True, help="image file path")
     parser.add_argument("--action-history", required=True,
-                        help="colon-separated action vectors, e.g. '45,0,45,0:45,10,45,10'")
+                        help="冒号分隔各步，每步 action_dim 个值，共 history_len 步。"
+                             "e.g. '0,0,0,0:1,0,0,0' (action_dim=4, history_len=2)")
     parser.add_argument("--action-dim", type=int, default=None,
                         help="override action dim (auto-detected from checkpoint if omitted)")
     parser.add_argument("--output-format", choices=["json", "raw"], default="json")
@@ -80,7 +89,7 @@ def main():
     args = parser.parse_args()
 
     predictor = ActionPredictorInference(args.model, args.device)
-    action_dim = args.action_dim or predictor._data_cfg.action_dim
+    action_dim = args.action_dim or predictor.action_dim
 
     image = Image.open(args.image).convert("RGB")
     history = parse_action_history(args.action_history, action_dim)

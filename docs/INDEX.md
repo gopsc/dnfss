@@ -66,7 +66,7 @@ docs/
 |------|------|
 | [core_CODE_REVIEW_LOG_20260730.md](reviews/core_CODE_REVIEW_LOG_20260730.md) | Core 模块代码审查日志（2026-07-30，自动化审查） |
 | [DEPLOY_DEFECT_AUDIT_20260806.md](reviews/DEPLOY_DEFECT_AUDIT_20260806.md) | 部署缺陷审查（2026-08-06，首次原生部署实录，含修复记录） |
-| [actpred_CODE_AUDIT_20260808.md](reviews/actpred_CODE_AUDIT_20260808.md) | actpred 模块代码审计（2026-08-08，PyTorch 动作预测，16 项发现） |
+| [actpred_CODE_AUDIT_20260808.md](reviews/actpred_CODE_AUDIT_20260808.md) | actpred 模块代码审计（2026-08-08，PyTorch 动作预测，16 项发现，全部修复） |
 
 ---
 
@@ -81,6 +81,7 @@ docs/
 | [aibox_file_network_cli_refactor.md](reports/aibox_file_network_cli_refactor.md) | aibox 文件/网络操作命令行化重构计划 |
 | [blackbird_promo_full.md](reports/blackbird_promo_full.md) | blackbird 项目完整版宣传文案 |
 | [bot4cj_analysis_20260525_00.md](reports/bot4cj_analysis_20260525_00.md) | bot4cj 机器人模块分析报告（Markdown） |
+| [libcrypt_CBC_deprecation_dev_doc.md](reports/libcrypt_CBC_deprecation_dev_doc.md) | libcrypt CBC 模式缺陷分析与 AES-GCM 迁移开发文档 |
 | [bot4cj_analysis_20260525_00.html](reports/bot4cj_analysis_20260525_00.html) | bot4cj 机器人模块分析报告（HTML） |
 
 ---
