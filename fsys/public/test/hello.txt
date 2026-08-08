@@ -1,1 +1,0 @@
-hello fsys — 这是 fsys 静态文件服务的测试文件。

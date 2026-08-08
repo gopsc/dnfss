@@ -1,202 +1,227 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="zh-CN">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>fsys 测试页</title>
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: system-ui, sans-serif; background: #0f1419; color: #e6e6e6; padding: 32px 16px; }
-  .wrap { max-width: 860px; margin: 0 auto; }
-  h1 { font-size: 22px; margin-bottom: 4px; }
-  .sub { color: #8b98a5; font-size: 13px; margin-bottom: 24px; }
-  .card { background: #1a2027; border: 1px solid #2a3441; border-radius: 10px; padding: 16px; margin-bottom: 14px; }
-  .card h2 { font-size: 14px; color: #9fb3c8; margin-bottom: 10px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  td { padding: 7px 8px; border-bottom: 1px solid #232d38; vertical-align: top; }
-  td.name { width: 34%; color: #d7e2ec; }
-  td.st { width: 90px; font-weight: 600; }
-  .ok { color: #4ade80; } .fail { color: #f87171; } .pending { color: #8b98a5; }
-  td.detail { color: #8b98a5; font-family: ui-monospace, monospace; font-size: 12px; word-break: break-all; }
-  button { background: #2563eb; color: #fff; border: 0; border-radius: 8px; padding: 10px 22px;
-           font-size: 14px; cursor: pointer; margin-bottom: 18px; }
-  button:hover { background: #1d4ed8; }
-  .links a { color: #60a5fa; text-decoration: none; margin-right: 14px; font-size: 13px; }
-  .links a:hover { text-decoration: underline; }
-  #summary { font-size: 14px; margin-bottom: 14px; }
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="DNFS 树状笔记：以树状结构组织知识的笔记社区，支持 Markdown、链接卡片、图片与文件分享。">
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fdf6ee">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1e1712">
+    <link rel="icon" href="favicon.ico">
+    <link rel="stylesheet" href="css/theme.css">
+    <link rel="stylesheet" href="css/index.css">
+    <title>DNFS 树状笔记 — 让知识自然成体系</title>
 </head>
 <body>
-<div class="wrap">
-  <h1>fsys 测试页</h1>
-  <div class="sub">C++ 静态文件托管服务 · 路由/安全功能自检</div>
+    <header class="header">
+        <div class="wrap">
+            <div class="header-inner">
+                <h1 id="logo">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="10.51" x2="15.42" y2="6.51"/><line x1="8.59" y1="13.49" x2="15.42" y2="17.49"/></svg>
+                    <span>DNFS 树状笔记</span>
+                </h1>
+                <nav class="right-group" aria-label="用户操作">
+                    <img src="favicon.ico" alt="用户头像" id="avatar" style="display:none">
+                    <b id="name" style="display:none"></b>
+                    <button id="enterBtn" class="btn btn-primary" style="display:none">进入笔记</button>
+                    <button id="logoutBtn" class="btn btn-ghost" style="display:none">退出</button>
+                    <button id="loginBtn" class="btn btn-primary">登录</button>
+                    <button id="registerBtn" class="btn btn-ghost">注册</button>
+                </nav>
+            </div>
+        </div>
+    </header>
 
-  <button onclick="runAll()">▶ 运行全部测试</button>
-  <div id="summary"></div>
+    <main id="main-page">
+        <!-- ===== Hero ===== -->
+        <section class="hero">
+            <div class="hero-bg" aria-hidden="true">
+                <svg class="hero-tree" viewBox="0 0 800 440" fill="none">
+                    <defs>
+                        <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+                            <stop offset="0%" stop-color="currentColor" stop-opacity="0.18"/>
+                            <stop offset="100%" stop-color="currentColor" stop-opacity="0"/>
+                        </radialGradient>
+                    </defs>
+                    <circle cx="400" cy="210" r="180" fill="url(#glow)"/>
+                    <g class="tree-branches" stroke="currentColor" stroke-linecap="round">
+                        <path pathLength="100" d="M400 400 L400 295" stroke-width="2.5"/>
+                        <path pathLength="100" d="M400 295 C 365 265, 310 240, 260 205" stroke-width="2"/>
+                        <path pathLength="100" d="M400 295 C 435 265, 490 240, 540 205" stroke-width="2"/>
+                        <path pathLength="100" d="M260 205 C 238 178, 210 152, 185 120" stroke-width="1.5"/>
+                        <path pathLength="100" d="M260 205 C 278 178, 300 152, 318 120" stroke-width="1.5"/>
+                        <path pathLength="100" d="M540 205 C 518 178, 496 152, 478 120" stroke-width="1.5"/>
+                        <path pathLength="100" d="M540 205 C 562 178, 590 152, 615 120" stroke-width="1.5"/>
+                        <path pathLength="100" d="M185 120 C 172 100, 160 82, 150 60" stroke-width="1"/>
+                        <path pathLength="100" d="M318 120 C 328 100, 338 82, 345 60" stroke-width="1"/>
+                        <path pathLength="100" d="M478 120 C 468 100, 458 82, 452 60" stroke-width="1"/>
+                        <path pathLength="100" d="M615 120 C 628 100, 640 82, 650 60" stroke-width="1"/>
+                    </g>
+                    <g class="tree-nodes" fill="currentColor">
+                        <circle cx="400" cy="400" r="7" opacity=".9"/>
+                        <circle cx="400" cy="295" r="5.5"/>
+                        <circle cx="260" cy="205" r="5"/>
+                        <circle cx="540" cy="205" r="5"/>
+                        <circle cx="185" cy="120" r="4"/>
+                        <circle cx="318" cy="120" r="4"/>
+                        <circle cx="478" cy="120" r="4"/>
+                        <circle cx="615" cy="120" r="4"/>
+                        <circle cx="150" cy="60" r="3" opacity=".65"/>
+                        <circle cx="345" cy="60" r="3" opacity=".65"/>
+                        <circle cx="452" cy="60" r="3" opacity=".65"/>
+                        <circle cx="650" cy="60" r="3" opacity=".65"/>
+                    </g>
+                </svg>
+            </div>
 
-  <div class="card">
-    <h2>API 自检</h2>
-    <table id="tbl">
-      <tr data-t="health"><td class="name">GET /health</td><td class="st pending">—</td><td class="detail"></td></tr>
-      <tr data-t="filelist_root"><td class="name">GET /api/filelist（根目录）</td><td class="st pending">—</td><td class="detail"></td></tr>
-      <tr data-t="filelist_sub"><td class="name">GET /api/filelist?path=test%2F（编码子目录）</td><td class="st pending">—</td><td class="detail"></td></tr>
-      <tr data-t="filelist_traverse"><td class="name">GET /api/filelist?path=..%2F..（遍历应 403）</td><td class="st pending">—</td><td class="detail"></td></tr>
-      <tr data-t="static_file"><td class="name">GET /test/hello.txt（静态文件）</td><td class="st pending">—</td><td class="detail"></td></tr>
-      <tr data-t="video_range"><td class="name">GET /video/test/sample.mp4（Range 206/416）</td><td class="st pending">—</td><td class="detail"></td></tr>
-      <tr data-t="download"><td class="name">GET /test/hello.txt?download=true（附件头）</td><td class="st pending">—</td><td class="detail"></td></tr>
-      <tr data-t="utf8_path"><td class="name">GET 中文文件名（URL 解码）</td><td class="st pending">—</td><td class="detail"></td></tr>
-      <tr data-t="hash"><td class="name">POST /api/hash（sha256("test123")）</td><td class="st pending">—</td><td class="detail"></td></tr>
-      <tr data-t="hash_bad"><td class="name">POST /api/hash 非法输入（应 400）</td><td class="st pending">—</td><td class="detail"></td></tr>
-      <tr data-t="check_user"><td class="name">POST /api/check_user（结构校验）</td><td class="st pending">—</td><td class="detail"></td></tr>
-      <tr data-t="favicon_private"><td class="name">GET /api/favicon 内网地址（SSRF 应 403）</td><td class="st pending">—</td><td class="detail"></td></tr>
-      <tr data-t="favicon_public"><td class="name">GET /api/favicon 公网地址（需外网）</td><td class="st pending">—</td><td class="detail"></td></tr>
-      <tr data-t="headers"><td class="name">安全响应头（CSP/X-Frame-Options…）</td><td class="st pending">—</td><td class="detail"></td></tr>
-      <tr data-t="notfound"><td class="name">GET /不存在的路径（应 404）</td><td class="st pending">—</td><td class="detail"></td></tr>
-    </table>
-  </div>
+            <div class="wrap hero-inner">
+                <p class="hero-badge"><span class="badge-dot"></span>树状结构 · Markdown · 多媒体分享</p>
+                <h2 class="hero-title">让知识像树一样<br><span class="accent-text">自然生长</span></h2>
+                <p class="hero-sub">每个节点都可以生长出子节点，像树枝一样层层延展<br>让零散的想法汇聚成体系</p>
+                <div class="hero-actions">
+                    <button class="btn btn-primary btn-lg" data-cta>开始记录</button>
+                    <a class="btn btn-ghost btn-lg" href="#features">了解更多</a>
+                </div>
+            </div>
 
-  <div class="card links">
-    <h2>手动验证链接</h2>
-    <a href="/api/filelist?path=" target="_blank">filelist 根</a>
-    <a href="/api/filelist?path=test" target="_blank">filelist test/</a>
-    <a href="/test/hello.txt" target="_blank">hello.txt</a>
-    <a href="/test/hello.txt?download=true" target="_blank">下载模式</a>
-    <a href="/health" target="_blank">health</a>
-  </div>
-</div>
+            <a class="scroll-hint" href="#features" aria-label="下滑了解特性">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </a>
+        </section>
 
-<script>
-const EXPECT_HASH = 'ecd71870d1963316a97e3ac3408c9835ad8cf0f3c1bc703527c30265534f75ae';
+        <!-- ===== 核心特性 ===== -->
+        <section id="features" class="section features-section">
+            <div class="wrap">
+                <p class="section-eyebrow">核心特性</p>
+                <h2 class="section-title">为什么选择树状笔记</h2>
+                <p class="section-sub">从灵感到体系，让知识在树上自然生长</p>
+                <div class="features">
+                    <div class="feature-card">
+                        <div class="feature-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="10.51" x2="15.42" y2="6.51"/><line x1="8.59" y1="13.49" x2="15.42" y2="17.49"/></svg>
+                        </div>
+                        <div class="feature-body">
+                            <h3>树状结构组织</h3>
+                            <p>每个节点都能生长出子节点，像树枝般层层延展，让零散的想法自然汇聚成体系。</p>
+                        </div>
+                        <span class="feature-tag">无限层级</span>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                        </div>
+                        <div class="feature-body">
+                            <h3>Markdown 写作</h3>
+                            <p>原生支持 Markdown 渲染，代码块、引用、列表一应俱全，专注内容本身。</p>
+                        </div>
+                        <span class="feature-tag">专注写作</span>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                        </div>
+                        <div class="feature-body">
+                            <h3>多媒体分享</h3>
+                            <p>链接卡片、图片直显、文件下载，多种内容形态一站承载，分享更自由。</p>
+                        </div>
+                        <span class="feature-tag">自由分享</span>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                        </div>
+                        <div class="feature-body">
+                            <h3>深色模式</h3>
+                            <p>跟随系统偏好自动切换明暗主题，深夜记录也不刺眼，日夜皆宜。</p>
+                        </div>
+                        <span class="feature-tag">日夜皆宜</span>
+                    </div>
+                </div>
+            </div>
+        </section>
 
-function setRow(key, ok, detail) {
-  const tr = document.querySelector(`tr[data-t="${key}"]`);
-  if (!tr) return;
-  const st = tr.children[1], dt = tr.children[2];
-  st.textContent = ok ? 'PASS' : 'FAIL';
-  st.className = 'st ' + (ok ? 'ok' : 'fail');
-  dt.textContent = detail || '';
-}
+        <!-- ===== 关于本站 ===== -->
+        <section class="section about-section">
+            <div class="wrap">
+                <p class="section-eyebrow">我们的理念</p>
+                <h2 class="section-title">关于本站</h2>
+                <div class="about-panel">
+                    <svg class="about-deco" viewBox="0 0 200 200" fill="none" aria-hidden="true">
+                        <circle cx="100" cy="100" r="90" stroke="currentColor" stroke-width=".6" opacity=".15"/>
+                        <circle cx="100" cy="100" r="60" stroke="currentColor" stroke-width=".5" opacity=".10"/>
+                        <circle cx="100" cy="100" r="30" stroke="currentColor" stroke-width=".4" opacity=".08"/>
+                    </svg>
+                    <p class="site-intro">
+                        DNFS 树状笔记是一个以树状结构组织内容的笔记社区：每个节点都可以生长出子节点，
+                        像树枝一样层层延展，让知识自然成体系。支持 Markdown 文本、链接卡片、图片与文件分享，
+                        注册登录后即可创建属于你自己的知识树。
+                    </p>
+                    <ul class="about-stats">
+                        <li><b>∞</b><span>节点层级无上限</span></li>
+                        <li><b>MD</b><span>原生 Markdown 渲染</span></li>
+                        <li><b>4+</b><span>内容形态一站承载</span></li>
+                    </ul>
+                </div>
+                <nav class="quick-links" aria-label="快捷链接">
+                    <a href="allcolor.html">调色板</a>
+                    <a href="games/">小游戏</a>
+                    <a href="LICENSE.html">用户使用条例</a>
+                </nav>
+            </div>
+        </section>
 
-async function j(url, opt) {
-  const res = await fetch(url, opt);
-  const text = await res.text();
-  let json = null;
-  try { json = JSON.parse(text); } catch (e) {}
-  return { res, text, json };
-}
+        <!-- ===== 结尾 CTA ===== -->
+        <section class="section cta-section" aria-label="立即开始">
+            <div class="wrap">
+                <div class="cta-band">
+                    <svg class="cta-tree" viewBox="0 0 400 200" fill="none" aria-hidden="true">
+                        <g stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity=".6">
+                            <path d="M200 190 L200 140"/>
+                            <path d="M200 140 C 175 120, 145 105, 120 85"/>
+                            <path d="M200 140 C 225 120, 255 105, 280 85"/>
+                            <path d="M120 85 C 105 65, 90 50, 80 30"/>
+                            <path d="M120 85 C 135 65, 148 50, 155 30"/>
+                            <path d="M280 85 C 265 65, 252 50, 245 30"/>
+                            <path d="M280 85 C 295 65, 310 50, 320 30"/>
+                        </g>
+                        <g fill="currentColor" opacity=".5">
+                            <circle cx="200" cy="190" r="4"/>
+                            <circle cx="200" cy="140" r="3"/>
+                            <circle cx="120" cy="85" r="2.5"/>
+                            <circle cx="280" cy="85" r="2.5"/>
+                            <circle cx="80" cy="30" r="2"/>
+                            <circle cx="155" cy="30" r="2"/>
+                            <circle cx="245" cy="30" r="2"/>
+                            <circle cx="320" cy="30" r="2"/>
+                        </g>
+                    </svg>
+                    <h2 class="cta-title">准备好让知识生长了吗？</h2>
+                    <p class="cta-sub">注册一个账号，种下你的第一棵知识树</p>
+                    <button class="btn btn-cta btn-lg" data-cta>立即开始</button>
+                </div>
+            </div>
+        </section>
+    </main>
 
-const tests = {
-  async health() {
-    const { res, json } = await j('/health');
-    const ok = res.status === 200 && json && json.status === 'ok';
-    setRow('health', ok, `HTTP ${res.status} ${JSON.stringify(json)}`);
-  },
-  async filelist_root() {
-    const { res, json } = await j('/api/filelist?path=');
-    const ok = res.status === 200 && json && json.success === true && Array.isArray(json.items);
-    setRow('filelist_root', ok, `HTTP ${res.status}, ${json && json.items ? json.items.length + ' 项' : '无 items'}`);
-  },
-  async filelist_sub() {
-    const { res, json } = await j('/api/filelist?path=' + encodeURIComponent('test'));
-    const hasHello = json && Array.isArray(json.items) && json.items.some(i => i.name === 'hello.txt');
-    setRow('filelist_sub', res.status === 200 && hasHello, `HTTP ${res.status}, hello.txt ${hasHello ? '可见' : '缺失'}`);
-  },
-  async filelist_traverse() {
-    const { res } = await j('/api/filelist?path=' + encodeURIComponent('../../'));
-    setRow('filelist_traverse', res.status === 403, `HTTP ${res.status}（期望 403）`);
-  },
-  async static_file() {
-    const { res, text } = await j('/test/hello.txt');
-    const ok = res.status === 200 && text.includes('hello fsys');
-    setRow('static_file', ok, `HTTP ${res.status}, ${(res.headers.get('content-type') || '').split(';')[0]}`);
-  },
-  async video_range() {
-    const full = await fetch('/video/test/sample.mp4');
-    const partial = await fetch('/video/test/sample.mp4', { headers: { Range: 'bytes=0-99' } });
-    const bad = await fetch('/video/test/sample.mp4', { headers: { Range: 'bytes=999999-' } });
-    const cr = partial.headers.get('content-range') || '';
-    const ok = full.status === 200 && full.headers.get('accept-ranges') === 'bytes'
-            && partial.status === 206 && cr.startsWith('bytes 0-99/')
-            && partial.headers.get('content-length') === '100'
-            && bad.status === 416;
-    setRow('video_range', ok, `full=${full.status}, range=${partial.status} ${cr}, bad=${bad.status}（期望 416）`);
-  },
-  async download() {
-    const { res } = await j('/test/hello.txt?download=true');
-    const cd = res.headers.get('content-disposition') || '';
-    setRow('download', res.status === 200 && cd.includes('attachment'), `content-disposition: ${cd || '(无)'}`);
-  },
-  async utf8_path() {
-    const { res, text } = await j('/test/' + encodeURIComponent('中文文件.txt'));
-    const ok = res.status === 200 && text.includes('中文内容');
-    setRow('utf8_path', ok, `HTTP ${res.status}（URL 解码生效=${ok}）`);
-  },
-  async hash() {
-    const { res, json } = await j('/api/hash', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: 'test123' })
-    });
-    const ok = res.status === 200 && json && json.hash === EXPECT_HASH;
-    setRow('hash', ok, `HTTP ${res.status}, hash ${ok ? '匹配' : '不匹配'}`);
-  },
-  async hash_bad() {
-    const { res } = await j('/api/hash', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: 12345 })
-    });
-    setRow('hash_bad', res.status === 400, `HTTP ${res.status}（期望 400）`);
-  },
-  async check_user() {
-    const { res, json } = await j('/api/check_user', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: 'fsys-test@example.com' })
-    });
-    // db 可能不可用：只要返回结构合法（success 字段存在）即 PASS
-    const ok = [200, 500].includes(res.status) && json && typeof json.success === 'boolean';
-    setRow('check_user', ok, `HTTP ${res.status} ${JSON.stringify(json)}`);
-  },
-  async favicon_private() {
-    const { res } = await j('/api/favicon?url=' + encodeURIComponent('http://127.0.0.1:8005/'));
-    setRow('favicon_private', res.status === 403, `HTTP ${res.status}（期望 403 forbidden host）`);
-  },
-  async favicon_public() {
-    try {
-      const { res } = await j('/api/favicon?url=' + encodeURIComponent('https://www.baidu.com'));
-      const ct = res.headers.get('content-type') || '';
-      setRow('favicon_public', res.status === 200 && ct.startsWith('image/'), `HTTP ${res.status} ${ct}`);
-    } catch (e) {
-      setRow('favicon_public', false, '网络不可达: ' + e.message);
-    }
-  },
-  async headers() {
-    const res = await fetch('/health');
-    const need = ['content-security-policy', 'x-frame-options', 'x-content-type-options',
-                  'referrer-policy', 'permissions-policy'];
-    const missing = need.filter(h => !res.headers.get(h));
-    setRow('headers', missing.length === 0, missing.length ? '缺失: ' + missing.join(', ') : '5 项安全头齐全');
-  },
-  async notfound() {
-    const { res } = await j('/no/such/file-' + Date.now());
-    setRow('notfound', res.status === 404, `HTTP ${res.status}（期望 404）`);
-  }
-};
-
-async function runAll() {
-  const summary = document.getElementById('summary');
-  summary.textContent = '测试运行中…';
-  document.querySelectorAll('#tbl tr').forEach(tr => {
-    tr.children[1].textContent = '…'; tr.children[1].className = 'st pending';
-    tr.children[2].textContent = '';
-  });
-  let pass = 0, fail = 0;
-  for (const [name, fn] of Object.entries(tests)) {
-    try { await fn(); }
-    catch (e) { setRow(name, false, '异常: ' + e.message); }
-    const st = document.querySelector(`tr[data-t="${name}"] .st`);
-    if (st && st.classList.contains('ok')) pass++; else fail++;
-  }
-  summary.innerHTML = `完成：<span class="ok">${pass} 通过</span> / <span class="fail">${fail} 失败</span>（共 ${pass + fail}）`;
-}
-</script>
+    <footer class="footer">
+        <div class="wrap">
+            <div class="footer-inner">
+                <div class="footer-brand">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="10.51" x2="15.42" y2="6.51"/><line x1="8.59" y1="13.49" x2="15.42" y2="17.49"/></svg>
+                    <span>DNFS 树状笔记</span>
+                </div>
+                <nav class="footer-nav" aria-label="页脚导航">
+                    <a href="dnfs.html">树状笔记</a>
+                    <a href="allcolor.html">调色板</a>
+                    <a href="games/">小游戏</a>
+                    <a href="LICENSE.html">用户使用条例</a>
+                </nav>
+                <p class="footer-icp">
+                    <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">蜀ICP备2024107064号-2</a>
+                </p>
+            </div>
+        </div>
+    </footer>
+    <script src="js/token_manager.js"></script>
+    <script src="js/index.js"></script>
 </body>
 </html>
