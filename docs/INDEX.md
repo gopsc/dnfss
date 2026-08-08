@@ -19,7 +19,6 @@ docs/
 | 文档 | 路径 | 说明 |
 |------|------|------|
 | 项目 README | [../README.md](../README.md) | 架构总览、服务说明、安装运行指南 |
-| 更新日志 | [../CHANGELOG.md](../CHANGELOG.md) | 版本变更记录、安全修复、功能更新 |
 
 ---
 
@@ -63,6 +62,7 @@ docs/
 |------|------|
 | [core_CODE_REVIEW_LOG_20260730.md](reviews/core_CODE_REVIEW_LOG_20260730.md) | Core 模块代码审查日志（2026-07-30，自动化审查） |
 | [DEPLOY_DEFECT_AUDIT_20260806.md](reviews/DEPLOY_DEFECT_AUDIT_20260806.md) | 部署缺陷审查（2026-08-06，首次原生部署实录，含修复记录） |
+| [actpred_CODE_AUDIT_20260808.md](reviews/actpred_CODE_AUDIT_20260808.md) | actpred 模块代码审计（2026-08-08，PyTorch 动作预测，16 项发现） |
 
 ---
 
@@ -114,6 +114,7 @@ docs/
 | aibox | [../aibox/README.md](../aibox/README.md) | AI 智能体系统 |
 | bot4cj | [../bot4cj/README.md](../bot4cj/README.md) | 机器人硬件脚本解析器（仓颉） |
 | BotOps | [../BotOps/README.md](../BotOps/README.md) | 运维控制面板 |
+| actpred | [../actpred/README.md](../actpred/README.md) | 动作预测神经网络（PyTorch） |
 | lci | [../lci/README.md](../lci/README.md) | LCI 交互式终端框架 |
 | tests | [../tests/blackbox/README.md](../tests/blackbox/README.md) | 黑盒测试套件 |
 

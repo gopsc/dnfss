@@ -275,14 +275,15 @@ gateway/
 
 ## 版本
 
-`0.7.0`（见 [src/main.cpp:31](src/main.cpp#L31)）。启动时打印：
+`0.8.0`（见 [src/main.cpp:35](src/main.cpp#L35)）。启动时打印：
 
 ```
-Gateway 0.7.0 started
+Gateway 0.8.0 started
 ```
 
 近期变更：
 
+- `0.8.0`：**P0 安全问题全部修复**（安全评级 B+ → A-）——HttpException 错误消息脱敏（4 处内部步骤消息替换为用户友好文案，修正注册失败状态码 400→500）；**进程退出 bug 修复**——信号处理改为 async-signal-safe（仅设 `volatile sig_atomic_t` 标志 + `write()` 输出）、新增 SIGPIPE 忽略、stop() 添加 8 秒超时保护 + 日志 3 秒超时（保证 11 秒内必定退出）、服务器事件循环改在独立线程运行；Token 双轨吊销机制（jti 黑名单 + 用户版本号）、错误信息脱敏（不返回源码路径/C++ 类型名）、JTI 黑名单内存有界保护（5000 条阈值 + 过期清理）、反向代理响应大小限制（libhttp 默认 10MB）、集中式异步日志客户端 LogC、WebSocket 代理（管理员权限校验）、多层速率限制（IP 级 + 邮箱级）、PBKDF2-HMAC-SHA256 密码哈希（10 万轮）、RSA Token 签名验签、HttpOnly+Secure+SameSite Cookie、密码强度校验。
 - `0.7.0`：配置体系完全迁移到 confs 统一配置服务——配置文件统一存放于 `confs/configs/gateway.ini`（原 example.ini 内容 + `[Downstream]` 段），删除本地 example.ini，移除 `-i/--input` 命令行参数（不再支持本地 ini 文件回退，与 static 模块一致）；启动时从 confs（`CONFS_HOST`/`CONFS_PORT`，默认 `127.0.0.1:8010`）通过 pymsg `get` 路由拉取配置（`retry_on_refused=true`）；`ConfIni` 增加 `fromString()`/`env()`/`env_int()`；环境变量覆盖支持 `LISTEN_ADDR`/`LISTEN_PORT`/`DB_HOST`/`DB_PORT`/`CAPTCHA_HOST`/`CAPTCHA_PORT`/`SMTP_HOST`/`SMTP_PORT`；配置完整性校验；`DbC` 增加 `init(host, port)`，main.cpp 所有硬编码 captcha/smtp/db 地址改为配置变量，`logs().set_endpoint()` 启动时初始化；`--version/-v` 选项补全实现；版本升至 0.7.0。
 - `0.6.1`：pymsg 客户端增加 `retry_on_refused` 重试机制——新增 `MsgConnectionRefusedException`；`MsgClient::call()` 新增 `retry_on_refused`/`retry_interval` 参数；`DbC::call_msg()` 启用重试等待 db 就绪；`LogC::_send()` 显式不重试（fail-safe）。
 - `0.6.0`：WebSocket 反向代理（仅管理员）——新增 `[WsProxy]` 配置段，支持 `routes = /path=ws://host:port/target;...` 精确路径映射；握手阶段校验 Token 中 `is_admin=true`（基于 `Admin.users` 白名单），通过后双向透明桥接文本/二进制帧到后端，支持 `ws://` 和 `wss://`；后端连接错误/鉴权失败均优雅关闭。依赖 libhttp v3.1+ 的 `ws_proxy()` 接口。顺带修复 `LocalTime.hpp` 在 Apple clang 下 C++20 tzdb 不可用的编译问题（改用 `strftime`/`get_time`/`mktime`）。
