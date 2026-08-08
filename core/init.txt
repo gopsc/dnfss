@@ -1,7 +1,7 @@
 bash /opt/micro_servers/db2/_run.sh
 bash /opt/micro_servers/confs/_run.sh
 bash /opt/micro_servers/ai_review/_run.sh
-bash /opt/micro_servers/dnfs/_run.sh
+bash /opt/micro_servers/dnfs2/_run.sh
 bash /opt/micro_servers/smtp/_run.sh
 bash /opt/micro_servers/static/_run.sh
 bash /opt/micro_servers/waf/_run.sh
