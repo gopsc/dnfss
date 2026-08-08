@@ -9,7 +9,7 @@ docs/
 ├── INDEX.md                              # 本文件（文档总索引）
 ├── security/                             # 安全审计与加固（25 篇）
 ├── reviews/                              # 代码审查日志（4 篇）
-└── reports/                              # 分析报告与开发规划（8 篇）
+└── reports/                              # 分析报告与开发规划（9 篇）
 ```
 
 ---
@@ -84,6 +84,7 @@ docs/
 | [bot4cj_analysis_20260525_00.md](reports/bot4cj_analysis_20260525_00.md) | bot4cj 机器人模块分析报告（Markdown） |
 | [libcrypt_CBC_deprecation_dev_doc.md](reports/libcrypt_CBC_deprecation_dev_doc.md) | libcrypt CBC 模式缺陷分析与 AES-GCM 迁移开发文档 |
 | [bot4cj_analysis_20260525_00.html](reports/bot4cj_analysis_20260525_00.html) | bot4cj 机器人模块分析报告（HTML） |
+| [actpred_pretrain_test_20260808.md](reports/actpred_pretrain_test_20260808.md) | actpred 预训练与推理测试报告（action_dim=18 变更、.mt 解析器、预训练、推理基准、NPU 调研） |
 
 ---
 
