@@ -69,7 +69,7 @@
 
 	/* 滚动进入视口渐显：由 JS 添加 .reveal 隐藏初始态，无 JS / 减弱动效时内容天然可见 */
 	if (!reduceMotion && 'IntersectionObserver' in window) {
-		const targets = document.querySelectorAll('.section-eyebrow, .section-title, .section-sub, .feature-card, .about .site-intro, .about-stats, .quick-links, .cta-band');
+		const targets = document.querySelectorAll('.section-eyebrow, .section-title, .section-sub, .feature-card, .site-intro, .about-stats, .quick-links, .cta-band');
 		targets.forEach(function (el, i) {
 			el.classList.add('reveal');
 			el.style.transitionDelay = (i % 4) * 70 + 'ms';
