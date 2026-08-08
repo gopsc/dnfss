@@ -1,0 +1,24 @@
+# Virtual environment
+venv/
+.env/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Checkpoints and trained models
+checkpoints/
+*.pt
+*.pth
+*.onnx
+
+# Dataset (too large for git)
+data/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
