@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>fsys 测试页</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #0f1419; color: #e6e6e6; padding: 32px 16px; }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .sub { color: #8b98a5; font-size: 13px; margin-bottom: 24px; }
+  .card { background: #1a2027; border: 1px solid #2a3441; border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+  .card h2 { font-size: 14px; color: #9fb3c8; margin-bottom: 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td { padding: 7px 8px; border-bottom: 1px solid #232d38; vertical-align: top; }
+  td.name { width: 34%; color: #d7e2ec; }
+  td.st { width: 90px; font-weight: 600; }
+  .ok { color: #4ade80; } .fail { color: #f87171; } .pending { color: #8b98a5; }
+  td.detail { color: #8b98a5; font-family: ui-monospace, monospace; font-size: 12px; word-break: break-all; }
+  button { background: #2563eb; color: #fff; border: 0; border-radius: 8px; padding: 10px 22px;
+           font-size: 14px; cursor: pointer; margin-bottom: 18px; }
+  button:hover { background: #1d4ed8; }
+  .links a { color: #60a5fa; text-decoration: none; margin-right: 14px; font-size: 13px; }
+  .links a:hover { text-decoration: underline; }
+  #summary { font-size: 14px; margin-bottom: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>fsys 测试页</h1>
+  <div class="sub">C++ 静态文件托管服务 · 路由/安全功能自检</div>
+
+  <button onclick="runAll()">▶ 运行全部测试</button>
+  <div id="summary"></div>
+
+  <div class="card">
+    <h2>API 自检</h2>
+    <table id="tbl">
+      <tr data-t="health"><td class="name">GET /health</td><td class="st pending">—</td><td class="detail"></td></tr>
+      <tr data-t="filelist_root"><td class="name">GET /api/filelist（根目录）</td><td class="st pending">—</td><td class="detail"></td></tr>
+      <tr data-t="filelist_sub"><td class="name">GET /api/filelist?path=test%2F（编码子目录）</td><td class="st pending">—</td><td class="detail"></td></tr>
+      <tr data-t="filelist_traverse"><td class="name">GET /api/filelist?path=..%2F..（遍历应 403）</td><td class="st pending">—</td><td class="detail"></td></tr>
+      <tr data-t="static_file"><td class="name">GET /test/hello.txt（静态文件）</td><td class="st pending">—</td><td class="detail"></td></tr>
+      <tr data-t="download"><td class="name">GET /test/hello.txt?download=true（附件头）</td><td class="st pending">—</td><td class="detail"></td></tr>
+      <tr data-t="utf8_path"><td class="name">GET 中文文件名（URL 解码）</td><td class="st pending">—</td><td class="detail"></td></tr>
+      <tr data-t="hash"><td class="name">POST /api/hash（sha256("test123")）</td><td class="st pending">—</td><td class="detail"></td></tr>
+      <tr data-t="hash_bad"><td class="name">POST /api/hash 非法输入（应 400）</td><td class="st pending">—</td><td class="detail"></td></tr>
+      <tr data-t="check_user"><td class="name">POST /api/check_user（结构校验）</td><td class="st pending">—</td><td class="detail"></td></tr>
+      <tr data-t="favicon_private"><td class="name">GET /api/favicon 内网地址（SSRF 应 403）</td><td class="st pending">—</td><td class="detail"></td></tr>
+      <tr data-t="favicon_public"><td class="name">GET /api/favicon 公网地址（需外网）</td><td class="st pending">—</td><td class="detail"></td></tr>
+      <tr data-t="headers"><td class="name">安全响应头（CSP/X-Frame-Options…）</td><td class="st pending">—</td><td class="detail"></td></tr>
+      <tr data-t="notfound"><td class="name">GET /不存在的路径（应 404）</td><td class="st pending">—</td><td class="detail"></td></tr>
+    </table>
+  </div>
+
+  <div class="card links">
+    <h2>手动验证链接</h2>
+    <a href="/api/filelist?path=" target="_blank">filelist 根</a>
+    <a href="/api/filelist?path=test" target="_blank">filelist test/</a>
+    <a href="/test/hello.txt" target="_blank">hello.txt</a>
+    <a href="/test/hello.txt?download=true" target="_blank">下载模式</a>
+    <a href="/health" target="_blank">health</a>
+  </div>
+</div>
+
+<script>
+const EXPECT_HASH = 'ecd71870d1963316a97e3ac3408c9835ad8cf0f3c1bc703527c30265534f75ae';
+
+function setRow(key, ok, detail) {
+  const tr = document.querySelector(`tr[data-t="${key}"]`);
+  if (!tr) return;
+  const st = tr.children[1], dt = tr.children[2];
+  st.textContent = ok ? 'PASS' : 'FAIL';
+  st.className = 'st ' + (ok ? 'ok' : 'fail');
+  dt.textContent = detail || '';
+}
+
+async function j(url, opt) {
+  const res = await fetch(url, opt);
+  const text = await res.text();
+  let json = null;
+  try { json = JSON.parse(text); } catch (e) {}
+  return { res, text, json };
+}
+
+const tests = {
+  async health() {
+    const { res, json } = await j('/health');
+    const ok = res.status === 200 && json && json.status === 'ok';
+    setRow('health', ok, `HTTP ${res.status} ${JSON.stringify(json)}`);
+  },
+  async filelist_root() {
+    const { res, json } = await j('/api/filelist?path=');
+    const ok = res.status === 200 && json && json.success === true && Array.isArray(json.items);
+    setRow('filelist_root', ok, `HTTP ${res.status}, ${json && json.items ? json.items.length + ' 项' : '无 items'}`);
+  },
+  async filelist_sub() {
+    const { res, json } = await j('/api/filelist?path=' + encodeURIComponent('test'));
+    const hasHello = json && Array.isArray(json.items) && json.items.some(i => i.name === 'hello.txt');
+    setRow('filelist_sub', res.status === 200 && hasHello, `HTTP ${res.status}, hello.txt ${hasHello ? '可见' : '缺失'}`);
+  },
+  async filelist_traverse() {
+    const { res } = await j('/api/filelist?path=' + encodeURIComponent('../../'));
+    setRow('filelist_traverse', res.status === 403, `HTTP ${res.status}（期望 403）`);
+  },
+  async static_file() {
+    const { res, text } = await j('/test/hello.txt');
+    const ok = res.status === 200 && text.includes('hello fsys');
+    setRow('static_file', ok, `HTTP ${res.status}, ${(res.headers.get('content-type') || '').split(';')[0]}`);
+  },
+  async download() {
+    const { res } = await j('/test/hello.txt?download=true');
+    const cd = res.headers.get('content-disposition') || '';
+    setRow('download', res.status === 200 && cd.includes('attachment'), `content-disposition: ${cd || '(无)'}`);
+  },
+  async utf8_path() {
+    const { res, text } = await j('/test/' + encodeURIComponent('中文文件.txt'));
+    const ok = res.status === 200 && text.includes('中文内容');
+    setRow('utf8_path', ok, `HTTP ${res.status}（URL 解码生效=${ok}）`);
+  },
+  async hash() {
+    const { res, json } = await j('/api/hash', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 'test123' })
+    });
+    const ok = res.status === 200 && json && json.hash === EXPECT_HASH;
+    setRow('hash', ok, `HTTP ${res.status}, hash ${ok ? '匹配' : '不匹配'}`);
+  },
+  async hash_bad() {
+    const { res } = await j('/api/hash', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 12345 })
+    });
+    setRow('hash_bad', res.status === 400, `HTTP ${res.status}（期望 400）`);
+  },
+  async check_user() {
+    const { res, json } = await j('/api/check_user', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'fsys-test@example.com' })
+    });
+    // db 可能不可用：只要返回结构合法（success 字段存在）即 PASS
+    const ok = [200, 500].includes(res.status) && json && typeof json.success === 'boolean';
+    setRow('check_user', ok, `HTTP ${res.status} ${JSON.stringify(json)}`);
+  },
+  async favicon_private() {
+    const { res } = await j('/api/favicon?url=' + encodeURIComponent('http://127.0.0.1:8005/'));
+    setRow('favicon_private', res.status === 403, `HTTP ${res.status}（期望 403 forbidden host）`);
+  },
+  async favicon_public() {
+    try {
+      const { res } = await j('/api/favicon?url=' + encodeURIComponent('https://www.baidu.com'));
+      const ct = res.headers.get('content-type') || '';
+      setRow('favicon_public', res.status === 200 && ct.startsWith('image/'), `HTTP ${res.status} ${ct}`);
+    } catch (e) {
+      setRow('favicon_public', false, '网络不可达: ' + e.message);
+    }
+  },
+  async headers() {
+    const res = await fetch('/health');
+    const need = ['content-security-policy', 'x-frame-options', 'x-content-type-options',
+                  'referrer-policy', 'permissions-policy'];
+    const missing = need.filter(h => !res.headers.get(h));
+    setRow('headers', missing.length === 0, missing.length ? '缺失: ' + missing.join(', ') : '5 项安全头齐全');
+  },
+  async notfound() {
+    const { res } = await j('/no/such/file-' + Date.now());
+    setRow('notfound', res.status === 404, `HTTP ${res.status}（期望 404）`);
+  }
+};
+
+async function runAll() {
+  const summary = document.getElementById('summary');
+  summary.textContent = '测试运行中…';
+  document.querySelectorAll('#tbl tr').forEach(tr => {
+    tr.children[1].textContent = '…'; tr.children[1].className = 'st pending';
+    tr.children[2].textContent = '';
+  });
+  let pass = 0, fail = 0;
+  for (const [name, fn] of Object.entries(tests)) {
+    try { await fn(); }
+    catch (e) { setRow(name, false, '异常: ' + e.message); }
+    const st = document.querySelector(`tr[data-t="${name}"] .st`);
+    if (st && st.classList.contains('ok')) pass++; else fail++;
+  }
+  summary.innerHTML = `完成：<span class="ok">${pass} 通过</span> / <span class="fail">${fail} 失败</span>（共 ${pass + fail}）`;
+}
+</script>
+</body>
+</html>
