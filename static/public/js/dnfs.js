@@ -558,7 +558,7 @@ function renderSpJs(container, sp, appendNote) {
 		}
 		toggle_btn.textContent = '停止特效';
 		out.style.display = 'block';
-		out.textContent = inNode ? '已载入（运行于隔离沙箱）' : '特效已启动（运行于隔离沙箱，不影响页面导航）';
+		out.textContent = inNode ? '已载入' : '特效已启动';
 	}
 	function stopEffect() {
 		if (frame) { frame.remove(); frame = null; }
