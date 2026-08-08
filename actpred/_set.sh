@@ -10,4 +10,8 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 # Remaining deps from Tsinghua mirror
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
+# ONNX 导出依赖（torch>=2.12 的 torch.onnx.export 走 dynamo 路径，onnxscript 为硬依赖）
+pip install onnxscript onnxruntime -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+pip check
 mkdir -p checkpoints data

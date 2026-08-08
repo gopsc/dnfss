@@ -39,10 +39,17 @@ class ActionDataset(Dataset):
             if not actions_path.exists() or not images_dir.is_dir():
                 continue
             actions = np.load(actions_path).astype(np.float32)
+            if actions.ndim != 2 or actions.shape[1] != action_dim:
+                raise ValueError(
+                    f"{actions_path} 形状应为 (T, {action_dim})，实际为 {actions.shape}。"
+                    f"请检查该 episode 的动作维度与 --action-dim 是否一致。")
             n_frames = len(actions)
             image_files = sorted(list(images_dir.glob("*.jpg")) + list(images_dir.glob("*.png")),
                                  key=_natural_key)
             n_images = len(image_files)
+            if n_frames != n_images:
+                print(f"WARNING: {ep_dir} 动作帧数 {n_frames} 与图像数 {n_images} 不一致，"
+                      f"按较少者（{min(n_frames, n_images)}）使用，请检查录制完整性")
             n = min(n_frames, n_images)
             for t in range(history_len, n):
                 self.samples.append((image_files[t], actions[t - history_len:t], actions[t]))
@@ -109,11 +116,20 @@ class DataRecorder:
                 ep_idx = max(ep_idx, int(d.name.split("_")[1]) + 1)
             except (ValueError, IndexError):
                 pass
-        self.episode_dir = self.output_dir / f"episode_{ep_idx:04d}"
-        self.images_dir = self.episode_dir / "images"
-        self.images_dir.mkdir(parents=True, exist_ok=True)
+        # 原子创建目录，避免并发 Recorder 分配到同一 episode
+        while True:
+            self.episode_dir = self.output_dir / f"episode_{ep_idx:04d}"
+            self.images_dir = self.episode_dir / "images"
+            try:
+                self.images_dir.mkdir(parents=True, exist_ok=False)
+                break
+            except FileExistsError:
+                ep_idx += 1
 
     def record(self, image: np.ndarray, action: np.ndarray):
+        if action.shape != (self.action_dim,):
+            raise ValueError(
+                f"action 维度应为 ({self.action_dim},)，实际为 {action.shape}")
         img = Image.fromarray(image)
         img.save(self.images_dir / f"{self._frame_idx:04d}.jpg", quality=90)
         self._actions.append(action.astype(np.float32))

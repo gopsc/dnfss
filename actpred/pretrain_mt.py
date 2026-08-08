@@ -20,10 +20,10 @@ import random
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader, Subset
+from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
-from config import Config, build_argparser, apply_overrides
+from config import Config, build_argparser, apply_overrides, validate_config_values
 from model import ActionPredictor
 from mt_parser import parse_mt_directory
 
@@ -34,20 +34,26 @@ class MTActionDataset(Dataset):
     每个样本: (action_history[history_len, action_dim], target[action_dim])
     """
 
-    def __init__(self, mt_dir: str, history_len: int, action_dim: int):
+    def __init__(self, mt_dir: str, history_len: int, action_dim: int,
+                 file_indices: list = None, files: list = None):
         self.history_len = history_len
         self.action_dim = action_dim
         self.samples = []
 
-        for path, matrix in parse_mt_directory(mt_dir):
-            n_rows = matrix.shape[1]
-            if n_rows < action_dim:
+        # 复用调用方已解析的结果（避免 train/val 各自重复解析同一目录）
+        all_files = files if files is not None else parse_mt_directory(mt_dir)
+        if file_indices is not None:
+            all_files = [all_files[i] for i in file_indices]
+
+        for path, matrix in all_files:
+            n_cols = matrix.shape[1]
+            if n_cols < action_dim:
                 matrix = np.pad(
                     matrix,
-                    ((0, 0), (0, action_dim - n_rows)),
+                    ((0, 0), (0, action_dim - n_cols)),
                     mode="constant",
                 )
-            elif n_rows > action_dim:
+            elif n_cols > action_dim:
                 matrix = matrix[:, :action_dim]
 
             for i in range(len(matrix) - history_len):
@@ -56,7 +62,8 @@ class MTActionDataset(Dataset):
                 self.samples.append((history.copy(), target.copy()))
 
         print(f"MTActionDataset: {len(self.samples)} samples "
-              f"from .mt files (history_len={history_len}, action_dim={action_dim})")
+              f"from {len(all_files)} files "
+              f"(history_len={history_len}, action_dim={action_dim})")
 
     def __len__(self):
         return len(self.samples)
@@ -128,6 +135,7 @@ def main():
     args = parser.parse_args()
 
     cfg = apply_overrides(Config(), args)
+    validate_config_values(cfg.data, cfg.model, cfg.train)
     cfg.data.data_dir = args.mt_dir
 
     os.makedirs(cfg.train.checkpoint_dir, exist_ok=True)
@@ -141,26 +149,32 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    full_ds = MTActionDataset(
-        args.mt_dir, cfg.data.history_len, cfg.data.action_dim
-    )
-    if len(full_ds) == 0:
+    # 按文件级划分 train/val，避免滑动窗口样本重叠导致的数据泄漏
+    all_files = parse_mt_directory(args.mt_dir)
+    if len(all_files) == 0:
         raise ValueError(
             f"数据集为空。请检查 mt-dir={args.mt_dir} "
             f"及 .mt 文件中 @Action 行数 > history_len={cfg.data.history_len}"
         )
 
-    n = len(full_ds)
-    indices = list(range(n))
+    n_files = len(all_files)
+    file_indices = list(range(n_files))
     rng = np.random.RandomState(cfg.train.seed)
-    rng.shuffle(indices)
-    val_count = max(1, int(n * cfg.train.val_split))
-    val_indices = indices[:val_count]
-    train_indices = indices[val_count:]
+    rng.shuffle(file_indices)
+    val_file_count = max(1, int(n_files * cfg.train.val_split))
+    val_file_indices = file_indices[:val_file_count]
+    train_file_indices = file_indices[val_file_count:]
 
-    train_ds = Subset(full_ds, train_indices)
-    val_ds = Subset(full_ds, val_indices)
+    train_ds = MTActionDataset(
+        args.mt_dir, cfg.data.history_len, cfg.data.action_dim,
+        file_indices=train_file_indices, files=all_files,
+    )
+    val_ds = MTActionDataset(
+        args.mt_dir, cfg.data.history_len, cfg.data.action_dim,
+        file_indices=val_file_indices, files=all_files,
+    )
 
+    print(f"Files: {len(train_file_indices)} train, {len(val_file_indices)} val")
     print(f"Samples: {len(train_ds)} train, {len(val_ds)} val")
     if len(train_ds) == 0:
         raise ValueError("训练集为空（样本数不足）")
@@ -179,7 +193,7 @@ def main():
         shuffle=False, num_workers=cfg.train.num_workers,
     )
 
-    model = ActionPredictor(cfg.model, cfg.data).to(device)
+    model = ActionPredictor(cfg.model, cfg.data, pretrained=False).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model params: {n_params:,}")
     print(f"Config: action_dim={cfg.data.action_dim}, "
@@ -256,7 +270,7 @@ def main():
     else:
         print(f"Best pre-trained model: {inference_path}")
         print("Fine-tune: bash _run.sh train --data-dir ./data "
-              f"--model {inference_path}")
+              f"--init-from {inference_path}")
 
     if args.save_config:
         with open(args.save_config, "w") as f:

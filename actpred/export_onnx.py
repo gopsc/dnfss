@@ -1,6 +1,6 @@
 import argparse
 import torch
-from config import DataConfig, ModelConfig
+from config import parse_checkpoint_config
 from model import ActionPredictor
 
 
@@ -11,11 +11,11 @@ def main():
     args = parser.parse_args()
 
     checkpoint = torch.load(args.model, map_location="cpu", weights_only=True)
-    cfg_dict = checkpoint["config"]
-    data_cfg = DataConfig(**cfg_dict["data"])
-    model_cfg = ModelConfig(**cfg_dict["model"])
+    cfg = parse_checkpoint_config(checkpoint["config"])
+    data_cfg = cfg.data
+    model_cfg = cfg.model
 
-    model = ActionPredictor(model_cfg, data_cfg)
+    model = ActionPredictor(model_cfg, data_cfg, pretrained=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 

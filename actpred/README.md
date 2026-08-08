@@ -34,6 +34,9 @@ bash _run.sh export --model checkpoints/best_inference.pt --output model.onnx
 python test_actpred.py
 ```
 
+> **注意**：torch ≥ 2.12 的 ONNX 导出依赖 `onnxscript`，`_set.sh` 已一并安装；
+> 如单独使用 requirements.txt 安装，请额外执行 `pip install onnxscript onnxruntime`。
+
 ## 预训练（从 .mt 脚本，无需图像）
 
 从 bot4cj 的 `.mt` 动作脚本中提取 `@Action` 矩阵，用零图像占位预训练动作动力学（history → next action），
@@ -43,8 +46,11 @@ python test_actpred.py
 # 预训练（解析 ../bot4cj/scripts/*.mt）
 bash _run.sh pretrain --mt-dir ../bot4cj/scripts --epochs 200 --noise-std 1.0
 
-# 用预训练权重作为微调起点（需修改 train.py 加载逻辑，或手动加载）
-bash _run.sh train --data-dir ./data --epochs 50
+# 用预训练权重作为微调起点
+# 注意：预训练在非归一化动作空间进行，微调时请勿开启 --normalize-actions，
+# 否则输入分布与预训练权重不匹配，预训练收益会大打折扣
+bash _run.sh train --data-dir ./data --epochs 50 \
+    --init-from checkpoints/pretrain_best_inference.pt
 ```
 
 | 参数 | 说明 |
@@ -104,6 +110,13 @@ recorder.flush()
 | `--seed` | 42 | 随机种子 |
 | `--num-workers` | 2 | DataLoader 工作进程数 |
 | `--checkpoint-dir` | ./checkpoints | 检查点保存目录 |
+
+## 部署注意
+
+- 启用 `--normalize-actions` 训练的模型，其 `action_stats.npy` 保存在 checkpoint 同目录；
+  部署时**必须将 stats 文件与 checkpoint 一起拷贝**（推理端优先按 checkpoint 内记录的路径查找，
+  找不到时回退到 checkpoint 同目录的 `action_stats.npy`）。
+- `actions.npy` 的列数必须与 `--action-dim` 一致；图像与动作帧数不一致时训练会打印 WARNING 并按较少者使用。
 
 ## 编程 API
 

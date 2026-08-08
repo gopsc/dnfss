@@ -27,12 +27,15 @@ class SimpleCNN(nn.Module):
 
 
 class MobileNetEncoder(nn.Module):
-    def __init__(self, feature_dim: int = 128):
+    def __init__(self, feature_dim: int = 128, pretrained: bool = True):
         super().__init__()
         from torchvision.models import mobilenet_v2, MobileNet_V2_Weights
+        weights = MobileNet_V2_Weights.DEFAULT if pretrained else None
         try:
-            backbone = mobilenet_v2(weights=MobileNet_V2_Weights.DEFAULT)
+            backbone = mobilenet_v2(weights=weights)
         except Exception as e:
+            if not pretrained:
+                raise RuntimeError("加载 MobileNetV2 架构失败") from e
             raise RuntimeError(
                 "MobileNetV2 预训练权重下载失败，可能是网络受限。"
                 "请在联网环境中预下载权重"
@@ -94,10 +97,12 @@ class FusionHead(nn.Module):
 
 
 class ActionPredictor(nn.Module):
-    def __init__(self, model_cfg: ModelConfig, data_cfg: DataConfig):
+    def __init__(self, model_cfg: ModelConfig, data_cfg: DataConfig,
+                 pretrained: bool = True):
         super().__init__()
         if model_cfg.cnn_backbone == "mobilenet":
-            self.image_encoder = MobileNetEncoder(model_cfg.cnn_feature_dim)
+            self.image_encoder = MobileNetEncoder(
+                model_cfg.cnn_feature_dim, pretrained=pretrained)
         else:
             self.image_encoder = SimpleCNN(model_cfg.cnn_feature_dim)
 

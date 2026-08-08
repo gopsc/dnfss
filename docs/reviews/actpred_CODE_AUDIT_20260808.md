@@ -1,8 +1,11 @@
-# actpred 模块代码审计报告
+# actpred 模块代码审计报告（第 1 轮 + 第 2 轮复审）
 
 > 审查日期：2026-08-08 (Asia/Shanghai)
 > 审查人：Automated Review
 > 审查范围：`actpred/` 全模块（Python，PyTorch 动作预测神经网络）
+>
+> **文档合并说明**：本文档为两轮审计的合并版——第 1 轮（16 项发现，全部修复）见 §二~§七；
+> 第 2 轮复审（11 项发现，含 3 项上轮修复不完整，全部修复）见 §八。
 
 ---
 
@@ -345,3 +348,135 @@ OK
 ---
 
 *本报告由自动化代码审计生成，供开发团队参考。修复建议需结合实际场景评估。*
+
+---
+
+## 八、第 2 轮复审（2026-08-08）
+
+> 前置文档：[第 1 轮安全审计](../security/actpred_SECURITY_AUDIT_20260808.md)（10 项发现，全部标记已修复 ✅）
+
+### 8.1 复审方法
+
+本轮采用**静态通读 + 动态验证**：除逐文件复查全部源码外，对疑点编写了针对性复现脚本（checkpoint 畸形 config、值域校验边界、数据形状不匹配、CLI 越界参数等），**所有结论均以实测输出为准**，不采信审计文档的"已修复"标记。
+
+实测环境：Intel Xeon E3-1200 v2, Linux 24.04, PyTorch CPU-only。第 1 轮审计后测试已扩展至 **39 用例（38 通过 + 1 环境性跳过）**。
+
+### 8.2 复审结论摘要
+
+| 类别 | 数量 | 说明 |
+|------|------|------|
+| A 类：上轮"已修复"标记与实现不符（修复不完整/未覆盖） | 3 | ACT-R01 ~ ACT-R03，均涉及安全审计 F-3 / F-8 的修复遗漏 |
+| B 类：新发现问题 | 8 | ACT-R04 ~ ACT-R11，数据校验、CLI 校验、部署约定、文档缺口 |
+| **合计** | **11** | 无 P0/P1，全部为 P3 级；安全评级维持 **B+**；**全部已修复 ✅** |
+
+模块仍为离线 CLI 工具（不监听端口、不联网、输入均来自本机可信路径），无远程可利用漏洞。本轮问题集中在**输入健壮性、修复覆盖完整性、部署约定文档化**。
+
+### 8.3 A 类：上轮修复项复审（3 项）
+
+#### [ACT-R01] checkpoint config 多余键仍抛裸 TypeError（F-8 声称已修复，实际未修复）🟡 P3 ✅ 已修复
+
+- **位置**: `predict.py`、`export_onnx.py`（`DataConfig(**cfg_dict["data"])` / `ModelConfig(**cfg_dict["model"])`）
+- **上轮声明**: 安全审计 F-8 描述为"多余键触发裸 TypeError"，修复项为新增 `validate_config_values()`，结论"已修复 ✅"
+- **实测**: 向 checkpoint config 的 `data` 段注入未知键 `evil_extra_key`，加载时抛 `TypeError: DataConfig.__init__() got an unexpected keyword argument 'evil_extra_key'`。`validate_config_values` 在 `DataConfig(**...)` **之后**才被调用，未知键在构造阶段即崩溃，校验函数根本无法执行。
+- **影响**: 畸形/损坏 checkpoint（或未来 config 结构演进产生的多余键）报错信息不含文件名与上下文；上轮"已修复"结论与实现不符。
+- **修复**: 新增 `parse_checkpoint_config()`，构造前校验键集合，未知键/缺段/非 dict 抛带键名的 ValueError。
+
+#### [ACT-R02] validate_config_values 遗漏 fused_hidden_dim，恶意 checkpoint 可致 OOM（F-8 修复不完整）🟡 P3 ✅ 已修复
+
+- **位置**: `config.py`
+- **实测**: 设 `model.fused_hidden_dim = 10**9`，`validate_config_values` **通过**；构造 `ActionPredictor` 时 `FusionHead` 分配内存抛 `RuntimeError ... DefaultCPUAllocator: can't allocate`。另有 `dropout`（可 <0 或 >1）也未被校验。
+- **影响**: 与 F-8 防护目标（恶意/损坏 checkpoint 防内存耗尽）直接冲突——攻击面同类、防护漏了 `fused_hidden_dim`。
+- **修复**: 校验表补充 `fused_hidden_dim ∈ [1, 4096]`、`dropout ∈ [0, 1]`，并扩展 train 字段校验（lr/val_split/batch_size/epochs/patience/num_workers/max_grad_norm/weight_decay）。
+
+#### [ACT-R03] pretrain_mt.py 未传 pretrained=False，mobilenet 离线预训练仍失败（F-3 修复不完整）🟡 P3 ✅ 已修复
+
+- **位置**: `pretrain_mt.py`
+- **实测**: `model = ActionPredictor(cfg.model, cfg.data)` **未传 `pretrained=False`**。`--backbone mobilenet` 时构造即尝试下载 ImageNet 权重（~14MB）：① 离线/受限网络环境下预训练直接 `RuntimeError`；② 零图像预训练会用 `load_state_dict` 全程覆盖这些权重，下载纯属浪费。
+- **影响**: F-3 的修复只覆盖了"推理/导出"两个入口，遗漏了第三个模型构造入口（预训练）。当前默认 backbone=simple 未触发，属潜伏问题。
+- **修复**: 构造模型传 `pretrained=False`。
+
+### 8.4 B 类：新发现问题（8 项）
+
+#### [ACT-R04] ActionDataset 不校验 actions.npy 列数与 action_dim 一致性 🟡 P3 ✅ 已修复
+
+- **位置**: `dataset.py`
+- **实测**: 构造 6 列 `actions.npy` 配 `action_dim=4`，数据集**加载成功**，样本 `action_history` 形状 (3, 6)；直到训练 `DataLoader` collate 阶段才因形状不一致报错，错误远离数据源头且信息不友好。
+- **修复**: 加载后校验 `actions.ndim == 2 and actions.shape[1] == action_dim`，否则抛带 episode 路径的 ValueError。
+
+#### [ACT-R05] 图像/动作帧数不匹配时静默截断，无任何警告 🟡 P3 ✅ 已修复
+
+- **位置**: `dataset.py`（`n = min(n_frames, n_images)`）
+- **实测**: 12 帧动作 + 8 张图像，数据集静默按 8 帧使用，**尾部 4 帧动作被丢弃且无提示**。
+- **修复**: `n_frames != n_images` 时打印 WARNING（含 episode 路径与数量）。
+
+#### [ACT-R06] 训练 CLI 参数无值域校验，越界值静默接受 🟡 P3 ✅ 已修复
+
+- **位置**: `config.py`（`apply_overrides`）、`train.py`
+- **实测**: `--history-len 0`、`--val-split 2.0`、`--lr -1` **全部静默接受**并进入训练：`history_len=0` 产生空 history 样本；`val_split=2.0` 验证集吞掉全部 episode；`lr=-1` loss 发散。
+- **对比**: `validate_config_values()` 只被推理/导出路径调用，**训练 CLI 完全不校验**——同一份参数两套待遇。
+- **修复**: train.py / pretrain_mt.py 在 `apply_overrides` 后调用 `validate_config_values(cfg.data, cfg.model, cfg.train)`。
+
+#### [ACT-R07] predict.py 加载 action_stats.npy 不校验形状 🟡 P3 ✅ 已修复
+
+- **位置**: `predict.py`
+- **实测**: `action_stats.npy` 形状错误（如 (2, 7) 配 action_dim=4）时加载成功，推理阶段抛难以定位的广播错误 `ValueError: operands could not be broadcast together with shapes (3,4) (7,)`。
+- **修复**: 加载后校验 `stats.shape == (2, action_dim)`，并强制转 float32（兼容 float64 stats）。
+
+#### [ACT-R08] 推理端硬编码 stats 路径约定，config 中 action_stats_path 为死字段 🟡 P3 ✅ 已修复
+
+- **位置**: `predict.py` vs `train.py`、`config.py`
+- **描述**: 训练时 `action_stats_path` 被写入 checkpoint config；但推理端**从不读取该字段**，硬编码从 checkpoint 同目录找 `action_stats.npy`。部署约定（stats 必须与 checkpoint 同目录、同名）未在任何文档说明。
+- **修复**: 推理端优先解析 config 记录的 `action_stats_path`（相对路径按 checkpoint 目录解析），旧 checkpoint 回退同目录约定；README 新增「部署注意」章节。
+
+#### [ACT-R09] README 未说明 ONNX 导出硬依赖 onnxscript，按文档执行直接失败 🟡 P3 ✅ 已修复
+
+- **位置**: `README.md`、`export_onnx.py`、`_set.sh`
+- **实测**: 当前 venv（torch 2.13）执行 `bash _run.sh export` 抛 `ModuleNotFoundError: No module named 'onnxscript'`——torch ≥2.12 的 `torch.onnx.export` 走 dynamo 路径，onnxscript 为硬依赖。
+- **修复**: `_set.sh` 增加 onnxscript/onnxruntime 安装；README 补充依赖说明。
+
+#### [ACT-R10] 预训练-微调归一化语义不匹配（方法论）🟡 P3 ✅ 已修复
+
+- **位置**: `pretrain_mt.py`（全程无归一化）vs `train.py`（`--normalize-actions` 支持）
+- **描述**: 预训练始终在**非归一化**动作空间训练；若微调时开启 `--normalize-actions`，`--init-from` 加载的预训练权重将在**归一化空间**继续训练，输入分布突变。
+- **修复**: README 微调示例注明「预训练权重搭配非归一化微调使用」。
+
+#### [ACT-R11] MTActionDataset 命名误导 + parse_mt_directory 重复解析 3 次 🟡 P3 ✅ 已修复
+
+- **位置**: `pretrain_mt.py`（`n_rows = matrix.shape[1]` 实为**列数**）
+- **描述**: ① 变量名 `n_rows` 取自 `shape[1]`（列数），与直觉相反，易在后续维护中引入行列颠倒 bug；② `main()` 先 `parse_mt_directory` 一次做文件级划分，train_ds / val_ds 构造时又各解析一次全部文件，**同一目录共解析 3 次**。
+- **修复**: 改名 `n_cols`；`MTActionDataset` 新增 `files` 参数复用预解析结果，解析次数 3 次 → 1 次。
+
+### 8.5 测试覆盖缺口（复审确认）
+
+复审时 `test_actpred.py` 39 用例，以下路径无覆盖：checkpoint config 异常结构（多余键/缺段）、`validate_config_values` 的 model/train 字段、`ActionDataset` 归一化正常路径、`actions.npy` 列数不匹配/帧数不匹配、`split_episodes` 边界、`train.py`/`pretrain_mt.py` 的 `main()` 端到端、stats 形状错误。
+
+### 8.6 修复记录（全部 ✅）
+
+> 修复时间：2026-08-08（复审当日）
+> 全部 11 项问题已修复并验证，单元测试由 39 用例扩展至 **51 用例（50 通过 + 1 环境性跳过）**。
+
+| 问题 | 修复内容 | 文件 |
+|------|----------|------|
+| ACT-R01 | 新增 `parse_checkpoint_config()`：校验 config 键集合，未知键/缺段/非 dict 抛带键名的 ValueError | config.py、predict.py、export_onnx.py |
+| ACT-R02 | 校验表补充 `fused_hidden_dim ∈ [1,4096]`、`dropout ∈ [0,1]`，并扩展 train 字段校验 | config.py |
+| ACT-R03 | `pretrain_mt.py` 构造模型传 `pretrained=False`，消除零图像预训练的无谓下载与离线失败 | pretrain_mt.py |
+| ACT-R04 | `actions.npy` 加载后校验 `ndim==2 且 shape[1]==action_dim`，否则抛带 episode 路径的 ValueError | dataset.py |
+| ACT-R05 | 帧数不匹配打印 WARNING（含 episode 路径与数量） | dataset.py |
+| ACT-R06 | train.py / pretrain_mt.py 在 `apply_overrides` 后调用 `validate_config_values(cfg.data, cfg.model, cfg.train)` | train.py、pretrain_mt.py |
+| ACT-R07 | stats 加载后校验形状 `(2, action_dim)`，并强制转 float32（兼容 float64 stats） | predict.py |
+| ACT-R08 | 推理端优先解析 checkpoint config 记录的 `action_stats_path`（相对路径按 checkpoint 目录解析），旧 checkpoint 回退同目录约定；README 新增「部署注意」 | predict.py、README.md |
+| ACT-R09 | `_set.sh` 增加 onnxscript/onnxruntime 安装；README 补充依赖说明 | _set.sh、README.md |
+| ACT-R10 | README 微调示例注明「预训练权重搭配非归一化微调使用」 | README.md |
+| ACT-R11 | `n_rows` 改名 `n_cols`；`MTActionDataset` 新增 `files` 参数复用预解析结果，解析次数 3 次 → 1 次 | pretrain_mt.py |
+
+### 8.7 验证记录
+
+- 全部 51 项单元测试通过（`Ran 51 tests ... OK (skipped=1)`）
+- 复现脚本确认：多余键 → ValueError（含键名）；fused_hidden_dim=10⁹ → 加载期拦截（不再 OOM）；stats 形状错误 → ValueError（含路径与期望形状）；`--lr -1` → CLI 拦截
+- 预训练端到端（3 个 .mt、3 epochs）正常，空验证集保底保存路径正确
+- 推理端 stats 双路径（config 相对路径 / 同目录回退）均验证通过
+- 上轮声称的亮点机制（weights_only、文件级划分、stats 隔离、保底保存等）经复查**均属实**
+
+---
+
+*本文档为两轮审计合并版：第 1 轮（§二~§七）+ 第 2 轮复审（§八），全部 27 项发现均已修复，修复项均经回归验证。*

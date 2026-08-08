@@ -79,8 +79,82 @@ def build_argparser(description: str = "") -> argparse.ArgumentParser:
     parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--max-grad-norm", type=float, default=None)
+    parser.add_argument("--init-from", type=str, default=None,
+                        help="预训练 checkpoint 路径，作为微调起点（strict=False 加载兼容权重）")
     parser.add_argument("--save-config", type=str, default=None, help="保存配置到 JSON 文件")
     return parser
+
+
+def validate_config_values(data_cfg: DataConfig, model_cfg: ModelConfig,
+                           train_cfg: TrainConfig = None):
+    """校验从 checkpoint 恢复或 CLI 传入的配置值域合理性
+
+    防止恶意/损坏 checkpoint 注入异常值（如超大维度导致 OOM），
+    也防止训练 CLI 越界参数（如 --history-len 0 / --lr -1）静默进入训练。
+    """
+    checks = [
+        ("image_size", data_cfg.image_size, 1, 1024, int),
+        ("history_len", data_cfg.history_len, 1, 1024, int),
+        ("action_dim", data_cfg.action_dim, 1, 1024, int),
+        ("cnn_feature_dim", model_cfg.cnn_feature_dim, 1, 4096, int),
+        ("action_hidden_dim", model_cfg.action_hidden_dim, 1, 4096, int),
+        ("fused_hidden_dim", model_cfg.fused_hidden_dim, 1, 4096, int),
+        ("dropout", model_cfg.dropout, 0.0, 1.0, float),
+    ]
+    for name, val, lo, hi, typ in checks:
+        if typ is int:
+            ok = isinstance(val, int) and not isinstance(val, bool) and lo <= val <= hi
+        else:
+            ok = isinstance(val, (int, float)) and not isinstance(val, bool) and lo <= val <= hi
+        if not ok:
+            raise ValueError(
+                f"checkpoint config {name}={val} 超出合理范围 [{lo}, {hi}]")
+
+    if train_cfg is not None:
+        t_checks = [
+            ("batch_size", train_cfg.batch_size, 1, 65536, int),
+            ("epochs", train_cfg.epochs, 1, 100000, int),
+            ("lr", train_cfg.lr, 1e-9, 10.0, float),
+            ("weight_decay", train_cfg.weight_decay, 0.0, 1.0, float),
+            ("val_split", train_cfg.val_split, 0.0, 1.0, float),
+            ("patience", train_cfg.patience, 0, 100000, int),
+            ("num_workers", train_cfg.num_workers, 0, 256, int),
+            ("max_grad_norm", train_cfg.max_grad_norm, 0.0, 1e6, float),
+        ]
+        for name, val, lo, hi, typ in t_checks:
+            if typ is int:
+                ok = isinstance(val, int) and not isinstance(val, bool) and lo <= val <= hi
+            else:
+                ok = isinstance(val, (int, float)) and not isinstance(val, bool) and lo <= val <= hi
+            if not ok:
+                raise ValueError(
+                    f"配置 {name}={val} 超出合理范围 [{lo}, {hi}]")
+
+
+def parse_checkpoint_config(cfg_dict: dict) -> Config:
+    """从 checkpoint 恢复 Config，校验键集合与值域
+
+    - 顶层缺 data/model 键 → ValueError（带明确信息）
+    - data/model 段含未知键 → ValueError（列出未知键，避免裸 TypeError）
+    - 值域非法 → ValueError（复用 validate_config_values）
+    """
+    if not isinstance(cfg_dict, dict):
+        raise ValueError(f"checkpoint config 应为 dict，实际为 {type(cfg_dict).__name__}")
+    for section in ("data", "model"):
+        if section not in cfg_dict:
+            raise ValueError(f"checkpoint config 缺少 '{section}' 段")
+        section_dict = cfg_dict[section]
+        if not isinstance(section_dict, dict):
+            raise ValueError(f"checkpoint config['{section}'] 应为 dict，实际为 {type(section_dict).__name__}")
+        known = set(DataConfig.__dataclass_fields__) if section == "data" \
+            else set(ModelConfig.__dataclass_fields__)
+        unknown = set(section_dict) - known
+        if unknown:
+            raise ValueError(
+                f"checkpoint config['{section}'] 含未知键: {sorted(unknown)}")
+    cfg = Config.from_dict(cfg_dict)
+    validate_config_values(cfg.data, cfg.model, cfg.train)
+    return cfg
 
 
 def apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:

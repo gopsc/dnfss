@@ -6,22 +6,23 @@ import torch
 from PIL import Image
 from torchvision import transforms
 
-from config import Config, ModelConfig, DataConfig
+from config import parse_checkpoint_config
 from model import ActionPredictor
 
 
 class ActionPredictorInference:
     def __init__(self, checkpoint_path: str, device: str = None):
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-        cfg_dict = checkpoint["config"]
-        self._data_cfg = DataConfig(**cfg_dict["data"])
-        self._model_cfg = ModelConfig(**cfg_dict["model"])
+        cfg = parse_checkpoint_config(checkpoint["config"])
+        self._data_cfg = cfg.data
+        self._model_cfg = cfg.model
 
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self._device = torch.device(device)
 
-        self._model = ActionPredictor(self._model_cfg, self._data_cfg).to(self._device)
+        self._model = ActionPredictor(
+            self._model_cfg, self._data_cfg, pretrained=False).to(self._device)
         self._model.load_state_dict(checkpoint["model_state_dict"])
         self._model.eval()
 
@@ -36,15 +37,28 @@ class ActionPredictorInference:
 
         self._action_mean = None
         self._action_std = None
-        stats_path = os.path.join(os.path.dirname(os.path.abspath(checkpoint_path)),
-                                  "action_stats.npy")
         if self._data_cfg.normalize_actions:
+            # 优先使用 checkpoint config 记录的 stats 路径（相对路径按 checkpoint 目录解析），
+            # 旧 checkpoint 无该字段时回退到 checkpoint 同目录的 action_stats.npy
+            stats_path = self._data_cfg.action_stats_path
+            if stats_path:
+                if not os.path.isabs(stats_path):
+                    stats_path = os.path.join(
+                        os.path.dirname(os.path.abspath(checkpoint_path)), stats_path)
+            else:
+                stats_path = os.path.join(
+                    os.path.dirname(os.path.abspath(checkpoint_path)),
+                    "action_stats.npy")
             if not os.path.exists(stats_path):
                 raise FileNotFoundError(
                     f"模型训练时启用了动作归一化，但未找到统计文件: {stats_path}")
             stats = np.load(stats_path)
-            self._action_mean = stats[0]
-            self._action_std = stats[1]
+            if stats.shape != (2, self._data_cfg.action_dim):
+                raise ValueError(
+                    f"action_stats.npy 形状应为 (2, {self._data_cfg.action_dim})，"
+                    f"实际为 {stats.shape}，请检查文件: {stats_path}")
+            self._action_mean = stats[0].astype(np.float32)
+            self._action_std = stats[1].astype(np.float32)
 
     @torch.no_grad()
     def predict(self, image: np.ndarray, action_history: np.ndarray) -> np.ndarray:
@@ -69,8 +83,9 @@ def parse_action_history(s: str, action_dim: int) -> np.ndarray:
     history = []
     for step in steps:
         values = [float(v) for v in step.split(",")]
-        assert len(values) == action_dim, \
-            f"Expected {action_dim} values per step, got {len(values)}"
+        if len(values) != action_dim:
+            raise ValueError(
+                f"Expected {action_dim} values per step, got {len(values)}")
         history.append(values)
     return np.array(history, dtype=np.float32)
 

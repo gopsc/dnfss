@@ -2,7 +2,7 @@
 torch>=2.0,<3.0
 torchvision>=0.15,<1.0
 numpy>=1.24,<3.0
-Pillow>=9.0,<12.0
+Pillow>=9.0,<14.0  # torchvision 依赖，上限放宽避免与 torch 源安装冲突
 
 # Training utilities
 tqdm>=4.60,<5.0

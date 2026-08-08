@@ -7,7 +7,7 @@
 ```
 docs/
 ├── INDEX.md                              # 本文件（文档总索引）
-├── security/                             # 安全审计与加固（25 篇）
+├── security/                             # 安全审计与加固（26 篇）
 ├── reviews/                              # 代码审查日志（4 篇）
 └── reports/                              # 分析报告与开发规划（9 篇）
 ```
@@ -57,6 +57,7 @@ docs/
 | libth | [libth_SECURITY_AUDIT_20260804.md](security/libth_SECURITY_AUDIT_20260804.md) | C++ 线程库（Thread、Cv_wait、Fsm） |
 | aibox | [aibox_SECURITY_AUDIT_20260801.md](security/aibox_SECURITY_AUDIT_20260801.md) | Python AI 智能体系统（WebSocket） |
 | BotOps | [BotOps_SECURITY_AUDIT_20260801.md](security/BotOps_SECURITY_AUDIT_20260801.md) | BotOps 运维控制面板 |
+| actpred | [actpred_SECURITY_AUDIT_20260808.md](security/actpred_SECURITY_AUDIT_20260808.md) | Python 动作预测模块（PyTorch 训练/推理、.mt 解析、ONNX 导出） |
 
 ---
 
@@ -66,7 +67,7 @@ docs/
 |------|------|
 | [core_CODE_REVIEW_LOG_20260730.md](reviews/core_CODE_REVIEW_LOG_20260730.md) | Core 模块代码审查日志（2026-07-30，自动化审查） |
 | [DEPLOY_DEFECT_AUDIT_20260806.md](reviews/DEPLOY_DEFECT_AUDIT_20260806.md) | 部署缺陷审查（2026-08-06，首次原生部署实录，含修复记录） |
-| [actpred_CODE_AUDIT_20260808.md](reviews/actpred_CODE_AUDIT_20260808.md) | actpred 模块代码审计（2026-08-08，PyTorch 动作预测，16 项发现，全部修复） |
+| [actpred_CODE_AUDIT_20260808.md](reviews/actpred_CODE_AUDIT_20260808.md) | actpred 模块代码审计（2026-08-08，两轮合并：第 1 轮 16 项 + 第 2 轮复审 11 项，共 27 项全部修复） |
 | [bot4cj_CODE_AUDIT_20260808.md](reviews/bot4cj_CODE_AUDIT_20260808.md) | bot4cj 模块代码审计（2026-08-08，仓颉机器人硬件脚本解析器，15 项发现，待修复） |
 
 ---

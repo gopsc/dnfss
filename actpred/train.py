@@ -6,7 +6,7 @@ import torch
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
-from config import Config, build_argparser, apply_overrides
+from config import Config, build_argparser, apply_overrides, validate_config_values
 from model import ActionPredictor
 from dataset import ActionDataset
 
@@ -62,6 +62,7 @@ def main():
     parser = build_argparser("actpred training")
     args = parser.parse_args()
     cfg = apply_overrides(Config(), args)
+    validate_config_values(cfg.data, cfg.model, cfg.train)
 
     os.makedirs(cfg.train.checkpoint_dir, exist_ok=True)
 
@@ -76,7 +77,7 @@ def main():
     print(f"Device: {device}")
 
     train_indices, val_indices = split_episodes(
-        cfg.data.data_dir, cfg.train.val_split)
+        cfg.data.data_dir, cfg.train.val_split, seed=cfg.train.seed)
     print(f"Episodes: {len(train_indices)} train, {len(val_indices)} val")
 
     train_ds = ActionDataset(
@@ -114,6 +115,16 @@ def main():
     model = ActionPredictor(cfg.model, cfg.data).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model params: {n_params:,}")
+
+    if args.init_from:
+        init_ckpt = torch.load(args.init_from, map_location="cpu", weights_only=True)
+        missing, unexpected = model.load_state_dict(
+            init_ckpt["model_state_dict"], strict=False)
+        if missing:
+            print(f"  init-from missing keys: {missing}")
+        if unexpected:
+            print(f"  init-from unexpected keys: {unexpected}")
+        print(f"Loaded pretrained weights from: {args.init_from}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.train.lr,
                                   weight_decay=cfg.train.weight_decay)
