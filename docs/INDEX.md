@@ -72,6 +72,7 @@ docs/
 |------|------|
 | [bot4cj_analysis_20260525_00.md](reports/bot4cj_analysis_20260525_00.md) | bot4cj 机器人模块分析报告（Markdown） |
 | [bot4cj_analysis_20260525_00.html](reports/bot4cj_analysis_20260525_00.html) | bot4cj 机器人模块分析报告（HTML） |
+| [core_service_registry_dev_doc.md](reports/core_service_registry_dev_doc.md) | Core 模块注册中心功能扩展开发文档（服务注册/发现/健康守护/自动重启） |
 
 ---
 
