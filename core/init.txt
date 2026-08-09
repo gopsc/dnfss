@@ -5,6 +5,7 @@ bash /opt/micro_servers/dnfs2/_run.sh
 bash /opt/micro_servers/smtp/_run.sh
 bash /opt/micro_servers/fsys/_run.sh
 bash /opt/micro_servers/waf/_run.sh
+bash /opt/micro_servers/ca/_run.sh
 bash /opt/micro_servers/gateway/_run.sh
 bash /opt/micro_servers/captcha2/_run.sh
 bash /opt/micro_servers/aibox/_run.sh

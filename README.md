@@ -2,7 +2,7 @@
 # micro_servers
 
 一套 DIY 的轻量级微服务架构（UniServe Framework），由 C++、Python、Go 与仓颉(Cangjie) 混合实现。
-`core` 作为进程托管服务负责拉起并守护各业务子进程，`redirect80` 将 80 端口流量重定向到 443，`waf` 作为前置 WAF 网关终止 TLS 并做规则匹配，`gateway` 作为应用层网关统一鉴权与反向代理，`db` 提供通用数据库访问与集中式日志收集，`confs` 提供统一配置分发，`ai_review` 提供 AI 内容审核，`static` 与 `dnfs` 作为业务服务对外提供能力。`db2` / `dnfs2` 分别为 `db` / `dnfs` 的 C++20 重实现，接口完全兼容可平替。此外包含 aibox 的终端前端 `BotOps`、独立的机器人硬件控制模块 `bot4cj`、嵌入式帧缓冲图形界面 `lci` 和嵌入式脚本引擎 `libtry`。
+`core` 作为进程托管服务负责拉起并守护各业务子进程，`redirect80` 将 80 端口流量重定向到 443，`waf` 作为前置 WAF 网关终止 TLS 并做规则匹配，`ca` 作为中央认证服务统一鉴权（waf → ca → gateway 前置拓扑），`gateway` 退化为纯转发反向代理，`db` 提供通用数据库访问与集中式日志收集，`confs` 提供统一配置分发，`ai_review` 提供 AI 内容审核，`static` 与 `dnfs` 作为业务服务对外提供能力。`db2` / `dnfs2` 分别为 `db` / `dnfs` 的 C++20 重实现，接口完全兼容可平替。此外包含 aibox 的终端前端 `BotOps`、独立的机器人硬件控制模块 `bot4cj`、嵌入式帧缓冲图形界面 `lci` 和嵌入式脚本引擎 `libtry`。
 
 ## 架构总览
 
@@ -29,7 +29,8 @@
   ┌─────┴──────┐
   │ redirect80 │  :80 → :443（GET/HEAD 301 / 其余 308，重定向到 waf）
   └────────────┘
- 日志链路: waf / gateway / static / dnfs / ai_review / captcha / smtp / aibox / confs / redirect80 ──(log_client, pymsg)──► db:8005 (Logs 表)
+ 日志链路: waf / ca / gateway / static / dnfs / ai_review / captcha / smtp / aibox / confs / redirect80 ──(log_client, pymsg)──► db:8005 (Logs 表)
+ 认证链路(v0.9.0 起): waf:443 ──HTTP──► ca:8443 (认证+前置转发) ──HTTP──► gateway:8445 (纯转发, 仅 loopback) ──► 内部服务
  配置链路: static 等业务服务 ──(pymsg get)──► confs:8010（配置统一存放于 confs/configs/，mtime 变化自动重载）
 ```
 
@@ -39,9 +40,9 @@
 
 1. 客户端若以 HTTP 访问 `:80`，由 `redirect80` 重定向到 HTTPS `:443`（GET/HEAD 返回 301，其余方法返回 308 保留 body）。
 2. 客户端所有请求先打到 `waf:443`（HTTPS），WAF 终止 TLS、运行 coraza 规则匹配，命中则直接返回 403。
-3. 未命中规则的请求由 WAF 以明文 HTTP 转发到 `gateway:8443`，并设置 `X-Forwarded-For` / `X-Forwarded-Proto` 头。
-4. `gateway` 对 `/login`、`/register` 做账号鉴权（PBKDF2 密码哈希 + RSA 签名 Token + 可选 CAPTCHA + 速率限制；注册需邮箱验证码，经 pymsg/TCP 调 `smtp:8008` 发送与校验），用户数据通过 pymsg/TCP 调用 `db:8005` 存取。
-5. 其余请求携带 Token，经 `gateway` 校验后反向代理到 `Proxy.opened` 中放开的内部服务（`static:9200` / `dnfs:8006`）。
+3. 未命中规则的请求由 WAF 以明文 HTTP 转发到 `ca:8443`，并设置 `X-Forwarded-For` / `X-Forwarded-Proto` 头。
+4. `ca` 对 `/login`、`/register` 做账号鉴权（PBKDF2 密码哈希 + RSA 签名 Token + 可选 CAPTCHA + 速率限制；注册需邮箱验证码，经 pymsg/TCP 调 `smtp:8008` 发送与校验），用户数据通过 pymsg/TCP 调用 `db:8005` 存取。
+5. 其余请求携带 Token，经 `ca` 验签后注入 `X-Auth-User` 身份头转发到 `gateway:8445`（仅 loopback，不验签仅做存在性检查），再由 gateway 反向代理到 `Proxy.opened` 中放开的内部服务（`static:9200` / `dnfs:8006`）。
 6. `db:8005` 与 `ai_review:8007` 在 `Proxy.closed` 中，仅允许内部服务间调用，不对外暴露。
 7. `dnfs` 处理节点增删改查时，通过 pymsg/TCP 调用 `db` 服务完成数据持久化，新增节点前调用 `ai_review` 进行内容审核。
 8. 各服务通过 `log_client.py` SDK 异步批量推送运行日志（pymsg/TCP 写入 db 的 `Logs` 表），实现集中式日志收集（fail-safe，db 不可用时静默丢弃）。
@@ -52,15 +53,16 @@
 |------|------|------|------|
 | [core](core/) | C++20 | 5200 | 进程托管服务（PMC），创建/列举/杀死/执行子进程，读取自启动列表守护业务进程，提供 HTTP 管理接口 |
 | [redirect80](redirect80/) | Python | 80 | HTTP→HTTPS 重定向服务，将 80 端口请求重定向到 443（GET/HEAD 301 / 其余 308），纯标准库实现 |
-| [waf](waf/) | Go | 443 | WAF 网关（入口），终止 TLS、coraza 规则匹配（SecLang）、反向代理到 gateway，支持 SIGHUP 热加载规则 |
-| [gateway](gateway/) | C++20 | 8443 | 应用层网关（内部 HTTP），用户注册/登录鉴权、Token 签发与校验、反向代理到内部服务 |
+| [waf](waf/) | Go | 443 | WAF 网关（入口），终止 TLS、coraza 规则匹配（SecLang）、反向代理到 ca，支持 SIGHUP 热加载规则 |
+| [ca](ca/) | C++20 | 8443 | 中央认证服务（内部 HTTP），用户注册/登录鉴权、Token 签发与校验、身份头注入后前置转发到 gateway |
+| [gateway](gateway/) | C++20 | 8445 | 应用层网关（仅 loopback），纯转发反向代理到内部服务，不验签（v0.9.0 起认证迁至 ca） |
 | [static](static/) | Python(Flask) | 9200 | 前端托管服务，社区首页、静态页面与文件浏览、视频/音频流媒体播放、路径遍历防护 |
 | [dnfs](dnfs/) | Python(Flask) | 8006 | 树状网络文件系统（Dendrachy Network File-System），基于父子 pid 的节点树增删改查，集成 AI 内容审核 |
 | [dnfs2](dnfs2/) | C++20 | 8006 | dnfs 的 C++20 重实现（libhttp + libmsg），接口与 Python 版完全兼容，修复 P0/P1 安全问题，可平替 |
 | [db](db/) | Python(pymsg) | 8005 | 通用数据库服务，基于 pymsg 协议（TCP 长度前缀帧 + JSON）的 SQL-over-TCP，SQLAlchemy Core 参数化查询防注入；内置集中式日志收集（Logs 表 + 自动清理） |
 | [db2](db2/) | C++20 | 8005 | db 的 C++20 重实现（libmsg + boost::json + libsqlite3），execute 路由/where 语法/响应格式完全对齐 Python 版，可平替 |
 | [ai_review](ai_review/) | Python(Flask) | 8007 | AI 内容审核服务，DeepSeek LLM + ChromaDB RAG，支持人工反馈纠偏 |
-| [captcha](captcha/) | Python(pymsg) | 8009 | 验证码服务（pymsg/TCP），生成图形验证码（5 分钟过期、一次性），经 gateway 的 `GET /captcha/image` 代理给浏览器 |
+| [captcha](captcha/) | Python(pymsg) | 8009 | 验证码服务（pymsg/TCP），生成图形验证码（5 分钟过期、一次性），经 ca 的 `GET /captcha/image` 代理给浏览器 |
 | [smtp](smtp/) | Python(pymsg) | 8008 | 邮件服务，发送/校验邮箱验证码（pymsg 路由 send_email/verify_email/health），注册流程的邮件验证码后端，SMTP 账号配置在 .env |
 | [confs](confs/) | Python(pymsg) | 8010 | 统一配置服务，集中存放并分发各服务配置文件（pymsg 路由 get/list/reload/health），内存缓存 + mtime 自动重载，路径遍历防护 |
 | [aibox](aibox/) | Python | 8765 | 独立 AI 智能体系统（DeepSeek + WebSocket），自带技能系统/记忆/任务调度，由 core 拉起但与主干微服务无调用关系 |
@@ -73,29 +75,35 @@
 - 可执行文件 `nidus.out`，作为 systemd 服务（`Nidus.service`）常驻运行（崩溃守护由 systemd 负责，core 自身不含自动重启逻辑）。
 - 支持两种工作模式：命令行子系统调用（`--send/--exec/--list/--kill`）与 HTTP 伺服器模式（`--serve <port>`）。
 - 通过命名管道（Pipe）与消息队列（Mq）实现进程间通信。
-- 读取 `init.txt` 自启动列表，按行拉起各业务服务（ai_review / db / dnfs / smtp / static / waf / gateway / captcha / aibox）。
+- 读取 `init.txt` 自启动列表，按行拉起各业务服务（ai_review / db / dnfs / smtp / static / waf / ca / gateway / captcha / aibox）。
 
 ### waf（WAF 网关）
 
 - 唯一对外入口，终止 TLS（`certs/full_chain.crt` / `certs/server.key`），监听 443 端口。
 - 基于 [coraza](https://github.com/corazawaf/coraza) v3.3.0（ModSecurity SecLang 的 Go 实现），规则匹配命中后返回 403。
-- 未命中规则的请求以明文 HTTP 反向代理到 `gateway:8443`，透传 `X-Forwarded-For` / `X-Forwarded-Proto`。
+- 未命中规则的请求以明文 HTTP 反向代理到 `ca:8443`，透传 `X-Forwarded-For` / `X-Forwarded-Proto`。
 - 规则库位于 [waf/rules/](waf/rules/)，分两段：本地自定义（ID 100000-199999）与 OWASP CRS（ID 900000-999999，可选）。
 - 极客操作：`kill -HUP <pid>` 热加载规则；`waf -list` 列规则；`waf -test <file>` 校验语法；`waf -check "<input>"` 测试单条输入。
 - 配置见 [waf/config.yaml](waf/config.yaml)，详见 [waf/README.md](waf/README.md)。
 
-### gateway（应用层网关 · v0.8.0）
+### ca（中央认证服务 · v1.0.0）
 
-- 内部 HTTP 服务，默认监听 127.0.0.1:8443，不再承载 TLS（TLS 已由 WAF 终止）。
-- 通过 `Server.tls = on/off` 配置切换 HTTPS/HTTP 模式（[example.ini](gateway/example.ini)），独立部署时仍可启用 TLS。
+- 内部 HTTP 服务，默认监听 127.0.0.1:8443（接管原 gateway 端口，WAF upstream 不变），不再承载 TLS（TLS 已由 WAF 终止）。
 - **密码安全**：PBKDF2-HMAC-SHA256（10 万轮 + 16 字节随机盐），密码强度校验（8+ 字符、4 类中至少 3 类），常数时间比较防 timing attack。
-- **用户存储**：用户数据通过 pymsg/TCP 调用 `db:8005`（`DbC::call_msg`）存取，不再直连本地 SQLite；登录成功即更新 `Users.last_login`（`"$now"` 哨兵）。
-- **Token 机制**：`Base64(payload) + "_" + RSA-Sign(payload)`，默认 1 小时过期，验签通过才放行；RSA 密钥对启动时内存生成，重启后旧 Token 全部失效。
-- **Cookie 认证**：登录成功同时签发 `HttpOnly + Secure + SameSite=Lax` 的 `q4_token` Cookie；代理时无 `Authorization` 头则回退读 Cookie 验签，并向下游注入 `Authorization: Bearer`（下游零改动）；`POST /logout` 清除 Cookie。公开目标（`Proxy.default`）不做凭证校验，避免旧 Cookie 影响公开页面。
-- **CAPTCHA**：`/captcha` 接口生成验证码（5 分钟过期、一次性使用），登录与注册均可选启用；`GET /captcha/image` 为 captcha 服务（pymsg/TCP :8009）的图形验证码代理路由。
-- **速率限制**：登录 5 次/5 分钟、注册 3 次/10 分钟，按 `X-Forwarded-For`（WAF 注入）客户端 IP 计数。
-- **反向代理**：`Target-Url` 必须在 `Proxy.opened` 白名单中（`closed` 仅记录用途，实际隔离靠"不在 opened 中即拒绝"），缺省走 `Proxy.default`（不需 Token，服务前端静态资源）。
-- **用户表**：`Users` 表由 [db/create_sqlite3.sql](db/create_sqlite3.sql) 建立（gateway 不再自动建表），无默认管理员账号，首位注册者即为管理员。
+- **用户存储**：用户数据通过 pymsg/TCP 调用 `db:8005`（`DbC::call_msg`）存取；登录成功即更新 `Users.last_login`（`"$now"` 哨兵）。
+- **Token 机制**：`Base64(payload) + "_" + RSA-Sign(payload)`，默认 1 小时过期；RSA 密钥对启动时内存生成，重启后旧 Token 全部失效；jti 黑名单 + 用户版本号双轨吊销。
+- **Cookie 认证**：登录成功同时签发 `HttpOnly + Secure + SameSite=Lax` 的 `q4_token` Cookie；验签时无 `Authorization` 头则回退读 Cookie，并向下游注入 `Authorization: Bearer`（下游零改动）；`POST /logout` 清除 Cookie。
+- **前置转发**：无 `Target-Url` 为公开请求（剥身份头直转 gateway）；有 `Target-Url` 为受保护请求（验签后注入 `X-Auth-User`/`X-Auth-Admin` 转发，strip-then-set 契约剥离客户端伪造值）；上游不可达统一 502。
+- **CAPTCHA**：`GET /captcha/image` 为 captcha 服务（pymsg/TCP :8009）的图形验证码代理路由；`/login` 强制 CAPTCHA。
+- **速率限制**：登录 5 次/5 分钟、注册 3 次/10 分钟、发码 IP 级 + 邮箱级双窗口，按 `X-Forwarded-For`（WAF 注入）客户端 IP 计数。
+- **用户表**：`Users` 表由 [db/create_sqlite3.sql](db/create_sqlite3.sql) 建立，无默认管理员账号，首位注册者即为管理员。
+- 详见 [ca/README.md](ca/README.md)。
+
+### gateway（应用层网关 · v0.9.0）
+
+- 纯转发服务，仅监听 127.0.0.1:8445（loopback 启动强制自检），不再验签（认证已迁至 ca）。
+- **存在性不变量**：显式 `Target-Url` 请求必须携带 ca 注入的 `X-Auth-User` 头，缺失一律 401。
+- **反向代理**：`Target-Url` 必须在 `Proxy.opened` 白名单中，缺省走 `Proxy.default`；`X-Auth-User`/`X-Auth-Admin`/`Authorization` 原样透传下游。
 - 详见 [gateway/README.md](gateway/README.md)。
 
 ### static（前端托管服务）
