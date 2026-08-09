@@ -9,7 +9,7 @@ docs/
 ├── INDEX.md                              # 本文件（文档总索引）
 ├── security/                             # 安全审计与加固（29 篇）
 ├── reviews/                              # 代码审查日志（4 篇）
-└── reports/                              # 分析报告与开发规划（12 篇）
+└── reports/                              # 分析报告与开发规划（13 篇）
 ```
 
 ---
@@ -92,6 +92,7 @@ docs/
 | [captcha_cpp_rewrite_dev_doc.md](reports/captcha_cpp_rewrite_dev_doc.md) | captcha 模块 C++20 重写开发方案（FreeType + stb_image_write 替代 Pillow，协议兼容零改动） |
 | [smtp_cpp_rewrite_dev_doc.md](reports/smtp_cpp_rewrite_dev_doc.md) | smtp 模块 C++20 重写开发方案（SMTP_SSL 客户端手写，审计 7 项遗留一并在重写中修复，零新增系统依赖） |
 | [libhttp_remote_addr_dev_doc.md](reports/libhttp_remote_addr_dev_doc.md) | libhttp 对端地址透传开发方案（X-Remote-Addr 可信头注入，非破坏；gateway trust_xff 配套，闭环审计 A4） |
+| [confs2_cpp_rewrite_dev_doc.md](reports/confs2_cpp_rewrite_dev_doc.md) | confs 模块 C++20 重写开发方案（libmsg RpcServer 替代 pymsg，协议兼容零改动，审计 7 项遗留一并修复，零新增系统依赖，未来可合入 core 注册中心） |
 
 ---
 
