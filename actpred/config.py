@@ -8,6 +8,7 @@ class DataConfig:
     image_size: int = 64
     action_dim: int = 18
     history_len: int = 5
+    frame_len: int = 3
     data_dir: str = "./data"
     normalize_actions: bool = False
     action_stats_path: Optional[str] = None
@@ -17,10 +18,11 @@ class DataConfig:
 class ModelConfig:
     cnn_backbone: str = "simple"
     cnn_feature_dim: int = 128
-    action_hidden_dim: int = 64
     fused_hidden_dim: int = 128
     dropout: float = 0.1
-    history_encoder: str = "mlp"
+    attn_dim: int = 128
+    attn_heads: int = 4
+    attn_layers: int = 2
 
 
 @dataclass
@@ -60,15 +62,17 @@ def build_argparser(description: str = "") -> argparse.ArgumentParser:
     parser.add_argument("--image-size", type=int, default=None)
     parser.add_argument("--action-dim", type=int, default=None)
     parser.add_argument("--history-len", type=int, default=None)
+    parser.add_argument("--frame-len", type=int, default=None)
     parser.add_argument("--data-dir", type=str, default=None)
     parser.add_argument("--normalize-actions", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--action-stats-path", type=str, default=None)
     parser.add_argument("--backbone", type=str, default=None, choices=["simple", "mobilenet"])
     parser.add_argument("--cnn-feature-dim", type=int, default=None)
-    parser.add_argument("--action-hidden-dim", type=int, default=None)
     parser.add_argument("--fused-hidden-dim", type=int, default=None)
     parser.add_argument("--dropout", type=float, default=None)
-    parser.add_argument("--history-encoder", type=str, default=None, choices=["mlp", "gru"])
+    parser.add_argument("--attn-dim", type=int, default=None)
+    parser.add_argument("--attn-heads", type=int, default=None)
+    parser.add_argument("--attn-layers", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
@@ -95,11 +99,14 @@ def validate_config_values(data_cfg: DataConfig, model_cfg: ModelConfig,
     checks = [
         ("image_size", data_cfg.image_size, 1, 1024, int),
         ("history_len", data_cfg.history_len, 1, 1024, int),
+        ("frame_len", data_cfg.frame_len, 1, 1024, int),
         ("action_dim", data_cfg.action_dim, 1, 1024, int),
         ("cnn_feature_dim", model_cfg.cnn_feature_dim, 1, 4096, int),
-        ("action_hidden_dim", model_cfg.action_hidden_dim, 1, 4096, int),
         ("fused_hidden_dim", model_cfg.fused_hidden_dim, 1, 4096, int),
         ("dropout", model_cfg.dropout, 0.0, 1.0, float),
+        ("attn_dim", model_cfg.attn_dim, 1, 4096, int),
+        ("attn_heads", model_cfg.attn_heads, 1, 64, int),
+        ("attn_layers", model_cfg.attn_layers, 1, 64, int),
     ]
     for name, val, lo, hi, typ in checks:
         if typ is int:
@@ -109,6 +116,11 @@ def validate_config_values(data_cfg: DataConfig, model_cfg: ModelConfig,
         if not ok:
             raise ValueError(
                 f"checkpoint config {name}={val} 超出合理范围 [{lo}, {hi}]")
+
+    if model_cfg.attn_dim % model_cfg.attn_heads != 0:
+        raise ValueError(
+            f"attn_dim={model_cfg.attn_dim} 必须能被 attn_heads="
+            f"{model_cfg.attn_heads} 整除")
 
     if train_cfg is not None:
         t_checks = [
@@ -162,15 +174,17 @@ def apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         "image_size": ("data", "image_size"),
         "action_dim": ("data", "action_dim"),
         "history_len": ("data", "history_len"),
+        "frame_len": ("data", "frame_len"),
         "data_dir": ("data", "data_dir"),
         "normalize_actions": ("data", "normalize_actions"),
         "action_stats_path": ("data", "action_stats_path"),
         "backbone": ("model", "cnn_backbone"),
         "cnn_feature_dim": ("model", "cnn_feature_dim"),
-        "action_hidden_dim": ("model", "action_hidden_dim"),
         "fused_hidden_dim": ("model", "fused_hidden_dim"),
         "dropout": ("model", "dropout"),
-        "history_encoder": ("model", "history_encoder"),
+        "attn_dim": ("model", "attn_dim"),
+        "attn_heads": ("model", "attn_heads"),
+        "attn_layers": ("model", "attn_layers"),
         "batch_size": ("train", "batch_size"),
         "epochs": ("train", "epochs"),
         "lr": ("train", "lr"),

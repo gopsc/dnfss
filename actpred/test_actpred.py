@@ -79,44 +79,56 @@ class TestParseActionHistory(unittest.TestCase):
 
 
 class TestActionPredictor(unittest.TestCase):
-    """测试模型前向传播"""
+    """测试多帧注意力模型前向传播"""
 
-    def test_forward_simple_mlp(self):
-        data_cfg = DataConfig(image_size=64, action_dim=18, history_len=5)
-        model_cfg = ModelConfig(cnn_backbone="simple", history_encoder="mlp")
+    def test_forward_multi_frame(self):
+        data_cfg = DataConfig(image_size=64, action_dim=18, history_len=5, frame_len=3)
+        model_cfg = ModelConfig(cnn_backbone="simple")
         model = ActionPredictor(model_cfg, data_cfg)
         model.eval()
 
-        image = torch.randn(2, 3, 64, 64)
+        images = torch.randn(2, 3, 3, 64, 64)
         history = torch.randn(2, 5, 18)
         with torch.no_grad():
-            out = model(image, history)
+            out = model(images, history)
         self.assertEqual(out.shape, (2, 18))
 
-    def test_forward_simple_gru(self):
-        data_cfg = DataConfig(image_size=64, action_dim=18, history_len=5)
-        model_cfg = ModelConfig(cnn_backbone="simple", history_encoder="gru")
+    def test_forward_single_frame_degenerate(self):
+        """frame_len=1 退化为单帧输入也应正常前向"""
+        data_cfg = DataConfig(image_size=32, action_dim=4, history_len=3, frame_len=1)
+        model_cfg = ModelConfig(cnn_backbone="simple")
         model = ActionPredictor(model_cfg, data_cfg)
         model.eval()
 
-        image = torch.randn(2, 3, 64, 64)
-        history = torch.randn(2, 5, 18)
+        images = torch.randn(2, 1, 3, 32, 32)
+        history = torch.randn(2, 3, 4)
         with torch.no_grad():
-            out = model(image, history)
-        self.assertEqual(out.shape, (2, 18))
+            out = model(images, history)
+        self.assertEqual(out.shape, (2, 4))
 
     def test_forward_dynamic_batch(self):
-        data_cfg = DataConfig(image_size=32, action_dim=4, history_len=3)
-        model_cfg = ModelConfig(cnn_backbone="simple", history_encoder="mlp")
+        data_cfg = DataConfig(image_size=32, action_dim=4, history_len=3, frame_len=2)
+        model_cfg = ModelConfig(cnn_backbone="simple")
         model = ActionPredictor(model_cfg, data_cfg)
         model.eval()
 
         for batch_size in [1, 4, 8]:
-            image = torch.randn(batch_size, 3, 32, 32)
+            images = torch.randn(batch_size, 2, 3, 32, 32)
             history = torch.randn(batch_size, 3, 4)
             with torch.no_grad():
-                out = model(image, history)
+                out = model(images, history)
             self.assertEqual(out.shape, (batch_size, 4))
+
+    def test_custom_attn_config(self):
+        """自定义 attn_dim/heads/layers 应可构建并前向"""
+        data_cfg = DataConfig(image_size=32, action_dim=4, history_len=3, frame_len=2)
+        model_cfg = ModelConfig(attn_dim=64, attn_heads=2, attn_layers=1)
+        model = ActionPredictor(model_cfg, data_cfg)
+        model.eval()
+
+        with torch.no_grad():
+            out = model(torch.randn(1, 2, 3, 32, 32), torch.randn(1, 3, 4))
+        self.assertEqual(out.shape, (1, 4))
 
 
 class TestDataRecorder(unittest.TestCase):
@@ -169,16 +181,29 @@ class TestActionDataset(unittest.TestCase):
     def test_dataset_loading(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             self._create_dummy_episode(Path(tmpdir), n_frames=10, action_dim=4)
-            ds = ActionDataset(tmpdir, history_len=3, action_dim=4, image_size=32)
-            self.assertEqual(len(ds), 7)  # 10 - 3 = 7 samples
+            ds = ActionDataset(tmpdir, history_len=3, action_dim=4, image_size=32,
+                               frame_len=3)
+            # 采样起点 max(history_len, frame_len-1) = 3 → 10 - 3 = 7 samples
+            self.assertEqual(len(ds), 7)
 
             sample = ds[0]
-            self.assertIn("image", sample)
+            self.assertIn("images", sample)
             self.assertIn("action_history", sample)
             self.assertIn("target", sample)
-            self.assertEqual(sample["image"].shape, (3, 32, 32))
+            self.assertEqual(sample["images"].shape, (3, 3, 32, 32))
             self.assertEqual(sample["action_history"].shape, (3, 4))
             self.assertEqual(sample["target"].shape, (4,))
+
+    def test_frame_len_gt_history_shifts_start(self):
+        """frame_len-1 > history_len 时采样起点由帧窗口决定"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._create_dummy_episode(Path(tmpdir), n_frames=10, action_dim=4)
+            ds = ActionDataset(tmpdir, history_len=3, action_dim=4, image_size=32,
+                               frame_len=6)
+            # 起点 max(3, 5) = 5 → 10 - 5 = 5 samples
+            self.assertEqual(len(ds), 5)
+            sample = ds[0]
+            self.assertEqual(sample["images"].shape, (6, 3, 32, 32))
 
     def test_episode_count(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -241,17 +266,24 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.data.image_size, 64)
         self.assertEqual(cfg.data.action_dim, 18)
         self.assertEqual(cfg.data.history_len, 5)
+        self.assertEqual(cfg.data.frame_len, 3)
         self.assertEqual(cfg.model.cnn_backbone, "simple")
-        self.assertEqual(cfg.model.history_encoder, "mlp")
+        self.assertEqual(cfg.model.attn_dim, 128)
+        self.assertEqual(cfg.model.attn_heads, 4)
+        self.assertEqual(cfg.model.attn_layers, 2)
         self.assertEqual(cfg.train.epochs, 100)
 
     def test_apply_overrides(self):
         parser = build_argparser("test")
-        args = parser.parse_args(["--epochs", "50", "--lr", "0.01", "--backbone", "mobilenet"])
+        args = parser.parse_args(["--epochs", "50", "--lr", "0.01",
+                                  "--backbone", "mobilenet",
+                                  "--frame-len", "4", "--attn-dim", "64"])
         cfg = apply_overrides(Config(), args)
         self.assertEqual(cfg.train.epochs, 50)
         self.assertEqual(cfg.train.lr, 0.01)
         self.assertEqual(cfg.model.cnn_backbone, "mobilenet")
+        self.assertEqual(cfg.data.frame_len, 4)
+        self.assertEqual(cfg.model.attn_dim, 64)
 
     def test_normalize_actions_flag(self):
         """--normalize-actions 和 --no-normalize-actions 都应可用"""
@@ -421,24 +453,37 @@ class TestValidateConfigValues(unittest.TestCase):
 
     def test_out_of_range_or_non_int_raises(self):
         for field, value in [("image_size", 99999), ("image_size", 0),
-                             ("history_len", -1), ("action_dim", "18")]:
+                             ("history_len", -1), ("frame_len", 0),
+                             ("frame_len", 99999), ("action_dim", "18")]:
             cfg = Config()
             setattr(cfg.data, field, value)
             with self.assertRaises(ValueError, msg=f"{field}={value}"):
                 validate_config_values(cfg.data, cfg.model)
 
     def test_model_field_out_of_range_raises(self):
-        """model 字段越界（fused_hidden_dim 超限、dropout 越界）应抛 ValueError"""
+        """model 字段越界（fused_hidden_dim 超限、dropout 越界、attn_* 越界）应抛 ValueError"""
         for field, value in [("fused_hidden_dim", 10 ** 9),
                              ("fused_hidden_dim", 0),
                              ("cnn_feature_dim", 99999),
-                             ("action_hidden_dim", -1),
+                             ("attn_dim", 0),
+                             ("attn_dim", 99999),
+                             ("attn_heads", 0),
+                             ("attn_heads", 128),
+                             ("attn_layers", 0),
                              ("dropout", 1.5),
                              ("dropout", -0.1)]:
             cfg = Config()
             setattr(cfg.model, field, value)
             with self.assertRaises(ValueError, msg=f"{field}={value}"):
                 validate_config_values(cfg.data, cfg.model)
+
+    def test_attn_dim_not_divisible_by_heads_raises(self):
+        """attn_dim 不能被 attn_heads 整除应抛 ValueError"""
+        cfg = Config()
+        cfg.model.attn_dim = 130
+        cfg.model.attn_heads = 4
+        with self.assertRaisesRegex(ValueError, "整除"):
+            validate_config_values(cfg.data, cfg.model)
 
     def test_train_field_out_of_range_raises(self):
         """train 字段越界（lr 为负、val_split>1 等）应抛 ValueError"""
@@ -472,6 +517,15 @@ class TestParseCheckpointConfig(unittest.TestCase):
         d = cfg.to_dict()
         d["data"]["evil_extra_key"] = 123
         with self.assertRaisesRegex(ValueError, "evil_extra_key"):
+            parse_checkpoint_config(d)
+
+    def test_legacy_checkpoint_config_rejected(self):
+        """旧架构 checkpoint（含 history_encoder/action_hidden_dim）应拒载"""
+        cfg = Config()
+        d = cfg.to_dict()
+        d["model"]["history_encoder"] = "mlp"
+        d["model"]["action_hidden_dim"] = 64
+        with self.assertRaisesRegex(ValueError, "history_encoder"):
             parse_checkpoint_config(d)
 
     def test_missing_section_raises(self):
@@ -519,11 +573,13 @@ class TestActionPredictorInference(unittest.TestCase):
     """测试推理封装端到端：checkpoint 保存 → 加载 → 推理"""
 
     @staticmethod
-    def _make_checkpoint(tmpdir, normalize_actions=False, image_size=32):
+    def _make_checkpoint(tmpdir, normalize_actions=False, image_size=32,
+                         frame_len=3):
         cfg = Config()
         cfg.data.image_size = image_size
         cfg.data.action_dim = 4
         cfg.data.history_len = 3
+        cfg.data.frame_len = frame_len
         cfg.data.normalize_actions = normalize_actions
         model = ActionPredictor(cfg.model, cfg.data)
         model.eval()
@@ -533,17 +589,19 @@ class TestActionPredictorInference(unittest.TestCase):
         return path, model, cfg
 
     def test_end_to_end_predict(self):
-        """加载 checkpoint 后推理输出形状正确、数值有限且可复现"""
+        """加载 checkpoint 后多帧推理输出形状正确、数值有限且可复现"""
         with tempfile.TemporaryDirectory() as tmpdir:
             path, _, _ = self._make_checkpoint(tmpdir)
             predictor = ActionPredictorInference(path, device="cpu")
             self.assertEqual(predictor.action_dim, 4)
             self.assertEqual(predictor.history_len, 3)
+            self.assertEqual(predictor.frame_len, 3)
 
-            image = np.random.randint(0, 255, (32, 32, 3), dtype=np.uint8)
+            images = [np.random.randint(0, 255, (32, 32, 3), dtype=np.uint8)
+                      for _ in range(3)]
             history = np.random.randn(3, 4).astype(np.float32)
-            pred1 = predictor.predict(image, history)
-            pred2 = predictor.predict(image, history)
+            pred1 = predictor.predict(images, history)
+            pred2 = predictor.predict(images, history)
             self.assertEqual(pred1.shape, (4,))
             self.assertTrue(np.all(np.isfinite(pred1)))
             np.testing.assert_array_equal(pred1, pred2)  # eval 模式确定性
@@ -563,9 +621,18 @@ class TestActionPredictorInference(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path, _, _ = self._make_checkpoint(tmpdir)
             predictor = ActionPredictorInference(path, device="cpu")
-            image = np.zeros((32, 32, 3), dtype=np.uint8)
+            images = [np.zeros((32, 32, 3), dtype=np.uint8)] * 3
             with self.assertRaisesRegex(ValueError, "action_history"):
-                predictor.predict(image, np.zeros((2, 4), dtype=np.float32))
+                predictor.predict(images, np.zeros((2, 4), dtype=np.float32))
+
+    def test_wrong_frame_count_raises(self):
+        """传入帧数与 frame_len 不一致应抛 ValueError"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path, _, _ = self._make_checkpoint(tmpdir)
+            predictor = ActionPredictorInference(path, device="cpu")
+            images = [np.zeros((32, 32, 3), dtype=np.uint8)] * 2
+            with self.assertRaisesRegex(ValueError, "帧"):
+                predictor.predict(images, np.zeros((3, 4), dtype=np.float32))
 
     def test_missing_action_stats_raises(self):
         """启用归一化但缺 action_stats.npy 应抛 FileNotFoundError"""
@@ -594,9 +661,9 @@ class TestActionPredictorInference(unittest.TestCase):
             image = np.random.randint(0, 255, (32, 32, 3), dtype=np.uint8)
             history = np.random.randn(3, 4).astype(np.float32)
             pred_raw = ActionPredictorInference(
-                raw_path, device="cpu").predict(image, history)
+                raw_path, device="cpu").predict([image] * 3, history)
             pred_norm = ActionPredictorInference(
-                norm_path, device="cpu").predict(image, history)
+                norm_path, device="cpu").predict([image] * 3, history)
             np.testing.assert_allclose(pred_norm, pred_raw, rtol=1e-5, atol=1e-6)
 
     def test_stats_shape_mismatch_raises(self):

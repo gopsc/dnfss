@@ -76,24 +76,25 @@ class MTActionDataset(Dataset):
         }
 
 
-def pretrain_one_epoch(model, loader, optimizer, device, image_size,
+def pretrain_one_epoch(model, loader, optimizer, device, image_size, frame_len,
                        max_grad_norm=None, noise_std=0.0):
     model.train()
     total_loss = 0.0
     count = 0
-    zero_image = None
+    zero_images = None
     for batch in tqdm(loader, desc="  pretrain", leave=False):
         history = batch["action_history"].to(device)
         target = batch["target"].to(device)
         if noise_std > 0:
             history = history + torch.randn_like(history) * noise_std
             target = target + torch.randn_like(target) * noise_std
-        if zero_image is None or zero_image.size(0) != history.size(0):
-            zero_image = torch.zeros(
-                history.size(0), 3, image_size, image_size, device=device
+        if zero_images is None or zero_images.size(0) != history.size(0):
+            zero_images = torch.zeros(
+                history.size(0), frame_len, 3, image_size, image_size,
+                device=device,
             )
         optimizer.zero_grad()
-        pred = model(zero_image, history)
+        pred = model(zero_images, history)
         loss = torch.nn.functional.mse_loss(pred, target)
         loss.backward()
         if max_grad_norm:
@@ -105,19 +106,20 @@ def pretrain_one_epoch(model, loader, optimizer, device, image_size,
 
 
 @torch.no_grad()
-def validate(model, loader, device, image_size):
+def validate(model, loader, device, image_size, frame_len):
     model.eval()
     total_loss = 0.0
     count = 0
-    zero_image = None
+    zero_images = None
     for batch in tqdm(loader, desc="  val  ", leave=False):
         history = batch["action_history"].to(device)
         target = batch["target"].to(device)
-        if zero_image is None or zero_image.size(0) != history.size(0):
-            zero_image = torch.zeros(
-                history.size(0), 3, image_size, image_size, device=device
+        if zero_images is None or zero_images.size(0) != history.size(0):
+            zero_images = torch.zeros(
+                history.size(0), frame_len, 3, image_size, image_size,
+                device=device,
             )
-        pred = model(zero_image, history)
+        pred = model(zero_images, history)
         loss = torch.nn.functional.mse_loss(pred, target)
         total_loss += loss.item() * history.size(0)
         count += history.size(0)
@@ -198,8 +200,10 @@ def main():
     print(f"Model params: {n_params:,}")
     print(f"Config: action_dim={cfg.data.action_dim}, "
           f"history_len={cfg.data.history_len}, "
+          f"frame_len={cfg.data.frame_len}, "
           f"backbone={cfg.model.cnn_backbone}, "
-          f"encoder={cfg.model.history_encoder}")
+          f"attn={cfg.model.attn_layers}x{cfg.model.attn_heads}h"
+          f"@{cfg.model.attn_dim}")
     print(f"Pre-training: noise_std={args.noise_std}")
 
     optimizer = torch.optim.AdamW(
@@ -222,9 +226,11 @@ def main():
               f"lr={optimizer.param_groups[0]['lr']:.6f}")
         train_loss = pretrain_one_epoch(
             model, train_loader, optimizer, device,
-            cfg.data.image_size, cfg.train.max_grad_norm, args.noise_std,
+            cfg.data.image_size, cfg.data.frame_len,
+            cfg.train.max_grad_norm, args.noise_std,
         )
-        val_loss = validate(model, val_loader, device, cfg.data.image_size)
+        val_loss = validate(model, val_loader, device,
+                            cfg.data.image_size, cfg.data.frame_len)
         scheduler.step()
         print(f"  train_loss={train_loss:.6f}  val_loss={val_loss:.6f}")
 
