@@ -5,6 +5,12 @@
 #include <boost/property_tree/json_parser.hpp>
 #include "main/PPool.hh"
 #include "main/pmc_mtd.hh"
+#include "registry/InitParser.hh"
+
+#include <unistd.h>
+#include <thread>
+#include <chrono>
+#include <filesystem>
 
 namespace qing {
 
@@ -87,37 +93,61 @@ catch(std::exception& exp) {
 
 /* 解析自启动列表、添加自启动项
  *
- * 如果在解析过程中出错，只是打印异常？ */
-void parse_self_init_list(std::string &path) 
+ * 兼容两种格式：
+ *   - services.yaml（结构化声明，含 args/env/depends_on/sleep_before）
+ *   - init.txt（纯命令列表，每行一条 bash 命令，# 开头为注释）
+ *
+ * path 可以是：
+ *   - 目录路径 → 自动查找 services.yaml 或 init.txt
+ *   - .yaml 文件 → 按 YAML 解析
+ *   - 其他文件 → 按 TXT 解析（向后兼容 init.txt）
+ *
+ * 如果在解析过程中出错，只是打印异常 */
+void parse_self_init_list(std::string &path)
 try {
+	namespace fs = std::filesystem;
 
-	std::ifstream file(path);
-	if (!file.is_open()) {	/* ---- 没能打开自启动文件 ---- */
-		std::cerr << "Failed to open self-init list" << std::endl;
+	std::vector<registry::ServiceConfig> services;
+
+	if (fs::is_directory(path)) {
+		/* 目录模式：InitParser::load 自动查找 services.yaml → init.txt */
+		services = registry::InitParser::load(path);
+	} else if (path.size() > 5 && path.substr(path.size() - 5) == ".yaml") {
+		/* YAML 文件模式 */
+		services = registry::InitParser::parseYaml(path);
+	} else {
+		/* TXT 文件模式（向后兼容 init.txt） */
+		services = registry::InitParser::parseTxt(path);
+	}
+
+	if (services.empty()) {
+		std::cerr << "parse_self_init_list: 没有可启动的服务" << std::endl;
 		return;
 	}
 
-	std::string row = "";
-	char ch;
-	while (file.get(ch))
-
-		if (ch == '\n') { 
-	
-			auto pos = row.find("#");
-			if (pos != -1)
-				row = row.substr(0, pos);
-			if (row != "") {	/* trim() */
-				ppool.clr();
-				ppool.crtp(row);	/* 创建进程 */
-				row = "";
-			}
+	for (const auto& svc : services) {
+		/* 启动前等待（替代散落在 _run.sh 中的 sleep） */
+		if (svc.sleep_before > 0) {
+			std::cerr << "[pmc] " << svc.name
+			          << " 等待 " << svc.sleep_before << "s..." << std::endl;
+			std::this_thread::sleep_for(
+				std::chrono::seconds(svc.sleep_before));
 		}
 
-		else row += ch;
+		/* 设置环境变量 */
+		for (const auto& [k, v] : svc.env)
+			setenv(k.c_str(), v.c_str(), 1);
 
-	file.close();
+		/* 清理已停止的进程，然后创建新进程 */
+		ppool.clr();
 
+		std::string full_cmd = svc.toCommand();
+		std::cerr << "[pmc] 启动: " << svc.name
+		          << " -> " << full_cmd << std::endl;
+		ppool.crtp(full_cmd);
+	}
 }
+
 catch (std::exception &exp) {
     std::cerr << "Exception at: parse_self_init_list()" << std::endl;
     std::cerr << "Exception type: " << typeid(exp).name() << std::endl;

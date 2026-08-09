@@ -13,4 +13,4 @@ if command -v setcap &>/dev/null; then
     fi
 fi
 
-exec python3 redirect80.py
+exec python3 redirect80.py "$@"

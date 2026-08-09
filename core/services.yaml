@@ -1,0 +1,87 @@
+# core/services.yaml
+# 声明式服务启动配置（替代 init.txt）
+# 如果本文件存在则优先使用，否则回退 init.txt
+#
+# 字段说明：
+#   name         服务唯一标识（用于日志和未来注册中心）
+#   cmd          启动命令（与 init.txt 每行格式一致）
+#   args         传递给 _run.sh 的命令行参数列表（可选）
+#   env          启动前设置的环境变量（可选）
+#   depends_on   依赖的服务名列表（未来 DAG 拓扑排序用，当前仅记录）
+#   sleep_before 启动前等待秒数（替代散落在 _run.sh 中的 sleep）
+
+services:
+  # --- 数据层（最先启动） ---
+  - name: db2
+    cmd: bash /opt/micro_servers/db2/_run.sh
+    args: []
+    depends_on: []
+    sleep_before: 0
+
+  # --- AI 审核 ---
+  - name: ai_review
+    cmd: bash /opt/micro_servers/ai_review/_run.sh
+    args: []
+    depends_on: [db2]
+    sleep_before: 2
+
+  # --- 文件服务 ---
+  - name: dnfs2
+    cmd: bash /opt/micro_servers/dnfs2/_run.sh
+    args: []
+    depends_on: [db2, ai_review]
+    sleep_before: 0
+
+  # --- 邮件服务 ---
+  - name: smtp
+    cmd: bash /opt/micro_servers/smtp/_run.sh
+    args: []
+    depends_on: []
+    sleep_before: 2
+
+  # --- 前端静态资源 ---
+  - name: fsys
+    cmd: bash /opt/micro_servers/fsys/_run.sh
+    args: []
+    depends_on: []
+    sleep_before: 0
+
+  # --- 安全链路 ---
+  - name: waf
+    cmd: bash /opt/micro_servers/waf/_run.sh
+    args: []           # -c config.yaml 保留在 _run.sh 作为默认值
+    depends_on: [ca, gateway]
+    sleep_before: 0
+
+  - name: ca
+    cmd: bash /opt/micro_servers/ca/_run.sh
+    args: []
+    depends_on: [db2]
+    sleep_before: 2
+
+  - name: gateway
+    cmd: bash /opt/micro_servers/gateway/_run.sh
+    args: []
+    depends_on: [db2]
+    sleep_before: 2
+
+  # --- 验证码 ---
+  - name: captcha2
+    cmd: bash /opt/micro_servers/captcha2/_run.sh
+    args: []
+    depends_on: []
+    sleep_before: 1
+
+  # --- AI 工具箱 ---
+  - name: aibox
+    cmd: bash /opt/micro_servers/aibox/_run.sh
+    args: []
+    depends_on: []
+    sleep_before: 0
+
+  # --- 端口重定向（最后启动） ---
+  - name: redirect80
+    cmd: bash /opt/micro_servers/redirect80/_run.sh
+    args: []
+    depends_on: [waf]
+    sleep_before: 0

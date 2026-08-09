@@ -149,7 +149,7 @@ int main(int argc, char** argv) {
 		("list", "list process all run")					/* 列出运行中的进程 */
 		("kill",   po::value<int>(),         "kill a process")			/* 杀死一个进程 */
 		/********* 子系统服务模式 ********/
-		("init,i", po::value<std::string>(), "self-init list")			/* 输入自启动列表 */
+		("init,i", po::value<std::string>(), "self-init config (dir or .yaml/.txt file)")			/* 输入自启动配置 */
 		("serve",  po::value<int>(),         "Run as http server")		/* 启用http伺服器 */
 		("confs",  po::value<int>(),         "Run embedded confs rpc server");	/* 启用内嵌confs配置服务 */
 

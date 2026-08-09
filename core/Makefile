@@ -4,7 +4,7 @@ APP_NAME := nidus
 
 INSTL_DIRS := /usr/local/bin
 
-CONF_NAME := init.txt
+CONF_NAME := services.yaml
 
 CONF_DIR := /etc/Nidus
 
@@ -17,7 +17,7 @@ CPP:= g++
 INCS:= -I include/
 
 MY_LIBS := -L/usr/lib -lus_th -lus_http -lus_httpclient -lus_msg -lcurl
-LIBS := -lpthread -lssl -lcrypto -lboost_program_options -lboost_json -lboost_thread -lboost_filesystem 
+LIBS := -lpthread -lssl -lcrypto -lboost_program_options -lboost_json -lboost_thread -lboost_filesystem -lyaml-cpp
 
 CPPFLAGS := --std=c++20 -O3 -pipe #-Wall -Werror
 
@@ -26,7 +26,7 @@ $(shell mkdir -p $(BUILD_DIR))
 
 #--------
 all: ${APP_NAME}.out
-${APP_NAME}.out: $(BUILD_DIR)/main.o $(BUILD_DIR)/PPool.o $(BUILD_DIR)/ProcessTask.o $(BUILD_DIR)/HttpTask.o $(BUILD_DIR)/ConfsTask.o $(BUILD_DIR)/Tttask.o $(BUILD_DIR)/pmc_mtd.o $(BUILD_DIR)/subsys_call.o
+${APP_NAME}.out: $(BUILD_DIR)/main.o $(BUILD_DIR)/PPool.o $(BUILD_DIR)/ProcessTask.o $(BUILD_DIR)/HttpTask.o $(BUILD_DIR)/ConfsTask.o $(BUILD_DIR)/Tttask.o $(BUILD_DIR)/pmc_mtd.o $(BUILD_DIR)/subsys_call.o $(BUILD_DIR)/InitParser.o
 	$(CPP) $^ $(MY_LIBS) $(LIBS) -o $@
 
 $(BUILD_DIR)/main.o:  src/main.cpp
@@ -53,6 +53,9 @@ $(BUILD_DIR)/pmc_mtd.o: src/main/pmc_mtd.cpp
 $(BUILD_DIR)/subsys_call.o: src/main/subsys_call.cpp
 	$(CPP) $(CPPFLAGS) -c $^ $(INCS) -o $@
 
+$(BUILD_DIR)/InitParser.o: src/registry/InitParser.cpp
+	$(CPP) $(CPPFLAGS) -c $^ $(INCS) -o $@
+
 
 
 install: $(APP_NAME).out
@@ -65,6 +68,7 @@ install: $(APP_NAME).out
 	@echo "正在配置 $(APP_NAME)"
 	@mkdir -p $(CONF_DIR)
 	@cp $(CONF_NAME) $(CONF_DIR)/$(CONF_NAME)
+	@cp init.txt $(CONF_DIR)/init.txt
 	@cp $(SRV_NAME) $(SRV_DIR)/$(SRV_NAME)
 	@systemctl daemon-reload
 	@systemctl enable $(SRV_NAME)
@@ -77,6 +81,7 @@ uninstall:
 	@
 	@rm -f $(INSTL_DIRS)/$(APP_NAME)
 	@rm -f $(CONF_DIRS)/$(CONF_NAME)
+	@rm -f $(CONF_DIRS)/init.txt
 	@rm -f -d ${CONF_DIRS}
 	@
 	@systemctl stop $(SRV_NAME)
