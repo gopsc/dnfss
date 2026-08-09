@@ -100,3 +100,23 @@
 
 ### 中期
 - [ ] 考虑替换为 Redis 存储支持水平扩展（当前单实例足够）
+
+---
+
+## C++20 重写
+
+2026-08-09，captcha 模块已完成 C++20 重写（`captcha2/`），使用 FreeType + stb_image_write
+替代 Pillow，协议完全兼容，gateway 零改动。
+
+- 重写审计报告： [captcha2_SECURITY_AUDIT_20260809.md](captcha2_SECURITY_AUDIT_20260809.md)
+- 开发方案文档： [../reports/captcha_cpp_rewrite_dev_doc.md](../reports/captcha_cpp_rewrite_dev_doc.md)
+- `core/init.txt` 已切换为 `captcha2/_run.sh`
+
+本报告中的遗留问题在 C++ 版中的状态：
+
+| 原审计项 | C++ 版状态 |
+|----------|-----------|
+| P1-1 存储容量上限 | ✅ 继承（max_store=10000） |
+| P2-1 Redis 水平扩展 | ❌ 未实现（单实例） |
+| NEW-1 答案非安全随机 | ❌ mt19937（同源问题，C++ 审计 P2-1） |
+| NEW-2 生成速率限制 | ⚠️ 已实现但为全局桶（C++ 审计 P1-1） |

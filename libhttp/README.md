@@ -300,6 +300,7 @@ using WebSocketClientBase = HttpClient;
 
 ## Version History
 
+- **v3.4.4**: 进程退出稳定性修复（配合 gateway v0.8.0）。Listener 新增 `close()` 公开方法（显式关闭 acceptor 停止接受新连接）；修复 `doAccept()` 在 acceptor 关闭或 `operation_aborted` 错误后无条件递归调用自身导致 CPU 100% 空转的 bug；`HttpServer::stop()` 改进关闭顺序（先关 acceptor → 清空 WS 客户端 → 停 io_context → 等 worker 线程退出 → 重置 listener），分步输出日志便于排障。
 - **v3.4.3**: WebSocket 发送/代理队列上限（P1-6）。新增 `setMaxWsQueueSize()`（默认 1000）；`wsSend` / `onProxyReadClient` / `onProxyReadBackend` 入队前检查，超限判定慢消费者并关闭连接，防止无界队列内存耗尽。
 - **v3.4.2**: 服务器读超时防 Slowloris（P1-4）。新增 `setHeaderTimeout()`（默认 10s）/`setReadTimeout()`（默认 30s）；`doRead` 两阶段读（`async_read_header` 头超时 → `async_read` 体超时），`doSSLHandshake` 覆盖握手超时，`doWsRead` 设 WS 空闲超时，对齐 WAF ReadHeaderTimeout/ReadTimeout。
 - **v3.4.1**: WebSocket 单条消息大小限制（P1-3）。新增 `setMaxWsMessageSize()`/`getMaxWsMessageSize()`（默认 16MB，与 Beast 默认一致），服务端 `doWsUpgrade`/`doWssUpgrade` 与代理 `onProxyConnect`/`onProxySslHandshake` 创建流后调用 `read_message_max()`，超限消息由 Beast 在分配内存前拒绝并关闭连接，防 OOM。

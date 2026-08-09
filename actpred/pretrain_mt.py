@@ -1,0 +1,282 @@
+"""actpred 预训练入口：从 .mt 脚本学习动作动力学（无需图像）
+
+用法:
+    bash _run.sh pretrain --mt-dir ../bot4cj/scripts --epochs 200
+
+流程:
+    1. 解析 .mt 文件中的 @Action 矩阵 → 动作序列
+    2. 滑动窗口采样: action_history[H] → target action（下一行）
+    3. 用零图像占位训练完整 ActionPredictor（保持 checkpoint 兼容性）
+    4. 保存 checkpoint，格式与 train.py 一致，可直接用于推理或微调
+
+数据增强:
+    --noise-std 控制高斯噪声标准差。因 .mt 脚本数据量有限，
+    适度噪声（如 0.5~2.0）可有效防止过拟合。
+"""
+
+import json
+import os
+import random
+
+import numpy as np
+import torch
+from torch.utils.data import Dataset, DataLoader
+from tqdm import tqdm
+
+from config import Config, build_argparser, apply_overrides, validate_config_values
+from model import ActionPredictor
+from mt_parser import parse_mt_directory
+
+
+class MTActionDataset(Dataset):
+    """从 .mt @Action 矩阵构建的滑动窗口数据集（无图像）
+
+    每个样本: (action_history[history_len, action_dim], target[action_dim])
+    """
+
+    def __init__(self, mt_dir: str, history_len: int, action_dim: int,
+                 file_indices: list = None, files: list = None):
+        self.history_len = history_len
+        self.action_dim = action_dim
+        self.samples = []
+
+        # 复用调用方已解析的结果（避免 train/val 各自重复解析同一目录）
+        all_files = files if files is not None else parse_mt_directory(mt_dir)
+        if file_indices is not None:
+            all_files = [all_files[i] for i in file_indices]
+
+        for path, matrix in all_files:
+            n_cols = matrix.shape[1]
+            if n_cols < action_dim:
+                matrix = np.pad(
+                    matrix,
+                    ((0, 0), (0, action_dim - n_cols)),
+                    mode="constant",
+                )
+            elif n_cols > action_dim:
+                matrix = matrix[:, :action_dim]
+
+            for i in range(len(matrix) - history_len):
+                history = matrix[i : i + history_len]
+                target = matrix[i + history_len]
+                self.samples.append((history.copy(), target.copy()))
+
+        print(f"MTActionDataset: {len(self.samples)} samples "
+              f"from {len(all_files)} files "
+              f"(history_len={history_len}, action_dim={action_dim})")
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        history, target = self.samples[idx]
+        return {
+            "action_history": torch.from_numpy(history.copy()),
+            "target": torch.from_numpy(target.copy()),
+        }
+
+
+def pretrain_one_epoch(model, loader, optimizer, device, image_size,
+                       max_grad_norm=None, noise_std=0.0):
+    model.train()
+    total_loss = 0.0
+    count = 0
+    zero_image = None
+    for batch in tqdm(loader, desc="  pretrain", leave=False):
+        history = batch["action_history"].to(device)
+        target = batch["target"].to(device)
+        if noise_std > 0:
+            history = history + torch.randn_like(history) * noise_std
+            target = target + torch.randn_like(target) * noise_std
+        if zero_image is None or zero_image.size(0) != history.size(0):
+            zero_image = torch.zeros(
+                history.size(0), 3, image_size, image_size, device=device
+            )
+        optimizer.zero_grad()
+        pred = model(zero_image, history)
+        loss = torch.nn.functional.mse_loss(pred, target)
+        loss.backward()
+        if max_grad_norm:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+        optimizer.step()
+        total_loss += loss.item() * history.size(0)
+        count += history.size(0)
+    return total_loss / max(count, 1)
+
+
+@torch.no_grad()
+def validate(model, loader, device, image_size):
+    model.eval()
+    total_loss = 0.0
+    count = 0
+    zero_image = None
+    for batch in tqdm(loader, desc="  val  ", leave=False):
+        history = batch["action_history"].to(device)
+        target = batch["target"].to(device)
+        if zero_image is None or zero_image.size(0) != history.size(0):
+            zero_image = torch.zeros(
+                history.size(0), 3, image_size, image_size, device=device
+            )
+        pred = model(zero_image, history)
+        loss = torch.nn.functional.mse_loss(pred, target)
+        total_loss += loss.item() * history.size(0)
+        count += history.size(0)
+    if count == 0:
+        return float("inf")
+    return total_loss / count
+
+
+def main():
+    parser = build_argparser("actpred pre-training from .mt scripts")
+    parser.add_argument("--mt-dir", type=str, required=True,
+                        help=".mt 脚本目录（如 ../bot4cj/scripts）")
+    parser.add_argument("--noise-std", type=float, default=0.0,
+                        help="高斯噪声标准差（数据增强，建议 0.5~2.0）")
+    args = parser.parse_args()
+
+    cfg = apply_overrides(Config(), args)
+    validate_config_values(cfg.data, cfg.model, cfg.train)
+    cfg.data.data_dir = args.mt_dir
+
+    os.makedirs(cfg.train.checkpoint_dir, exist_ok=True)
+
+    random.seed(cfg.train.seed)
+    np.random.seed(cfg.train.seed)
+    torch.manual_seed(cfg.train.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(cfg.train.seed)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
+
+    # 按文件级划分 train/val，避免滑动窗口样本重叠导致的数据泄漏
+    all_files = parse_mt_directory(args.mt_dir)
+    if len(all_files) == 0:
+        raise ValueError(
+            f"数据集为空。请检查 mt-dir={args.mt_dir} "
+            f"及 .mt 文件中 @Action 行数 > history_len={cfg.data.history_len}"
+        )
+
+    n_files = len(all_files)
+    file_indices = list(range(n_files))
+    rng = np.random.RandomState(cfg.train.seed)
+    rng.shuffle(file_indices)
+    val_file_count = max(1, int(n_files * cfg.train.val_split))
+    val_file_indices = file_indices[:val_file_count]
+    train_file_indices = file_indices[val_file_count:]
+
+    train_ds = MTActionDataset(
+        args.mt_dir, cfg.data.history_len, cfg.data.action_dim,
+        file_indices=train_file_indices, files=all_files,
+    )
+    val_ds = MTActionDataset(
+        args.mt_dir, cfg.data.history_len, cfg.data.action_dim,
+        file_indices=val_file_indices, files=all_files,
+    )
+
+    print(f"Files: {len(train_file_indices)} train, {len(val_file_indices)} val")
+    print(f"Samples: {len(train_ds)} train, {len(val_ds)} val")
+    if len(train_ds) == 0:
+        raise ValueError("训练集为空（样本数不足）")
+    if len(val_ds) == 0:
+        print("WARNING: 验证集为空，模型选择禁用")
+
+    loader_gen = torch.Generator()
+    loader_gen.manual_seed(cfg.train.seed)
+    train_loader = DataLoader(
+        train_ds, batch_size=cfg.train.batch_size,
+        shuffle=True, num_workers=cfg.train.num_workers,
+        generator=loader_gen,
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=cfg.train.batch_size,
+        shuffle=False, num_workers=cfg.train.num_workers,
+    )
+
+    model = ActionPredictor(cfg.model, cfg.data, pretrained=False).to(device)
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"Model params: {n_params:,}")
+    print(f"Config: action_dim={cfg.data.action_dim}, "
+          f"history_len={cfg.data.history_len}, "
+          f"backbone={cfg.model.cnn_backbone}, "
+          f"encoder={cfg.model.history_encoder}")
+    print(f"Pre-training: noise_std={args.noise_std}")
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=cfg.train.lr,
+        weight_decay=cfg.train.weight_decay,
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=cfg.train.epochs
+    )
+
+    best_val_loss = float("inf")
+    patience_counter = 0
+    best_path = os.path.join(cfg.train.checkpoint_dir, "pretrain_best.pt")
+    inference_path = os.path.join(
+        cfg.train.checkpoint_dir, "pretrain_best_inference.pt"
+    )
+
+    for epoch in range(1, cfg.train.epochs + 1):
+        print(f"\nEpoch {epoch}/{cfg.train.epochs}  "
+              f"lr={optimizer.param_groups[0]['lr']:.6f}")
+        train_loss = pretrain_one_epoch(
+            model, train_loader, optimizer, device,
+            cfg.data.image_size, cfg.train.max_grad_norm, args.noise_std,
+        )
+        val_loss = validate(model, val_loader, device, cfg.data.image_size)
+        scheduler.step()
+        print(f"  train_loss={train_loss:.6f}  val_loss={val_loss:.6f}")
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "val_loss": val_loss,
+                    "config": cfg.to_dict(),
+                },
+                best_path,
+            )
+            torch.save(
+                {
+                    "model_state_dict": model.state_dict(),
+                    "config": cfg.to_dict(),
+                },
+                inference_path,
+            )
+            print(f"  -> saved best (val_loss={val_loss:.6f})")
+        else:
+            patience_counter += 1
+            if patience_counter >= cfg.train.patience:
+                print(f"\nEarly stopping at epoch {epoch} "
+                      f"(patience={cfg.train.patience})")
+                break
+
+    print(f"\nPre-training done. Best val_loss={best_val_loss:.6f}")
+
+    if best_val_loss == float("inf"):
+        torch.save(
+            {
+                "model_state_dict": model.state_dict(),
+                "config": cfg.to_dict(),
+            },
+            inference_path,
+        )
+        print("WARNING: saved final weights (no valid validation loss)")
+    else:
+        print(f"Best pre-trained model: {inference_path}")
+        print("Fine-tune: bash _run.sh train --data-dir ./data "
+              f"--init-from {inference_path}")
+
+    if args.save_config:
+        with open(args.save_config, "w") as f:
+            json.dump(cfg.to_dict(), f, indent=2, ensure_ascii=False)
+        print(f"Config saved to: {args.save_config}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,4 +1,4 @@
-VERSION := 0.0.1
+VERSION := 0.0.2
 FRAMEWORK_NAME := us
 LIB_NAME := libus_crypt
 INSTL_TDIR := /lib

@@ -1,6 +1,6 @@
 import argparse
 import torch
-from config import DataConfig, ModelConfig
+from config import parse_checkpoint_config
 from model import ActionPredictor
 
 
@@ -11,19 +11,16 @@ def main():
     args = parser.parse_args()
 
     checkpoint = torch.load(args.model, map_location="cpu", weights_only=True)
-    cfg_dict = checkpoint["config"]
-    data_cfg = DataConfig(**cfg_dict["data"])
-    model_cfg = ModelConfig(**cfg_dict["model"])
+    cfg = parse_checkpoint_config(checkpoint["config"])
+    data_cfg = cfg.data
+    model_cfg = cfg.model
 
-    model = ActionPredictor(model_cfg, data_cfg)
+    model = ActionPredictor(model_cfg, data_cfg, pretrained=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
     dummy_image = torch.randn(1, 3, data_cfg.image_size, data_cfg.image_size)
-    if model_cfg.history_encoder == "gru":
-        dummy_history = torch.randn(1, data_cfg.history_len, data_cfg.action_dim)
-    else:
-        dummy_history = torch.randn(1, data_cfg.history_len, data_cfg.action_dim)
+    dummy_history = torch.randn(1, data_cfg.history_len, data_cfg.action_dim)
 
     torch.onnx.export(
         model, (dummy_image, dummy_history),
@@ -38,6 +35,21 @@ def main():
         opset_version=17,
     )
     print(f"ONNX model exported to: {args.output}")
+
+    # 可选：验证导出的 ONNX 模型一致性
+    try:
+        import onnxruntime as ort
+        import numpy as np
+        sess = ort.InferenceSession(args.output)
+        img_np = dummy_image.numpy()
+        hist_np = dummy_history.numpy()
+        ort_out = sess.run(None, {"image": img_np, "action_history": hist_np})[0]
+        with torch.no_grad():
+            torch_out = model(dummy_image, dummy_history).numpy()
+        max_diff = np.abs(ort_out - torch_out).max()
+        print(f"ONNX 一致性验证通过（最大差异: {max_diff:.6e}）")
+    except ImportError:
+        print("提示: 安装 onnxruntime 可验证导出模型一致性 (pip install onnxruntime)")
 
 
 if __name__ == "__main__":

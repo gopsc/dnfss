@@ -34,9 +34,11 @@ qing::Crypto_Basic          (基类: bytes_to_hex / hex_to_bytes / CRYPTO_CHECK)
 
 ### AES_CBC — AES-256-CBC 对称加密
 
+> ⚠️ **CBC 模式存在结构性安全缺陷**（无完整性保护、Padding Oracle、IV 重用风险）。详见 [CBC 迁移开发文档](../docs/reports/libcrypt_CBC_deprecation_dev_doc.md)。新代码建议使用 AES-GCM（待实现），现有 `AES_CBC` 保留以兼容存量代码。
+
 ```cpp
 AES_CBC aes;                           // 自动生成随机 32B 密钥 + 16B IV
-AES_CBC aes(key_vec, iv_vec);          // 使用外部密钥和 IV
+AES_CBC aes(key_vec, iv_vec);          // 使用外部密钥和 IV（校验 32B 密钥 + 16B IV）
 std::string hex = aes.encrypt(text);   // 加密，返回 hex 密文
 std::string raw = aes.decrypt(hex);    // 解密 hex 密文，返回原文
 std::string k = aes.get_key();         // 获取密钥（hex）
@@ -44,6 +46,8 @@ std::string v = aes.get_iv();          // 获取 IV（hex）
 ```
 
 加密输出为 hex 编码的密文，非原始字节。解密接受 hex 输入，返回原始字符串。
+
+参数化构造函数会校验密钥长度（必须 32 字节）和 IV 长度（必须 16 字节），不匹配时抛出 `std::runtime_error`。
 
 ### Base64 — Base64 编解码
 
@@ -56,7 +60,7 @@ std::string v = aes.get_iv();          // 获取 IV（hex）
 | `decode_to_bytes(b64)` | 解码为字节向量 |
 | `base64_encode(str)` (static) | 静态编码工具 |
 | `base64_decode_to_string(b64)` (static) | 静态解码工具 |
-| `is_valid_base64(str)` (static) | 验证字符集合法性（不依赖 OpenSSL） |
+| `is_valid_base64(str)` (static) | 验证格式合法性：字符集 + 长度为 4 的倍数 + `=` 填充规则（不依赖 OpenSSL） |
 
 编码不添加换行符（`BIO_FLAGS_BASE64_NO_NL`）。
 
@@ -66,7 +70,7 @@ std::string v = aes.get_iv();          // 获取 IV（hex）
 SHA256 h;
 std::string hex = h.hash("hello");           // 字符串 → hex 哈希
 auto bytes = h.hash_bytes("hello");          // 字符串 → 字节哈希
-bool ok = h.verify("hello", expected_hex);   // 验证
+bool ok = h.verify("hello", expected_hex);   // 验证（常量时间比较，防时序侧信道）
 
 // 静态快捷方式
 std::string h = SHA256::sha256("hello");
@@ -80,7 +84,7 @@ std::string h = SHA256::sha256("hello");
 MyRSA::Generator gen;
 gen.save_pri_key("private.pem", "password");  // PKCS#8 + AES-256-CBC 加密
 gen.save_pub_key("public.pem");               // SubjectPublicKeyInfo
-std::string pem = gen.get_public_key_pem();    // 导出 PEM 字符串
+std::string pem = gen.get_public_key_pem();    // 导出 PEM 字符串（失败时抛出 CryptoExp）
 ```
 
 **Private_Key** — 加载私钥（支持 PKCS#1/PKCS#8，加密或明文）。
@@ -193,6 +197,17 @@ libcrypt/
 - **AES 密钥和 IV**：默认构造函数随机生成，每次创建 `AES_CBC` 对象产生不同的密钥对。需要长期存储密钥时使用参数化构造函数传入外部密钥。
 - **hex 编码**：`bytes_to_hex` 使用查表法实现，位于 `Crypto_Basic.cpp` 中编译进 `.so`。`SHA256` 不再有私有副本。
 - **`Private_Key` 私有继承**：该设计防止 `Private_Key` 被隐式转换为 `Crypto_Basic*`，是刻意为之的安全措施。
+
+## 变更记录
+
+### v0.0.2 — 安全加固（2026-08-08）
+
+| 文件 | 变更 |
+|------|------|
+| AES_CBC.hpp | 添加 `#pragma once`；`EVP_CIPHER_CTX` 改为 RAII（`EVP_CIPHER_CTX_ptr`），消除异常路径内存泄漏；构造函数校验密钥 32B / IV 16B；参数改为 `const&`；`encrypt`/`decrypt` 参数改为 `const std::string&`；`EVP_EncryptUpdate` 入参 `static_cast<int>` 防 size_t 截断；移除 `print_bytes` 调试方法 |
+| SHA256.hpp | `EVP_MD_CTX` 改为 RAII（`EVP_MD_CTX_ptr_sha`）；`verify()` 改用 `CRYPTO_memcmp` 常量时间比较，防时序侧信道攻击；移除 `print_hash` 调试方法 |
+| Base64.hpp | 添加 `#pragma once`；`BIO*` 改为 RAII（`BIO_ptr_b64`）；`is_valid_base64` 增强校验（长度为 4 的倍数 + `=` 仅末尾且 ≤2 个）；移除 `print_encoded`/`print_decoded` 调试方法 |
+| MyRSA.hpp | `Generator` 构造函数校验密钥非空，失败抛出 `CryptoExp`；`key_to_pem` 失败时抛出异常而非返回空字符串；提取共享 `password_callback` 静态方法，消除两处重复 lambda |
 
 ## 许可证
 

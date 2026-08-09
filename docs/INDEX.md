@@ -7,9 +7,9 @@
 ```
 docs/
 ├── INDEX.md                              # 本文件（文档总索引）
-├── security/                             # 安全审计与加固相关
-├── reviews/                              # 代码审查日志
-└── reports/                              # 其他分析报告
+├── security/                             # 安全审计与加固（28 篇）
+├── reviews/                              # 代码审查日志（4 篇）
+└── reports/                              # 分析报告与开发规划（11 篇）
 ```
 
 ---
@@ -19,7 +19,6 @@ docs/
 | 文档 | 路径 | 说明 |
 |------|------|------|
 | 项目 README | [../README.md](../README.md) | 架构总览、服务说明、安装运行指南 |
-| 更新日志 | [../CHANGELOG.md](../CHANGELOG.md) | 版本变更记录、安全修复、功能更新 |
 
 ---
 
@@ -45,15 +44,22 @@ docs/
 | db2 | [db2_SECURITY_AUDIT_20260806.md](security/db2_SECURITY_AUDIT_20260806.md) | C++20 数据库 RPC 服务（db 的 C++ 重实现，SQLite C API） |
 | pymsg | [pymsg_SECURITY_AUDIT_20260801.md](security/pymsg_SECURITY_AUDIT_20260801.md) | Python RPC 基础库（长度前缀帧、MsgClient/Server） |
 | dnfs | [dnfs_SECURITY_AUDIT_20260801.md](security/dnfs_SECURITY_AUDIT_20260801.md) | Python 树状菜单服务 |
+| dnfs2 | [dnfs2_SECURITY_AUDIT_20260808.md](security/dnfs2_SECURITY_AUDIT_20260808.md) | C++20 树状菜单服务（dnfs 重实现） |
 | static | [static_SECURITY_AUDIT_20260801.md](security/static_SECURITY_AUDIT_20260801.md) | Python 前端托管/文件服务 |
+| fsys | [fsys_SECURITY_AUDIT_20260808.md](security/fsys_SECURITY_AUDIT_20260808.md) | Python 文件系统服务 |
 | ai_review | [ai_review_SECURITY_AUDIT_20260801.md](security/ai_review_SECURITY_AUDIT_20260801.md) | Python AI 内容审核（DeepSeek + RAG） |
-| smtp | [smtp_SECURITY_AUDIT_20260801.md](security/smtp_SECURITY_AUDIT_20260801.md) | Python 邮件服务（验证码发送/校验） |
+| smtp | [smtp_SECURITY_AUDIT_20260801.md](security/smtp_SECURITY_AUDIT_20260801.md) | Python 邮件服务（验证码发送/校验）初版 + 0809 复审合并版 |
+| smtp3 | [smtp3_SECURITY_AUDIT_20260809.md](security/smtp3_SECURITY_AUDIT_20260809.md) | C++20 邮件服务（smtp 重写），2 项 P0 + P1-2 + 全部 P3 当日已修复，仅剩 P1-1（TLS 校验）待修 |
 | captcha | [captcha_SECURITY_AUDIT_20260801.md](security/captcha_SECURITY_AUDIT_20260801.md) | Python 验证码服务 |
+| captcha2 | [captcha2_SECURITY_AUDIT_20260809.md](security/captcha2_SECURITY_AUDIT_20260809.md) | C++20 验证码服务（captcha 重写，FreeType + stb，含 P0 大小写缺陷发现） |
 | confs | [confs_SECURITY_AUDIT_20260801.md](security/confs_SECURITY_AUDIT_20260801.md) | Python 统一配置服务 |
 | libmsg | [libmsg_SECURITY_AUDIT_20260806.md](security/libmsg_SECURITY_AUDIT_20260806.md) | C++ RPC 基础库（pymsg 协议帧、MsgClient/Server、RpcClient/Server） |
 | libhttp | [libhttp_SECURITY_AUDIT_20260803.md](security/libhttp_SECURITY_AUDIT_20260803.md) | C++ HTTP/WebSocket 库（请求/响应/WS/静态文件） |
+| libsqlite3 | [libsqlite3_SECURITY_AUDIT_20260806.md](security/libsqlite3_SECURITY_AUDIT_20260806.md) | C++ SQLite3 封装（Header-only） |
+| libth | [libth_SECURITY_AUDIT_20260804.md](security/libth_SECURITY_AUDIT_20260804.md) | C++ 线程库（Thread、Cv_wait、Fsm） |
 | aibox | [aibox_SECURITY_AUDIT_20260801.md](security/aibox_SECURITY_AUDIT_20260801.md) | Python AI 智能体系统（WebSocket） |
 | BotOps | [BotOps_SECURITY_AUDIT_20260801.md](security/BotOps_SECURITY_AUDIT_20260801.md) | BotOps 运维控制面板 |
+| actpred | [actpred_SECURITY_AUDIT_20260808.md](security/actpred_SECURITY_AUDIT_20260808.md) | Python 动作预测模块（PyTorch 训练/推理、.mt 解析、ONNX 导出） |
 
 ---
 
@@ -63,15 +69,27 @@ docs/
 |------|------|
 | [core_CODE_REVIEW_LOG_20260730.md](reviews/core_CODE_REVIEW_LOG_20260730.md) | Core 模块代码审查日志（2026-07-30，自动化审查） |
 | [DEPLOY_DEFECT_AUDIT_20260806.md](reviews/DEPLOY_DEFECT_AUDIT_20260806.md) | 部署缺陷审查（2026-08-06，首次原生部署实录，含修复记录） |
+| [actpred_CODE_AUDIT_20260808.md](reviews/actpred_CODE_AUDIT_20260808.md) | actpred 模块代码审计（2026-08-08，两轮合并：第 1 轮 16 项 + 第 2 轮复审 11 项，共 27 项全部修复） |
+| [bot4cj_CODE_AUDIT_20260808.md](reviews/bot4cj_CODE_AUDIT_20260808.md) | bot4cj 模块代码审计（2026-08-08，仓颉机器人硬件脚本解析器，15 项发现，待修复） |
 
 ---
 
-## 四、分析报告 (`reports/`)
+## 四、分析报告与开发规划 (`reports/`)
 
 | 文档 | 说明 |
 |------|------|
+| [blackbird_research_report.md](reports/blackbird_research_report.md) | blackbird 项目研究报告（安全架构分析、改进建议、里程碑规划） |
+| [core_service_registry_dev_doc.md](reports/core_service_registry_dev_doc.md) | Core 模块注册中心功能扩展开发文档（服务注册/发现/健康守护/自动重启） |
+| [auth_service_plan.md](reports/auth_service_plan.md) | 权限系统独立化计划书（认证授权从 gateway 拆分为独立服务） |
+| [aibox_open_dev_plan.md](reports/aibox_open_dev_plan.md) | aibox 开放版开发计划（命令注入漏洞修复、安全沙箱方案） |
+| [aibox_file_network_cli_refactor.md](reports/aibox_file_network_cli_refactor.md) | aibox 文件/网络操作命令行化重构计划 |
+| [blackbird_promo_full.md](reports/blackbird_promo_full.md) | blackbird 项目完整版宣传文案 |
 | [bot4cj_analysis_20260525_00.md](reports/bot4cj_analysis_20260525_00.md) | bot4cj 机器人模块分析报告（Markdown） |
+| [libcrypt_CBC_deprecation_dev_doc.md](reports/libcrypt_CBC_deprecation_dev_doc.md) | libcrypt CBC 模式缺陷分析与 AES-GCM 迁移开发文档 |
 | [bot4cj_analysis_20260525_00.html](reports/bot4cj_analysis_20260525_00.html) | bot4cj 机器人模块分析报告（HTML） |
+| [actpred_pretrain_test_20260808.md](reports/actpred_pretrain_test_20260808.md) | actpred 预训练与推理测试报告（action_dim=18 变更、.mt 解析器、预训练、推理基准、NPU 调研） |
+| [captcha_cpp_rewrite_dev_doc.md](reports/captcha_cpp_rewrite_dev_doc.md) | captcha 模块 C++20 重写开发方案（FreeType + stb_image_write 替代 Pillow，协议兼容零改动） |
+| [smtp_cpp_rewrite_dev_doc.md](reports/smtp_cpp_rewrite_dev_doc.md) | smtp 模块 C++20 重写开发方案（SMTP_SSL 客户端手写，审计 7 项遗留一并在重写中修复，零新增系统依赖） |
 
 ---
 
@@ -91,6 +109,7 @@ docs/
 | confs | [../confs/README.md](../confs/README.md) | 统一配置服务 |
 | static | [../static/README.md](../static/README.md) | 前端托管服务 |
 | dnfs | [../dnfs/README.md](../dnfs/README.md) | 树状网络文件系统 |
+| dnfs2 | [../dnfs2/README.md](../dnfs2/README.md) | C++20 树状菜单服务（dnfs 重实现） |
 | ai_review | [../ai_review/README.md](../ai_review/README.md) | AI 内容审核 |
 | captcha | [../captcha/README.md](../captcha/README.md) | 验证码服务 |
 | smtp | [../smtp/README.md](../smtp/README.md) | 邮件服务 |
@@ -105,6 +124,8 @@ docs/
 | libcrypt | [../libcrypt/README.md](../libcrypt/README.md) | C++ 加密库 |
 | libth | [../libth/README.md](../libth/README.md) | C++ 线程库 |
 | libsqlite3 | [../libsqlite3/README.md](../libsqlite3/README.md) | C++ SQLite3 封装 |
+| libmsg | [../libmsg/README.md](../libmsg/README.md) | C++ RPC 基础库（pymsg 协议 C++ 实现） |
+| libtry | [../libtry/](../libtry/) | 嵌入式脚本解释器 |
 
 ### 其他模块
 
@@ -112,8 +133,10 @@ docs/
 |------|------|------|
 | aibox | [../aibox/README.md](../aibox/README.md) | AI 智能体系统 |
 | bot4cj | [../bot4cj/README.md](../bot4cj/README.md) | 机器人硬件脚本解析器（仓颉） |
-| BotOps | [../BotOps/README.md](../BotOps/README.md) | 运维控制面板 |
-| lci | [../lci/README.md](../lci/README.md) | LCI 交互式终端框架 |
+| BotOps | [../BotOps/README.md](../BotOps/README.md) | aibox 智能体 TUI 前端（Textual） |
+| actpred | [../actpred/README.md](../actpred/README.md) | 动作预测神经网络（PyTorch） |
+| lci | [../lci/README.md](../lci/README.md) | 嵌入式帧缓冲图形界面 |
+| fsys | [../fsys/README.md](../fsys/README.md) | 文件系统服务 |
 | tests | [../tests/blackbox/README.md](../tests/blackbox/README.md) | 黑盒测试套件 |
 
 ### Robot 文档 (README.robot.md)

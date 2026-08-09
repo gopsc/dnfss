@@ -84,7 +84,7 @@
 - 极客操作：`kill -HUP <pid>` 热加载规则；`waf -list` 列规则；`waf -test <file>` 校验语法；`waf -check "<input>"` 测试单条输入。
 - 配置见 [waf/config.yaml](waf/config.yaml)，详见 [waf/README.md](waf/README.md)。
 
-### gateway（应用层网关 · v0.5.3）
+### gateway（应用层网关 · v0.8.0）
 
 - 内部 HTTP 服务，默认监听 127.0.0.1:8443，不再承载 TLS（TLS 已由 WAF 终止）。
 - 通过 `Server.tls = on/off` 配置切换 HTTPS/HTTP 模式（[example.ini](gateway/example.ini)），独立部署时仍可启用 TLS。

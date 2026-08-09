@@ -420,6 +420,7 @@ static RateLimiter				_EMAIL_CODE_RATE;	// 发送邮箱验证码 IP 级限流
 static RateLimiter				_REFRESH_TOKEN_RATE;	// Token 刷新限流
 static RateLimiter				_RESET_PASSWORD_RATE;	// 重置密码 IP 级限流
 static RateLimiter				_RESET_CODE_RATE;	// 发送重置密码验证码 IP 级限流
+static RateLimiter				_CAPTCHA_IMAGE_RATE;	// 获取验证码图片 IP 级限流（防全局 DoS，P1-1）
 // 邮箱级双窗口限流:同一邮箱在 gateway 层的发送配额。
 // 配合 IP 限流(IP 可被代理池绕过)与 smtp 同邮箱 60s 冷却(仅防短期重复)。
 // 双窗口设计:小时窗限制短期轰炸,天窗限制长期骚扰。
@@ -1849,6 +1850,16 @@ http::response<http::string_body> handleCaptchaImage(
 	http::response<http::string_body> res;
 	res.version(req.version());
 
+	/* IP 级速率限制（P1-1 修复）：单 IP 每分钟最多 10 次，
+	   防止单一攻击者打满全局限流导致全站验证码不可用 */
+	std::string client_ip = "direct";
+	auto it_host = req.base().find("X-Forwarded-For");
+	if (it_host != req.base().end())
+		client_ip = std::string(it_host->value());
+	if (!_CAPTCHA_IMAGE_RATE.check_and_record(client_ip, 10, 60))
+		THROW_EX_CUSTOM(HttpException, 2403,
+			"Too many captcha requests. Please try again later.", 429, "/captcha/image");
+
 	/* 调 captcha 服务（pymsg/TCP），连接失败/超时视为 502 */
 	pmc::net::MsgClient client(_CAPTCHA_HOST, _CAPTCHA_PORT, "gateway");
 	std::string resp;
@@ -1864,8 +1875,15 @@ http::response<http::string_body> handleCaptchaImage(
 	try {
 		auto jv = json::parse(resp);
 		auto& obj = jv.as_object();
-		if (!obj.at("success").as_bool())
+		if (!obj.at("success").as_bool()) {
+			// P3-5: 依据 error 信息映射准确 HTTP 状态码
+			std::string err_msg = json::value_to<std::string>(obj.at("error"));
+			if (err_msg.find("rate_limit") != std::string::npos)
+				THROW_EX_CUSTOM(HttpException, 2401, "Too many captcha requests", 429, "/captcha/image");
+			if (err_msg.find("store") != std::string::npos || err_msg.find("full") != std::string::npos)
+				THROW_EX_CUSTOM(HttpException, 2401, "Captcha service overloaded", 503, "/captcha/image");
 			THROW_EX_CUSTOM(HttpException, 2401, "Captcha service error", 502, "/captcha/image");
+		}
 		auto& data = obj.at("data").as_object();
 		token = json::value_to<std::string>(data.at("token"));
 		auto image_b64 = json::value_to<std::string>(data.at("image"));

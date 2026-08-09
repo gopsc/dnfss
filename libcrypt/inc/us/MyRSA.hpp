@@ -51,6 +51,7 @@ namespace qing {
         public:
             Generator() {
                 key = generate_rsa_key();
+                if (!key) throw Crypto_Basic::CryptoExp("RSA 密钥对生成失败");
             }
 
             // 保存私钥为 PKCS#8 格式（AES-256-CBC 加密），支持密码保护
@@ -153,7 +154,7 @@ namespace qing {
                 BIO_ptr bio(BIO_new(BIO_s_mem()));
                 if (!bio) {
                     HANDLE_SSL_ERROR();
-                    return "";
+                    throw Crypto_Basic::CryptoExp("导出 PEM 时无法创建 BIO");
                 }
 
                 int ret;
@@ -169,7 +170,7 @@ namespace qing {
 
                 if (ret != 1) {
                     HANDLE_SSL_ERROR();
-                    return "";
+                    throw Crypto_Basic::CryptoExp("导出 PEM 失败");
                 }
 
                 char* data;
@@ -246,18 +247,7 @@ namespace qing {
                     return nullptr;
                 }
 
-                pem_password_cb* cb = nullptr;
-                if (password) {
-                    cb = [](char* buf, int size, int rwflag, void* u) -> int {
-                        if (!u) return 0;
-                        const char* pass = (const char*)u;
-                        int len = strlen(pass);
-                        if (len > size) len = size;
-                        memcpy(buf, pass, len);
-                        return len;
-                    };
-                }
-
+                pem_password_cb* cb = password ? &password_callback : nullptr;
                 EVP_PKEY* pkey = PEM_read_bio_PrivateKey(bio.get(), nullptr, cb, (void*)password);
                 if (!pkey) {
                     HANDLE_SSL_ERROR();
@@ -274,24 +264,23 @@ namespace qing {
                     return nullptr;
                 }
 
-                pem_password_cb* cb = nullptr;
-                if (password) {
-                    cb = [](char* buf, int size, int rwflag, void* u) -> int {
-                        if (!u) return 0;
-                        const char* pass = (const char*)u;
-                        int len = strlen(pass);
-                        if (len > size) len = size;
-                        memcpy(buf, pass, len);
-                        return len;
-                    };
-                }
-
+                pem_password_cb* cb = password ? &password_callback : nullptr;
                 EVP_PKEY* pkey = PEM_read_bio_PrivateKey(bio.get(), nullptr, cb, (void*)password);
                 if (!pkey) {
                     HANDLE_SSL_ERROR();
                     return nullptr;
                 }
                 return EVP_PKEY_ptr(pkey);
+            }
+
+            // 密码回调（共享，消除重复 lambda）
+            static int password_callback(char* buf, int size, int rwflag, void* u) {
+                if (!u) return 0;
+                const char* pass = static_cast<const char*>(u);
+                int len = static_cast<int>(strlen(pass));
+                if (len > size) len = size;
+                memcpy(buf, pass, len);
+                return len;
             }
 
             // RSA 解密（OAEP）
