@@ -1,6 +1,10 @@
 # blackbird
 # micro_servers
 
+<p align="center">
+  <img src="logo.png" width="360" alt="blackbird · Powered by UniServe Framework">
+</p>
+
 一套 DIY 的轻量级微服务架构（UniServe Framework），由 C++、Python、Go 与仓颉(Cangjie) 混合实现。
 `core` 作为进程托管服务负责拉起并守护各业务子进程，`redirect80` 将 80 端口流量重定向到 443，`waf` 作为前置 WAF 网关终止 TLS 并做规则匹配，`ca` 作为中央认证服务统一鉴权（waf → ca → gateway 前置拓扑），`gateway` 退化为纯转发反向代理，`db` 提供通用数据库访问与集中式日志收集，`confs` 提供统一配置分发，`ai_review` 提供 AI 内容审核，`static` 与 `dnfs` 作为业务服务对外提供能力。`db2` / `dnfs2` 分别为 `db` / `dnfs` 的 C++20 重实现，接口完全兼容可平替。此外包含 aibox 的终端前端 `BotOps`、独立的机器人硬件控制模块 `bot4cj`、嵌入式帧缓冲图形界面 `lci` 和嵌入式脚本引擎 `libtry`。
 
