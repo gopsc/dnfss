@@ -169,7 +169,10 @@ static std::vector<uint8_t> generate_image(const std::string& text, const std::s
 
 		int rw, rh, ox, oy;
 		auto rotated = rotate_bitmap(bmp, angle, rw, rh, ox, oy);
-		int cx = x - rw / 2, cy = y - rh / 2;
+		int cx = x - rw / 2;
+		int cy = y;
+		if (cy + rh > kImgHeight) cy = kImgHeight - rh;
+		if (cy < 0) cy = 0;
 		composite_char(pixels, rotated, rw, rh, cx, cy, fg);
 	}
 

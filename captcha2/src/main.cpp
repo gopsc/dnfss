@@ -451,9 +451,12 @@ static std::vector<uint8_t> generate_image(const std::string& text, const std::s
 		int rw, rh;
 		auto rotated = rotate_bitmap(bmp, angle, rw, rh);
 
-		// 合成位置：目标中心对准期望位置
+		// 合成位置：水平居中于 x，y 为顶部留白（与 Python 版语义一致）
+		// 底部越界时上移钳制，保证字符完整落在画布内
 		int cx = x - rw / 2;
-		int cy = y - rh / 2;
+		int cy = y;
+		if (cy + rh > kImgHeight) cy = kImgHeight - rh;
+		if (cy < 0) cy = 0;
 		composite_char(pixels, rotated, rw, rh, cx, cy, fg);
 	}
 
