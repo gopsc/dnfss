@@ -75,6 +75,7 @@ public:
           _timeout(timeout),
           _retry_on_refused(retry_on_refused),
           _retry_interval(retry_interval) {
+        // [libmsg-audit P2-3] 入口边界校验：timeout ∈ (0,300]s，retry_interval ∈ (0,60]s。
         if (timeout <= 0 || timeout > 300.0) {
             throw MsgException("invalid timeout: " + std::to_string(timeout));
         }
@@ -128,7 +129,8 @@ public:
         }
         const json::value& success = obj.at("success");
         if (!success.is_bool()) {
-            // 类型不符时不要调用 as_bool()（会抛未捕获的 boost system_error），统一抛 RpcError
+            // [libmsg-audit P3-1] 类型不符时不要调用 as_bool()（会抛未捕获的 boost system_error），
+            // 统一抛 RpcError，与其余非法响应处理保持一致，避免底层异常泄露内部细节。
             throw RpcError("非法 RPC 响应（success 字段不是 bool）");
         }
         if (!success.as_bool()) {

@@ -81,9 +81,14 @@ struct MsgServerConfig {
 
 /// 每连接的发送锁和活跃标志。
 ///
-/// active 标志用于防止 CWE-362 竞态：当 _remove_client() 先获取 send_mtx
-/// 并 close(fd) 后，reply/broadcast 后获取 send_mtx 时通过 active==false
-/// 得知 fd 已关闭，立即放弃发送，避免向 OS 复用的 fd 发送数据。
+/// [libmsg-audit P0-1 / P0-2 / P1-3] 组合 send_mtx（互斥锁）+ active（原子标志）彻底消除
+/// CWE-362 竞态：
+///   - 第一轮 P0-1：单客户端移除路径先持 send_mtx 再 close，reply/broadcast 先获取
+///     send_mtx 则 _remove_client 等待，防止 fd 关闭后被 OS 复用导致数据发往错误客户端。
+///   - 第二轮 P0-2：批量关闭路径 _close_all_clients 同样持 send_mtx 后 shutdown+close，
+///     修复第一轮只覆盖单路径的竞态回归。
+///   - 第四轮 P1-3：active 标志堵住反向竞态——_remove_client 先获取锁并 close(fd) 后，
+///     reply/broadcast 后获取锁时通过 active==false 得知 fd 已关闭，立即放弃发送。
 struct ConnectionLock {
     std::mutex send_mtx;
     std::atomic<bool> active{true};
@@ -101,6 +106,10 @@ public:
 
     explicit MsgServer(const std::string& addr, int port, MsgServerConfig config = {})
         : _addr(addr), _port(port), _config(config), _server_fd(-1), _running(false) {
+        // [libmsg-audit P2-3 / P2-5] 全量边界校验：拒绝非法 port / workers / recv_timeout /
+        // max_connections / max_queue_size / listen_backlog / poll_timeout。防止 htons 截断产生
+        // 错误端口、负值导致所有连接被拒或队列无法提交、极大值（>300s）绕过 Slowloris 防护、
+        // poll_timeout=0 导致 select 忙轮询 CPU 100%。
         detail::validatePort(port);
         if (config.workers < 0 || config.workers > 256) {
             throw MsgException("invalid workers: " + std::to_string(config.workers) + " (must be in [0, 256])");
@@ -136,6 +145,8 @@ public:
      *                   回调内可安全调用 reply()/broadcast()/stop()。
      */
     void start(MessageCallback on_message) {
+        // [libmsg-audit P2-8] 空回调会在 worker 线程 / RpcServer 分发中抛 std::bad_function_call，
+        // 提前校验并给出明确错误，避免行为不符合预期且错误信息含糊。
         if (!on_message) {
             throw MsgException("MsgServer::start(): on_message callback must not be null");
         }
@@ -233,14 +244,14 @@ public:
             conn_lock = it->second;
         }
         std::lock_guard<std::mutex> lock(conn_lock->send_mtx);
-        // 检查 active：防止 _remove_client 先获取 send_mtx 并 close(fd) 后，
-        // reply 向已关闭/被 OS 复用的 fd 发送数据（CWE-362）
+        // [libmsg-audit P1-3] 检查 active：防止 _remove_client 先获取 send_mtx 并 close(fd) 后，
+        // reply 向已关闭/被 OS 复用的 fd 发送数据（CWE-362 反向竞态）。
         if (!conn_lock->active.load()) return;
         try {
             pmsg_send(sockfd, msg);
         } catch (const MsgException&) {
-            // 发送失败（连接断开或发送超时），标记为 failed 由主循环清理。
-            // 与 broadcast() 保持一致，避免连接残留。
+            // [libmsg-audit P2-6] 发送失败（连接断开或发送超时），标记为 failed 由主循环清理。
+            // 与 broadcast() 保持一致，避免连接残留不清理（原 reply 静默忽略，连接滞留）。
             std::lock_guard<std::mutex> flk(_failed_mtx);
             _failed.insert(sockfd);
         }
@@ -267,12 +278,12 @@ public:
         }
         for (auto& [fd, conn_lock] : targets) {
             std::lock_guard<std::mutex> slock(conn_lock->send_mtx);
-            // 检查 active：防止 _remove_client 先 close(fd) 后向复用 fd 发送（CWE-362）
+            // [libmsg-audit P1-3] 检查 active：防止 _remove_client 先 close(fd) 后向复用 fd 发送（CWE-362 反向竞态）
             if (!conn_lock->active.load()) continue;
             try {
                 pmsg_send(fd, msg);
             } catch (const MsgException&) {
-                // 发送失败，标记为 failed 由主循环清理
+                // [libmsg-audit P2-6] 发送失败，标记为 failed 由主循环统一清理
                 std::lock_guard<std::mutex> flk(_failed_mtx);
                 _failed.insert(fd);
             }
@@ -314,7 +325,8 @@ private:
             }
             if (!has_task) continue;
 
-            // workers > 0 模式下，消息接收在 worker 线程中完成（防事件循环阻塞 CWE-400）
+            // [libmsg-audit P1-1] workers > 0 模式下，消息接收在 worker 线程中完成（防事件循环阻塞 CWE-400），
+            // 避免攻击者以 max_connections 个半开连接阻塞事件循环长达数小时（Slowloris 变体）。
             if (task.needs_recv) {
                 try {
                     task.message = pmsg_recv(task.fd, _config.recv_timeout);
@@ -452,12 +464,13 @@ private:
         }
         if (client_fd >= FD_SETSIZE) { ::close(client_fd); return; }
 
-        // 禁用 Nagle 算法和设置发送超时（在加入 _clients 之前，确保连接配置完整）
+        // [libmsg-audit P3-3] 禁用 Nagle 算法和设置发送超时（在加入 _clients 之前，确保连接配置完整），
+        // 先完成所有 socket 配置再暴露给其他线程，避免半配置连接被回复。
         int flag = 1;
         ::setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
-        // 设置发送超时：防止慢客户端不读数据导致发送缓冲区填满，
-        // 使 reply()/broadcast() 的 send() 永久阻塞（拒绝服务）。
+        // [libmsg-audit P1-2] 设置发送超时：防止慢客户端不读数据导致发送缓冲区填满，
+        // 使 reply()/broadcast() 的 send() 永久阻塞（拒绝服务，CWE-400）。
         // 超时后 sendAll() 抛 MsgTimeoutException，被 reply/broadcast 捕获并标记 failed 清理。
         struct timeval sndtv {};
         constexpr double kServerSendTimeout = 5.0;  // 秒
@@ -511,7 +524,7 @@ private:
             return;
         }
 
-        // 线程池模式：标记 busy，提交任务（由 worker 负责 recv + callback，
+        // [libmsg-audit P1-1] 线程池模式：标记 busy，提交任务（由 worker 负责 recv + callback，
         // 事件循环线程不阻塞接收，防 Slowloris DoS CWE-400）
         {
             std::lock_guard<std::mutex> blk(_busy_mtx);
@@ -557,9 +570,9 @@ private:
                 _send_locks.erase(it);
             }
         }
-        // 持有 send_mtx 后设置 active=false 再 close(fd)：
-        // 1. 防止 broadcast/reply 在 fd 关闭后向 OS 复用的新连接发送数据（CWE-362）
-        // 2. active=false 让 reply/broadcast 在获取锁后得知 fd 已关闭，放弃发送
+        // [libmsg-audit P0-1 / P1-3] 持有 send_mtx 后设置 active=false 再 close(fd)：
+        // 1. 防止 broadcast/reply 在 fd 关闭后向 OS 复用的新连接发送数据（CWE-362，第一轮 P0-1）
+        // 2. active=false 让 reply/broadcast 在获取锁后得知 fd 已关闭，放弃发送（第四轮 P1-3 反向竞态）
         if (conn_lock) {
             std::lock_guard<std::mutex> slk(conn_lock->send_mtx);
             conn_lock->active.store(false);
@@ -587,8 +600,9 @@ private:
             _clients.clear();
             _send_locks.clear();
         }
-        // 持有每个连接的 send_mtx 后设置 active=false 再 close(fd)：
-        // 防止 stop()/析构时 reply/broadcast 正在发送，导致数据发到 OS 复用的新连接（CWE-362）
+        // [libmsg-audit P0-2 / P1-3] 持有每个连接的 send_mtx 后设置 active=false 再 close(fd)：
+        // 防止 stop()/析构时 reply/broadcast 正在发送，导致数据发到 OS 复用的新连接（CWE-362）。
+        // 第二轮 P0-2 修复批量关闭路径的竞态回归，第四轮 P1-3 的 active 标志堵住反向竞态。
         for (auto& [fd, conn_lock] : to_close) {
             if (conn_lock) {
                 std::lock_guard<std::mutex> slk(conn_lock->send_mtx);
@@ -611,7 +625,7 @@ private:
     std::string _addr;
     int _port;
     MsgServerConfig _config;
-    std::atomic<int> _server_fd;  ///< 监听 socket fd（atomic 防止 stop() 与 _event_loop 数据竞争）
+    std::atomic<int> _server_fd;  ///< [libmsg-audit P2-7] 监听 socket fd（atomic 防止 stop() 与 _event_loop 数据竞争 UB，CWE-362/662）
     std::atomic<bool> _running;
     MessageCallback _on_message;
 

@@ -90,6 +90,8 @@ public:
           _stop(false),
           _wakeup(false),
           _dropped(0) {
+        // [libmsg-audit P2-3] 入口校验：handler 非空、batch_size>0、flush_interval∈(0,300]、
+        // poll_timeout∈(0,5]。拒绝非法输入（如 batch_size=0 导致死循环、poll_timeout=0 忙轮询）。
         if (!_handler) {
             throw std::invalid_argument("AsyncQueue: handler must not be null");
         }

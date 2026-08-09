@@ -83,6 +83,7 @@ public:
      * @param name     路由名（对应请求中的 _route 字段），不能为空
      * @param handler  处理函数，签名 json::value(const json::object& req)
      */
+    // [libmsg-audit P2-3] 入口校验：name 与 handler 均非空，否则后续调用会崩溃。
     void add_route(const std::string& name, Handler handler) {
         if (name.empty()) {
             throw MsgException("route name cannot be empty");
@@ -127,7 +128,7 @@ private:
 
         json::object req = req_val.as_object();
 
-        // 提取 _route
+        // [libmsg-audit P3-2] 提取 _route：区分"字段缺失"与"类型不符"返回不同错误信息，避免误导客户端。
         std::string route;
         if (auto it = req.find("_route"); it != req.end() && it->value().is_string()) {
             route = it->value().as_string().c_str();
@@ -181,9 +182,10 @@ private:
         _server.reply(fd, json::serialize(resp));
     }
 
-    // ---- 错误信息脱敏 ------------------------------------------------------
+    // ---- 错误信息脱敏 ------------------------------------------------------ [libmsg-audit P2-1]
     // 匹配绝对路径（如 /opt/micro_servers/db/xxx.py 或 /usr/lib/...），替换为 <redacted>
     // 不返回函数堆栈、SQL、文件路径等内部细节给客户端；完整异常由 on_error 钩子记录到服务端日志。
+    // 正则已扩展为 /\S+(?:\/\S*)*，覆盖含空格/括号/@/~ 等特殊字符的路径（原正则会泄露此类路径，CWE-209）。
 
     static std::string _sanitize_error(const std::string& msg) {
         if (msg.empty()) return msg;

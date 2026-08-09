@@ -51,9 +51,9 @@ namespace detail {
 
 using namespace msg_constants;
 
-// ---- UTF-8 合法性校验（对齐 Python decode('utf-8')）------------------------
+// ---- UTF-8 合法性校验（对齐 Python decode('utf-8')）------------------------ [libmsg-audit P2-4]
 // 防御性校验：协议声明载荷为 UTF-8，非法字节序列表示协议错误或攻击，
-// 直接抛 MsgConnectionException 断开连接。
+// 直接抛 MsgConnectionException 断开连接（拒绝 overlong / 代理对 / 超 U+10FFFF）。
 inline bool isValidUtf8(const char* data, size_t len) noexcept {
     const unsigned char* bytes = reinterpret_cast<const unsigned char*>(data);
     size_t i = 0;
@@ -91,7 +91,9 @@ inline bool isValidUtf8(const char* data, size_t len) noexcept {
     return true;
 }
 
-// ---- 参数校验辅助 --------------------------------------------------------
+// ---- 参数校验辅助 -------------------------------------------------------- [libmsg-audit P2-3]
+// validateTimeout / validatePort：统一拒绝非法 timeout（(0,300]s）与 port（[1,65535]），
+// 防止 0/负值导致 deadline 立即到期、极大值绕过 Slowloris 防护、port 越界 htons 截断。
 inline void validateTimeout(double timeout_sec) {
     if (timeout_sec <= 0 || timeout_sec > 300.0) {  // 最大 5 分钟
         throw MsgException("invalid timeout: " + std::to_string(timeout_sec) + " seconds (must be in (0, 300])");
@@ -153,9 +155,10 @@ inline void recvExact(int sockfd, char *buf, size_t n) {
     }
 }
 
-// ---- deadline 模式精确读取 n 字节（总超时，防 Slowloris）-------------------
+// ---- deadline 模式精确读取 n 字节（总超时，防 Slowloris）------------------- [libmsg-audit P1-1]
 // 与 Python 版 _recv_exact 对齐：每次 select 前按剩余时间收紧超时，
-// header+payload 共享同一个 deadline，总接收时间不超过 timeout_sec。
+// header+payload 共享同一个 deadline，总接收时间不超过 timeout_sec，
+// 防止单连接以不完整帧头长期占用接收线程（Slowloris 变体，CWE-400）。
 
 inline void recvExactDeadline(int sockfd, char *buf, size_t n,
                               const std::chrono::steady_clock::time_point& deadline) {
@@ -217,7 +220,7 @@ inline std::string recvFrameDeadline(int sockfd, double timeout_sec) {
     std::string payload(static_cast<size_t>(length), '\0');
     if (length > 0) {
         recvExactDeadline(sockfd, payload.data(), length, deadline);
-        // UTF-8 合法性校验（对齐 Python decode('utf-8')），非法载荷视为协议错误
+        // [libmsg-audit P2-4] UTF-8 合法性校验（对齐 Python decode('utf-8')），非法载荷视为协议错误
         if (!isValidUtf8(payload.data(), length)) {
             throw MsgConnectionException("invalid UTF-8 payload");
         }
@@ -246,6 +249,7 @@ inline void sendAll(int sockfd, const char *data, size_t len) {
 // ---- 短连接 helper：connect → action → close ------------------------------
 
 inline int openConnection(const std::string& addr, int port, double timeout) {
+    // [libmsg-audit P2-3] 入口边界校验：port 与 timeout 必须在合法范围。
     validatePort(port);
     validateTimeout(timeout);
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -317,7 +321,7 @@ inline std::string pmsg_recv(int sockfd) {
     std::string payload(static_cast<size_t>(length), '\0');
     if (length > 0) {
         detail::recvExact(sockfd, payload.data(), length);
-        // UTF-8 合法性校验（对齐 Python decode('utf-8')），非法载荷视为协议错误
+        // [libmsg-audit P2-4] UTF-8 合法性校验（对齐 Python decode('utf-8')），非法载荷视为协议错误
         if (!detail::isValidUtf8(payload.data(), length)) {
             throw MsgConnectionException("invalid UTF-8 payload");
         }
