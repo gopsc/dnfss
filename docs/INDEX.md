@@ -7,9 +7,9 @@
 ```
 docs/
 ├── INDEX.md                              # 本文件（文档总索引）
-├── security/                             # 安全审计与加固（26 篇）
+├── security/                             # 安全审计与加固（27 篇）
 ├── reviews/                              # 代码审查日志（4 篇）
-└── reports/                              # 分析报告与开发规划（9 篇）
+└── reports/                              # 分析报告与开发规划（10 篇）
 ```
 
 ---
@@ -50,6 +50,7 @@ docs/
 | ai_review | [ai_review_SECURITY_AUDIT_20260801.md](security/ai_review_SECURITY_AUDIT_20260801.md) | Python AI 内容审核（DeepSeek + RAG） |
 | smtp | [smtp_SECURITY_AUDIT_20260801.md](security/smtp_SECURITY_AUDIT_20260801.md) | Python 邮件服务（验证码发送/校验）初版 + 0809 复审合并版 |
 | captcha | [captcha_SECURITY_AUDIT_20260801.md](security/captcha_SECURITY_AUDIT_20260801.md) | Python 验证码服务 |
+| captcha2 | [captcha2_SECURITY_AUDIT_20260809.md](security/captcha2_SECURITY_AUDIT_20260809.md) | C++20 验证码服务（captcha 重写，FreeType + stb，含 P0 大小写缺陷发现） |
 | confs | [confs_SECURITY_AUDIT_20260801.md](security/confs_SECURITY_AUDIT_20260801.md) | Python 统一配置服务 |
 | libmsg | [libmsg_SECURITY_AUDIT_20260806.md](security/libmsg_SECURITY_AUDIT_20260806.md) | C++ RPC 基础库（pymsg 协议帧、MsgClient/Server、RpcClient/Server） |
 | libhttp | [libhttp_SECURITY_AUDIT_20260803.md](security/libhttp_SECURITY_AUDIT_20260803.md) | C++ HTTP/WebSocket 库（请求/响应/WS/静态文件） |
@@ -86,6 +87,7 @@ docs/
 | [libcrypt_CBC_deprecation_dev_doc.md](reports/libcrypt_CBC_deprecation_dev_doc.md) | libcrypt CBC 模式缺陷分析与 AES-GCM 迁移开发文档 |
 | [bot4cj_analysis_20260525_00.html](reports/bot4cj_analysis_20260525_00.html) | bot4cj 机器人模块分析报告（HTML） |
 | [actpred_pretrain_test_20260808.md](reports/actpred_pretrain_test_20260808.md) | actpred 预训练与推理测试报告（action_dim=18 变更、.mt 解析器、预训练、推理基准、NPU 调研） |
+| [captcha_cpp_rewrite_dev_doc.md](reports/captcha_cpp_rewrite_dev_doc.md) | captcha 模块 C++20 重写开发方案（FreeType + stb_image_write 替代 Pillow，协议兼容零改动） |
 
 ---
 
