@@ -14,7 +14,7 @@ services:
   # --- 数据层（最先启动） ---
   - name: db2
     cmd: bash /opt/micro_servers/db2/_run.sh
-    args: []
+    args: ["--instance", "db2", "--log-level", "info"]
     depends_on: []
     sleep_before: 0
 
@@ -42,7 +42,7 @@ services:
   # --- 前端静态资源 ---
   - name: fsys
     cmd: bash /opt/micro_servers/fsys/_run.sh
-    args: []
+    args: ["--instance", "fsys", "--log-level", "info"]
     depends_on: []
     sleep_before: 0
 
