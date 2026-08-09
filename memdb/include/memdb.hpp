@@ -35,16 +35,19 @@ private:
     std::list <memdb_column> db;
     std::unordered_map <T, index_keys> keys;
     std::priority_queue <index_timestamp> time_touch;
-    size_t __size;
+    size_t __size = 0;
+    int MAX_TIME = 60 * 10;       // 10分钟
     void flush();
 
 
 public:
     using key_t = T;
     using value_t = U;
-    static constexpr int npos = -1;
+    static constexpr bool fail = false;
+    static constexpr bool succ = true;
 
     Memdb();
+    Memdb(int max_time);
     Memdb& operator=(const Memdb& to_be_cp_memdb);
     ~Memdb();
 
@@ -53,8 +56,8 @@ public:
     const std::list <memdb_column>& get_db() const;
     const std::priority_queue <index_timestamp>& get_time_touch() const;
 
-    void insert(key_t to_be_ins_k, value_t ins_v);                                  //TODO 要加返回值
-    void remove(key_t to_be_del_k);                                                 //TODO 要加返回值
-    void update(key_t to_be_udt_k, value_t udt_v, bool need_to_udt_timetouch=false);//TODO 要加返回值
-    value_t search(key_t to_be_sch_k) const;
+    bool insert(key_t to_be_ins_k, value_t ins_v);
+    bool remove(key_t to_be_del_k);
+    bool update(key_t to_be_udt_k, value_t udt_v, bool need_to_udt_timetouch=false);
+    std::optional<U> search(key_t to_be_sch_k);
 };

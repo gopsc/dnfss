@@ -5,21 +5,27 @@
 template <typename T, typename U>
 
 bool Memdb <T, U>::index_timestamp::operator<(const index_timestamp& a) const {
-    return this -> item -> timestamp > a.item -> timestamp;
+    return this -> item -> timestamp < a.item -> timestamp;
 }
 
 
 template <typename T, typename U>
 
 void Memdb <T, U>::flush() {
+    if (this -> time_touch.empty() == true) {
+        return;
+    }
     std::chrono::system_clock::time_point now_time = std::chrono::system_clock::now();
     std::list <memdb_column>::iterator it = this -> time_touch.front().item;
 
     while (now_time > it -> timestamp || it -> be_del == true) {
-        this -> keys.erase(it -> key);
         this -> db.erase(it);
 		this -> time_touch.pop();
 		this -> __size--;
+
+        if (this -> time_touch.empty() == true) {
+            return;
+        }
         it = this -> time_touch.front().item;
         now_time = std::chrono::system_clock::now();
     }
@@ -28,6 +34,11 @@ void Memdb <T, U>::flush() {
 template <typename T, typename U>
 
 Memdb <T, U>::Memdb() = default;
+
+
+template <typename T, typename U>
+
+Memdb <T, U>::Memdb(int max_time) : MAX_TIME(max_time) {}
 
 
 template <typename T, typename U>
@@ -70,15 +81,18 @@ const std::priority_queue <typename Memdb <T, U>::index_timestamp>& Memdb <T, U>
 
 template <typename T, typename U>
 
-void Memdb <T, U>::insert(key_t to_be_ins_k, value_t ins_v) {
+bool Memdb <T, U>::insert(key_t to_be_ins_k, value_t ins_v) {
     this -> flush();
+    if (this -> keys.find(to_be_ins_k) != this -> keys.end()) {
+        return this -> fail;
+    }
 
     std::chrono::system_clock::time_point now_time = std::chrono::system_clock::now();
 
     Memdb::memdb_column new_column;
     new_column.key = to_be_ins_k;
     new_column.value = ins_v;
-    new_column.timestamp = now_time;
+    new_column.timestamp = now_time + std::chrono::seconds(MAX_TIME);
     this -> db.push_back(new_column);
 
     Memdb::index_keys new_key;
@@ -89,38 +103,56 @@ void Memdb <T, U>::insert(key_t to_be_ins_k, value_t ins_v) {
     Memdb::index_timestamp new_time_touch;
     new_time_touch.item = std::prev(this -> db.end());
     this -> time_touch.push(new_time_touch);
+
+    this -> __size++;
+
+    return this -> succ;
 }
 
 
 template <typename T, typename U>
 
-void Memdb <T, U>::remove(key_t to_be_del_k) {
+bool Memdb <T, U>::remove(key_t to_be_del_k) {
     this -> flush();
+    if (this -> keys.find(to_be_del_k) == this -> keys.end()) {
+        return this -> fail;
+    }
 
     std::list <memdb_column>::iterator it = this -> keys[to_be_del_k].item;
     it -> be_del = true;
+    this -> keys.erase(it -> key);
+
+    return this -> succ;
 }
 
 
 template <typename T, typename U>
 
-void Memdb <T, U>::update(key_t to_be_udt_k, value_t udt_v, bool need_to_udt_timetouch=false) {
+bool Memdb <T, U>::update(key_t to_be_udt_k, value_t udt_v, bool need_to_udt_timetouch) {
     this -> flush();
+    if (this -> keys.find(to_be_udt_k) == this -> keys.end()) {
+        return this -> fail;
+    }
 
-    std::list <memdb_column>::iterator it = this -> keys[to_be_udt_k];  //! 这边会默认插入
+    std::list <memdb_column>::iterator it = this -> keys[to_be_udt_k].item;
     it -> value = udt_v;
     if (need_to_udt_timetouch == true) {
         std::chrono::system_clock::time_point now_time = std::chrono::system_clock::now();
-        it -> timestamp = now_time;
+        it -> timestamp = now_time + std::chrono::seconds(MAX_TIME);        //! 排序失效
     }
+
+    return this -> succ;
 }
 
 
 template <typename T, typename U>
 
-Memdb <T, U>::value_t Memdb <T, U>::search(key_t to_be_sch_k) const {
+std::optional<U> Memdb <T, U>::search(key_t to_be_sch_k){
     this -> flush();
+    if (this -> keys.find(to_be_sch_k) == this -> keys.end()) {
+        return std::nullopt;
+    }
 
-    std::list <memdb_column>::iterator it = this -> keys[to_be_sch_k];  //! 这边会默认插入
+    std::list <memdb_column>::iterator it = this -> keys[to_be_sch_k].item;
     return it -> value;
 }
