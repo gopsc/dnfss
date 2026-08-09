@@ -25,18 +25,18 @@ def train_one_epoch(model, loader, optimizer, device, max_grad_norm: float = Non
     total_loss = 0.0
     count = 0
     for batch in tqdm(loader, desc="  train", leave=False):
-        image = batch["image"].to(device)
+        images = batch["images"].to(device)
         history = batch["action_history"].to(device)
         target = batch["target"].to(device)
         optimizer.zero_grad()
-        pred = model(image, history)
+        pred = model(images, history)
         loss = torch.nn.functional.mse_loss(pred, target)
         loss.backward()
         if max_grad_norm:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
         optimizer.step()
-        total_loss += loss.item() * image.size(0)
-        count += image.size(0)
+        total_loss += loss.item() * images.size(0)
+        count += images.size(0)
     return total_loss / max(count, 1)
 
 
@@ -46,13 +46,13 @@ def validate(model, loader, device):
     total_loss = 0.0
     count = 0
     for batch in tqdm(loader, desc="  val  ", leave=False):
-        image = batch["image"].to(device)
+        images = batch["images"].to(device)
         history = batch["action_history"].to(device)
         target = batch["target"].to(device)
-        pred = model(image, history)
+        pred = model(images, history)
         loss = torch.nn.functional.mse_loss(pred, target)
-        total_loss += loss.item() * image.size(0)
-        count += image.size(0)
+        total_loss += loss.item() * images.size(0)
+        count += images.size(0)
     if count == 0:
         return float("inf")  # 空验证集不参与比较，避免假 best
     return total_loss / count
@@ -83,7 +83,7 @@ def main():
     train_ds = ActionDataset(
         cfg.data.data_dir, cfg.data.history_len, cfg.data.action_dim,
         cfg.data.image_size, cfg.data.normalize_actions,
-        cfg.data.action_stats_path, train_indices)
+        cfg.data.action_stats_path, train_indices, cfg.data.frame_len)
     if cfg.data.normalize_actions and not cfg.data.action_stats_path:
         # 归一化统计量必须只用训练集计算，再供验证集复用，否则 val loss 不可信
         stats_path = os.path.join(cfg.train.checkpoint_dir, "action_stats.npy")
@@ -93,7 +93,7 @@ def main():
     val_ds = ActionDataset(
         cfg.data.data_dir, cfg.data.history_len, cfg.data.action_dim,
         cfg.data.image_size, cfg.data.normalize_actions,
-        cfg.data.action_stats_path, val_indices)
+        cfg.data.action_stats_path, val_indices, cfg.data.frame_len)
 
     print(f"Samples: {len(train_ds)} train, {len(val_ds)} val")
     if len(train_ds) == 0:

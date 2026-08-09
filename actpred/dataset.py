@@ -17,10 +17,12 @@ def _natural_key(p):
 class ActionDataset(Dataset):
     def __init__(self, data_dir: str, history_len: int, action_dim: int,
                  image_size: int = 64, normalize_actions: bool = False,
-                 action_stats_path: str = None, episode_indices: list = None):
+                 action_stats_path: str = None, episode_indices: list = None,
+                 frame_len: int = 3):
         self.history_len = history_len
         self.action_dim = action_dim
         self.image_size = image_size
+        self.frame_len = frame_len
 
         self.transform = transforms.Compose([
             transforms.Resize((image_size, image_size)),
@@ -51,8 +53,11 @@ class ActionDataset(Dataset):
                 print(f"WARNING: {ep_dir} 动作帧数 {n_frames} 与图像数 {n_images} 不一致，"
                       f"按较少者（{min(n_frames, n_images)}）使用，请检查录制完整性")
             n = min(n_frames, n_images)
-            for t in range(history_len, n):
-                self.samples.append((image_files[t], actions[t - history_len:t], actions[t]))
+            # 每个样本：帧 [t-frame_len+1, t]（旧→新）+ 动作历史 [t-history_len, t) → 动作 t
+            start = max(history_len, frame_len - 1)
+            for t in range(start, n):
+                self.samples.append((image_files[t - frame_len + 1: t + 1],
+                                     actions[t - history_len:t], actions[t]))
 
         self._action_mean = None
         self._action_std = None
@@ -77,15 +82,18 @@ class ActionDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        image_path, action_history, target = self.samples[idx]
-        image = Image.open(image_path).convert("RGB")
-        image = self.transform(image)
+        image_paths, action_history, target = self.samples[idx]
+        frames = []
+        for p in image_paths:
+            image = Image.open(p).convert("RGB")
+            frames.append(self.transform(image))
+        images = torch.stack(frames)  # (F, 3, S, S)
         action_history = torch.tensor(action_history, dtype=torch.float32)
         target = torch.tensor(target, dtype=torch.float32)
         if self._action_mean is not None:
             action_history = (action_history - self._action_mean) / self._action_std
             target = (target - self._action_mean) / self._action_std
-        return {"image": image, "action_history": action_history, "target": target}
+        return {"images": images, "action_history": action_history, "target": target}
 
     def get_action_stats(self):
         if self._action_mean is not None:

@@ -53,34 +53,7 @@ class MobileNetEncoder(nn.Module):
         return self.proj(x)
 
 
-class MLPHistoryEncoder(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int = 64, dropout: float = 0.1):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(inplace=True),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
-
-
-class GRUHistoryEncoder(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int = 64, dropout: float = 0.1):
-        super().__init__()
-        self.gru = nn.GRU(input_size=input_dim, hidden_size=hidden_dim,
-                          num_layers=1, batch_first=True)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        _, h = self.gru(x)
-        return self.dropout(h.squeeze(0))
-
-
-class FusionHead(nn.Module):
+class PredictionHead(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, dropout: float = 0.1):
         super().__init__()
         self.net = nn.Sequential(
@@ -97,6 +70,13 @@ class FusionHead(nn.Module):
 
 
 class ActionPredictor(nn.Module):
+    """多帧图像 + 历史动作的 Transformer 注意力融合预测器
+
+    token 序列：[img×F, act×H, PRED]，长度固定为 F+H+1，
+    取 PRED 位置输出进预测头回归下一时间步动作。
+    除 batch 维外全部维度静态，保证 ONNX/NPU 部署友好。
+    """
+
     def __init__(self, model_cfg: ModelConfig, data_cfg: DataConfig,
                  pretrained: bool = True):
         super().__init__()
@@ -106,26 +86,44 @@ class ActionPredictor(nn.Module):
         else:
             self.image_encoder = SimpleCNN(model_cfg.cnn_feature_dim)
 
-        history_input_dim = data_cfg.history_len * data_cfg.action_dim
-        if model_cfg.history_encoder == "gru":
-            self.action_encoder = GRUHistoryEncoder(
-                data_cfg.action_dim, model_cfg.action_hidden_dim, model_cfg.dropout)
-        else:
-            self.action_encoder = MLPHistoryEncoder(
-                history_input_dim, model_cfg.action_hidden_dim, model_cfg.dropout)
+        d = model_cfg.attn_dim
+        self.img_proj = nn.Linear(model_cfg.cnn_feature_dim, d)
+        self.act_proj = nn.Linear(data_cfg.action_dim, d)
 
-        fused_input = model_cfg.cnn_feature_dim + model_cfg.action_hidden_dim
-        self.head = FusionHead(
-            fused_input, model_cfg.fused_hidden_dim, data_cfg.action_dim, model_cfg.dropout)
+        seq_len = data_cfg.frame_len + data_cfg.history_len + 1
+        self.pred_token = nn.Parameter(torch.zeros(1, 1, d))
+        self.pos_embed = nn.Parameter(torch.zeros(1, seq_len, d))
+        nn.init.trunc_normal_(self.pred_token, std=0.02)
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
 
-        self._use_gru = model_cfg.history_encoder == "gru"
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d, nhead=model_cfg.attn_heads,
+            dim_feedforward=d * 2, dropout=model_cfg.dropout,
+            batch_first=True, norm_first=True)
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=model_cfg.attn_layers,
+            enable_nested_tensor=False)
+
+        self.head = PredictionHead(
+            d, model_cfg.fused_hidden_dim, data_cfg.action_dim, model_cfg.dropout)
+
+        self._frame_len = data_cfg.frame_len
         self._history_len = data_cfg.history_len
         self._action_dim = data_cfg.action_dim
+        self._image_size = data_cfg.image_size
+        self._cnn_feature_dim = model_cfg.cnn_feature_dim
 
-    def forward(self, image: torch.Tensor, action_history: torch.Tensor) -> torch.Tensor:
-        img_feat = self.image_encoder(image)
-        if self._use_gru:
-            act_feat = self.action_encoder(action_history)
-        else:
-            act_feat = self.action_encoder(action_history.flatten(1))
-        return self.head(torch.cat([img_feat, act_feat], dim=-1))
+    def forward(self, images: torch.Tensor, action_history: torch.Tensor) -> torch.Tensor:
+        # images: (B, F, 3, S, S)  action_history: (B, H, D)
+        b = images.size(0)
+        frames = images.reshape(
+            b * self._frame_len, 3, self._image_size, self._image_size)
+        img_feat = self.image_encoder(frames).reshape(
+            b, self._frame_len, self._cnn_feature_dim)
+        img_tokens = self.img_proj(img_feat)
+        act_tokens = self.act_proj(action_history)
+        pred_token = self.pred_token.expand(b, -1, -1)
+        tokens = torch.cat([img_tokens, act_tokens, pred_token], dim=1)
+        tokens = tokens + self.pos_embed
+        out = self.encoder(tokens)
+        return self.head(out[:, -1])

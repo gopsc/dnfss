@@ -19,16 +19,17 @@ def main():
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
-    dummy_image = torch.randn(1, 3, data_cfg.image_size, data_cfg.image_size)
+    dummy_images = torch.randn(
+        1, data_cfg.frame_len, 3, data_cfg.image_size, data_cfg.image_size)
     dummy_history = torch.randn(1, data_cfg.history_len, data_cfg.action_dim)
 
     torch.onnx.export(
-        model, (dummy_image, dummy_history),
+        model, (dummy_images, dummy_history),
         args.output,
-        input_names=["image", "action_history"],
+        input_names=["images", "action_history"],
         output_names=["predicted_action"],
         dynamic_axes={
-            "image": {0: "batch"},
+            "images": {0: "batch"},
             "action_history": {0: "batch"},
             "predicted_action": {0: "batch"},
         },
@@ -41,11 +42,11 @@ def main():
         import onnxruntime as ort
         import numpy as np
         sess = ort.InferenceSession(args.output)
-        img_np = dummy_image.numpy()
+        img_np = dummy_images.numpy()
         hist_np = dummy_history.numpy()
-        ort_out = sess.run(None, {"image": img_np, "action_history": hist_np})[0]
+        ort_out = sess.run(None, {"images": img_np, "action_history": hist_np})[0]
         with torch.no_grad():
-            torch_out = model(dummy_image, dummy_history).numpy()
+            torch_out = model(dummy_images, dummy_history).numpy()
         max_diff = np.abs(ort_out - torch_out).max()
         print(f"ONNX 一致性验证通过（最大差异: {max_diff:.6e}）")
     except ImportError:

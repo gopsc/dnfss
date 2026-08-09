@@ -1,18 +1,25 @@
 # actpred — 动作预测模块
 
-输入摄像头图像 + 历史动作序列，预测下一个连续动作（回归）。
+输入多帧摄像头图像 + 历史动作序列，预测下一时间步的连续动作（回归）。
 
-纯神经网络实现（PyTorch），支持轻量 CNN 或 MobileNetV2 图像编码，MLP/GRU 动作历史编码。总参数量 ~140K（默认）至 ~2.3M。
+纯神经网络实现（PyTorch）：轻量 CNN 或 MobileNetV2 逐帧编码，图像/动作 token 进轻量
+Transformer（pre-LN）自注意力融合，取 [PRED] token 回归下一步动作。
+默认配置总参数量 ~450K。
 
 ## 架构
 
 ```
-图像 (3×64×64)  ──►  CNN 编码器  ──►  img_feat (128)
-                                          │
-                                          ├─ concat ──►  融合头  ──►  预测动作 (action_dim)
-                                          │
-动作历史 (H×D)  ──►  MLP/GRU    ──►  act_feat (64)
+F 帧图像 (F×3×64×64) ─► 共享 CNN 编码器 ─► F 个 token ─► proj → d_model ┐
+                                                                          ├─► [img×F, act×H, PRED] + 位置编码
+动作历史 (H×D)      ─► Linear proj → d_model ─► H 个 token ────────┤        │
+可学习 [PRED] token ────────────────────────────────────────┘        ▼
+                                       TransformerEncoder (pre-LN, 2 层, 4 头, d_model=128)
+                                                                                 │
+                                             取 PRED 位置输出 ─► MLP 头 ─► 预测动作 (action_dim)
 ```
+
+token 序列长度固定为 F+H+1（默认 3+5+1=9），除 batch 外无动态 shape，对 NPU（如树莓派
+AI 扩展板）部署友好。
 
 ## 快速开始
 
@@ -23,8 +30,10 @@ cd actpred && bash _set.sh
 # 训练
 bash _run.sh train --data-dir ./data --epochs 100 --action-dim 18
 
-# 推理（--action-history 格式：冒号分隔各步，每步 action_dim 个值，共 history_len 步）
-bash _run.sh --model checkpoints/best_inference.pt --image frame.jpg \
+# 推理（--images 按时间顺序旧→新传入 frame_len 个图像路径，冷启动时可重复传同一帧；
+#      --action-history 格式：冒号分隔各步，每步 action_dim 个值，共 history_len 步）
+bash _run.sh --model checkpoints/best_inference.pt \
+    --images frame_t-2.jpg frame_t-1.jpg frame_t.jpg \
     --action-history "45,0,45,0,45,0,45,0,90,90,10,200,0,0,0,0,0,0:45,0,45,0,45,0,45,0,90,90,0,20,0,0,0,0,0,0:45,0,45,0,45,0,45,0,90,90,0,0,0,0,0,0,0,0:45,0,45,0,45,0,45,0,90,90,0,0,0,0,0,0,0,0:45,0,45,0,45,0,45,0,90,90,0,0,0,0,0,0,0,0"
 
 # 导出 ONNX（如安装了 onnxruntime，导出后自动验证一致性）
@@ -39,7 +48,7 @@ python test_actpred.py
 
 ## 预训练（从 .mt 脚本，无需图像）
 
-从 bot4cj 的 `.mt` 动作脚本中提取 `@Action` 矩阵，用零图像占位预训练动作动力学（history → next action），
+从 bot4cj 的 `.mt` 动作脚本中提取 `@Action` 矩阵，用全零多帧图像占位预训练动作动力学（history → next action），
 保存的 checkpoint 与正常训练格式完全兼容，可直接用于推理或作为微调起点。
 
 ```bash
@@ -74,7 +83,8 @@ data/
         ...
 ```
 
-每个 timestep 的样本：当前图像 + 前 `history_len` 步动作 → 当前步动作。
+每个 timestep 的样本：帧 `[t-frame_len+1, t]`（旧→新）+ 前 `history_len` 步动作 → 当前步动作。
+采样起点为 `max(history_len, frame_len-1)`。
 
 ### 数据采集
 
@@ -96,8 +106,11 @@ recorder.flush()
 | `--image-size` | 64 | 图像缩放尺寸 |
 | `--action-dim` | 18 | 动作向量维度（对齐 bot4cj 18 列：10 舵机 + 2 云台 + 扬声器频率 + 延时 + 4 预留）|
 | `--history-len` | 5 | 历史动作窗口长度 |
+| `--frame-len` | 3 | 输入图像帧数（含当前帧，旧帧在前）|
 | `--backbone` | simple | CNN 类型 (simple/mobilenet) |
-| `--history-encoder` | mlp | 历史编码器 (mlp/gru) |
+| `--attn-dim` | 128 | 注意力 token 维度 d_model（须能被 attn-heads 整除）|
+| `--attn-heads` | 4 | 注意力头数 |
+| `--attn-layers` | 2 | TransformerEncoder 层数 |
 | `--epochs` | 100 | 训练轮数 |
 | `--lr` | 0.001 | 学习率 |
 | `--batch-size` | 32 | 批次大小 |
@@ -124,7 +137,8 @@ recorder.flush()
 from predict import ActionPredictorInference
 
 predictor = ActionPredictorInference("checkpoints/best_inference.pt")
-print(predictor.action_dim, predictor.history_len)  # 公共属性
-action = predictor.predict(image_rgb, action_history)  # np.ndarray (action_dim,)
+print(predictor.action_dim, predictor.history_len, predictor.frame_len)  # 公共属性
+# images: 长度为 frame_len 的 RGB 图像列表（旧→新，末帧为当前帧；冷启动可重复同一帧）
+action = predictor.predict(images, action_history)  # np.ndarray (action_dim,)
 # action_history 形状须为 (history_len, action_dim)
 ```
