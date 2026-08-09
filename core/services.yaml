@@ -28,7 +28,7 @@ services:
   # --- 文件服务 ---
   - name: dnfs2
     cmd: bash /opt/micro_servers/dnfs2/_run.sh
-    args: []
+    args: ["--instance", "dnfs2", "--log-level", "info"]
     depends_on: [db2, ai_review]
     sleep_before: 0
 

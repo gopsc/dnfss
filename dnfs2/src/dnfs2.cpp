@@ -166,10 +166,36 @@ struct Config {
     // confs 引导
     std::string confs_host    = "127.0.0.1";
     int         confs_port    = 8010;
+
+    // CLI 标准化参数
+    std::string instance      = "dnfs2";
+    std::string log_level     = "info";       // debug|info|warn|error
+    std::string confs_config_name = "dnfs.ini"; // --config 覆盖
 };
 
 static Config load_config(int argc, char* argv[]) {
     Config cfg;
+
+    // 0. 预扫描 --help/-h 和 --config（在 confs 拉取前处理）
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            std::printf(
+                "dnfs2 — C++20 树状网络文件系统\n\n"
+                "用法: dnfs2 [选项]\n\n"
+                "选项:\n"
+                "  --host <addr>       绑定地址（别名: --addr/-a），默认 127.0.0.1\n"
+                "  --port <num>        监听端口（别名: -p），默认 8006\n"
+                "  --threads <num>     工作线程数（别名: -t），默认 4\n"
+                "  --config <name>     confs 拉取的配置名，默认 dnfs.ini\n"
+                "  --log-level <level> debug|info|warn|error，默认 info\n"
+                "  --instance <name>   实例名（注册中心用），默认 dnfs2\n"
+                "  --help, -h          显示此帮助并退出\n\n"
+                "配置优先级: CLI > 环境变量 > confs > 默认值\n");
+            std::exit(0);
+        }
+        if (arg == "--config" && i + 1 < argc) cfg.confs_config_name = argv[++i];
+    }
 
     // 1. confs 引导地址
     if (const char* h = std::getenv("CONFS_HOST")) cfg.confs_host = h;
@@ -181,17 +207,17 @@ static Config load_config(int argc, char* argv[]) {
         }
     }
 
-    // 2. 从 confs 拉取 dnfs.ini（retry_on_refused=true，等待 confs 就绪）
+    // 2. 从 confs 拉取配置文件（retry_on_refused=true，等待 confs 就绪）
     std::string ini_text;
     try {
         RpcClient confs_client(cfg.confs_host, cfg.confs_port, "dnfs2",
                                /*timeout=*/5.0, /*retry_on_refused=*/true);
-        json::value data = confs_client.call("get", {{"name", "dnfs.ini"}});
+        json::value data = confs_client.call("get", {{"name", cfg.confs_config_name}});
         if (data.is_object() && data.as_object().contains("content")) {
             ini_text = std::string(data.as_object().at("content").as_string());
         }
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "[dnfs2] 从 confs 获取 dnfs.ini 失败: %s\n", e.what());
+        std::fprintf(stderr, "[dnfs2] 从 confs 获取 %s 失败: %s\n", cfg.confs_config_name.c_str(), e.what());
         std::exit(1);
     }
 
@@ -247,9 +273,11 @@ static Config load_config(int argc, char* argv[]) {
     // 5. 命令行参数（最高优先级）
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if ((arg == "--addr"    || arg == "-a") && i + 1 < argc) cfg.listen_host = argv[++i];
+        if ((arg == "--addr"    || arg == "-a" || arg == "--host") && i + 1 < argc) cfg.listen_host = argv[++i];
         else if ((arg == "--port" || arg == "-p") && i + 1 < argc) cfg.listen_port = safe_stoi(argv[++i], "--port");
         else if ((arg == "--threads" || arg == "-t") && i + 1 < argc) cfg.threads = safe_stoi(argv[++i], "--threads");
+        else if (arg == "--log-level" && i + 1 < argc) cfg.log_level = argv[++i];
+        else if (arg == "--instance" && i + 1 < argc) cfg.instance = argv[++i];
     }
 
     // 6. 数值范围校验
@@ -276,6 +304,18 @@ static Config load_config(int argc, char* argv[]) {
     if (cfg.gateway_timeout <= 0 || cfg.gateway_timeout > 60.0) {
         std::fprintf(stderr, "[dnfs2] invalid gateway_timeout: %f (must be in (0, 60])\n", cfg.gateway_timeout);
         std::exit(1);
+    }
+
+    // log_level 合法性校验
+    {
+        std::string lv = cfg.log_level;
+        if (lv == "warning") lv = "warn";
+        if (lv != "debug" && lv != "info" && lv != "warn" && lv != "error") {
+            std::fprintf(stderr, "[dnfs2] invalid log_level: %s (must be debug|info|warn|error)\n",
+                         cfg.log_level.c_str());
+            std::exit(1);
+        }
+        cfg.log_level = lv;
     }
 
     return cfg;
@@ -499,8 +539,11 @@ public:
         );
         _log_queue->start();
 
-        std::printf("[dnfs2] 配置来源: confs (dnfs.ini @ %s:%d)\n",
+        std::printf("[dnfs2] 配置来源: confs (%s @ %s:%d)\n",
+                    _cfg.confs_config_name.c_str(),
                     _cfg.confs_host.c_str(), _cfg.confs_port);
+        std::printf("[dnfs2] instance=%s log-level=%s\n",
+                    _cfg.instance.c_str(), _cfg.log_level.c_str());
         std::printf("[dnfs2] Token 验签: gateway %s\n", _cfg.gateway_url.c_str());
     }
 
@@ -567,6 +610,19 @@ private:
     void _log(const std::string& level, const std::string& service,
               const std::string& message, const std::string& trace_id = "",
               const std::string& extra = "") {
+        // 日志级别过滤
+        static const std::unordered_map<std::string, int> kLogLevels = {
+            {"debug", 0}, {"DEBUG", 0},
+            {"info", 1},  {"INFO", 1},
+            {"warn", 2},  {"WARN", 2}, {"warning", 2}, {"WARNING", 2},
+            {"error", 3}, {"ERROR", 3}
+        };
+        auto it_lvl = kLogLevels.find(level);
+        int msg_lvl = (it_lvl != kLogLevels.end()) ? it_lvl->second : 1;
+        auto it_cfg = kLogLevels.find(_cfg.log_level);
+        int cfg_lvl = (it_cfg != kLogLevels.end()) ? it_cfg->second : 1;
+        if (msg_lvl < cfg_lvl) return;
+
         LogEntry e;
         e.ts = utc_now();
         e.service = service;
@@ -1182,8 +1238,9 @@ int main(int argc, char* argv[]) {
     try {
         Config cfg = load_config(argc, argv);
 
-        std::printf("[dnfs2] listen=%s:%d threads=%d\n",
-                    cfg.listen_host.c_str(), cfg.listen_port, cfg.threads);
+        std::printf("[dnfs2] listen=%s:%d threads=%d instance=%s\n",
+                    cfg.listen_host.c_str(), cfg.listen_port, cfg.threads,
+                    cfg.instance.c_str());
         std::printf("[dnfs2] db=%s:%d ai_review=%s gateway=%s\n",
                     cfg.db_host.c_str(), cfg.db_port,
                     cfg.review_url.c_str(), cfg.gateway_url.c_str());
