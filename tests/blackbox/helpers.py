@@ -7,6 +7,7 @@ micro_servers 黑盒测试 — 共享工具模块。
 
 import http.client
 import json
+import random
 import socket
 import struct
 import time
@@ -326,3 +327,50 @@ def check_service(url: str, timeout: float = 8.0) -> tuple:
         return False, f"网络错误: {e.strerror if hasattr(e, 'strerror') else str(e)}"
     except Exception as e:
         return False, str(e)
+
+
+# ---------------------------------------------------------------------------
+# gateway 测试专用工具
+# ---------------------------------------------------------------------------
+
+def random_xff() -> str:
+    """生成随机 X-Forwarded-For 值，用于隔离 gateway 的 IP 级限流桶。
+
+    背景：gateway 直连模式下信任客户端 XFF 头（审计发现 A4），每个测试场景
+    使用独立随机 XFF，可避免限流用例之间互相消耗配额（如登录 5 次/5 分钟）。
+    """
+    return f"10.{random.randint(1, 254)}.{random.randint(1, 254)}.{random.randint(1, 254)}"
+
+
+# 响应体泄露特征：源码文件名/路径/C++ 类型签名（P0-2/P0-3 脱敏回归基线）
+_LEAK_PATTERNS = ("main.cpp", ".hpp", ".cpp:", "/opt/", "boost::", "std::",
+                  "source_location", "typeid", "__cxa")
+
+
+def assert_no_internal_leak(body: str, name: str, counter: Counter):
+    """断言响应体不含内部实现信息（源码路径/C++ 类型名等，P0-2/P0-3 回归）。"""
+    hits = [p for p in _LEAK_PATTERNS if p in body]
+    if not hits:
+        print(f"  [PASS] {name}")
+        counter.add_pass()
+        return True
+    else:
+        print(f"  [FAIL] {name}: 响应泄露内部信息 {hits}")
+        counter.add_fail(name, f"leak patterns {hits}")
+        return False
+
+
+def db_execute(action: str, table: str, *, where: dict = None,
+               values: dict = None, host: str = "127.0.0.1",
+               port: int = 8005, timeout: float = 10.0) -> dict:
+    """通过 pymsg 调 db execute 路由（测试数据准备/清理用）。
+
+    返回 db 完整响应 {"success": ..., "data": ...}；db 不可达时
+    返回 {"success": False, "error": ...}（PymsgClient 内部兜底）。
+    """
+    payload = {"_route": "execute", "action": action, "table": table}
+    if where is not None:
+        payload["where"] = where
+    if values is not None:
+        payload["values"] = values
+    return PymsgClient(host, port, "test_blackbox").call(payload, timeout)

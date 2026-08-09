@@ -17,7 +17,7 @@ tests/blackbox/
 ├── config.py           # 服务地址与端口映射
 ├── helpers.py          # HTTP/TCP 请求封装 + 断言工具 + 计数器
 ├── test_runner.py      # 统一入口，--url 自动识别目标服务
-├── test_gateway.py     # 用户注册 → 登录 → Token → 代理转发
+├── test_gateway.py     # 输入校验/Token契约/代理路径安全/限流/CORS（v0.8.0 契约，认证链路待测试钩子）
 ├── test_captcha.py     # 获取验证码 → 校验 → 一次性消费
 ├── test_smtp.py        # 发送邮箱验证码 → 校验
 ├── test_dnfs.py        # 创建笔记 → 查询 → 更新 → 删除（含内容审核）

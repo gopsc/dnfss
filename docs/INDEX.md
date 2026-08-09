@@ -7,9 +7,9 @@
 ```
 docs/
 ├── INDEX.md                              # 本文件（文档总索引）
-├── security/                             # 安全审计与加固（28 篇）
+├── security/                             # 安全审计与加固（29 篇）
 ├── reviews/                              # 代码审查日志（4 篇）
-└── reports/                              # 分析报告与开发规划（11 篇）
+└── reports/                              # 分析报告与开发规划（12 篇）
 ```
 
 ---
@@ -39,6 +39,7 @@ docs/
 | waf | [waf_SECURITY_AUDIT_20260801.md](security/waf_SECURITY_AUDIT_20260801.md) | Go WAF 网关（TLS、coraza、反向代理） |
 | gateway | [gateway_SECURITY_AUDIT_20260801.md](security/gateway_SECURITY_AUDIT_20260801.md) | C++20 应用网关（鉴权、Token、反向代理）初版 |
 | gateway | [gateway_SECURITY_AUDIT_20260807.md](security/gateway_SECURITY_AUDIT_20260807.md) | C++20 应用网关复审版（P0全部修复，进程退出bug修复） |
+| gateway | [gateway_SECURITY_AUDIT_20260809.md](security/gateway_SECURITY_AUDIT_20260809.md) | C++20 应用网关增量复审（8 项新发现：关闭崩溃、头名大小写架空XFF修复等；黑盒测试重写落地） |
 | core | [core_SECURITY_AUDIT_20260801.md](security/core_SECURITY_AUDIT_20260801.md) | C++20 进程托管服务（PMC/Nidus） |
 | db | [db_SECURITY_AUDIT_20260801.md](security/db_SECURITY_AUDIT_20260801.md) | Python 数据库服务（pymsg、SQLAlchemy、日志收集） |
 | db2 | [db2_SECURITY_AUDIT_20260806.md](security/db2_SECURITY_AUDIT_20260806.md) | C++20 数据库 RPC 服务（db 的 C++ 重实现，SQLite C API） |
@@ -80,7 +81,7 @@ docs/
 |------|------|
 | [blackbird_research_report.md](reports/blackbird_research_report.md) | blackbird 项目研究报告（安全架构分析、改进建议、里程碑规划） |
 | [core_service_registry_dev_doc.md](reports/core_service_registry_dev_doc.md) | Core 模块注册中心功能扩展开发文档（服务注册/发现/健康守护/自动重启） |
-| [auth_service_plan.md](reports/auth_service_plan.md) | 权限系统独立化计划书（认证授权从 gateway 拆分为独立服务） |
+| [auth_service_plan.md](reports/auth_service_plan.md) | 认证独立化（CA 模块）开发文档（waf→ca→gateway 前置拓扑；gateway 退 8445 纯转发不验签；下游/WAF/前端零改动） |
 | [aibox_open_dev_plan.md](reports/aibox_open_dev_plan.md) | aibox 开放版开发计划（命令注入漏洞修复、安全沙箱方案） |
 | [aibox_file_network_cli_refactor.md](reports/aibox_file_network_cli_refactor.md) | aibox 文件/网络操作命令行化重构计划 |
 | [blackbird_promo_full.md](reports/blackbird_promo_full.md) | blackbird 项目完整版宣传文案 |
@@ -90,6 +91,7 @@ docs/
 | [actpred_pretrain_test_20260808.md](reports/actpred_pretrain_test_20260808.md) | actpred 预训练与推理测试报告（action_dim=18 变更、.mt 解析器、预训练、推理基准、NPU 调研） |
 | [captcha_cpp_rewrite_dev_doc.md](reports/captcha_cpp_rewrite_dev_doc.md) | captcha 模块 C++20 重写开发方案（FreeType + stb_image_write 替代 Pillow，协议兼容零改动） |
 | [smtp_cpp_rewrite_dev_doc.md](reports/smtp_cpp_rewrite_dev_doc.md) | smtp 模块 C++20 重写开发方案（SMTP_SSL 客户端手写，审计 7 项遗留一并在重写中修复，零新增系统依赖） |
+| [libhttp_remote_addr_dev_doc.md](reports/libhttp_remote_addr_dev_doc.md) | libhttp 对端地址透传开发方案（X-Remote-Addr 可信头注入，非破坏；gateway trust_xff 配套，闭环审计 A4） |
 
 ---
 
