@@ -6,33 +6,44 @@
 
 ---
 
-## 代码验证记录
+## ⚠️ 合并追溯说明（2026-08-10）
 
-**验证日期**: 2026-08-03  
-**验证方式**: 逐条对照审计报告与当前代码（`__init__.py`、`rpc.py`、`async_queue.py`）
+原始审计报告共 16 条发现（P0×3 / P1×5 / P2×4 / P3×4）。其中 **6 条已修复项**
+（P0-1、P0-2、P1-1、P1-2、P1-3、P1-5）的修复代码已落地并经 2026-08-03 验证，
+现已作为 `[SECURITY AUDIT ... ✅ 已修复]` 注释合并进源文件对应位置：
 
-### 验证结果汇总
+| 编号 | 已合并位置 |
+|------|------------|
+| P0-1 | `pymsg/__init__.py` — `recv()`、`_recv_exact()` |
+| P0-2 | `pymsg/__init__.py` — `recv()`、`_handle_client()` |
+| P1-1 | `pymsg/__init__.py` — `MsgServer.__init__`、`_accept_client()` |
+| P1-2 | `pymsg/__init__.py` — `_BoundedThreadPoolExecutor` 类、`MsgServer.__init__`、`_handle_client()` |
+| P1-3 | `pymsg/rpc.py` — `_sanitize_error()` |
+| P1-5 | `pymsg/rpc.py` — 模块顶部 `_MAX_NUM_DIGITS` 注释、`_dispatch()` |
 
-| 等级 | 总数 | 已修复 | 部分修复 | 未修复 | 修复率 |
-|------|------|--------|----------|--------|--------|
-| P0 | 3 | 2 | 0 | 1 | 67% |
-| P1 | 5 | 4 | 0 | 1 | 80% |
-| P2 | 4 | 0 | 0 | 4 | 0% |
-| P3 | 4 | 0 | 0 | 4 | 0% |
-| **合计** | **16** | **6** | **0** | **10** | **37.5%** |
+**本报告以下章节仅保留尚未修复（未合并）的 10 条发现作为待办跟踪**，已修复条目
+已从「逐条验证」「修复进度」及详细问题章节中删除，其完整描述见源代码注释。
 
-### 逐条验证
+---
 
-| 编号 | 状态 | 代码位置 | 验证说明 |
-|------|------|----------|----------|
-| P0-1 | ✅ 已修复 | `__init__.py` L103-120, L140-170 | `recv()` 改为 deadline 模式：`_recv_exact` 接收 `time.monotonic()+timeout` 作为总截止时刻，每次 `recv_into` 前按剩余时间收紧 socket 超时；header 与 payload 共享同一总超时，逐字节发送无法刷新 deadline，半开连接被及时关闭（已实测：0.6s 超时 0.60s 即抛 TimeoutError） |
-| P0-2 | ✅ 已修复 | `__init__.py` L113-114, L462-463 | 双重防护：`recv()` 将 `UnicodeDecodeError` 包装为 `ConnectionError`；`_handle_client` 防御性捕获 `UnicodeDecodeError` |
+## 剩余未修复条目（待跟踪）
+
+### 汇总
+
+| 等级 | 剩余总数 | 说明 |
+|------|----------|------|
+| P0 | 1 | 无认证/鉴权机制 |
+| P1 | 1 | 明文 TCP，无 TLS |
+| P2 | 4 | 健壮性/配置问题 |
+| P3 | 4 | 优化建议 |
+| **合计** | **10** | |
+
+### 逐条验证（仅未合并项）
+
+| 编号 | 状态 | 代码位置 | 说明 |
+|------|------|----------|------|
 | P0-3 | ❌ 未修复 | `rpc.py` L80-171 | 无认证机制，仅依赖 127.0.0.1 网络层隔离 |
-| P1-1 | ✅ 已修复 | `__init__.py` L342-350, L467-484 | `MsgServer` 新增 `max_connections` 参数（默认 1000），`_accept_client` 在 `len(_clients) >= max_connections` 时直接拒绝并关闭新连接；已实测 max_connections=3 时第 4 个连接被关闭（ConnectionResetError），handler 只处理前 3 条 |
-| P1-2 | ✅ 已修复 | `__init__.py` L316-333, L369, L405-410, L530-540 | 新增 `_BoundedThreadPoolExecutor`（`submit` 时检查 `_work_queue.qsize()`，超限抛 `queue.Full`）；`MsgServer` 新增 `max_queue_size` 参数（默认 1000），`_handle_client` 捕获 `queue.Full` 后拒绝并断开该连接；已实测 workers=1 + max_queue_size=1 时，慢 handler 阻塞下第 3 个连接被拒绝关闭，handler 只处理前 2 个任务 |
-| P1-3 | ✅ 已修复 | `rpc.py` L49-57, L160-178 | 新增 `_sanitize_error()`：用 `_PATH_RE` 正则将异常信息中的绝对路径（如 `/opt/micro_servers/db/xxx.py`）替换为 `<redacted>`，保留业务错误语义；`_dispatch` 返回给客户端前统一调用；已实测异常信息含绝对路径时返回体仅含 `<redacted>`，不透传 `/opt/...` |
 | P1-4 | ❌ 未修复 | 全模块 | 明文 TCP，无 TLS 支持 |
-| P1-5 | ✅ 已修复 | `rpc.py` L28-46, L158-166 | `json.loads` 增加 `parse_int=_checked_int` / `parse_float=_checked_float` 钩子，数字位数超 `_MAX_NUM_DIGITS=100` 抛 `ValueError`；`except` 捕获 `RecursionError` 防止深度嵌套导致栈溢出；解析失败统一返回 `"invalid JSON request"` 不透传输入片段；已实测超大整数（10000 位）与深度 200000 嵌套均被拒绝，服务存活 |
 | P2-1 | ❌ 未修复 | `__init__.py` L106-111 | length=0 空消息无特殊处理 |
 | P2-2 | ❌ 未修复 | `__init__.py` L395-418 | `broadcast()` 无频率/权限控制 |
 | P2-3 | ❌ 未修复 | `__init__.py` L377-378 | `except (ValueError, OSError): break` 仍捕获所有 OSError（含 EINTR） |
@@ -55,44 +66,20 @@
 
 ---
 
-## 修复进度
+## 修复进度（剩余）
 
-| 优先级 | 总数 | 已修复 | 待修复 |
-|--------|------|--------|--------|
-| P0 | 3 | 2 | 1 |
-| P1 | 5 | 2 | 3 |
-| P2 | 4 | 0 | 4 |
-| P3 | 4 | 0 | 4 |
+| 优先级 | 剩余待修复 |
+|--------|------------|
+| P0 | 1（无认证） |
+| P1 | 1（无 TLS） |
+| P2 | 4 |
+| P3 | 4 |
 
 ---
 
 ## 🔴 P0 — 严重问题
 
-### P0-1: recv 超时可被绕过（Slowloris 变种 DoS）✅ 已修复
-- **位置**: `__init__.py:103-120`（`recv`）、`__init__.py:140-170`（`_recv_exact`）
-- **原问题**: `sock.settimeout()` 设置的是**单次系统调用**超时，不是整个消息接收总超时。攻击者可每次在快超时时发送 1 字节：
-  - 4 字节长度头最长可占用 `4 * recv_timeout = 40秒`
-  - 载荷部分按字节发送可使连接存活任意长时间
-- **影响**: 少量攻击者即可耗尽连接/线程资源，造成所有依赖 pymsg 的服务拒绝服务
-- **修复方案（deadline 模式）**:
-  - `recv()` 在开头计算 `deadline = time.monotonic() + timeout`，header 与 payload 共享**同一总截止时刻**
-  - `_recv_exact` 每次 `recv_into` 前按 `deadline - now` 设置剩余 socket 超时，剩余时间耗尽即抛 `TimeoutError`
-  - 逐字节发送会不断刷新单次 `sock.settimeout()`，但**无法刷新总 deadline**，半开连接会被及时关闭
-  - 实测验证：超时 0.6s 时，逐字节攻击在 0.60s 即被 TimeoutError 终止（旧实现需等到完整消息 1.4s）
-
----
-
-### P0-2: UnicodeDecodeError 可导致同步模式服务崩溃 ✅ 已修复
-- **位置**: `__init__.py:113-114`、`__init__.py:462-463`
-- **原问题**: `payload.decode("utf-8")` 抛出的 `UnicodeDecodeError`（`ValueError` 子类）不在 `_handle_client` 的异常捕获列表中，同步模式下收到无效 UTF-8 字节会直接导致整个服务进程崩溃
-- **修复方案（双重防护）**:
-  1. `recv()` 函数将 `UnicodeDecodeError` 包装为 `ConnectionError`（第一层）
-  2. `_handle_client` 异常捕获列表添加 `UnicodeDecodeError`（第二层，防御性兜底）
-- **影响范围**: 已消除，db/confs/smtp/captcha 等所有 pymsg 服务均受保护
-
----
-
-### P0-3: 无认证/鉴权机制（已部分缓解：绑定 127.0.0.1）
+### P0-3: 无认证/鉴权机制
 - **位置**: `rpc.py:80-171` 整个 RpcServer
 - **问题**: RPC 服务完全没有身份验证，任何能连接到端口的客户端都能调用所有路由
 - **当前缓解**: 所有服务均绑定 127.0.0.1，依赖网络层隔离
@@ -107,11 +94,7 @@
 
 | # | 问题 | 位置 | 状态 |
 |---|------|------|------|
-| P1-1 | 无连接数限制，连接耗尽攻击 | `__init__.py:342-350,467-484` | ✅ 已修复（`max_connections` 默认 1000） |
-| P1-2 | 线程池无队列限制，慢 handler 耗尽内存 | `__init__.py:316-333,369,405-410,530-540` | ✅ 已修复（`_BoundedThreadPoolExecutor` + `max_queue_size` 默认 1000） |
-| P1-3 | 异常信息直接返回客户端，泄露内部细节 | `rpc.py:49-57,160-178` 新增 `_sanitize_error()` 脱敏绝对路径 | ✅ 已修复 |
 | P1-4 | 无 TLS/加密传输，内网流量可被窃听 | 全模块明文 TCP | ❌ 未修复 |
-| P1-5 | JSON 解析无深度限制，深度嵌套导致栈溢出/CPU 100% | `rpc.py:28-46,158-166` `parse_int/parse_float` 钩子 + 捕获 `RecursionError` | ✅ 已修复 |
 
 ---
 
@@ -141,39 +124,22 @@
 
 1. ✅ 64 MiB 消息大小上限（`_MAX_MSG_SIZE`），防止 OOM
 2. ✅ send/recv 双端都检查消息大小
-3. ✅ recv_timeout 防 Slowloris（基础实现，需修复 P0-1）
-4. ✅ 线程池模式下同一连接串行处理，避免帧交错
-5. ✅ 使用 `sendmsg` 散射-聚集 I/O 减少内存拷贝
-6. ✅ 使用 `recv_into` 预分配 buffer
-7. ✅ 线程安全的发送锁
-8. ✅ 回调异常隔离（线程池模式）
-9. ✅ 单元测试覆盖消息大小边界
+3. ✅ 线程池模式下同一连接串行处理，避免帧交错
+4. ✅ 使用 `sendmsg` 散射-聚集 I/O 减少内存拷贝
+5. ✅ 使用 `recv_into` 预分配 buffer
+6. ✅ 线程安全的发送锁
+7. ✅ 回调异常隔离（线程池模式）
+8. ✅ 单元测试覆盖消息大小边界
 
-## 新增安全机制（审计后添加，审计报告未覆盖）
-
-| 机制 | 代码位置 | 说明 |
-|------|----------|------|
-| UnicodeDecodeError 双重防护 | `__init__.py` L113-114, L462-463 | `recv()` 包装为 `ConnectionError` + `_handle_client` 防御性捕获，防止无效 UTF-8 导致服务崩溃 |
-| AsyncRpcQueue 有界队列 | `async_queue.py` L47, L130-132 | `max_queue_size` 默认 10000，超限丢弃最旧数据，防止内存无限增长 |
-| AsyncRpcQueue 错误隔离 | `async_queue.py` L49, L189-194 | `on_error` 回调 + 异常捕获，后台线程失败不影响主业务 |
-| RpcClient 响应格式校验 | `rpc.py` L89-90 | 校验响应必须是含 `success` 字段的 dict，非法响应抛出 `RpcError` |
-| MsgClient.call 节制日志 | `__init__.py` L209, L248-254 | 重试日志首次立即打印，后续每 5 秒一次，避免刷屏 |
+> 注：P0-1（recv 总超时）、P0-2（UnicodeDecodeError 防护）、P1-1（连接数限制）、
+> P1-2（有界队列）、P1-3（异常脱敏）、P1-5（JSON 解析限制）等已修复机制均已合并进
+> 源代码注释，见开头「合并追溯说明」。
 
 ---
 
-## 修复路线图
-
-### 立即（24小时）
-- [x] 修复 P0-1: recv 总超时（deadline 模式）✅ 已完成
-- [x] 修复 P0-2: 捕获 UnicodeDecodeError/JSONDecodeError ✅ 已完成
-
-### 短期（72小时）
-- [x] 添加最大连接数限制 ✅ 已完成
-- [x] 线程池改用有界队列 ✅ 已完成
-- [x] 异常信息脱敏 ✅ 已完成
-- [x] JSON 解析深度限制 ✅ 已完成
+## 修复路线图（剩余）
 
 ### 中期
-- [ ] 统一认证机制
-- [ ] TLS 支持选项
-- [ ] 安全事件日志
+- [ ] 统一认证机制（P0-3）
+- [ ] TLS 支持选项（P1-4）
+- [ ] 安全事件日志（P3-1）

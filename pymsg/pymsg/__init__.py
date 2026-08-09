@@ -101,6 +101,12 @@ def recv(
             message is received.
         TimeoutError: If the operation exceeds the timeout.
     """
+    # [SECURITY AUDIT P0-1 ✅ 已修复] recv 总超时（deadline 模式）
+    # 原问题：sock.settimeout() 是「单次系统调用」超时而非整条消息总超时，
+    # 攻击者可每次在快超时时发 1 字节绕过，造成 Slowloris 型连接耗尽 DoS。
+    # 修复：header 与 payload 共享同一总截止时刻 deadline，每次 recv_into
+    # 前按剩余时间收紧 socket 超时，半开连接被及时关闭（实测 0.6s 超时即终止）。
+    # 详见 docs/security/pymsg_SECURITY_AUDIT_20260801.md
     deadline = None
     if timeout is not None:
         deadline = time.monotonic() + timeout
@@ -113,6 +119,11 @@ def recv(
             )
         payload = _recv_exact(sock, length, deadline)
         return payload.decode("utf-8")
+    # [SECURITY AUDIT P0-2 ✅ 已修复] UnicodeDecodeError 导致同步服务崩溃
+    # 原问题：payload.decode("utf-8") 抛出的 UnicodeDecodeError（ValueError 子类）
+    # 不在 _handle_client 捕获列表中，同步模式收到无效 UTF-8 会令整个进程崩溃。
+    # 修复（双重防护）：此处将 UnicodeDecodeError 包装为 ConnectionError（第一层），
+    # _handle_client 再防御性捕获兜底（第二层）。db/confs/smtp/captcha 等服务均受保护。
     except UnicodeDecodeError:
         raise ConnectionError("invalid UTF-8 payload") from None
     except (TimeoutError, _socket.timeout):
@@ -155,6 +166,9 @@ def _recv_exact(
     ``TimeoutError``。这防止 Slowloris 型攻击：逐字节发送会不断刷新单次
     ``sock.settimeout()``，但无法刷新总 deadline，半开连接会被及时关闭。
     """
+    # [SECURITY AUDIT P0-1 ✅ 已修复] 本函数为 P0-1 的核心修复实现，
+    # 与上方 recv() 的 deadline 计算配合，构成整条消息的总超时防护。
+    # 详见 docs/security/pymsg_SECURITY_AUDIT_20260801.md
     buf = bytearray(n)
     view = memoryview(buf)
     got = 0
@@ -313,6 +327,11 @@ class MsgClient:
             self._sock = None
 
 
+# [SECURITY AUDIT P1-2 ✅ 已修复] 线程池无队列限制 → 慢 handler 耗尽内存
+# 原问题：标准 ThreadPoolExecutor 使用无界队列，慢 handler 时任务无限堆积直至 OOM。
+# 修复：本类在 submit 时检查排队深度，超限即抛 queue.Full；MsgServer 新增
+# max_queue_size 参数（默认 1000），_handle_client 捕获 queue.Full 后拒绝并断开连接。
+# 详见 docs/security/pymsg_SECURITY_AUDIT_20260801.md
 class _BoundedThreadPoolExecutor(ThreadPoolExecutor):
     """有界线程池：提交队列有上限，满时抛 ``queue.Full``。
 
@@ -368,7 +387,13 @@ class MsgServer:
 
     def __init__(self, addr: str, port: int, *, workers: int = 0,
                  recv_timeout: float = _RECV_TIMEOUT,
+                 # [SECURITY AUDIT P1-1 ✅ 已修复] 无连接数限制 → 连接耗尽攻击
+                 # 原问题：服务端无并发连接上限，攻击者可耗尽文件描述符/线程资源。
+                 # 修复：新增 max_connections（默认 1000），_accept_client 在
+                 # len(_clients) >= max_connections 时直接拒绝并关闭新连接。
+                 # 详见 docs/security/pymsg_SECURITY_AUDIT_20260801.md
                  max_connections: int = 1000,
+                 # [SECURITY AUDIT P1-2 ✅ 已修复] 见上方 _BoundedThreadPoolExecutor
                  max_queue_size: int = 1000) -> None:
         self.addr = addr
         self.port = port
@@ -499,8 +524,9 @@ class MsgServer:
             client_sock, client_addr = servsock.accept()
             if client_sock.fileno() == -1:
                 return
-            # 活跃连接数上限控制：超过 max_connections 直接拒绝，
-            # 防止连接耗尽攻击（listen backlog 只限制 SYN 队列，不限制已建立连接数）
+            # [SECURITY AUDIT P1-1 ✅ 已修复] 活跃连接数上限控制：超过
+            # max_connections 直接拒绝，防止连接耗尽攻击（listen backlog 只限制
+            # SYN 队列，不限制已建立连接数）。本段即 P1-1 的落地实现。
             if len(self._clients) >= self._max_connections:
                 try:
                     client_sock.close()
@@ -518,8 +544,9 @@ class MsgServer:
             text = recv(s, timeout=self._recv_timeout)
         except (ConnectionError, ConnectionResetError, OSError,
                 TimeoutError, UnicodeDecodeError):
-            # TimeoutError: 客户端在超时时间内未发送完整消息（Slowloris 防护），关闭连接
-            # UnicodeDecodeError: 防御性捕获，recv() 已包装为 ConnectionError，此处兜底
+            # [SECURITY AUDIT P0-2 ✅ 已修复（第二层兜底）] UnicodeDecodeError：
+            # recv() 已将其包装为 ConnectionError，此处防御性捕获防止任何遗漏。
+            # TimeoutError：客户端在超时时间内未发送完整消息（Slowloris 防护，P0-1），关闭连接
             self._remove_client(s, socketlist)
             return
         addr = self._clients.get(s, ("unknown", 0))
@@ -537,7 +564,8 @@ class MsgServer:
         try:
             self._pool.submit(self._run_task, s, addr, text, on_message)
         except _queue.Full:
-            # 有界队列已满：慢 handler 时任务不应无限堆积，拒绝并断开该连接
+            # [SECURITY AUDIT P1-2 ✅ 已修复] 有界队列已满：慢 handler 时任务不应
+            # 无限堆积，拒绝并断开该连接，防止内存无限增长。
             with self._lock:
                 self._busy.discard(s)
             self._remove_client(s, socketlist)

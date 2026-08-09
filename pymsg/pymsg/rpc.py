@@ -25,6 +25,13 @@ from . import MsgClient, MsgServer
 
 __all__ = ["RpcClient", "RpcServer", "RpcError"]
 
+# [SECURITY AUDIT P1-5 ✅ 已修复] JSON 解析无深度/数字位数限制 → 栈溢出 / CPU 100%
+# 原问题：json.loads 对深度嵌套与超大数字无限制，恶意输入可触发 RecursionError
+# 栈溢出或消耗大量 CPU/内存。修复：parse_int/parse_float 钩子限制数字位数
+# <= _MAX_NUM_DIGITS(100)，并捕获 RecursionError 防止深度嵌套；解析失败统一返回
+# "invalid JSON request" 不透传输入片段（见 _dispatch）。实测 10000 位整数与
+# 深度 200000 嵌套均被拒绝，服务存活。
+# 详见 docs/security/pymsg_SECURITY_AUDIT_20260801.md
 # 超大数字位数上限：防止超大整数/浮点（如 10^100000）消耗大量 CPU 与内存
 _MAX_NUM_DIGITS = 100
 
@@ -46,6 +53,11 @@ def _checked_float(value: str) -> float:
     return float(value)
 
 
+# [SECURITY AUDIT P1-3 ✅ 已修复] 异常信息直接返回客户端 → 泄露内部细节
+# 原问题：handler 抛出的异常 str(e) 含绝对路径（如 /opt/micro_servers/db/xxx.py）、
+# 堆栈等内部细节，直接回显给客户端。修复：_dispatch 返回前统一经 _sanitize_error()
+# 将绝对路径替换为 <redacted>，保留业务错误语义（实测含绝对路径时仅返回 <redacted>）。
+# 详见 docs/security/pymsg_SECURITY_AUDIT_20260801.md
 def _sanitize_error(msg: str) -> str:
     """脱敏异常信息中的绝对路径等内部细节，保留业务错误语义。
 
@@ -187,7 +199,8 @@ class RpcServer:
     # ── 分发与响应包装 --------------------------------------------------
     def _dispatch(self, sock, addr, text):
         try:
-            # parse_int/parse_float 限制超大数字；RecursionError 防护深度嵌套
+            # [SECURITY AUDIT P1-5 ✅ 已修复] parse_int/parse_float 限制超大数字；
+            # RecursionError 防护深度嵌套（落地实现见文件顶部 _MAX_NUM_DIGITS 注释）
             req = json.loads(text, parse_int=_checked_int,
                              parse_float=_checked_float)
         except (json.JSONDecodeError, ValueError, RecursionError):
