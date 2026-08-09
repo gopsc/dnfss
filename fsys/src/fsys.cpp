@@ -14,7 +14,7 @@
  * 安全改进（相比 Python static）：
  *   F-1  server.setMaxBodySize(10MB) 限制请求体大小
  *   F-2  libhttp 原生 HTTPS 支持，无需回退开发服务器
- *   F-3  命令行参数 --addr/-a --port/-p --threads/-t
+ *   F-3  命令行参数 --host/--addr/-a --port/-p --threads/-t --log-level --instance --config --help
  *   F-4  所有端口/线程数有严格边界校验
  *   F-5  Boost.Beast 异步多线程替代 Flask 同步
  *   F-6  消除 Python/Flask/waitress 依赖
@@ -271,10 +271,39 @@ struct Config {
     int         db_port      = 8005;
 
     std::string dnfs_url     = "http://127.0.0.1:8006";
+
+    // CLI 标准化参数（Step 3）
+    std::string log_level         = "info";       // debug|info|warn|error
+    std::string instance_name     = "fsys";       // 实例名（注册中心用）
+    std::string confs_config_name = "static.ini"; // confs 拉取的配置名
 };
 
 static Config load_config(int argc, char* argv[]) {
     Config cfg;
+
+    // 0. 预扫描 --help 和 --config（需在 confs 拉取前处理）
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            std::printf(
+                "fsys — C++20 静态文件托管服务\n\n"
+                "Usage: fsys [OPTIONS]\n\n"
+                "Options:\n"
+                "  -h, --help              Show this help and exit\n"
+                "  -a, --addr <addr>       Listen address (alias: --host)\n"
+                "      --host <addr>       Listen address (canonical name)\n"
+                "  -p, --port <port>       Listen port\n"
+                "  -t, --threads <n>       Worker threads\n"
+                "      --config <name>     confs config name (default: static.ini)\n"
+                "      --log-level <level> debug|info|warn|error (default: info)\n"
+                "      --instance <name>   Instance name (default: fsys)\n\n"
+                "Config priority: CLI > env > confs > defaults\n");
+            std::exit(0);
+        }
+        if (arg == "--config" && i + 1 < argc) {
+            cfg.confs_config_name = argv[++i];
+        }
+    }
 
     // 1. confs 引导地址
     if (const char* h = std::getenv("CONFS_HOST")) cfg.confs_host = h;
@@ -286,17 +315,18 @@ static Config load_config(int argc, char* argv[]) {
         }
     }
 
-    // 2. 从 confs 拉取 static.ini（retry_on_refused=true）
+    // 2. 从 confs 拉取配置（retry_on_refused=true）
     std::string ini_text;
     try {
         RpcClient confs_client(cfg.confs_host, cfg.confs_port, "fsys",
                                /*timeout=*/5.0, /*retry_on_refused=*/true);
-        json::value data = confs_client.call("get", {{"name", "static.ini"}});
+        json::value data = confs_client.call("get", {{"name", cfg.confs_config_name}});
         if (data.is_object() && data.as_object().contains("content")) {
             ini_text = std::string(data.as_object().at("content").as_string());
         }
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "[fsys] 从 confs 获取 static.ini 失败: %s\n", e.what());
+        std::fprintf(stderr, "[fsys] 从 confs 获取 %s 失败: %s\n",
+                     cfg.confs_config_name.c_str(), e.what());
         std::exit(1);
     }
 
@@ -343,9 +373,12 @@ static Config load_config(int argc, char* argv[]) {
     // 5. 命令行参数（最高优先级）
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if ((arg == "--addr"    || arg == "-a") && i + 1 < argc) cfg.listen_host = argv[++i];
+        if ((arg == "--addr"    || arg == "-a" || arg == "--host") && i + 1 < argc) cfg.listen_host = argv[++i];
         else if ((arg == "--port" || arg == "-p") && i + 1 < argc) cfg.listen_port = safe_stoi(argv[++i], "--port");
         else if ((arg == "--threads" || arg == "-t") && i + 1 < argc) cfg.threads = safe_stoi(argv[++i], "--threads");
+        else if (arg == "--log-level" && i + 1 < argc) cfg.log_level = argv[++i];
+        else if (arg == "--instance" && i + 1 < argc) cfg.instance_name = argv[++i];
+        // --config 和 --help 已在预扫描阶段处理
     }
 
     // 6. 校验必需配置项
@@ -370,6 +403,18 @@ static Config load_config(int argc, char* argv[]) {
     if (cfg.threads < 1 || cfg.threads > 256) {
         std::fprintf(stderr, "[fsys] invalid threads: %d (must be 1-256)\n", cfg.threads);
         std::exit(1);
+    }
+
+    // log_level 校验
+    {
+        std::string ll = cfg.log_level;
+        std::transform(ll.begin(), ll.end(), ll.begin(), ::tolower);
+        if (ll != "debug" && ll != "info" && ll != "warn" && ll != "error") {
+            std::fprintf(stderr, "[fsys] invalid --log-level: %s (must be debug|info|warn|error)\n",
+                         cfg.log_level.c_str());
+            std::exit(1);
+        }
+        cfg.log_level = ll;
     }
 
     // 8. 路径规范化：static_root/SSL 相对路径基于当前工作目录
@@ -654,8 +699,11 @@ public:
             _filesystem_enabled = false;
         }
 
-        std::printf("[fsys] 配置来源: confs (static.ini @ %s:%d)\n",
+        std::printf("[fsys] 配置来源: confs (%s @ %s:%d)\n",
+                    _cfg.confs_config_name.c_str(),
                     _cfg.confs_host.c_str(), _cfg.confs_port);
+        std::printf("[fsys] 实例: %s | 日志级别: %s\n",
+                    _cfg.instance_name.c_str(), _cfg.log_level.c_str());
         std::printf("[fsys] 静态目录: %s\n", _cfg.static_root.c_str());
     }
 
@@ -687,6 +735,19 @@ private:
     void _log(const std::string& level, const std::string& service,
               const std::string& message, const std::string& trace_id = "",
               const std::string& extra = "") {
+        // 日志级别过滤
+        static const std::unordered_map<std::string, int> kLogLevels = {
+            {"debug", 0}, {"DEBUG", 0},
+            {"info", 1}, {"INFO", 1},
+            {"warn", 2}, {"WARNING", 2},
+            {"error", 3}, {"ERROR", 3}
+        };
+        auto cfg_it = kLogLevels.find(_cfg.log_level);
+        auto msg_it = kLogLevels.find(level);
+        if (cfg_it != kLogLevels.end() && msg_it != kLogLevels.end()) {
+            if (msg_it->second < cfg_it->second) return;
+        }
+
         LogEntry e;
         e.ts = utc_now();
         e.service = service;
@@ -1576,6 +1637,9 @@ int main(int argc, char* argv[]) {
                     cfg.static_root.c_str(), cfg.ssl_enabled ? "on" : "off");
         std::printf("[fsys] db=%s:%d dnfs=%s\n",
                     cfg.db_host.c_str(), cfg.db_port, cfg.dnfs_url.c_str());
+        std::printf("[fsys] instance=%s log-level=%s config=%s\n",
+                    cfg.instance_name.c_str(), cfg.log_level.c_str(),
+                    cfg.confs_config_name.c_str());
         std::fflush(stdout);
 
         FsysServer server(std::move(cfg));
