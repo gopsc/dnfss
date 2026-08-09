@@ -236,7 +236,6 @@ except RpcError as e:
 | 服务 | 配置文件 | 接入方式 |
 |------|---------|---------|
 | [static](../static/) | [static.ini](configs/static.ini) | confs 强依赖（pymsg 自动阻塞等待 confs 就绪）→ 环境变量覆盖（最高优先级，Docker 兼容） |
-| [dnfs](../dnfs/) | [dnfs.ini](configs/dnfs.ini) | confs 强依赖（pymsg 自动阻塞等待 confs 就绪）→ 环境变量覆盖（最高优先级，Docker 兼容） |
 | [db](../db/) | [db.ini](configs/db.ini) | confs 强依赖（pymsg 自动阻塞等待 confs 就绪）→ 环境变量覆盖（最高优先级，Docker 兼容） |
 
 static 的接入实现见 [static/fsys.py](../static/fsys.py)：
@@ -247,13 +246,6 @@ static 的接入实现见 [static/fsys.py](../static/fsys.py)：
 - confs 连接地址为引导配置：环境变量 `CONFS_HOST`/`CONFS_PORT` 优先，默认 `127.0.0.1:8010`
 - 支持的环境变量：`LISTEN_ADDR`/`LISTEN_PORT`/`STATIC_ROOT`/`CONFS_HOST`/`CONFS_PORT`
 - 已删除 `--config` 命令行参数和本地 `config.ini` 回退逻辑
-
-dnfs 的接入实现见 [dnfs/dnfs.py](../dnfs/dnfs.py)：
-- 两层加载顺序：confs（dnfs.ini，强依赖）→ 环境变量覆盖（优先级最高）
-- pymsg `retry_on_refused=True` 自动阻塞等待 confs 就绪，不严格要求启动顺序
-- 配置项涵盖：`[server]` host/port、`[database]` host/port/timeout、`[ai_review]` url/timeout
-- confs 连接地址为引导配置：环境变量 `CONFS_HOST`/`CONFS_PORT` 优先，默认 `127.0.0.1:8010`
-- 支持的环境变量：`LISTEN_ADDR`/`LISTEN_PORT`/`DB_HOST`/`DB_PORT`/`REVIEW_URL`/`CONFS_HOST`/`CONFS_PORT`
 
 db 的接入实现见 [db/dbv2.py](../db/dbv2.py)：
 - 两层加载顺序：confs（db.ini，强依赖）→ 环境变量覆盖（优先级最高）
@@ -274,7 +266,6 @@ confs/
 ├── configs/             # 配置文件存放目录（被分发对象）
 │   ├── example.ini      # 示例配置
 │   ├── static.ini       # static 服务配置（已接入分发）
-│   ├── dnfs.ini         # dnfs 服务配置（已接入分发）
 │   └── db.ini           # db 服务配置（已接入分发）
 ├── docs/
 │   └── SECURITY_AUDIT_20260801.md  # 安全审计报告

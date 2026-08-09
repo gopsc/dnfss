@@ -33,30 +33,24 @@ dnfs2 :8006 ──pymsg──► db2 :8005 (execute 路由) ──► SQLite
 
 ## 配置
 
-从 confs 拉取 `dnfs.ini`，环境变量覆盖，命令行参数最高优先级。
+纯 CLI + 环境变量 + 默认值，不依赖 confs。
 
-```ini
-[server]
-host = 127.0.0.1
-port = 8006
+| 配置项 | CLI 参数 | 环境变量 | 默认值 |
+|--------|---------|---------|--------|
+| 绑定地址 | `--host` / `--addr` / `-a` | `LISTEN_ADDR` | 127.0.0.1 |
+| 监听端口 | `--port` / `-p` | `LISTEN_PORT` | 8006 |
+| 工作线程 | `--threads` / `-t` | — | 4 |
+| 数据库地址 | `--db-host` | `DB_HOST` | 127.0.0.1 |
+| 数据库端口 | `--db-port` | `DB_PORT` | 8005 |
+| 数据库超时 | `--db-timeout` | — | 10 |
+| AI 审核URL | `--review-url` | `REVIEW_URL` | http://127.0.0.1:8007/review |
+| AI 审核超时 | `--review-timeout` | — | 10 |
+| 网关验签URL | `--gateway-url` | `GATEWAY_URL` | http://127.0.0.1:8443/whoami |
+| 网关超时 | `--gateway-timeout` | — | 5 |
+| 日志级别 | `--log-level` | — | info |
+| 实例名 | `--instance` | — | dnfs2 |
 
-[database]
-host = 127.0.0.1
-port = 8005
-timeout = 10
-
-[ai_review]
-url = http://127.0.0.1:8007/review
-timeout = 10
-
-[gateway]
-url = http://127.0.0.1:8443/whoami
-timeout = 5
-```
-
-环境变量: `CONFS_HOST`, `CONFS_PORT`, `LISTEN_ADDR`, `LISTEN_PORT`, `DB_HOST`, `DB_PORT`, `REVIEW_URL`, `GATEWAY_URL`
-
-命令行: `--addr`, `--port`, `--threads`
+优先级: CLI > 环境变量 > 默认值
 
 ## 构建
 

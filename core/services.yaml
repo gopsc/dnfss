@@ -29,7 +29,6 @@ services:
   - name: dnfs2
     cmd: bash /opt/micro_servers/dnfs2/_run.sh
     args:
-      - "--no-confs"
       - "--instance"
       - "dnfs2"
       - "--log-level"

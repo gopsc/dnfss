@@ -136,7 +136,7 @@
 - 数据操作：libmsg `RpcClient` 调 db2 `execute` 路由（与 Python 版调 db 路径一致）。
 - 内容审核：HttpClient POST ai_review `/review`，fail-closed。
 - 异步日志：libmsg `AsyncQueue` 写入 db2 Logs 表。
-- 配置从 confs 拉取 `dnfs.ini`，环境变量覆盖，命令行参数最高优先级；详见 [dnfs2/README.md](dnfs2/README.md)。
+- 配置通过 CLI 参数 + 环境变量 + 默认值，不依赖 confs；详见 [dnfs2/README.md](dnfs2/README.md)。
 
 ### db（通用数据库服务）
 
