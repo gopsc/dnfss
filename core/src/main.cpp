@@ -32,6 +32,7 @@
 #include "tt/Pipe.h"
 #include "main/Tttask.hh"
 #include "main/HttpTask.hh"
+#include "main/ConfsTask.hh"
 #include "main/pmc_mtd.hh"
 #include "main/subsys_call.hh"
 
@@ -39,7 +40,7 @@
 #include "cn/中文化.hpp"
 
 /* 静态区 - 存放全局变量 */
-static const char *PMC_VERSION = "0.0.10"; 	/* 版本号 */
+static const char *PMC_VERSION = "0.1.0"; 	/* 版本号 */
 static const size_t MSGLEN = 2048;		/* 单条消息的长度 */
 static const size_t MSGCNT = 100;		/* 消息条数 */
 
@@ -52,7 +53,16 @@ namespace po = boost::program_options;
 
 void pmc_init(po::variables_map&);		/* 初始化pmc并行机器 */
 void pmc_serve(po::variables_map&);		/* pmc的http伺服器模式 */
+void pmc_confs(po::variables_map&);		/* pmc内嵌confs配置服务 */
 void parse_data_from_mq(std::string&);		/* 解析消息队列收到的消息 */
+
+/* 环境变量整数解析（失败时回退默认值，不终止进程） */
+static int env_or_default(const char* key, int fallback) {
+	auto* v = std::getenv(key);
+	if (!v) return fallback;
+	try { return std::stoi(v); }
+	catch (...) { return fallback; }
+}
 
 //-------------------------------------------------------------
 //-------------------------------------------------------------
@@ -140,7 +150,8 @@ int main(int argc, char** argv) {
 		("kill",   po::value<int>(),         "kill a process")			/* 杀死一个进程 */
 		/********* 子系统服务模式 ********/
 		("init,i", po::value<std::string>(), "self-init list")			/* 输入自启动列表 */
-		("serve",  po::value<int>(),         "Run as http server");		/* 启用http伺服器 */
+		("serve",  po::value<int>(),         "Run as http server")		/* 启用http伺服器 */
+		("confs",  po::value<int>(),         "Run embedded confs rpc server");	/* 启用内嵌confs配置服务 */
 
  	/* 参数变量映射关系 */
 	po::variables_map vm;
@@ -210,7 +221,11 @@ int main(int argc, char** argv) {
 	/* TODO: 抽象出来 */
 	if (vm.count("serve"))
 		pmc_serve(vm);
-	
+
+	/* 内嵌confs配置服务 */
+	if (vm.count("confs"))
+		pmc_confs(vm);
+
 
 	/* pmc初始化函数 */
 	pmc_init(vm);
@@ -257,6 +272,29 @@ void pmc_serve(po::variables_map& vm)
 	server->start();
 	taskPool.push_back(server);
 		
+}
+
+/* 内嵌confs配置服务（pymsg RPC，只监听本地）
+ *
+ * 环境变量覆盖（CONFS_* 前缀，避免 core 环境变量污染子进程）：
+ *   CONFS_ADDR     监听地址（默认 127.0.0.1）
+ *   CONFS_PORT     监听端口（被 --confs 命令行参数覆盖）
+ *   CONFS_WORKERS  工作线程数（默认 4）
+ *   CONFS_DIR      配置文件目录（默认 ./configs） */
+void pmc_confs(po::variables_map& vm)
+{
+	std::string addr = "127.0.0.1";
+	int workers = 4;
+	std::string dir = "./configs";
+	if (auto* v = std::getenv("CONFS_ADDR"))    addr = v;
+	if (auto* v = std::getenv("CONFS_DIR"))     dir = v;
+	workers = env_or_default("CONFS_WORKERS", workers);
+
+	int port = vm["confs"].as<int>();
+
+	auto confs = std::make_shared<ConfsTask> (addr, port, workers, dir);
+	confs->start();
+	taskPool.push_back(confs);
 }
 
 

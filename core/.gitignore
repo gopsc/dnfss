@@ -130,3 +130,6 @@ go.sum
 # VS
 x64
 .vs
+
+# configs 符号链接（由 _set.sh 创建，指向 ../confs/configs/，内嵌 confs 服务使用）
+configs

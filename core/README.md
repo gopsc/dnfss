@@ -49,6 +49,18 @@ PMC在启动时生成一个AES密钥，然后用一个RSA公钥将其加密发�
 然后访问者与客户端之间的交流全部用此AES密钥加密
 
 
+## 内嵌 confs 配置服务（v0.1.0 起）
+core 内置了统一配置服务（由 confs2 合并而来，pymsg RPC 协议，与 Python confs 完全兼容）：
+
+```bash
+./nidus.out -i init.txt --serve 5200 --confs 8010
+```
+
+- `--confs <port>`：启用内嵌 confs 配置服务（get/list/reload/health 四个路由）
+- 不传 `--confs` 时行为与原版完全一致
+- 配置文件目录默认为 `./configs`（_set.sh 会创建指向 `../confs/configs` 的符号链接）
+- 环境变量：`CONFS_ADDR` / `CONFS_PORT` / `CONFS_WORKERS` / `CONFS_DIR`
+
 ## 如何使用并发机器运行程序
 首先应该在模块中创建一个启动脚本，脚本中应该完成工作目录的切换、虚拟环境的激活，以及程序的启动。
 

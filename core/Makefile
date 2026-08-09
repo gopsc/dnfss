@@ -1,4 +1,4 @@
-VERSION := 0.0.4
+VERSION := 0.1.0
 
 APP_NAME := nidus
 
@@ -16,7 +16,7 @@ CPP:= g++
 
 INCS:= -I include/
 
-MY_LIBS := -L/usr/lib -lus_th -lus_http -lus_httpclient -lcurl
+MY_LIBS := -L/usr/lib -lus_th -lus_http -lus_httpclient -lus_msg -lcurl
 LIBS := -lpthread -lssl -lcrypto -lboost_program_options -lboost_json -lboost_thread -lboost_filesystem 
 
 CPPFLAGS := --std=c++20 -O3 -pipe #-Wall -Werror
@@ -26,7 +26,7 @@ $(shell mkdir -p $(BUILD_DIR))
 
 #--------
 all: ${APP_NAME}.out
-${APP_NAME}.out: $(BUILD_DIR)/main.o $(BUILD_DIR)/PPool.o $(BUILD_DIR)/ProcessTask.o $(BUILD_DIR)/HttpTask.o $(BUILD_DIR)/Tttask.o $(BUILD_DIR)/pmc_mtd.o $(BUILD_DIR)/subsys_call.o
+${APP_NAME}.out: $(BUILD_DIR)/main.o $(BUILD_DIR)/PPool.o $(BUILD_DIR)/ProcessTask.o $(BUILD_DIR)/HttpTask.o $(BUILD_DIR)/ConfsTask.o $(BUILD_DIR)/Tttask.o $(BUILD_DIR)/pmc_mtd.o $(BUILD_DIR)/subsys_call.o
 	$(CPP) $^ $(MY_LIBS) $(LIBS) -o $@
 
 $(BUILD_DIR)/main.o:  src/main.cpp
@@ -42,6 +42,9 @@ $(BUILD_DIR)/Tttask.o: src/main/Tttask.cpp
 	$(CPP) $(CPPFLAGS) -c $^ $(INCS) -o $@
 
 $(BUILD_DIR)/HttpTask.o: src/main/HttpTask.cpp
+	$(CPP) $(CPPFLAGS) -c $^ $(INCS) -o $@
+
+$(BUILD_DIR)/ConfsTask.o: src/main/ConfsTask.cpp
 	$(CPP) $(CPPFLAGS) -c $^ $(INCS) -o $@
 
 $(BUILD_DIR)/pmc_mtd.o: src/main/pmc_mtd.cpp
