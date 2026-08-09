@@ -145,6 +145,11 @@ struct Config {
     // confs 地址（引导配置，不从 confs 自身获取）
     std::string confs_host       = "127.0.0.1";
     int         confs_port       = 8010;
+
+    // 标准化 CLI 参数
+    std::string log_level        = "info";   // debug|info|warn|error
+    std::string instance         = "db2";    // 实例名（注册中心用）
+    std::string confs_config_name = "db.ini"; // confs 拉取的配置名
 };
 
 // 从 sqlite:///path 或 sqlite:////abs/path 提取文件路径
@@ -159,21 +164,43 @@ static std::string db_url_to_path(const std::string& url) {
 static Config load_config(int argc, char* argv[]) {
     Config cfg;
 
+    // 0. 预扫描 --help/-h 和 --config（需在 confs 拉取前处理）
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            std::printf(
+                "db2 — C++20 数据库 RPC 服务\n\n"
+                "用法: db2 [选项]\n\n"
+                "选项:\n"
+                "  --host <addr>       绑定地址 (别名: --addr/-a)\n"
+                "  --port <num>        监听端口 (别名: -p)\n"
+                "  --workers <num>     工作线程数 (别名: -w)\n"
+                "  --config <name>     confs 配置名 (默认: db.ini)\n"
+                "  --log-level <level> debug|info|warn|error (默认: info)\n"
+                "  --instance <name>   实例名 (默认: db2)\n"
+                "  --help, -h          显示帮助并退出\n\n"
+                "配置优先级: CLI > 环境变量 > confs > 默认值\n");
+            std::exit(0);
+        }
+        if (arg == "--config" && i + 1 < argc) cfg.confs_config_name = argv[++i];
+    }
+
     // 1. 从环境变量读取 confs 引导地址
     if (const char* h = std::getenv("CONFS_HOST")) cfg.confs_host = h;
     if (const char* p = std::getenv("CONFS_PORT")) cfg.confs_port = safe_stoi(p, "CONFS_PORT");
 
-    // 2. 从 confs 服务拉取 db.ini（retry_on_refused=true，等待 confs 就绪）
+    // 2. 从 confs 服务拉取配置（retry_on_refused=true，等待 confs 就绪）
     std::string ini_text;
     try {
         RpcClient confs_client(cfg.confs_host, cfg.confs_port, "db2",
                                /*timeout=*/5.0, /*retry_on_refused=*/true);
-        json::value data = confs_client.call("get", {{"name", "db.ini"}});
+        json::value data = confs_client.call("get", {{"name", cfg.confs_config_name}});
         if (data.is_object() && data.as_object().contains("content")) {
             ini_text = std::string(data.as_object().at("content").as_string());
         }
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "[db2] Failed to fetch db.ini from confs: %s\n", e.what());
+        std::fprintf(stderr, "[db2] Failed to fetch %s from confs: %s\n",
+                     cfg.confs_config_name.c_str(), e.what());
         std::exit(1);
     }
 
@@ -223,9 +250,12 @@ static Config load_config(int argc, char* argv[]) {
     // 5. 命令行参数（最高优先级）
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if ((arg == "--addr"    || arg == "-a") && i + 1 < argc) cfg.listen_host = argv[++i];
+        if ((arg == "--addr"    || arg == "-a" || arg == "--host") && i + 1 < argc) cfg.listen_host = argv[++i];
         else if ((arg == "--port" || arg == "-p") && i + 1 < argc) cfg.listen_port = safe_stoi(argv[++i], "--port");
         else if ((arg == "--workers" || arg == "-w") && i + 1 < argc) cfg.workers = safe_stoi(argv[++i], "--workers");
+        else if (arg == "--log-level" && i + 1 < argc) cfg.log_level = argv[++i];
+        else if (arg == "--instance" && i + 1 < argc) cfg.instance = argv[++i];
+        // --config 和 --help 已在预扫描阶段处理
     }
 
     // 6. 数值配置范围校验（防误配置导致异常行为）
@@ -248,6 +278,18 @@ static Config load_config(int argc, char* argv[]) {
     if (cfg.max_records < 1) {
         std::fprintf(stderr, "[db2] invalid max_records: %d (must be >= 1)\n", cfg.max_records);
         std::exit(1);
+    }
+
+    // log_level 合法性校验
+    {
+        std::string lv = cfg.log_level;
+        std::transform(lv.begin(), lv.end(), lv.begin(), ::tolower);
+        if (lv != "debug" && lv != "info" && lv != "warn" && lv != "error") {
+            std::fprintf(stderr, "[db2] invalid log-level: %s (must be debug|info|warn|error)\n",
+                         cfg.log_level.c_str());
+            std::exit(1);
+        }
+        cfg.log_level = lv;
     }
 
     return cfg;
@@ -892,6 +934,18 @@ private:
     void _log_internal(const std::string& level, const std::string& service,
                        std::string message, const std::string& trace_id,
                        const std::string& extra) {
+        // 日志级别过滤
+        static const std::unordered_map<std::string, int> kLogLevels = {
+            {"debug", 0}, {"info", 1}, {"warn", 2}, {"warning", 2}, {"error", 3},
+            {"DEBUG", 0}, {"INFO", 1}, {"WARN", 2}, {"WARNING", 2}, {"ERROR", 3}
+        };
+        auto it_cfg = kLogLevels.find(_cfg.log_level);
+        auto it_msg = kLogLevels.find(level);
+        if (it_cfg != kLogLevels.end() && it_msg != kLogLevels.end()
+            && it_msg->second < it_cfg->second) {
+            return;  // 低于设定级别，丢弃
+        }
+
         if (message.size() > kMaxMessage) message.resize(kMaxMessage);
         std::string ex = extra;
         if (ex.size() > kMaxExtra) ex.resize(kMaxExtra);
@@ -992,9 +1046,11 @@ int main(int argc, char* argv[]) {
     try {
         Config cfg = load_config(argc, argv);
 
-        std::printf("[db2] listen=%s:%d workers=%d db=%s\n",
+        std::printf("[db2] listen=%s:%d workers=%d db=%s instance=%s log-level=%s config=%s\n",
                     cfg.listen_host.c_str(), cfg.listen_port,
-                    cfg.workers, cfg.db_url.c_str());
+                    cfg.workers, cfg.db_url.c_str(),
+                    cfg.instance.c_str(), cfg.log_level.c_str(),
+                    cfg.confs_config_name.c_str());
         std::fflush(stdout);
 
         DB2Server server(cfg);
