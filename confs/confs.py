@@ -29,7 +29,7 @@ import os
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 # pymsg / log_client 导入：生产环境 pymsg 由 venv（pip install ../pymsg）提供；
 # 附加 ../pymsg 源码路径作为无 venv 时的开发兜底
@@ -67,8 +67,8 @@ class KeyNotFound(ConfigError):
 
 
 def _iso(ts: float) -> str:
-    """时间戳转 ISO 8601（UTC，与 db 服务的日期序列化约定一致）。"""
-    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    """时间戳转 ISO 8601（系统时区）。"""
+    return datetime.fromtimestamp(ts).astimezone().isoformat()
 
 
 # ═══════════════════════════════════════════════════════════════════════

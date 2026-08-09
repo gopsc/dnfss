@@ -22,7 +22,7 @@ import json
 import os as _os
 import sys as _sys
 import atexit
-from datetime import datetime, timezone
+from datetime import datetime
 
 _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
 from pymsg import RpcClient, RpcError, AsyncRpcQueue  # noqa: E402
@@ -47,8 +47,8 @@ def _safe_json(obj):
 
 
 def _now_iso():
-    """生成当前 UTC 时间 ISO 字符串（入队时调用，保证时间戳准确）。"""
-    return datetime.now(timezone.utc).isoformat()
+    """生成当前系统时间 ISO 字符串（入队时调用，保证时间戳准确）。"""
+    return datetime.now().astimezone().isoformat()
 
 
 class LogClient:
