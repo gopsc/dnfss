@@ -48,7 +48,7 @@ docs/
 | static | [static_SECURITY_AUDIT_20260801.md](security/static_SECURITY_AUDIT_20260801.md) | Python 前端托管/文件服务 |
 | fsys | [fsys_SECURITY_AUDIT_20260808.md](security/fsys_SECURITY_AUDIT_20260808.md) | Python 文件系统服务 |
 | ai_review | [ai_review_SECURITY_AUDIT_20260801.md](security/ai_review_SECURITY_AUDIT_20260801.md) | Python AI 内容审核（DeepSeek + RAG） |
-| smtp | [smtp_SECURITY_AUDIT_20260801.md](security/smtp_SECURITY_AUDIT_20260801.md) | Python 邮件服务（验证码发送/校验） |
+| smtp | [smtp_SECURITY_AUDIT_20260801.md](security/smtp_SECURITY_AUDIT_20260801.md) | Python 邮件服务（验证码发送/校验）初版 + 0809 复审合并版 |
 | captcha | [captcha_SECURITY_AUDIT_20260801.md](security/captcha_SECURITY_AUDIT_20260801.md) | Python 验证码服务 |
 | confs | [confs_SECURITY_AUDIT_20260801.md](security/confs_SECURITY_AUDIT_20260801.md) | Python 统一配置服务 |
 | libmsg | [libmsg_SECURITY_AUDIT_20260806.md](security/libmsg_SECURITY_AUDIT_20260806.md) | C++ RPC 基础库（pymsg 协议帧、MsgClient/Server、RpcClient/Server） |
