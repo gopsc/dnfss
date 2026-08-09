@@ -171,6 +171,7 @@ struct Config {
     std::string instance      = "dnfs2";
     std::string log_level     = "info";       // debug|info|warn|error
     std::string confs_config_name = "dnfs.ini"; // --config 覆盖
+    bool        no_confs      = false;        // --no-confs: 跳过 confs 拉取
 };
 
 static Config load_config(int argc, char* argv[]) {
@@ -184,17 +185,27 @@ static Config load_config(int argc, char* argv[]) {
                 "dnfs2 — C++20 树状网络文件系统\n\n"
                 "用法: dnfs2 [选项]\n\n"
                 "选项:\n"
-                "  --host <addr>       绑定地址（别名: --addr/-a），默认 127.0.0.1\n"
-                "  --port <num>        监听端口（别名: -p），默认 8006\n"
-                "  --threads <num>     工作线程数（别名: -t），默认 4\n"
-                "  --config <name>     confs 拉取的配置名，默认 dnfs.ini\n"
-                "  --log-level <level> debug|info|warn|error，默认 info\n"
-                "  --instance <name>   实例名（注册中心用），默认 dnfs2\n"
-                "  --help, -h          显示此帮助并退出\n\n"
-                "配置优先级: CLI > 环境变量 > confs > 默认值\n");
+                "  --host <addr>          绑定地址（别名: --addr/-a），默认 127.0.0.1\n"
+                "  --port <num>           监听端口（别名: -p），默认 8006\n"
+                "  --threads <num>        工作线程数（别名: -t），默认 4\n"
+                "  --db-host <addr>       数据库地址，默认 127.0.0.1\n"
+                "  --db-port <num>        数据库端口，默认 8005\n"
+                "  --db-timeout <sec>     数据库超时秒数，默认 10\n"
+                "  --review-url <url>     AI 审核服务 URL，默认 http://127.0.0.1:8007/review\n"
+                "  --review-timeout <sec> AI 审核超时秒数，默认 10\n"
+                "  --gateway-url <url>    网关验签 URL，默认 http://127.0.0.1:8443/whoami\n"
+                "  --gateway-timeout <sec> 网关超时秒数，默认 5\n"
+                "  --config <name>        confs 拉取的配置名，默认 dnfs.ini\n"
+                "  --no-confs             跳过 confs 拉取，完全依赖 CLI + ENV + 默认值\n"
+                "  --log-level <level>    debug|info|warn|error，默认 info\n"
+                "  --instance <name>      实例名（注册中心用），默认 dnfs2\n"
+                "  --help, -h             显示此帮助并退出\n\n"
+                "配置优先级: CLI > 环境变量 > confs > 默认值\n"
+                "使用 --no-confs 时跳过 confs，优先级变为: CLI > 环境变量 > 默认值\n");
             std::exit(0);
         }
         if (arg == "--config" && i + 1 < argc) cfg.confs_config_name = argv[++i];
+        if (arg == "--no-confs") cfg.no_confs = true;
     }
 
     // 1. confs 引导地址
@@ -208,59 +219,62 @@ static Config load_config(int argc, char* argv[]) {
     }
 
     // 2. 从 confs 拉取配置文件（retry_on_refused=true，等待 confs 就绪）
-    std::string ini_text;
-    try {
-        RpcClient confs_client(cfg.confs_host, cfg.confs_port, "dnfs2",
-                               /*timeout=*/5.0, /*retry_on_refused=*/true);
-        json::value data = confs_client.call("get", {{"name", cfg.confs_config_name}});
-        if (data.is_object() && data.as_object().contains("content")) {
-            ini_text = std::string(data.as_object().at("content").as_string());
-        }
-    } catch (const std::exception& e) {
-        std::fprintf(stderr, "[dnfs2] 从 confs 获取 %s 失败: %s\n", cfg.confs_config_name.c_str(), e.what());
-        std::exit(1);
-    }
-
-    // 3. 解析 INI
-    IniMap ini = parse_ini(ini_text);
-
-    // 校验必需配置项
-    static const std::pair<const char*, const char*> required_keys[] = {
-        {"server",    "host"},
-        {"server",    "port"},
-        {"database",  "host"},
-        {"database",  "port"},
-        {"database",  "timeout"},
-        {"ai_review", "url"},
-        {"ai_review", "timeout"},
-        {"gateway",   "url"},
-        {"gateway",   "timeout"},
-    };
-    for (auto& [sec, key] : required_keys) {
-        auto si = ini.find(sec);
-        if (si == ini.end() || si->second.find(key) == si->second.end()) {
-            std::fprintf(stderr, "[dnfs2] 缺少必需配置: [%s] %s\n", sec, key);
+    //    --no-confs 模式下跳过，直接用 ENV + CLI + 默认值
+    if (!cfg.no_confs) {
+        std::string ini_text;
+        try {
+            RpcClient confs_client(cfg.confs_host, cfg.confs_port, "dnfs2",
+                                   /*timeout=*/5.0, /*retry_on_refused=*/true);
+            json::value data = confs_client.call("get", {{"name", cfg.confs_config_name}});
+            if (data.is_object() && data.as_object().contains("content")) {
+                ini_text = std::string(data.as_object().at("content").as_string());
+            }
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[dnfs2] 从 confs 获取 %s 失败: %s\n", cfg.confs_config_name.c_str(), e.what());
             std::exit(1);
         }
+
+        // 3. 解析 INI
+        IniMap ini = parse_ini(ini_text);
+
+        // 校验必需配置项
+        static const std::pair<const char*, const char*> required_keys[] = {
+            {"server",    "host"},
+            {"server",    "port"},
+            {"database",  "host"},
+            {"database",  "port"},
+            {"database",  "timeout"},
+            {"ai_review", "url"},
+            {"ai_review", "timeout"},
+            {"gateway",   "url"},
+            {"gateway",   "timeout"},
+        };
+        for (auto& [sec, key] : required_keys) {
+            auto si = ini.find(sec);
+            if (si == ini.end() || si->second.find(key) == si->second.end()) {
+                std::fprintf(stderr, "[dnfs2] 缺少必需配置: [%s] %s\n", sec, key);
+                std::exit(1);
+            }
+        }
+
+        auto get = [&](const std::string& sec, const std::string& key,
+                       const std::string& def = "") -> std::string {
+            auto si = ini.find(sec);
+            if (si == ini.end()) return def;
+            auto ki = si->second.find(key);
+            return (ki == si->second.end()) ? def : ki->second;
+        };
+
+        cfg.listen_host     = get("server",    "host",     cfg.listen_host);
+        cfg.listen_port     = safe_stoi(get("server",    "port", std::to_string(cfg.listen_port)), "[server] port");
+        cfg.db_host         = get("database",  "host",     cfg.db_host);
+        cfg.db_port         = safe_stoi(get("database",  "port", std::to_string(cfg.db_port)), "[database] port");
+        cfg.db_timeout      = std::stod(get("database",  "timeout", std::to_string(cfg.db_timeout)));
+        cfg.review_url      = get("ai_review", "url",      cfg.review_url);
+        cfg.review_timeout  = std::stod(get("ai_review", "timeout", std::to_string(cfg.review_timeout)));
+        cfg.gateway_url     = get("gateway",   "url",      cfg.gateway_url);
+        cfg.gateway_timeout = std::stod(get("gateway",   "timeout", std::to_string(cfg.gateway_timeout)));
     }
-
-    auto get = [&](const std::string& sec, const std::string& key,
-                   const std::string& def = "") -> std::string {
-        auto si = ini.find(sec);
-        if (si == ini.end()) return def;
-        auto ki = si->second.find(key);
-        return (ki == si->second.end()) ? def : ki->second;
-    };
-
-    cfg.listen_host     = get("server",    "host",     cfg.listen_host);
-    cfg.listen_port     = safe_stoi(get("server",    "port", std::to_string(cfg.listen_port)), "[server] port");
-    cfg.db_host         = get("database",  "host",     cfg.db_host);
-    cfg.db_port         = safe_stoi(get("database",  "port", std::to_string(cfg.db_port)), "[database] port");
-    cfg.db_timeout      = std::stod(get("database",  "timeout", std::to_string(cfg.db_timeout)));
-    cfg.review_url      = get("ai_review", "url",      cfg.review_url);
-    cfg.review_timeout  = std::stod(get("ai_review", "timeout", std::to_string(cfg.review_timeout)));
-    cfg.gateway_url     = get("gateway",   "url",      cfg.gateway_url);
-    cfg.gateway_timeout = std::stod(get("gateway",   "timeout", std::to_string(cfg.gateway_timeout)));
 
     // 4. 环境变量覆盖（Docker 兼容）
     if (const char* v = std::getenv("LISTEN_ADDR"))  cfg.listen_host = v;
@@ -276,6 +290,13 @@ static Config load_config(int argc, char* argv[]) {
         if ((arg == "--addr"    || arg == "-a" || arg == "--host") && i + 1 < argc) cfg.listen_host = argv[++i];
         else if ((arg == "--port" || arg == "-p") && i + 1 < argc) cfg.listen_port = safe_stoi(argv[++i], "--port");
         else if ((arg == "--threads" || arg == "-t") && i + 1 < argc) cfg.threads = safe_stoi(argv[++i], "--threads");
+        else if (arg == "--db-host" && i + 1 < argc) cfg.db_host = argv[++i];
+        else if (arg == "--db-port" && i + 1 < argc) cfg.db_port = safe_stoi(argv[++i], "--db-port");
+        else if (arg == "--db-timeout" && i + 1 < argc) cfg.db_timeout = std::stod(argv[++i]);
+        else if (arg == "--review-url" && i + 1 < argc) cfg.review_url = argv[++i];
+        else if (arg == "--review-timeout" && i + 1 < argc) cfg.review_timeout = std::stod(argv[++i]);
+        else if (arg == "--gateway-url" && i + 1 < argc) cfg.gateway_url = argv[++i];
+        else if (arg == "--gateway-timeout" && i + 1 < argc) cfg.gateway_timeout = std::stod(argv[++i]);
         else if (arg == "--log-level" && i + 1 < argc) cfg.log_level = argv[++i];
         else if (arg == "--instance" && i + 1 < argc) cfg.instance = argv[++i];
     }
@@ -539,9 +560,13 @@ public:
         );
         _log_queue->start();
 
-        std::printf("[dnfs2] 配置来源: confs (%s @ %s:%d)\n",
-                    _cfg.confs_config_name.c_str(),
-                    _cfg.confs_host.c_str(), _cfg.confs_port);
+        if (cfg.no_confs) {
+            std::printf("[dnfs2] 配置来源: CLI + ENV + 默认值（--no-confs 模式）\n");
+        } else {
+            std::printf("[dnfs2] 配置来源: confs (%s @ %s:%d)\n",
+                        _cfg.confs_config_name.c_str(),
+                        _cfg.confs_host.c_str(), _cfg.confs_port);
+        }
         std::printf("[dnfs2] instance=%s log-level=%s\n",
                     _cfg.instance.c_str(), _cfg.log_level.c_str());
         std::printf("[dnfs2] Token 验签: gateway %s\n", _cfg.gateway_url.c_str());

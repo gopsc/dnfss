@@ -28,7 +28,30 @@ services:
   # --- 文件服务 ---
   - name: dnfs2
     cmd: bash /opt/micro_servers/dnfs2/_run.sh
-    args: ["--instance", "dnfs2", "--log-level", "info"]
+    args:
+      - "--no-confs"
+      - "--instance"
+      - "dnfs2"
+      - "--log-level"
+      - "info"
+      - "--host"
+      - "127.0.0.1"
+      - "--port"
+      - "8006"
+      - "--db-host"
+      - "127.0.0.1"
+      - "--db-port"
+      - "8005"
+      - "--db-timeout"
+      - "10"
+      - "--review-url"
+      - "http://127.0.0.1:8007/review"
+      - "--review-timeout"
+      - "10"
+      - "--gateway-url"
+      - "http://127.0.0.1:8443/whoami"
+      - "--gateway-timeout"
+      - "5"
     depends_on: [db2, ai_review]
     sleep_before: 0
 
