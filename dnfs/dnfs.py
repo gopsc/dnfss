@@ -309,6 +309,15 @@ apply_security_headers(app)
 CORS(app)
 
 
+# [SECURITY-AUDIT] P0-1 / P1-5 —— 已修复（审计结论见 docs/security/dnfs_SECURITY_AUDIT_20260801.md）
+# 原问题：
+#   · P0-1 Token 无 RSA 签名验证，攻击者可伪造任意身份（含管理员）。
+#   · P1-5 Token 无过期校验，被盗 Token 可长期复用。
+# 修复方式（本项目统一安全决策）：本服务不持有密钥，Token 校验全部上移至 gateway。
+#   decode_token 转发 gateway /whoami，由 gateway 完成 RSA 验签 + 基于
+#   created_at+keep_time 的过期校验；gateway 不可达 → fail-closed 抛 503，
+#   验签失败/未登录 → 返回 None（调用方转 401）。is_admin 由 gateway 基于
+#   [Admin] 白名单在 Token payload 写入，本服务只读，不再本地判定。
 def decode_token(token: str):
     """通过 gateway /whoami 接口验证 Token 并返回用户信息。
 
@@ -465,6 +474,12 @@ def get_notes():
 
 
 # eg: {"id": 1}
+# [SECURITY-AUDIT] P0-3 / P1-10 —— 已修复
+# 原问题：
+#   · P0-3 delete_note / update_note 原缺 @_handle_exp 装饰器，异常冒泡成 Flask 默认 500 页。
+#   · P1-10 上述函数内 decode_token 等调用无 try-except，异常直接裸抛 500。
+# 修复：两函数均加 @_handle_exp（定义见 L294），DnfsExp → 对应状态码、
+#       其余 Exception → 500，统一返回结构化 JSON，不再泄露栈信息。
 @app.route('/delete_note', methods=['POST'])
 @_handle_exp
 def delete_note():
@@ -568,6 +583,7 @@ def delete_note():
 #    "title": "test",
 #    "content": "hello"
 #}
+# [SECURITY-AUDIT] P0-3 / P1-10 —— 同 delete_note，已加 @_handle_exp 统一异常（见上）。
 @app.route('/update_note', methods=['POST'])
 @_handle_exp
 def update_note():

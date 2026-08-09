@@ -43,8 +43,8 @@ docs/
 | db | [db_SECURITY_AUDIT_20260801.md](security/db_SECURITY_AUDIT_20260801.md) | Python 数据库服务（pymsg、SQLAlchemy、日志收集） |
 | db2 | [db2_SECURITY_AUDIT_20260806.md](security/db2_SECURITY_AUDIT_20260806.md) | C++20 数据库 RPC 服务（db 的 C++ 重实现，SQLite C API） |
 | pymsg | [pymsg_SECURITY_AUDIT_20260801.md](security/pymsg_SECURITY_AUDIT_20260801.md) | Python RPC 基础库（长度前缀帧、MsgClient/Server） |
-| dnfs | [dnfs_SECURITY_AUDIT_20260801.md](security/dnfs_SECURITY_AUDIT_20260801.md) | Python 树状菜单服务 |
-| dnfs2 | [dnfs2_SECURITY_AUDIT_20260808.md](security/dnfs2_SECURITY_AUDIT_20260808.md) | C++20 树状菜单服务（dnfs 重实现） |
+| dnfs | [dnfs_SECURITY_AUDIT_20260801.md](security/dnfs_SECURITY_AUDIT_20260801.md) | Python 树状网络文件系统（**已废弃，生产用 dnfs2**；2026-08-10 复核为全量 16 项发现） |
+| dnfs2 | [dnfs2_SECURITY_AUDIT_20260808.md](security/dnfs2_SECURITY_AUDIT_20260808.md) | C++20 树状网络文件系统（dnfs 重实现，**生产在跑**，评级 A） |
 | static | [static_SECURITY_AUDIT_20260801.md](security/static_SECURITY_AUDIT_20260801.md) | Python 前端托管/文件服务 |
 | fsys | [fsys_SECURITY_AUDIT_20260808.md](security/fsys_SECURITY_AUDIT_20260808.md) | Python 文件系统服务 |
 | ai_review | [ai_review_SECURITY_AUDIT_20260801.md](security/ai_review_SECURITY_AUDIT_20260801.md) | Python AI 内容审核（DeepSeek + RAG） |
