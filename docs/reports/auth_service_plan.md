@@ -351,5 +351,5 @@ db_port = 8005
 
 - 本文档**替代** 2026-08-08 初版计划书中的双栈拓扑与阶段划分（初版的职责盘点/迁移清单仍然有效，已并入 §1.2/§3.5）
 - [libhttp_remote_addr_dev_doc.md](libhttp_remote_addr_dev_doc.md)（A4 根治）：实施时 `trust_xff`/`rate_limit_key()` 配套由 gateway 改为落 CA；`is_special_header` 两侧同步加 `x-remote-addr`
-- [gateway_SECURITY_AUDIT_20260809.md](../security/gateway_SECURITY_AUDIT_20260809.md)：A2（白名单 403）断言、P2-3（CORS 白名单）随转发层/配置迁入 CA；P1-7（CSRF Token）在 CA 层评估
+- [gateway_SECURITY_AUDIT.md](../security/gateway_SECURITY_AUDIT.md)：A2（白名单 403）断言、P2-3（CORS 白名单）随转发层/配置迁入 CA；P1-7（CSRF Token）在 CA 层评估
 - gateway README / 项目 README 的架构图、端口表、请求链路在上线步骤第 4 步同步更新

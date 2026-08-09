@@ -1,7 +1,7 @@
 # libhttp 对端地址透传 · 开发文档
 
 **日期**: 2026-08-09
-**背景**: gateway 审计 A4（[gateway_SECURITY_AUDIT_20260809.md](../security/gateway_SECURITY_AUDIT_20260809.md)）——独立部署模式 B 下 RateLimiter 以客户端可控的 `X-Forwarded-For` 为限流键，伪造 XFF 即绕过全部 IP 级限流。根治需要 libhttp 向 handler 透传 TCP 对端地址。
+**背景**: gateway 审计 A4（[gateway_SECURITY_AUDIT.md](../security/gateway_SECURITY_AUDIT.md)）——独立部署模式 B 下 RateLimiter 以客户端可控的 `X-Forwarded-For` 为限流键，伪造 XFF 即绕过全部 IP 级限流。根治需要 libhttp 向 handler 透传 TCP 对端地址。
 **范围**: `libhttp`（注入实现）、`gateway`（消费方配套）；其余消费方（core/dnfs2/fsys）零改动。
 
 ---

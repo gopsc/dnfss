@@ -25,7 +25,7 @@ UniServe Framework 的中央认证服务（Central Auth），C++20 实现，v1.0
 - **CAPTCHA 代理**：`GET /captcha/image` 代理 captcha2 签发图形验证码（PNG + `X-Captcha-Token` 响应头，10 次/分钟/IP，禁缓存）。
 - **邮箱验证码**：`/register/send_code`、`/reset/send_code` 发送 6 位验证码邮件（10 分钟有效）；`/reset_password` 重置密码（防枚举恒成功 + 改密后版本号吊销全端 Token）。
 - **速率限制**：登录 5 次/5 分钟、注册 3 次/10 分钟、发验证码 5 次/10 分钟（IP 级）+ 3 次/小时/10 次/天（邮箱级），按 `X-Forwarded-For` 客户端 IP 计数（由 WAF 注入），超限一律返回 429。
-- **OPTIONS 预检**：由 libhttp 处理，`Access-Control-Allow-Origin` 反射请求的 Origin 头（见审计 P2-3）。
+- **OPTIONS 预检**：由 libhttp 处理，`Access-Control-Allow-Origin` 反射请求的 Origin 头（见 [`ca_SECURITY_AUDIT.md`](../docs/security/ca_SECURITY_AUDIT.md) P2-3）。
 
 ## 身份头契约（strip-then-set）
 
@@ -107,7 +107,7 @@ Target-Url: http://127.0.0.1:8006                   // 可选；携带即视为�
 - `Upstream.gateway`：唯一上游 gateway 地址（默认 `http://127.0.0.1:8445`，env `UPSTREAM_GATEWAY`）。
 - `Token.*`：`keep_time` / `refresh_grace_multiplier` / `max_refresh`。
 - `Admin.users`：管理员白名单（分号分隔邮箱），登录命中时 Token payload 写入 `is_admin=true`。
-- `CORS.allowed_origins`：已读取但尚未用于预检响应（审计 P2-3）。
+- `CORS.allowed_origins`：已读取但尚未用于预检响应（见 [`ca_SECURITY_AUDIT.md`](../docs/security/ca_SECURITY_AUDIT.md) P2-3）。
 - `WsProxy.routes`：`/path=ws://host:port/target`，分号分隔。
 - `Downstream.*`：db/captcha/smtp 地址（env `DB_*`/`CAPTCHA_*`/`SMTP_*`/`CONFS_*`）。
 

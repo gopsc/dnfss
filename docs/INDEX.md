@@ -9,7 +9,7 @@ docs/
 ├── INDEX.md                              # 本文件（文档总索引）
 ├── security/                             # 安全审计与加固（29 篇）
 ├── reviews/                              # 代码审查日志（4 篇）
-└── reports/                              # 分析报告与开发规划（13 篇）
+└── reports/                              # 分析报告与开发规划（14 篇）
 ```
 
 ---
@@ -37,9 +37,8 @@ docs/
 | 模块 | 文档 | 审计范围 |
 |------|------|----------|
 | waf | [waf_SECURITY_AUDIT_20260801.md](security/waf_SECURITY_AUDIT_20260801.md) | Go WAF 网关（TLS、coraza、反向代理） |
-| gateway | [gateway_SECURITY_AUDIT_20260801.md](security/gateway_SECURITY_AUDIT_20260801.md) | C++20 应用网关（鉴权、Token、反向代理）初版 |
-| gateway | [gateway_SECURITY_AUDIT_20260807.md](security/gateway_SECURITY_AUDIT_20260807.md) | C++20 应用网关复审版（P0全部修复，进程退出bug修复） |
-| gateway | [gateway_SECURITY_AUDIT_20260809.md](security/gateway_SECURITY_AUDIT_20260809.md) | C++20 应用网关增量复审（8 项新发现：关闭崩溃、头名大小写架空XFF修复等；黑盒测试重写落地） |
+| gateway | [gateway_SECURITY_AUDIT.md](security/gateway_SECURITY_AUDIT.md) | C++20 应用网关安全审计合并文档（v0.8.0 三轮审计合并：初版/复审/增量复审；v0.9.0 纯转发，认证迁 ca） |
+| ca | [ca_SECURITY_AUDIT.md](security/ca_SECURITY_AUDIT.md) | C++20 中央认证服务（Central Auth，v1.0.0），承接原 gateway 认证职责；含迁移接收项与 ca 相关开放项 |
 | core | [core_SECURITY_AUDIT_20260801.md](security/core_SECURITY_AUDIT_20260801.md) | C++20 进程托管服务（PMC/Nidus） |
 | db | [db_SECURITY_AUDIT_20260801.md](security/db_SECURITY_AUDIT_20260801.md) | Python 数据库服务（pymsg、SQLAlchemy、日志收集） |
 | db2 | [db2_SECURITY_AUDIT_20260806.md](security/db2_SECURITY_AUDIT_20260806.md) | C++20 数据库 RPC 服务（db 的 C++ 重实现，SQLite C API） |
@@ -93,6 +92,7 @@ docs/
 | [smtp_cpp_rewrite_dev_doc.md](reports/smtp_cpp_rewrite_dev_doc.md) | smtp 模块 C++20 重写开发方案（SMTP_SSL 客户端手写，审计 7 项遗留一并在重写中修复，零新增系统依赖） |
 | [libhttp_remote_addr_dev_doc.md](reports/libhttp_remote_addr_dev_doc.md) | libhttp 对端地址透传开发方案（X-Remote-Addr 可信头注入，非破坏；gateway trust_xff 配套，闭环审计 A4） |
 | [confs2_cpp_rewrite_dev_doc.md](reports/confs2_cpp_rewrite_dev_doc.md) | confs 模块 C++20 重写开发方案（libmsg RpcServer 替代 pymsg，协议兼容零改动，审计 7 项遗留一并修复，零新增系统依赖，未来可合入 core 注册中心） |
+| [fsys_public_frontend_research_20260810.md](reports/fsys_public_frontend_research_20260810.md) | fsys/public 前端研究报告（Vanilla 技术栈、HttpOnly Cookie 认证体系、dnfs/aibox/view/mgmt 页面分析、8 项问题与改进建议） |
 
 ---
 

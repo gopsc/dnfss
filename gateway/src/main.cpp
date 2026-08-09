@@ -24,7 +24,9 @@ namespace po = boost::program_options;
 /* v0.9.0：认证独立化瘦身（waf → ca → gateway 前置拓扑）
  * - 认证资产（Token 签发/验签、登录/注册/重置、WS 代理鉴权）已全部迁至 ca 模块
  * - gateway 退化为纯转发服务：仅 loopback 监听（默认 8445），不验签
- * - 身份契约：显式 Target-Url 请求必须携带 ca 注入的 X-Auth-User 头（存在性不变量） */
+ * - 身份契约：显式 Target-Url 请求必须携带 ca 注入的 X-Auth-User 头（存在性不变量）
+ * - 安全审计结论见 docs/security/gateway_SECURITY_AUDIT.md（合并文档：开放项/历史追溯/上线清单）；
+ *   已修复项以“审计 A*”/“P1-1”等标记内联于下方对应代码 */
 constexpr const char *_VER = "0.9.0";
 
 //////////////////////////////////
