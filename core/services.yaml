@@ -41,7 +41,7 @@ services:
     cmd: bash /opt/micro_servers/ai_review/_run.sh
     args: ["--instance", "ai_review", "--log-level", "info"]
     depends_on: [db2]
-    sleep_before: 2
+    sleep_before: 0
 
   # --- 文件服务 ---
   - name: dnfs2
@@ -78,7 +78,7 @@ services:
     cmd: bash /opt/micro_servers/smtp/_run.sh
     args: ["--instance", "smtp", "--log-level", "info"]
     depends_on: []
-    sleep_before: 2
+    sleep_before: 0
 
   # --- 前端静态资源 ---
   - name: fsys
@@ -161,13 +161,13 @@ services:
       - "--smtp-port"
       - "8008"
     depends_on: [db2]
-    sleep_before: 2
+    sleep_before: 0
 
   - name: gateway
     cmd: bash /opt/micro_servers/gateway/_run.sh
     args: ["--instance", "gateway", "--log-level", "info"]
     depends_on: [db2]
-    sleep_before: 2
+    sleep_before: 0
 
   # --- 验证码 ---
   - name: captcha2

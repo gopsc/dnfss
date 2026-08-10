@@ -4,5 +4,4 @@
 # 启动时从 confs（CONFS_HOST:CONFS_PORT，默认 127.0.0.1:8010）拉取配置。
 cd "$(dirname "$0")" || exit
 
-# sleep 已移至 services.yaml 的 sleep_before 字段统一管理
 exec ./build/gateway.out "$@"

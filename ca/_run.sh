@@ -5,5 +5,4 @@
 # "$@" 透传允许命令行临时覆盖任意配置项。
 cd "$(dirname "$0")" || exit
 
-# sleep 已移至 services.yaml 的 sleep_before 字段统一管理
 exec ./build/ca.out "$@"
