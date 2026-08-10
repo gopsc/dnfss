@@ -16,7 +16,7 @@ CPP:= g++
 
 INCS:= -I include/
 
-MY_LIBS := -L/usr/lib -lus_th -lus_http -lus_httpclient -lus_msg -lcurl
+MY_LIBS := -L/usr/lib -lus_th -lus_http -lus_httpclient -lus_msg -lus_logc -lcurl
 LIBS := -lpthread -lssl -lcrypto -lboost_program_options -lboost_json -lboost_thread -lboost_filesystem -lyaml-cpp
 
 CPPFLAGS := --std=c++20 -O3 -pipe #-Wall -Werror

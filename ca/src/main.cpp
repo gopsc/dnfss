@@ -25,7 +25,7 @@
 #include "LocalTime.hpp"
 #include "Conf.hpp"
 #include "DbC.hpp"
-#include "LogC.hpp"
+#include <us/LogC.hpp>
 
 using namespace pmc::net;
 using namespace qing;
@@ -971,6 +971,7 @@ int main(int argc, char **argv) {
 	/* 初始化下游客户端地址 */
 	DbC::init(_DB_HOST, _DB_PORT);
 	logs().set_endpoint(_DB_HOST, _DB_PORT);
+	logs().set_service_name("ca-log");
 
 	/* 设置日志级别过滤 */
 	logs().set_level(_LOG_LEVEL);

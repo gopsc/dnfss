@@ -31,12 +31,12 @@
 #include <vector>
 
 #include "main/ConfsTask.hh"
-#include "main/ConfsLogC.hpp"
+#include <us/LogC.hpp>
 
 namespace json = boost::json;
 namespace fs = std::filesystem;
 
-using qing::confs::ConfsLogC;
+using qing::LogC;
 
 namespace qing {
 
@@ -386,6 +386,7 @@ ConfsTask::ConfsTask(std::string addr_, int port_, int workers_, std::string con
     : addr(std::move(addr_)), port(port_), workers(workers_),
       started_at(std::chrono::steady_clock::now())
 {
+    LogC::instance().set_service_name("confs-log");
     store = std::make_unique<ConfigStore>(config_dir);
     this->th = std::make_unique<Thread>();
     init_thread();
@@ -423,12 +424,12 @@ void ConfsTask::init_thread() {
         this->server = std::make_unique<pmc::net::RpcServer> (addr, port,
             pmc::net::MsgServerConfig{.workers = workers},
             [](const std::string& route, const std::exception& e) {
-                ConfsLogC::instance().error("confs", "路由 " + route + " 处理异常: " + e.what());
+                LogC::instance().error("confs", "路由 " + route + " 处理异常: " + e.what());
             });
         register_routes(*this->server);
         th.run();
 
-        ConfsLogC::instance().info("confs", "开始监听 tcp://" + addr + ":"
+        LogC::instance().info("confs", "开始监听 tcp://" + addr + ":"
                                    + std::to_string(port));
         this->server->start();  /* 堵死线程，等待 stop() 解除 */
     });
@@ -482,13 +483,13 @@ void ConfsTask::register_routes(pmc::net::RpcServer& rpc) {
             auto val = extract_ini_key(entry.content, key);
             if (!val)
                 throw KeyNotFound("键不存在: " + name + " -> " + key);
-            ConfsLogC::instance().info("confs", "分发配置键 " + name + " -> " + key);
+            LogC::instance().info("confs", "分发配置键 " + name + " -> " + key);
             return json::object{{"name", name}, {"key", key}, {"value", *val}};
         }
 
         if (ext == ".json") {
             auto val = extract_json_key(entry.content, key);
-            ConfsLogC::instance().info("confs", "分发配置键 " + name + " -> " + key);
+            LogC::instance().info("confs", "分发配置键 " + name + " -> " + key);
             return json::object{{"name", name}, {"key", key}, {"value", val}};
         }
 
@@ -519,7 +520,7 @@ void ConfsTask::register_routes(pmc::net::RpcServer& rpc) {
         // 省略 name 或 null → 清空全部缓存
         if (it == req.end() || it->value().is_null()) {
             auto names = store->reload(nullptr);
-            ConfsLogC::instance().info("confs", "清空配置缓存（" + std::to_string(names.size()) + " 项）");
+            LogC::instance().info("confs", "清空配置缓存（" + std::to_string(names.size()) + " 项）");
             json::array arr;
             for (const auto& n : names) arr.push_back(json::value(n));
             return json::object{{"reloaded", arr}};
@@ -534,7 +535,7 @@ void ConfsTask::register_routes(pmc::net::RpcServer& rpc) {
             throw ConfigError("name 字段不能为空（要清空全部缓存请省略 name 字段）");
 
         auto names = store->reload(&name);
-        ConfsLogC::instance().info("confs", "重载配置 " + names[0]);
+        LogC::instance().info("confs", "重载配置 " + names[0]);
         json::array arr;
         for (const auto& n : names) arr.push_back(json::value(n));
         return json::object{{"reloaded", arr}};

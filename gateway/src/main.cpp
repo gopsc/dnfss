@@ -14,7 +14,8 @@
 #include <boost/program_options.hpp>
 #include "ExpBase.hpp"
 #include "Conf.hpp"
-#include "LogC.hpp"
+#include <us/LogC.hpp>
+#include <us/Msg.hpp>
 
 using namespace pmc::net;
 using namespace qing;
@@ -319,6 +320,7 @@ int main(int argc, char **argv) {
 
 	/* 初始化日志推送端点 */
 	logs().set_endpoint(_DB_HOST, _DB_PORT);
+	logs().set_service_name("gateway-log");
 	logs().set_level(_LOG_LEVEL);
 
 	std::cout << "[gateway] 监听: " << _ADDR << ":" << _PORT

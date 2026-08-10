@@ -621,5 +621,7 @@ class MsgServer:
 # ── JSON RPC 约定层（依赖上面的 MsgClient / MsgServer，故放在末尾导入）──
 from .rpc import RpcClient, RpcError, RpcServer  # noqa: E402
 from .async_queue import AsyncRpcQueue  # noqa: E402
+from .logc import LogClient, set_log_level  # noqa: E402
 
-__all__ += ["RpcClient", "RpcServer", "RpcError", "AsyncRpcQueue"]
+__all__ += ["RpcClient", "RpcServer", "RpcError", "AsyncRpcQueue",
+            "LogClient", "set_log_level"]

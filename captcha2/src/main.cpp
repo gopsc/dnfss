@@ -36,12 +36,12 @@
 #include <unordered_map>
 #include <vector>
 
-#include "LogC.hpp"
+#include <us/LogC.hpp>
 
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-using namespace captcha2;
+using qing::LogC;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. 配置结构
@@ -70,13 +70,12 @@ struct CaptchaConfig {
 	int rate_limit_per_min = 600;  // P1-1: 全局限流仅作最后防线，主要限流由 gateway 按 IP 负责
 };
 
-// 从 confs 拉取指定名称的配置文件全文，阻塞等待 confs 就绪
-static std::string fetch_config_from_confs(const std::string& confs_host, int confs_port,
-		const std::string& config_name) {
+// 从 confs 拉取 captcha.ini 全文，阻塞等待 confs 就绪
+static std::string fetch_config_from_confs(const std::string& confs_host, int confs_port) {
 	pmc::net::RpcClient client(confs_host, confs_port, "captcha2",
 		/*timeout=*/5.0, /*retry_on_refused=*/true);
 	try {
-		auto data = client.call("get", {{"name", config_name}});
+		auto data = client.call("get", {{"name", "captcha.ini"}});
 		auto* content = data.as_object().if_contains("content");
 		if (!content || !content->is_string()) {
 			std::cerr << "[captcha2] confs 返回的 captcha.ini 无 content 字段" << std::endl;
@@ -526,15 +525,13 @@ static CaptchaConfig g_config;
 static CaptchaStore g_store;
 static RateLimiter g_rate_limiter;
 static auto& g_log = LogC::instance();
+static const auto _log_init = (LogC::instance().set_service_name("captcha2-log"), true);
 
 int main(int argc, char* argv[]) {
 	try {
 		// ── 命令行参数 ──
 		std::string confs_host = "127.0.0.1";
 		int confs_port = 8010;
-		std::string confs_config_name = "captcha.ini";  // --config 覆盖
-		std::string instance = "captcha2";               // --instance 覆盖
-		std::string log_level = "info";                  // --log-level 覆盖
 		{
 			const char* env;
 			if ((env = std::getenv("CONFS_HOST"))) confs_host = env;
@@ -544,13 +541,9 @@ int main(int argc, char* argv[]) {
 		po::options_description desc("captcha2 — pymsg 验证码服务");
 		desc.add_options()
 			("help,h", "显示帮助")
-			("addr,a", po::value<std::string>(), "监听地址（覆盖 confs，别名 --host）")
-			("host", po::value<std::string>(), "监听地址（覆盖 confs，别名 --addr/-a）")
+			("addr,a", po::value<std::string>(), "监听地址（覆盖 confs）")
 			("port,p", po::value<int>(), "监听端口（覆盖 confs）")
-			("workers,w", po::value<int>(), "工作线程数（覆盖 confs）")
-			("config", po::value<std::string>(), "confs 拉取的配置名（默认 captcha.ini）")
-			("log-level", po::value<std::string>(), "日志级别 debug|info|warn|error，默认 info")
-			("instance", po::value<std::string>(), "实例名（注册中心用，默认 captcha2）");
+			("workers,w", po::value<int>(), "工作线程数（覆盖 confs）");
 		po::variables_map vm;
 		po::store(po::parse_command_line(argc, argv, desc), vm);
 		po::notify(vm);
@@ -560,30 +553,20 @@ int main(int argc, char* argv[]) {
 			return 0;
 		}
 
-		// 预扫描 --config / --instance / --log-level / --host（confs 拉取前处理）
-		if (vm.count("config"))   confs_config_name = vm["config"].as<std::string>();
-		if (vm.count("instance")) instance = vm["instance"].as<std::string>();
-		if (vm.count("log-level")) log_level = vm["log-level"].as<std::string>();
-
 		// ── 配置加载：confs → env → 命令行 ──
-		std::string ini_text = fetch_config_from_confs(confs_host, confs_port, confs_config_name);
+		std::string ini_text = fetch_config_from_confs(confs_host, confs_port);
 		merge_ini(g_config, ini_text);
 
 		apply_env_overrides(g_config);
 
 		if (vm.count("addr"))    g_config.host = vm["addr"].as<std::string>();
-		if (vm.count("host"))    g_config.host = vm["host"].as<std::string>();
 		if (vm.count("port"))    g_config.port = vm["port"].as<int>();
 		if (vm.count("workers")) g_config.workers = vm["workers"].as<int>();
 
 		validate_config(g_config);
 
-		g_log.set_level(log_level);
-
-		std::cerr << "[captcha2] 配置来源: confs " << confs_config_name << " @ "
+		std::cerr << "[captcha2] 配置来源: confs captcha.ini @ "
 			<< confs_host << ":" << confs_port << std::endl;
-		std::cerr << "[captcha2] instance=" << instance
-			<< " log-level=" << log_level << std::endl;
 		std::cerr << "[captcha2] captcha_len=" << g_config.len
 			<< " ttl=" << g_config.ttl
 			<< " max_store=" << g_config.max_store

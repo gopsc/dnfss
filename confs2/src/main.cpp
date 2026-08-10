@@ -31,13 +31,13 @@
 #include <unordered_set>
 #include <vector>
 
-#include "LogC.hpp"
+#include <us/LogC.hpp>
 
 namespace json = boost::json;
 namespace po = boost::program_options;
 namespace fs = std::filesystem;
 
-using confs2::LogC;
+using qing::LogC;
 
 // ═══════════════════════════════════════════════════════════════════════
 // 1. 常量与异常
@@ -411,6 +411,7 @@ static void validate_config(const ConfsConfig& cfg) {
 static ConfsConfig g_config;
 static ConfigStore* g_store = nullptr;
 static auto& g_log = LogC::instance();
+static const auto _log_init = (LogC::instance().set_service_name("confs2-log"), true);
 static const auto g_start_time = std::chrono::steady_clock::now();
 
 static std::int64_t uptime_seconds() {

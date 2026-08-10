@@ -1,7 +1,7 @@
 CXX      := g++
 CXXFLAGS := -std=c++20 -Wall -Wextra -O2
 INCS     := -I./inc -I/usr/include/freetype2
-LIBS     := -lus_msg -lboost_json -lboost_program_options -lfreetype -lpthread -lm
+LIBS     := -lus_msg -lus_logc -lboost_json -lboost_program_options -lfreetype -lpthread -lm
 
 TARGET   := captcha2.bin
 SRC      := src/main.cpp

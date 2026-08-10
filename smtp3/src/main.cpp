@@ -59,12 +59,12 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "LogC.hpp"
+#include <us/LogC.hpp>
 
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-using namespace smtp3;
+using qing::LogC;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 辅助: 安全的 stoi
@@ -716,6 +716,7 @@ static SendLimiter g_limiter;
 static std::unordered_map<std::string, double> g_cooldown;
 static std::mutex g_cooldown_mtx;
 static auto& g_log = LogC::instance();
+static const auto _log_init = (LogC::instance().set_service_name("smtp3-log"), true);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 8. main() — RpcServer 启动

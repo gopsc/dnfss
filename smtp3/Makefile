@@ -1,7 +1,7 @@
 CXX      := g++
 CXXFLAGS := -std=c++20 -Wall -Wextra -O2
 INCS     := -I./inc
-LIBS     := -lus_msg -lboost_json -lboost_program_options -lssl -lcrypto -lpthread
+LIBS     := -lus_msg -lus_logc -lboost_json -lboost_program_options -lssl -lcrypto -lpthread
 
 TARGET   := smtp3.bin
 SRC      := src/main.cpp
