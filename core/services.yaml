@@ -83,7 +83,7 @@ services:
 
   - name: gateway
     cmd: bash /opt/micro_servers/gateway/_run.sh
-    args: []
+    args: ["--instance", "gateway", "--log-level", "info"]
     depends_on: [db2]
     sleep_before: 2
 

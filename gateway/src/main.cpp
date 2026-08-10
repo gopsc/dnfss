@@ -109,6 +109,11 @@ static int			_DB_PORT = 8005;
 /* confs 引导配置（不依赖 confs 本身，环境变量 CONFS_HOST/CONFS_PORT 覆盖，默认 127.0.0.1:8010） */
 static std::string		_CONFS_HOST = "127.0.0.1";
 static int			_CONFS_PORT = 8010;
+/* confs 配置名（--config 覆盖，默认 gateway.ini） */
+static std::string		_CONFS_CONFIG_NAME = "gateway.ini";
+/* CLI 标准化参数（注册中心 / 日志级别） */
+static std::string		_INSTANCE = "gateway";
+static std::string		_LOG_LEVEL = "info";
 
 /* instance items */
 static std::unique_ptr<HttpServer>		_SERVE;
@@ -164,6 +169,11 @@ int main(int argc, char **argv) {
 	desc.add_options()
 		("help,h",					"output help message")
 		("version,v",					"output version message")
+		("host",		po::value<std::string>(),	"绑定地址（覆盖 [Server] address，默认 127.0.0.1）")
+		("port",		po::value<int>(),		"监听端口（覆盖 [Server] port，默认 8445）")
+		("config",		po::value<std::string>(),	"confs 拉取的配置名（默认 gateway.ini）")
+		("log-level",	po::value<std::string>(),	"日志级别 debug|info|warn|error，默认 info")
+		("instance",	po::value<std::string>(),	"实例名（注册中心用，默认 gateway）")
 	;
 
 
@@ -195,6 +205,10 @@ int main(int argc, char **argv) {
 		return 0;
 	}
 
+	/* CLI 预扫描：--config 必须在 confs 拉取前处理（其余 CLI 覆盖在 ENV 之后接入） */
+	if (vm.count("config"))
+		_CONFS_CONFIG_NAME = vm["config"].as<std::string>();
+
 	/* ==================== 配置加载（两层：confs 强依赖 → 环境变量覆盖） ====================
 	 * 与 Python 服务（dnfs/db/static）保持一致的加载模式：
 	 *   1. 引导配置：confs 地址从 CONFS_HOST/CONFS_PORT 环境变量读取，缺省 127.0.0.1:8010
@@ -214,11 +228,11 @@ int main(int argc, char **argv) {
 		try {
 			/* 从 confs 拉取 gateway.ini */
 			std::cout << "[gateway] 从 confs (" << _CONFS_HOST << ":" << _CONFS_PORT
-			          << ") 拉取 gateway.ini ..." << std::endl;
+			          << ") 拉取 " << _CONFS_CONFIG_NAME << " ..." << std::endl;
 			pmc::net::MsgClient confs_client(_CONFS_HOST, _CONFS_PORT, "gateway");
 			json::object req;
 			req["_route"] = "get";
-			req["name"] = "gateway.ini";
+			req["name"] = _CONFS_CONFIG_NAME;
 			std::string resp_str = confs_client.call(
 				json::serialize(req), /*timeout=*/5.0,
 				/*retry_on_refused=*/true);
@@ -268,6 +282,16 @@ int main(int argc, char **argv) {
 		int env_db_port = ConfIni::env_int("DB_PORT", -1);
 		if (env_db_port > 0) _DB_PORT = env_db_port;
 
+		/* 3b. CLI 覆盖（最高优先级）：--host / --port / --instance / --log-level */
+		if (vm.count("host"))
+			_ADDR = vm["host"].as<std::string>();
+		if (vm.count("port"))
+			_PORT = vm["port"].as<int>();
+		if (vm.count("instance"))
+			_INSTANCE = vm["instance"].as<std::string>();
+		if (vm.count("log-level"))
+			_LOG_LEVEL = vm["log-level"].as<std::string>();
+
 		/* 4. 配置完整性校验 */
 		if (_ADDR.empty() || _PORT == -1) {
 			std::cerr << "[gateway] 致命错误: 配置项 [Server] address/port 缺失"
@@ -295,9 +319,12 @@ int main(int argc, char **argv) {
 
 	/* 初始化日志推送端点 */
 	logs().set_endpoint(_DB_HOST, _DB_PORT);
+	logs().set_level(_LOG_LEVEL);
 
 	std::cout << "[gateway] 监听: " << _ADDR << ":" << _PORT
 	          << " (TLS: " << (_TLS ? "on" : "off") << ")" << std::endl;
+	std::cout << "[gateway] instance=" << _INSTANCE
+	          << " log-level=" << _LOG_LEVEL << std::endl;
 
 	// 根据 Server.tls 选择 HTTPS（带证书）或 HTTP（无证书）构造函数
 	// HTTP 模式用于 ca 前置后的内部转发链路
