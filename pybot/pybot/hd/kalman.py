@@ -21,7 +21,7 @@ class Kalman:
     def filter(self, dat):
         x_mid = self.a * self.x_last            # (1) x(k|k-1) = A*X(k-1|k-1)
         p_mid = self.a * self.p_last + self.q   # (2) p(k|k-1) = A*p(k-1|k-1)*A'+Q
-        kg = p_mid / (p_mid + self.r)           # (4) kg(k) = p(k|k-1)/(p(k|k-1)+R)
+        kg = p_mid / max(p_mid + self.r, 1e-10)   # (4) kg(k) = p(k|k-1)/(p(k|k-1)+R)
         x_now = x_mid + kg * (dat - x_mid)      # (3) x(k|k) = X(k|k-1)+kg*(Z(k)-X(k|k-1))
         p_now = (1.0 - kg) * p_mid              # (5) p(k|k) = (1-kg)*P(k|k-1)
         self.p_last = p_now

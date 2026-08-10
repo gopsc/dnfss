@@ -114,7 +114,12 @@ class MPU6050Var(HardwareVar):
         addr = get_mt(matrix, i, matrix.index_of_col(0, "addr"))
         log.info("Create a MPU6050_BIND HVar: %s, use i2c interf: %s, "
                  "i2c addr: %s", name, i2c_name, addr)
-        fd = M[i2c_name].play({})["fd"]     # 引用 I2C 变量取 fd
+        i2c_var = M[i2c_name]
+        if not isinstance(i2c_var, I2CVar):
+            raise TypeError(
+                f"@MPU6050_BIND '{name}' references '{i2c_name}', "
+                f"but it is a {type(i2c_var).__name__}, not an I2CVar")
+        fd = i2c_var.play({})["fd"]
         return cls(name, MPU6050(fd, to_int(addr)))
 
 

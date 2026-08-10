@@ -36,7 +36,7 @@ def test_missing_protocol_function(tmp_path, monkeypatch):
     (tmp_path / "Broken.py").write_text(
         "def build(ctx): return {}\n", encoding="utf-8")
     monkeypatch.setenv("PYBOT_MODULES_PATH", str(tmp_path))
-    with pytest.raises(plugin.PluginNotFound):
+    with pytest.raises(plugin.PluginProtocolError):
         plugin.load_module("Broken")
 
 

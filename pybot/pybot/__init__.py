@@ -25,3 +25,4 @@ from .parser import (          # noqa: F401
     to_int,
 )
 from .robot import RobotStruct  # noqa: F401
+from .plugin import PluginNotFound, PluginProtocolError, PluginVar  # noqa: F401

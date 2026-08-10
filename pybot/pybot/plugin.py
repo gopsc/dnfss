@@ -37,6 +37,17 @@ class PluginNotFound(Exception):
         self.searched = searched
 
 
+class PluginProtocolError(Exception):
+    """插件缺少 build / call / destroy 之一"""
+
+    def __init__(self, name, path, missing):
+        super().__init__(
+            f"plugin '{name}' at {path} missing function: {missing}(ctx)")
+        self.name = name
+        self.path = path
+        self.missing = missing
+
+
 def search_dirs():
     """插件搜索目录（按优先级）：$PYBOT_MODULES_PATH → 包内置 → cwd"""
     dirs = []
@@ -68,9 +79,7 @@ def load_module(name):
     spec.loader.exec_module(module)
     for fn in ("build", "call", "destroy"):
         if not callable(getattr(module, fn, None)):
-            raise PluginNotFound(
-                name, [path]) from ValueError(
-                f"plugin '{name}' missing function {fn}(ctx)")
+            raise PluginProtocolError(name, path, fn)
     log.debug("loaded plugin %s from %s", name, path)
     return module
 
