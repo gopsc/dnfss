@@ -38,6 +38,29 @@ _FLUSH_INTERVAL = 2.0    # 超时 2 秒强制 flush
 _TIMEOUT = 5             # socket 超时（秒）
 _QUEUE_MAXSIZE = 10000   # 队列上限，防止后台线程异常时内存无限增长；满则丢弃最旧条目
 
+# ── 日志级别过滤 ──
+_LOG_LEVELS = {
+    "debug": 0, "info": 1, "warn": 2, "warning": 2,
+    "error": 3, "critical": 4,
+}
+_LOG_LEVEL_THRESHOLD = _LOG_LEVELS["info"]  # 默认 info
+
+
+def _normalize_level(level):
+    """归一化级别名：大写转小写，warning→warn。"""
+    lv = (level or "info").lower()
+    if lv == "warning":
+        lv = "warn"
+    return lv
+
+
+def set_log_level(level):
+    """设置日志过滤阈值（低于该级别的日志将被丢弃）。"""
+    global _LOG_LEVEL_THRESHOLD
+    lv = _normalize_level(level)
+    if lv in _LOG_LEVELS:
+        _LOG_LEVEL_THRESHOLD = _LOG_LEVELS[lv]
+
 
 def _safe_json(obj):
     """安全序列化 extra 字段，不可序列化对象转为 repr 字符串，保证不抛异常。"""
@@ -77,6 +100,9 @@ class LogClient:
 
         队列满时静默丢弃最旧条目再放入新条目，保证不阻塞业务线程、不导致 OOM。
         """
+        # 级别过滤：低于当前阈值的日志直接丢弃（不进队列）
+        if _LOG_LEVELS.get(_normalize_level(level), 0) < _LOG_LEVEL_THRESHOLD:
+            return
         entry = {
             'ts': _now_iso(),  # 入队时即生成时间戳，反映真实事件时间
             'service': service,

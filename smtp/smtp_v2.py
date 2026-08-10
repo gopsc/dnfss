@@ -303,12 +303,23 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="smtp — pymsg 邮箱验证码服务")
-    parser.add_argument("--addr", default="127.0.0.1", help="监听地址")
+    parser.add_argument("--addr", "--host", dest="addr", default="127.0.0.1",
+                        help="监听地址（--host 与 --addr 等价）")
     parser.add_argument("--port", type=int, default=8008, help="监听端口")
     parser.add_argument("--workers", type=int, default=4,
                         help="回调并发线程数（0=同步串行模式）")
+    parser.add_argument("--log-level", default="info",
+                        choices=["debug", "info", "warn", "error"],
+                        help="日志级别（默认 info）")
+    parser.add_argument("--instance", default="smtp",
+                        help="实例名（注册中心用，默认 smtp）")
     args = parser.parse_args()
 
+    # 应用日志级别过滤（低于阈值的日志不进队列）
+    logs.set_log_level(args.log_level)
+
+    print(f"[smtp] instance={args.instance} log-level={args.log_level}")
+    print(f"[smtp] 配置来源: .env / ENV > 默认值（SMTP 账号不通过 CLI 传递）")
     server = SmtpServer(args.addr, args.port, workers=args.workers)
     try:
         server.start()

@@ -57,7 +57,7 @@ services:
   # --- 邮件服务 ---
   - name: smtp
     cmd: bash /opt/micro_servers/smtp/_run.sh
-    args: []
+    args: ["--instance", "smtp", "--log-level", "info"]
     depends_on: []
     sleep_before: 2
 
