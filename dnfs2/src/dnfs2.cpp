@@ -60,6 +60,10 @@ static constexpr size_t kSpMaxUrl          = 2048;
 static constexpr size_t kSpMaxCode         = 512 * 1024;
 static constexpr size_t kSpMaxData         = 3500 * 1024;
 static constexpr size_t kSpReviewCodePrefix = 4000;
+static constexpr size_t kSpMaxCss          = 256 * 1024;   // style 节点 CSS 上限
+static constexpr size_t kSpMaxThemeVars    = 64;           // theme 节点变量条数上限
+static constexpr size_t kSpMaxThemeKey     = 64;
+static constexpr size_t kSpMaxThemeValue   = 256;
 
 // 日志
 static constexpr size_t kLogMaxMessage  = 8192;
@@ -239,7 +243,7 @@ private:
 // 特殊节点校验
 // ============================================================================
 
-static const std::vector<std::string> kSpTypes = {"link", "js", "image", "file"};
+static const std::vector<std::string> kSpTypes = {"link", "js", "image", "file", "style", "theme"};
 
 // 识别特殊节点信封：合法信封返回 object；普通内容返回 nullptr；
 // 以 {"_sp" 开头但 JSON 非法视为格式错误（抛异常）。
@@ -270,6 +274,10 @@ static json::value parse_sp(const std::string& content) {
 
 static void validate_sp(const json::object& sp) {
     std::string t = std::string(sp.at("_sp").as_string());
+
+    // persist（style/theme 的生命周期标记）可选，必须是布尔值
+    if (sp.contains("persist") && !sp.at("persist").is_bool())
+        throw DnfsExp("persist 必须是布尔值", 400);
 
     if (t == "link") {
         if (!sp.contains("url") || !sp.at("url").is_string())
@@ -310,6 +318,46 @@ static void validate_sp(const json::object& sp) {
             throw DnfsExp("文件节点缺少数据", 400);
         if (data.size() > kSpMaxData)
             throw DnfsExp("文件过大（上限约 2.6MB）", 400);
+    } else if (t == "style") {
+        if (!sp.contains("css") || !sp.at("css").is_string())
+            throw DnfsExp("样式节点缺少 css", 400);
+        std::string css = std::string(sp.at("css").as_string());
+        if (css.empty() || css.find_first_not_of(" \t\r\n") == std::string::npos)
+            throw DnfsExp("样式节点 css 不能为空", 400);
+        if (css.size() > kSpMaxCss)
+            throw DnfsExp("样式节点 css 过大（上限 256KB）", 400);
+    } else if (t == "theme") {
+        if (!sp.contains("vars") || !sp.at("vars").is_object())
+            throw DnfsExp("主题节点缺少 vars 对象", 400);
+        const auto& vars = sp.at("vars").as_object();
+        if (vars.empty())
+            throw DnfsExp("主题节点 vars 不能为空", 400);
+        if (vars.size() > kSpMaxThemeVars)
+            throw DnfsExp("主题变量过多（上限 64 条）", 400);
+        auto is_name_char = [](char c) {
+            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                || (c >= '0' && c <= '9') || c == '-' || c == '_';
+        };
+        for (const auto& kv : vars) {
+            std::string key(kv.key());
+            // 仅允许 CSS 自定义属性名：-- 前缀 + [A-Za-z0-9_-]
+            if (key.size() < 3 || key.size() > kSpMaxThemeKey
+                || key[0] != '-' || key[1] != '-')
+                throw DnfsExp("主题变量名必须以 -- 开头", 400);
+            for (char c : key) {
+                if (!is_name_char(c))
+                    throw DnfsExp("主题变量名含非法字符", 400);
+            }
+            if (!kv.value().is_string())
+                throw DnfsExp("主题变量值必须是字符串", 400);
+            std::string val = std::string(kv.value().as_string());
+            if (val.empty() || val.size() > kSpMaxThemeValue)
+                throw DnfsExp("主题变量值为空或过长（上限 256 字符）", 400);
+            // 值禁止 {}<>：防止逃逸 :root 变量上下文注入任意规则，
+            // 保持 theme 相对 style 的"仅换肤"克制定位
+            if (val.find_first_of("{}<>") != std::string::npos)
+                throw DnfsExp("主题变量值含非法字符（{}<>）", 400);
+        }
     }
 }
 
@@ -333,6 +381,15 @@ static std::string sp_review_text(const std::string& title, const json::object& 
             if (code.size() > kSpReviewCodePrefix) code = code.substr(0, kSpReviewCodePrefix);
             parts.push_back(code);
         }
+    } else if (t == "style") {
+        if (sp.contains("css") && sp.at("css").is_string()) {
+            std::string css = std::string(sp.at("css").as_string());
+            if (css.size() > kSpReviewCodePrefix) css = css.substr(0, kSpReviewCodePrefix);
+            parts.push_back(css);
+        }
+    } else if (t == "theme") {
+        if (sp.contains("vars") && sp.at("vars").is_object())
+            parts.push_back(json::serialize(sp.at("vars")));
     } else {
         if (sp.contains("name") && sp.at("name").is_string())
             parts.push_back(std::string(sp.at("name").as_string()));

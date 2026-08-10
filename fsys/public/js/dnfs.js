@@ -445,7 +445,7 @@ function parseSp(content) {
 	} catch (e) {
 		return null;	// 非法信封按普通文本展示（后端发布时已拦截，这里是兜底）
 	}
-	if (obj && typeof obj === 'object' && ['link', 'js', 'image', 'file'].indexOf(obj._sp) !== -1) return obj;
+	if (obj && typeof obj === 'object' && ['link', 'js', 'image', 'file', 'style', 'theme'].indexOf(obj._sp) !== -1) return obj;
 	return null;
 }
 
@@ -468,6 +468,7 @@ function renderContent(container, item) {
 	else if (sp._sp === 'js') renderSpJs(container, sp, appendNote);
 	else if (sp._sp === 'image') renderSpImage(container, sp, appendNote);
 	else if (sp._sp === 'file') renderSpFile(container, sp, appendNote);
+	else if (sp._sp === 'style' || sp._sp === 'theme') renderSpCss(container, sp, appendNote, item);
 }
 
 /* 链接节点：服务端代理拉取的 favicon + 可点击链接（卡片内交互需 stopPropagation） */
@@ -505,8 +506,15 @@ var sp_effects_disabled = (function() {
 	try { return localStorage.getItem('sp_effects_disabled') === '1'; } catch (e) { return false; }
 })();
 /* 清除当前页面已运行的全部特效沙箱（进入新节点 / 关闭特效时调用） */
+/* 清除当前页面已运行的全部特效沙箱与节点作用域注入样式（进入新节点 / 关闭特效时调用）。
+ * persist 注入样式（data-persist="1"）跨节点保留，由用户面板"还原界面样式"统一清除。 */
 function clearAllEffects() {
 	document.querySelectorAll('.sp-effect-frame').forEach(function(f) { f.remove(); });
+	document.querySelectorAll('.sp-injected-style:not([data-persist="1"])').forEach(function(s) { s.remove(); });
+}
+/* 还原界面样式：清除 style/theme 节点的全部注入样式（含 persist），不清特效沙箱 */
+function clearAllStyles() {
+	document.querySelectorAll('.sp-injected-style').forEach(function(s) { s.remove(); });
 }
 function renderSpJs(container, sp, appendNote) {
 	var bar = document.createElement('div');
@@ -619,6 +627,108 @@ function renderSpFile(container, sp, appendNote) {
 	appendNote();
 }
 
+/* ===== 样式类节点（style/theme）：CSS 注入 <style> 控制整个界面 =====
+ * 生命周期：
+ *   - 节点作用域（默认）：.sp-injected-style 无 data-persist 标记，随 load_notes 的
+ *     clearAllEffects 移除，离开节点界面自动还原；
+ *   - persist:true：data-persist="1" 标记，跨节点保留，由用户面板"还原界面样式"统一清除。
+ * 安全：仅管理员可发布（后端强制）且经 AI 送审；CSS 无法执行脚本，风险面仅为界面外观，
+ * 可随时由用户一键还原。theme 是 style 的克制子集——仅允许覆盖 CSS 变量（:root 块），
+ * 变量名/值合法性由后端 validate_sp 强制，前端这里只做兜底过滤。 */
+var sp_style_reset = false;	/* 用户手动还原后，本会话不再自动注入 persist 样式（仍可在卡片手动启用） */
+
+function themeVarsToCss(vars) {
+	var lines = [':root {'];
+	for (var k in vars) {
+		if (!Object.prototype.hasOwnProperty.call(vars, k)) continue;
+		if (!/^--[A-Za-z0-9_-]+$/.test(k)) continue;
+		var v = String(vars[k]);
+		if (/[{}<>]/.test(v)) continue;
+		lines.push('  ' + k + ': ' + v + ';');
+	}
+	lines.push('}');
+	return lines.join('\n');
+}
+
+/* vars 对象 → 编辑/审计用的行文本（每行 "--var: value;"），与 theme 提交输入格式一致；
+ * 非 -- 前缀 key 后端不会接受，这里同口径过滤防止原型链属性混入展示 */
+function themeVarsToText(vars) {
+	var lines = [];
+	for (var k in vars) {
+		if (!Object.prototype.hasOwnProperty.call(vars, k)) continue;
+		if (k.indexOf('--') !== 0) continue;
+		lines.push(k + ': ' + vars[k] + ';');
+	}
+	return lines.join('\n');
+}
+
+function renderSpCss(container, sp, appendNote, item) {
+	var is_theme = (sp._sp === 'theme');
+	var kindLabel = is_theme ? '主题' : '样式';
+	var cssText = is_theme ? themeVarsToCss(sp.vars || {}) : String(sp.css || '');
+	var displayText = is_theme ? themeVarsToText(sp.vars || {}) : String(sp.css || '');
+	var persist = (sp.persist === true);
+	var noteId = (item && item.id != null) ? String(item.id) : null;
+
+	var bar = document.createElement('div');
+	bar.className = 'sp-actions';
+	var audit_btn = document.createElement('button');
+	audit_btn.className = 'act-btn act-edit';
+	audit_btn.textContent = '审计源码';
+	var toggle_btn = document.createElement('button');
+	toggle_btn.className = 'act-btn act-move';
+	toggle_btn.textContent = '停用' + kindLabel;
+	var pre = document.createElement('pre');
+	pre.className = 'sp-code';
+	pre.style.display = 'none';
+	pre.textContent = displayText;
+	var out = document.createElement('div');
+	out.className = 'sp-run';
+	out.style.display = 'none';
+	var styleEl = null;	/* 当前注入的 <style> 实例，null 表示未生效 */
+
+	audit_btn.addEventListener('click', function(e) {
+		e.stopPropagation();
+		var hidden = (pre.style.display === 'none');
+		pre.style.display = hidden ? 'block' : 'none';
+		audit_btn.textContent = hidden ? '收起源码' : '审计源码';
+	});
+	function applyCss() {
+		if (styleEl) return;
+		/* 同一节点的旧注入先移除（编辑更新 / 重新渲染不产生重复 <style>） */
+		if (noteId) {
+			document.querySelectorAll('.sp-injected-style[data-note-id="' + noteId + '"]')
+				.forEach(function(s) { s.remove(); });
+		}
+		styleEl = document.createElement('style');
+		styleEl.className = 'sp-injected-style';
+		if (persist) styleEl.setAttribute('data-persist', '1');
+		if (noteId) styleEl.setAttribute('data-note-id', noteId);
+		styleEl.textContent = cssText;
+		document.head.appendChild(styleEl);
+		toggle_btn.textContent = '停用' + kindLabel;
+		out.style.display = 'block';
+		out.textContent = persist ? kindLabel + '已生效（全局保持）' : kindLabel + '已生效（本层）';
+	}
+	function stopCss() {
+		if (styleEl) { styleEl.remove(); styleEl = null; }
+		toggle_btn.textContent = '启用' + kindLabel;
+		out.style.display = 'none';
+	}
+	toggle_btn.addEventListener('click', function(e) {
+		e.stopPropagation();
+		if (styleEl) stopCss(); else applyCss();
+	});
+	bar.appendChild(audit_btn);
+	bar.appendChild(toggle_btn);
+	container.appendChild(bar);
+	container.appendChild(pre);
+	container.appendChild(out);
+	appendNote();
+	/* 渲染即生效；persist 样式在用户手动还原后（本会话）不再自动注入 */
+	if (!(persist && sp_style_reset)) applyCss();
+}
+
 function formatBytes(n) {
 	var units = ['B', 'KB', 'MB', 'GB'];
 	var i = 0;
@@ -663,6 +773,8 @@ var sp_panel = document.getElementById('sp-panel');
 var sp_type = document.getElementById('sp-type');
 var sp_file = document.getElementById('sp-file');
 var sp_file_tip = document.getElementById('sp-file-tip');
+var sp_persist_wrap = document.getElementById('sp-persist-wrap');
+var sp_persist = document.getElementById('sp-persist');
 var sp_edit_original = null;	/* 编辑图片/文件节点时的原信封字符串：未选新文件则原样提交 */
 /* 搜索框：当前层卡片标题/内容关键词过滤 */
 var searchtext = document.getElementById('searchtext');
@@ -695,6 +807,10 @@ sp_type.addEventListener('change', function() {
 	var is_file = (t === 'image' || t === 'file');
 	sp_file.style.display = is_file ? '' : 'none';
 	input_note_content.style.display = is_file ? 'none' : '';
+	/* persist 选项仅样式类节点（style/theme）可见，切走时复位勾选 */
+	var is_style = (t === 'style' || t === 'theme');
+	sp_persist_wrap.style.display = is_style ? '' : 'none';
+	if (!is_style) sp_persist.checked = false;
 	sp_file_tip.textContent = '';
 	sp_file_tip.className = is_file ? 'tip-yellow' : '';
 	if (!is_file) {
@@ -703,6 +819,8 @@ sp_type.addEventListener('change', function() {
 	}
 	if (t === 'link') input_note_content.placeholder = '请输入链接 URL（https://…）';
 	else if (t === 'js') input_note_content.placeholder = '请输入完整前端代码（可含 HTML/CSS/JS）';
+	else if (t === 'style') input_note_content.placeholder = '请输入 CSS（如 .card { border-radius: 16px }），发布后全界面生效';
+	else if (t === 'theme') input_note_content.placeholder = '每行一个变量，如 --accent: #e8853a';
 	else input_note_content.placeholder = '';
 });
 
@@ -713,6 +831,27 @@ function readFileAsDataURL(f) {
 		r.onerror = function() { reject(new Error('文件读取失败')); };
 		r.readAsDataURL(f);
 	});
+}
+
+/* 解析主题变量输入：每行一条 "--变量名: 值"（末尾分号可选），返回 vars 对象；非法返回 null（已弹提示） */
+function parseThemeVars(text) {
+	var vars = {};
+	var lines = text.split('\n');
+	for (var i = 0; i < lines.length; i++) {
+		var line = lines[i].trim();
+		if (!line) continue;
+		if (line.indexOf('--') !== 0) { alert('第 ' + (i + 1) + ' 行不是 CSS 变量（须以 -- 开头）：' + line); return null; }
+		var idx = line.indexOf(':');
+		if (idx <= 0) { alert('第 ' + (i + 1) + ' 行缺少冒号：' + line); return null; }
+		var k = line.substring(0, idx).trim();
+		var v = line.substring(idx + 1).trim().replace(/;+$/, '');
+		if (!/^--[A-Za-z0-9_-]+$/.test(k)) { alert('非法变量名：' + k); return null; }
+		if (!v) { alert('变量缺少值：' + k); return null; }
+		if (/[{}<>]/.test(v)) { alert('变量值含非法字符（{}<>）：' + k); return null; }
+		vars[k] = v;
+	}
+	if (Object.keys(vars).length === 0) { alert('请至少输入一个 CSS 变量，如 --accent: #e8853a'); return null; }
+	return vars;
 }
 
 /* by qing — 构造提交内容：普通节点返回原文本，特殊节点返回信封 JSON 字符串。
@@ -729,6 +868,20 @@ async function buildSubmitContent() {
 		var code = input_note_content.value;
 		if (!code.trim()) { alert('请输入前端代码'); return null; }
 		return JSON.stringify({ _sp: 'js', code: code });
+	}
+	if (t === 'style') {
+		var css = input_note_content.value;
+		if (!css.trim()) { alert('请输入 CSS 样式'); return null; }
+		var style_env = { _sp: 'style', css: css };
+		if (sp_persist.checked) style_env.persist = true;
+		return JSON.stringify(style_env);
+	}
+	if (t === 'theme') {
+		var vars = parseThemeVars(input_note_content.value);
+		if (!vars) return null;
+		var theme_env = { _sp: 'theme', vars: vars };
+		if (sp_persist.checked) theme_env.persist = true;
+		return JSON.stringify(theme_env);
 	}
 	/* image / file：优先使用新选择的文件；编辑模式下未选新文件则保留原信封 */
 	if (sp_file.files.length === 0) {
@@ -808,6 +961,16 @@ function startEdit(item) {
 		sp_type.value = sp._sp;
 		sp_type.dispatchEvent(new Event('change'));
 		input_note_content.value = (sp._sp === 'link') ? (sp.url || '') : (sp.code || '');
+	} else if (sp && sp._sp === 'style') {
+		sp_type.value = 'style';
+		sp_type.dispatchEvent(new Event('change'));
+		input_note_content.value = sp.css || '';
+		sp_persist.checked = (sp.persist === true);
+	} else if (sp && sp._sp === 'theme') {
+		sp_type.value = 'theme';
+		sp_type.dispatchEvent(new Event('change'));
+		input_note_content.value = themeVarsToText(sp.vars || {});
+		sp_persist.checked = (sp.persist === true);
 	} else if (sp) {
 		sp_type.value = sp._sp;
 		sp_type.dispatchEvent(new Event('change'));
@@ -831,6 +994,7 @@ function cancelEdit() {
 	sp_edit_original = null;
 	sp_file.value = '';
 	sp_file_tip.textContent = '';
+	sp_persist.checked = false;
 	if (sp_type.value !== 'text') {
 		sp_type.value = 'text';
 		sp_type.dispatchEvent(new Event('change'));
@@ -979,6 +1143,12 @@ function itemSearchText(item) {
 			if (sp.note) parts.push(sp.note);
 		} else if (sp._sp === 'js') {
 			if (sp.code) parts.push(sp.code);
+			if (sp.note) parts.push(sp.note);
+		} else if (sp._sp === 'style') {
+			if (sp.css) parts.push(sp.css);
+			if (sp.note) parts.push(sp.note);
+		} else if (sp._sp === 'theme') {
+			parts.push(themeVarsToText(sp.vars || {}));
 			if (sp.note) parts.push(sp.note);
 		} else {	/* image / file：不把 base64 数据纳入搜索 */
 			if (sp.name) parts.push(sp.name);
@@ -1144,6 +1314,18 @@ function renderUserPanel() {
 		renderCards(current_children);
 	});
 	userpanel.appendChild(effect_btn);
+
+	/* 还原界面样式：清除 style/theme 节点的全部注入样式（含 persist），并重渲染当前层——
+	 * persist 卡片不再自动注入（sp_style_reset 会话级抑制），需要时可在卡片上手动启用 */
+	let style_reset_btn = document.createElement("div");
+	style_reset_btn.className = "tag";
+	style_reset_btn.textContent = "还原界面样式";
+	style_reset_btn.addEventListener("click", () => {
+		sp_style_reset = true;
+		clearAllStyles();
+		renderCards(current_children);
+	});
+	userpanel.appendChild(style_reset_btn);
 
 	/* 管理员专属入口：运维机器人 / 进程管理器 */
 	if (current_user.is_admin) {
