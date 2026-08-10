@@ -208,7 +208,6 @@
 | 配置文件 | 消费模块 | 依赖强度 |
 |----------|----------|----------|
 | `gateway.ini` | gateway | confs 拉取（0.7.0 起配置完全迁入） |
-| `example.ini` | —（旧 gateway 示例模板） | 无消费方 |
 
 - **部署安全约定**：`confs/configs/*.ini` 含敏感字段，权限必须收紧为 `root:root 0640`，仅 root 可写；被同机普通用户篡改可劫持对应服务（详见 `docs/security/core_SECURITY_AUDIT_20260801.md` 2026-08-10 复审）。原 `ca.ini` 管理员白名单已随 ca v1.1.0 迁入 `core/services.yaml` 的 CLI args；原 `smtp.ini` 全部配置已随 smtp3 迁入 `core/services.yaml` 的 CLI args（SMTP 凭据仍经 `.env` 注入）；原 `captcha.ini` 与 `static.ini` 已分别随 captcha2、fsys 迁入 CLI args，防护对象相应转为 `services.yaml` 与 `.env` 的文件权限。
 
