@@ -230,7 +230,7 @@ dnfs 已接入 confs 统一配置服务，confs 是 dnfs 启动的**强依赖**�
 
 ### 配置文件
 
-集中托管在 [confs/configs/dnfs.ini](../confs/configs/dnfs.ini)，由 confs 服务分发：
+集中托管在 `confs/configs/dnfs.ini`（已删除，配置经 CLI 传递），由 confs 服务分发：
 
 | Section | Key | 说明 |
 |---------|-----|------|

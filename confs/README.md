@@ -237,8 +237,8 @@ except RpcError as e:
 
 | 服务 | 配置文件 | 接入方式 |
 |------|---------|---------|
-| [static](../static/) | [static.ini](configs/static.ini) | confs 强依赖（pymsg 自动阻塞等待 confs 就绪）→ 环境变量覆盖（最高优先级，Docker 兼容） |
-| [db](../db/) | [db.ini](configs/db.ini) | confs 强依赖（pymsg 自动阻塞等待 confs 就绪）→ 环境变量覆盖（最高优先级，Docker 兼容） |
+| [static](../static/) | `static.ini` | confs 强依赖（pymsg 自动阻塞等待 confs 就绪）→ 环境变量覆盖（最高优先级，Docker 兼容） |
+| [db](../db/) | `db.ini` | confs 强依赖（pymsg 自动阻塞等待 confs 就绪）→ 环境变量覆盖（最高优先级，Docker 兼容） |
 
 static 的接入实现见 [static/fsys.py](../static/fsys.py)：
 - 两层加载顺序：confs（static.ini，强依赖）→ 环境变量覆盖（优先级最高）
@@ -288,4 +288,4 @@ confs/
 - INI 配置文件中 `%(xxx)s` 语法**不会**被当作插值引用，而是作为字面字符串返回；如需插值请在业务层自行处理
 - 调用方拿到 `get()` 返回的 dict 可以自由修改（如 `entry["content"] = "x"`），不会影响 confs 内部缓存
 - 当前接入情况见上文"集成关系 → 已接入的服务"；新服务接入可参考 static 的三层 fail-safe 模式（内置默认 → confs 优先 → 本地回退）
-- 安全审计报告详见 [docs/SECURITY_AUDIT_20260801.md](docs/SECURITY_AUDIT_20260801.md)
+- 安全审计报告详见 [confs_SECURITY_AUDIT_20260801.md](../docs/security/confs_SECURITY_AUDIT_20260801.md)

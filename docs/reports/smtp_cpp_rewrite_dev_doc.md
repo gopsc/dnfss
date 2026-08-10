@@ -625,7 +625,7 @@ smtp2/
 |------|----------|
 | `confs/configs/smtp.ini` | **新增**，smtp 统一配置文件 |
 | `core/init.txt` | `smtp/_run.sh` → `smtp2/_run.sh` |
-| `docs/INDEX.md` | 添加本文件的索引条目 |
+| `docs/` 根目录 | 登记本文件条目 |
 
 ### 零改动
 

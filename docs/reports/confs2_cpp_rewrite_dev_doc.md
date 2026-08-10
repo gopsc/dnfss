@@ -405,7 +405,7 @@ struct ConfsConfig {
 
 ### 4.6 日志客户端（LogC.hpp）
 
-从 [captcha2/inc/LogC.hpp](../../captcha2/inc/LogC.hpp) 改编，仅改 namespace 和服务名：
+从 [liblogc/inc/us/LogC.hpp](../../liblogc/inc/us/LogC.hpp)（原 captcha2/inc/LogC.hpp，后独立为 liblogc 模块）改编，仅改 namespace 和服务名：
 
 ```cpp
 namespace confs2 {

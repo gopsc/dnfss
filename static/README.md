@@ -95,7 +95,7 @@ static 已接入 confs 统一配置服务，confs 是 static 启动的**强依�
 
 ### 配置文件
 
-集中托管在 [confs/configs/static.ini](../confs/configs/static.ini)，由 confs 服务分发：
+集中托管在 `confs/configs/static.ini`（已删除，配置经 CLI 传递），由 confs 服务分发：
 
 | Section | Key | 说明 |
 |---------|-----|------|

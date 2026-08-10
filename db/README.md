@@ -40,7 +40,7 @@ db 已接入 [confs](../confs/) 统一配置服务，confs 是 db 启动的**强
 
 ### confs 配置文件（db.ini）
 
-配置文件托管于 [confs/configs/db.ini](../confs/configs/db.ini)：
+配置文件托管于 `confs/configs/db.ini`（已删除，配置经 CLI 传递）：
 
 ```ini
 [server]
@@ -288,7 +288,7 @@ python3 _view_db.sqlite3.py -s "SELECT service, COUNT(*) FROM Logs GROUP BY serv
 
 ## 切换数据库
 
-推荐方式：修改 confs 的 [db.ini](../confs/configs/db.ini) 中 `[database] url`，然后通过 confs `reload` 路由重载（或重启 db）。也可通过环境变量 `DATABASE_URL` 覆盖（Docker 部署时常用）：
+推荐方式：修改 confs 的 `db.ini`（已删除，配置经 CLI 传递）中 `[database] url`，然后通过 confs `reload` 路由重载（或重启 db）。也可通过环境变量 `DATABASE_URL` 覆盖（Docker 部署时常用）：
 
 - SQLite（默认）：`sqlite:///database.db`（相对路径）或 `sqlite:////app/data/database.db`（绝对路径，Docker 中使用）
 - PostgreSQL：`postgresql://user:pass@localhost/dbname`（需 `pip install psycopg2-binary`）

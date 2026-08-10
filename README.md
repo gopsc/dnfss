@@ -297,17 +297,18 @@
 
 ## 测试
 
-[tests/](tests/) 包含一套黑盒测试套件，基于子进程调用与 HTTP 请求验证各微服务功能正确性：
+[tests/blackbox/](tests/blackbox/) 包含一套黑盒用户模拟测试套件，基于 HTTP/TCP 公开接口验证各微服务功能正确性（纯 Python 标准库，零第三方依赖）：
 
 | 测试文件 | 被测模块 | 说明 |
 |----------|----------|------|
-| `test_db_*.py` | db | SQL-over-TCP 的 select/insert/update/delete、日期哨兵、边界条件 |
-| `test_gateway_*.py` | gateway | 用户注册/登录/Token 校验、速率限制、CAPTCHA 集成 |
-| `test_waf_*.py` | waf | coraza 规则匹配与拦截、白名单放行 |
-| `test_dnfs_*.py` | dnfs | 节点树 CRUD、AI 审核集成 |
+| `test_db.py` | db2 | SQL-over-TCP 的日志写入/查询/统计/清理 |
+| `test_gateway.py` | ca（认证） | 用户注册/登录/Token 校验、输入校验、代理路径安全、限流 |
+| `test_waf.py` | waf | coraza 规则匹配与拦截（SQLi/XSS/命令注入/路径遍历/扫描器）、正常请求放行 |
+| `test_dnfs.py` | dnfs2 | 节点树 CRUD、AI 审核集成 |
+| `test_captcha.py` / `test_smtp.py` / `test_ai_review.py` / `test_static.py` | captcha2 / smtp / ai_review / fsys | 验证码一次性消费、邮件验证码、内容审核纠偏、文件浏览与视频流 |
 
-- 默认使用 `config.py` 中的生产地址（127.0.0.1），每个测试函数前后自动备份/恢复 db 数据，保证不污染线上数据。
-- 测试依赖 `pymsg`、`Flask`、`flask-cors`、`requests`、`Pillow`，详见 [tests/requirements-test.txt](tests/requirements-test.txt)。
+- 默认使用 `tests/blackbox/config.py` 中的生产地址（127.0.0.1，条目名映射见该文件），运行方式见 [tests/blackbox/README.md](tests/blackbox/README.md)。
+- 注册测试会创建真实数据库记录，测试完成后可手动清理。
 
 ## 依赖
 

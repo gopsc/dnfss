@@ -1,7 +1,7 @@
 # Blackbird / micro_servers 项目资料长文档
 
 > 文档类型：项目资料 / 综合参考手册（面向开发者、维护者、审计者与潜在贡献者）
-> 资料来源：仓库主 `README.md`、各模块 `README.md`、`docs/INDEX.md`、`docs/MODULES.md`、`docs/security/*`、`docs/reviews/*`、`docs/reports/blackbird_research_report.md`、`docs/security/SECURITY_HARDENING_PLAN_20260803.md`、`docs/blackbird_promo_pack.md`
+> 资料来源：仓库主 `README.md`、各模块 `README.md`、`docs/MODULES.md`、`docs/security/*`、`docs/reviews/*`、`docs/reports/blackbird_research_report.md`、`docs/security/SECURITY_HARDENING_PLAN_20260803.md`、`docs/reports/blackbird_promo_pack.md`
 > 整理日期：2026-08-10
 > 文档状态：`advisory`（基于仓库现有文档整合；涉及最新代码整改状态的部分标注为 `human_review_pending`，需结合代码人工复核）
 
@@ -195,7 +195,7 @@ Blackbird 是一套 **DIY 的轻量级"进程托管式微服务"框架**，用 C
 | 项 | 说明 |
 |----|------|
 | **tests** | 黑盒测试套件（`test_db_*`/`test_gateway_*`/`test_waf_*`/`test_dnfs_*`），子进程 + HTTP 验证，前后自动备份恢复 db |
-| **docs** | 文档聚合（security/ 审计、reviews/ 审查、reports/ 分析、INDEX.md），41+ 篇 md |
+| **docs** | 文档聚合（security/ 审计、reviews/ 审查、reports/ 分析），41+ 篇 md |
 
 ---
 
@@ -329,7 +329,7 @@ Gateway v0.8.0 修复 P0 后，**安全评级 B+ → A-**；随 ca 引入与 C++
 ## 9. 许可证与推广
 
 - **许可证**：各模块 MIT。
-- **价值主张摘要**（详见 `docs/blackbird_promo_pack.md`）：
+- **价值主张摘要**（详见 `docs/reports/blackbird_promo_pack.md`）：
   - "微服务的好处，Kubernetes 的麻烦，二选一？Blackbird 说：都要，但只留好处。"
   - "你的数据、你的服务、你的规则——一台机器，全部自己说了算。"
   - Slogan 候选：*轻装微服务，主权握手中*；*一台服务器，一座可控的城*；*微服务的纯粹主义*。
@@ -371,4 +371,4 @@ Gateway v0.8.0 修复 P0 后，**安全评级 B+ → A-**；随 ca 引入与 C++
 - **已确认事实**：主 README 拓扑（waf:443→ca:8443→gateway:8445）；ca 为 C++ 认证前置模块；C++ 重写潮（ca/captcha2/confs2/smtp3/gateway 精简/core ConfsTask）；安全评级 B+→A-；MIT 许可
 - **待核验事项**：3 项高危 + 2 项中危是否已在最新提交修复（研究报基于 2026-08-08 快照）；docker-compose 补全状态；MODULES.md 端口口径同步
 - **下一节唯一目标**：（可选）补充"各模块 API 速查表"或"从零部署实战 walkthrough"
-- **续写口令**：`继续编辑 docs/blackbird_project_profile.md，当前停于第 10 章风险收口；已含架构/模块/协议/安全/部署/路线图；约束：以主 README 拓扑为准、高危缺口标注 human_review_pending、不虚构修复状态；下一目标：补模块 API 速查表或部署实战。`
+- **续写口令**：`继续编辑 docs/reports/blackbird_project_profile.md，当前停于第 10 章风险收口；已含架构/模块/协议/安全/部署/路线图；约束：以主 README 拓扑为准、高危缺口标注 human_review_pending、不虚构修复状态；下一目标：补模块 API 速查表或部署实战。`

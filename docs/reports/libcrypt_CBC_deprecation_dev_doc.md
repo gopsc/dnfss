@@ -346,7 +346,7 @@ AAD 允许对**不加密但需认证**的数据做完整性校验。建议在以
 完成开发后需同步更新：
 
 - [ ] `libcrypt/README.md` — 新增 AES_GCM 章节，标注 AES_CBC 废弃
-- [ ] `docs/INDEX.md` — 注册本文档
+- [ ] `docs/` 根目录或 `docs/reports/` 中登记本文档
 - [ ] `libcrypt/Makefile` — install/uninstall 新增 AES_GCM.hpp
 
 ---

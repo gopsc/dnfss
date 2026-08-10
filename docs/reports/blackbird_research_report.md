@@ -115,7 +115,7 @@ blackbird 是由个人开发者「qing」维护的轻量级多语言微服务框
 
 **论据（带引用）**：
 - 代码显示，`tests/blackbox/` 仅 8 个黑盒集成测试，覆盖 db/dnfs/gateway/waf/static/captcha/smtp/ai_review；无单元测试、无 CI（仓库无 `.github/workflows` / `gitlab-ci.yml`）。
-- 文档完备度极高：`docs/security/` 含 24+ 份逐模块审计（自 2026-08-01 起，含 gateway(db2/dnfs2 多轮)、SECURITY_HARDENING_PLAN_20260803）；`docs/reviews/` 为代码评审日志；`docs/INDEX.md` 提供索引。
+- 文档完备度极高：`docs/security/` 含 24+ 份逐模块审计（自 2026-08-01 起，含 gateway(db2/dnfs2 多轮)、SECURITY_HARDENING_PLAN_20260803）；`docs/reviews/` 为代码评审日志；`docs/` 根目录提供全局文档。
 - 双实现并存：db（dbv2.py）vs db2（db2.cpp）、dnfs vs dnfs2、pymsg vs libmsg、libtry vs libth、lci vs bot4cj → 正以「C++ 重写 Python 微服务」为目标迁移（v1/v2 双轨）。
 - 模块 LOC 显示同一能力在两语言重复承载：db2 1007 行与 db 1301 行、pymsg 1490 行与 libmsg 1972 行（cloc 口径，含注释）。
 
@@ -123,7 +123,7 @@ blackbird 是由个人开发者「qing」维护的轻量级多语言微服务框
 
 **小结**：blackbird 以极高文档/审计完备度弥补了测试与 CI 短板；但 v1/v2 双实现带来的重复与维护成本，是质量与效率层面的核心结构性风险，建议在重构收口时优先合并单轨。
 
-**本章引用文件**：tests/blackbox/、docs/security/、docs/reviews/、docs/INDEX.md、db/dbv2.py、db2/src/db2.cpp、pymsg/pymsg/__init__.py、libmsg/inc/us/Msg_Basic.hpp
+**本章引用文件**：tests/blackbox/、docs/security/、docs/reviews/、db/dbv2.py、db2/src/db2.cpp、pymsg/pymsg/__init__.py、libmsg/inc/us/Msg_Basic.hpp
 
 ---
 

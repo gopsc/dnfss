@@ -73,7 +73,7 @@
 | 模块 | 说明 |
 |------|------|
 | tests | 黑盒测试套件（`test_db_*`/`test_gateway_*`/`test_waf_*`/`test_dnfs_*`），子进程 + HTTP 验证，前后自动备份恢复 db |
-| docs | 文档聚合（security/ 审计、reviews/ 审查、reports/ 分析、INDEX.md），41+ 篇 md |
+| docs | 文档聚合（security/ 审计、reviews/ 审查、reports/ 分析），41+ 篇 md |
 
 ## 九、根级构建与部署脚本
 
