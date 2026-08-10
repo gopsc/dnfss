@@ -481,15 +481,9 @@ function renderContent(container, item) {
 var sp_effects_disabled = (function() {
 	try { return localStorage.getItem('sp_effects_disabled') === '1'; } catch (e) { return false; }
 })();
-/* 清除当前页面已运行的全部特效沙箱（进入新节点 / 关闭特效时调用） */
-/* 清除当前页面已运行的全部特效沙箱与节点作用域注入样式（进入新节点 / 关闭特效时调用）。
- * persist 注入样式（data-persist="1"）跨节点保留，由用户面板"还原界面样式"统一清除。 */
+/* 清除当前页面已运行的全部特效沙箱与注入样式（进入新节点 / 关闭特效时调用） */
 function clearAllEffects() {
 	document.querySelectorAll('.sp-effect-frame').forEach(function(f) { f.remove(); });
-	document.querySelectorAll('.sp-injected-style:not([data-persist="1"])').forEach(function(s) { s.remove(); });
-}
-/* 还原界面样式：清除 style/theme 节点的全部注入样式（含 persist），不清特效沙箱 */
-function clearAllStyles() {
 	document.querySelectorAll('.sp-injected-style').forEach(function(s) { s.remove(); });
 }
 function renderSpJs(container, sp, appendNote) {
@@ -594,14 +588,11 @@ function renderSpFile(container, sp, appendNote) {
 }
 
 /* ===== 样式类节点（style/theme）：CSS 注入 <style> 控制整个界面 =====
- * 生命周期：
- *   - 节点作用域（默认）：.sp-injected-style 无 data-persist 标记，随 load_notes 的
- *     clearAllEffects 移除，离开节点界面自动还原；
- *   - persist:true：data-persist="1" 标记，跨节点保留，由用户面板"还原界面样式"统一清除。
- * 安全：节点拥有者或管理员可发布（后端强制）且经 AI 送审；CSS 无法执行脚本，风险面仅为界面外观，
- * 可随时由用户一键还原。theme 是 style 的克制子集——仅允许覆盖 CSS 变量（:root 块），
+ * 生命周期：节点作用域——进入该节点所在层时注入生效，切换/返回节点时随
+ * clearAllEffects 移除，界面自动还原；卡片上可逐个停用/启用。
+ * 安全：节点拥有者或管理员可发布（后端强制）且经 AI 送审；CSS 无法执行脚本，风险面仅为界面外观。
+ * theme 是 style 的克制子集——仅允许覆盖 CSS 变量（:root 块），
  * 变量名/值合法性由后端 validate_sp 强制，前端这里只做兜底过滤。 */
-var sp_style_reset = false;	/* 用户手动还原后，本会话不再自动注入 persist 样式（仍可在卡片手动启用） */
 
 function themeVarsToCss(vars) {
 	var lines = [':root {'];
@@ -633,7 +624,6 @@ function renderSpCss(container, sp, appendNote, item) {
 	var kindLabel = is_theme ? '主题' : '样式';
 	var cssText = is_theme ? themeVarsToCss(sp.vars || {}) : String(sp.css || '');
 	var displayText = is_theme ? themeVarsToText(sp.vars || {}) : String(sp.css || '');
-	var persist = (sp.persist === true);
 	var noteId = (item && item.id != null) ? String(item.id) : null;
 
 	var bar = document.createElement('div');
@@ -668,13 +658,12 @@ function renderSpCss(container, sp, appendNote, item) {
 		}
 		styleEl = document.createElement('style');
 		styleEl.className = 'sp-injected-style';
-		if (persist) styleEl.setAttribute('data-persist', '1');
 		if (noteId) styleEl.setAttribute('data-note-id', noteId);
 		styleEl.textContent = cssText;
 		document.head.appendChild(styleEl);
 		toggle_btn.textContent = '停用' + kindLabel;
 		out.style.display = 'block';
-		out.textContent = persist ? kindLabel + '已生效（全局保持）' : kindLabel + '已生效（本层）';
+		out.textContent = kindLabel + '已生效（本层）';
 	}
 	function stopCss() {
 		if (styleEl) { styleEl.remove(); styleEl = null; }
@@ -691,8 +680,8 @@ function renderSpCss(container, sp, appendNote, item) {
 	container.appendChild(pre);
 	container.appendChild(out);
 	appendNote();
-	/* 渲染即生效；persist 样式在用户手动还原后（本会话）不再自动注入 */
-	if (!(persist && sp_style_reset)) applyCss();
+	/* 渲染即生效 */
+	applyCss();
 }
 
 function formatBytes(n) {
@@ -739,8 +728,6 @@ var sp_panel = document.getElementById('sp-panel');
 var sp_type = document.getElementById('sp-type');
 var sp_file = document.getElementById('sp-file');
 var sp_file_tip = document.getElementById('sp-file-tip');
-var sp_persist_wrap = document.getElementById('sp-persist-wrap');
-var sp_persist = document.getElementById('sp-persist');
 var sp_edit_original = null;	/* 编辑文件节点时的原信封字符串：未选新文件则原样提交 */
 /* 搜索框：当前层卡片标题/内容关键词过滤 */
 var searchtext = document.getElementById('searchtext');
@@ -773,10 +760,6 @@ sp_type.addEventListener('change', function() {
 	var is_file = (t === 'file');
 	sp_file.style.display = is_file ? '' : 'none';
 	input_note_content.style.display = is_file ? 'none' : '';
-	/* persist 选项仅样式类节点（style/theme）可见，切走时复位勾选 */
-	var is_style = (t === 'style' || t === 'theme');
-	sp_persist_wrap.style.display = is_style ? '' : 'none';
-	if (!is_style) sp_persist.checked = false;
 	sp_file_tip.textContent = '';
 	sp_file_tip.className = is_file ? 'tip-yellow' : '';
 	if (!is_file) {
@@ -832,16 +815,12 @@ async function buildSubmitContent() {
 	if (t === 'style') {
 		var css = input_note_content.value;
 		if (!css.trim()) { alert('请输入 CSS 样式'); return null; }
-		var style_env = { _sp: 'style', css: css };
-		if (sp_persist.checked) style_env.persist = true;
-		return JSON.stringify(style_env);
+		return JSON.stringify({ _sp: 'style', css: css });
 	}
 	if (t === 'theme') {
 		var vars = parseThemeVars(input_note_content.value);
 		if (!vars) return null;
-		var theme_env = { _sp: 'theme', vars: vars };
-		if (sp_persist.checked) theme_env.persist = true;
-		return JSON.stringify(theme_env);
+		return JSON.stringify({ _sp: 'theme', vars: vars });
 	}
 	/* file：优先使用新选择的文件；编辑模式下未选新文件则保留原信封 */
 	if (sp_file.files.length === 0) {
@@ -921,12 +900,10 @@ function startEdit(item) {
 		sp_type.value = 'style';
 		sp_type.dispatchEvent(new Event('change'));
 		input_note_content.value = sp.css || '';
-		sp_persist.checked = (sp.persist === true);
 	} else if (sp && sp._sp === 'theme') {
 		sp_type.value = 'theme';
 		sp_type.dispatchEvent(new Event('change'));
 		input_note_content.value = themeVarsToText(sp.vars || {});
-		sp_persist.checked = (sp.persist === true);
 	} else if (sp) {
 		sp_type.value = sp._sp;
 		sp_type.dispatchEvent(new Event('change'));
@@ -950,7 +927,6 @@ function cancelEdit() {
 	sp_edit_original = null;
 	sp_file.value = '';
 	sp_file_tip.textContent = '';
-	sp_persist.checked = false;
 	if (sp_type.value !== 'text') {
 		sp_type.value = 'text';
 		sp_type.dispatchEvent(new Event('change'));
@@ -1268,18 +1244,6 @@ function renderUserPanel() {
 		renderCards(current_children);
 	});
 	userpanel.appendChild(effect_btn);
-
-	/* 还原界面样式：清除 style/theme 节点的全部注入样式（含 persist），并重渲染当前层——
-	 * persist 卡片不再自动注入（sp_style_reset 会话级抑制），需要时可在卡片上手动启用 */
-	let style_reset_btn = document.createElement("div");
-	style_reset_btn.className = "tag";
-	style_reset_btn.textContent = "还原界面样式";
-	style_reset_btn.addEventListener("click", () => {
-		sp_style_reset = true;
-		clearAllStyles();
-		renderCards(current_children);
-	});
-	userpanel.appendChild(style_reset_btn);
 
 	/* 管理员专属入口：运维机器人 / 进程管理器 */
 	if (current_user.is_admin) {

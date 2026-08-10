@@ -274,10 +274,6 @@ static json::value parse_sp(const std::string& content) {
 static void validate_sp(const json::object& sp) {
     std::string t = std::string(sp.at("_sp").as_string());
 
-    // persist（style/theme 的生命周期标记）可选，必须是布尔值
-    if (sp.contains("persist") && !sp.at("persist").is_bool())
-        throw DnfsExp("persist 必须是布尔值", 400);
-
     if (t == "js") {
         if (!sp.contains("code") || !sp.at("code").is_string())
             throw DnfsExp("前端代码不能为空", 400);
