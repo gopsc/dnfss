@@ -13,7 +13,26 @@ services:
   # --- 数据层（最先启动） ---
   - name: db2
     cmd: bash /opt/micro_servers/db2/_run.sh
-    args: ["--instance", "db2", "--log-level", "info"]
+    args:
+      - "--instance"
+      - "db2"
+      - "--log-level"
+      - "info"
+      # --- 配置全部经 CLI 传递（原 confs/configs/db.ini 迁入） ---
+      - "--host"
+      - "127.0.0.1"
+      - "--port"
+      - "8005"
+      - "--workers"
+      - "4"
+      - "--db-url"
+      - "sqlite:///database.db"
+      - "--retention-days"
+      - "30"
+      - "--max-records"
+      - "1000000"
+      - "--cleanup-interval"
+      - "3600"
     depends_on: []
     sleep_before: 0
 

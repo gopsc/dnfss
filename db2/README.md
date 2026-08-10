@@ -11,7 +11,7 @@ db 模块的 C++20 重实现，接口与 Python 版完全兼容：相同的 `exe
 | where 运算符 | ✅ | ✅ 完全对齐 |
 | 响应格式 | ✅ | ✅ 完全对齐 |
 | `$now` 哨兵值 | ✅ | ✅ |
-| confs 配置拉取 | ✅ | ✅ |
+| confs 配置拉取 | ✅ | ✅ 纯 CLI（已移除 confs 依赖） |
 | Logs 自动建表 + 清理 | ✅ | ✅ |
 | 数据库后端 | SQLite / PG / MySQL | SQLite（直接 C API） |
 | 依赖 | Python 3 + SQLAlchemy | libmsg + boost::json + libsqlite3 |
@@ -29,59 +29,68 @@ db 模块的 C++20 重实现，接口与 Python 版完全兼容：相同的 `exe
 ### 启动
 
 ```bash
-./_run.sh                        # 读 confs 自动获取配置
+./_run.sh                                          # 使用 services.yaml 传入的 CLI 参数
 ./_run.sh --addr 127.0.0.1 --port 8005 --workers 4   # 覆盖监听参数
 ```
 
-服务启动时强依赖 confs（拉取 `db.ini`）。confs 未就绪时自动重试，不要求启动顺序。
+配置全部经 CLI 传递（由 core/services.yaml 注入），不依赖 confs。
 
 ## 配置管理
 
-与 Python db 完全一致：启动时从 confs 服务拉取 `db.ini`，失败则退出（exit code 1）。
+配置通过三层加载（CLI > 环境变量 > 默认值），全部配置项由 core/services.yaml 经 CLI 参数传入，不依赖 confs。
 
-### confs 配置文件（db.ini）
+### CLI 参数
 
-配置文件托管于 [confs/configs/db.ini](../confs/configs/db.ini)：
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--host` / `--addr` / `-a` | 监听地址 | `127.0.0.1` |
+| `--port` / `-p` | 监听端口 | `8005` |
+| `--workers` / `-w` | 工作线程数 | `4` |
+| `--db-url` | 数据库路径 | `sqlite:///database.db` |
+| `--retention-days` | 日志保留天数 | `30` |
+| `--max-records` | 日志最大条数 | `1000000` |
+| `--cleanup-interval` | 日志清理间隔秒数 | `3600` |
+| `--log-level` | 日志级别 | `info` |
+| `--instance` | 实例名 | `db2` |
 
-```ini
-[server]
-host = 127.0.0.1
-port = 8005
-workers = 4
+### 环境变量（覆盖默认值，被 CLI 覆盖）
 
-[database]
-url = sqlite:///database.db
+| 环境变量 | 说明 |
+|---------|------|
+| `LISTEN_ADDR` | 监听地址 |
+| `LISTEN_PORT` | 监听端口 |
+| `WORKERS` | 工作线程数 |
+| `DATABASE_URL` | 数据库文件路径 |
+| `RETENTION_DAYS` | 日志保留天数 |
+| `MAX_RECORDS` | 日志最大条数 |
+| `CLEANUP_INTERVAL` | 日志清理间隔秒数 |
 
-[logs]
-retention_days = 30
-max_records = 1000000
-cleanup_interval = 3600
-```
+### services.yaml 示例
 
-### 引导配置（confs 连接地址）
-
-| 来源 | 优先级 |
-|------|--------|
-| 环境变量 `CONFS_HOST` / `CONFS_PORT` | 最高 |
-| 默认值 `127.0.0.1:8010` | 兜底 |
-
-### 环境变量（最高优先级，覆盖 confs 配置值）
-
-| 环境变量 | 说明 | 对应配置项 |
-|---------|------|-----------|
-| `LISTEN_ADDR` | 监听地址 | `[server] host` |
-| `LISTEN_PORT` | 监听端口 | `[server] port` |
-| `WORKERS` | 工作线程数 | `[server] workers` |
-| `DATABASE_URL` | 数据库文件路径 | `[database] url` |
-| `CONFS_HOST` | confs 地址（引导） | — |
-| `CONFS_PORT` | confs 端口（引导） | — |
-
-### 命令行参数（最高优先级）
-
-```
---addr  / -a   监听地址
---port  / -p   监听端口
---workers / -w 工作线程数
+```yaml
+- name: db2
+  cmd: bash /opt/micro_servers/db2/_run.sh
+  args:
+    - "--instance"
+    - "db2"
+    - "--log-level"
+    - "info"
+    - "--host"
+    - "127.0.0.1"
+    - "--port"
+    - "8005"
+    - "--workers"
+    - "4"
+    - "--db-url"
+    - "sqlite:///database.db"
+    - "--retention-days"
+    - "30"
+    - "--max-records"
+    - "1000000"
+    - "--cleanup-interval"
+    - "3600"
+  depends_on: []
+  sleep_before: 0
 ```
 
 ## 协议与 API

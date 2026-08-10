@@ -35,7 +35,7 @@
   └────────────┘
  日志链路: waf / ca / gateway / static / dnfs / ai_review / captcha / smtp / aibox / confs / redirect80 ──(log_client, pymsg)──► db:8005 (Logs 表)
  认证链路(v0.9.0 起): waf:443 ──HTTP──► ca:8443 (认证+前置转发) ──HTTP──► gateway:8445 (纯转发, 仅 loopback) ──► 内部服务
- 配置链路: gateway / db2 / static / smtp / captcha ──(pymsg get)──► confs:8010（配置统一存放于 confs/configs/，mtime 变化自动重载；ca/dnfs2/redirect80 例外，配置纯 CLI 传递）
+ 配置链路: gateway / static / smtp / captcha ──(pymsg get)──► confs:8010（配置统一存放于 confs/configs/，mtime 变化自动重载；ca/dnfs2/redirect80/db2 例外，配置纯 CLI 传递）
 ```
 
 > `db2` / `dnfs2` 分别是 `db` / `dnfs` 的 C++20 重实现（接口完全兼容，可平替），架构位置与 Python 版一致。`BotOps` 为 aibox 的终端前端（WebSocket 客户端），`lci` 为嵌入式帧缓冲图形界面，均不在上图中。
@@ -160,7 +160,7 @@
 - per-thread 连接：每个 worker 线程持有独立 `sqlite3*`（`thread_local`），列 schema 加锁缓存；SQLite PRAGMA 对齐 Python 版（WAL / NORMAL / busy_timeout=5000）。
 - 内置 Logs 表（启动自动建表 + 索引）与后台清理线程（保留 30 天 / 上限 100 万条），设计与 Python db 一致。
 - 安全机制：表名白名单（字母数字下划线）、`sqlite3_bind_text` 参数绑定、仅反射已有表无法建删表、RpcServer 异常脱敏。
-- 配置从 confs 拉取 `db.ini`（强依赖，confs 未就绪自动重试），环境变量（`LISTEN_ADDR`/`LISTEN_PORT`/`WORKERS`/`DATABASE_URL`）覆盖，命令行参数最高优先级；详见 [db2/README.md](db2/README.md)。
+- 配置全部经 CLI 传递（CLI > 环境变量 > 默认值，原 `db.ini` 迁入 `core/services.yaml` 的 CLI args），不依赖 confs；详见 [db2/README.md](db2/README.md)。
 
 ### ai_review（AI 内容审核服务）
 
@@ -208,7 +208,6 @@
 | 配置文件 | 消费模块 | 依赖强度 |
 |----------|----------|----------|
 | `gateway.ini` | gateway | confs 拉取（0.7.0 起配置完全迁入） |
-| `db.ini` | db / db2 | 强依赖（confs 未就绪自动重试） |
 | `static.ini` | static（fsys.py）/ fsys | 强依赖（拉取失败直接退出） |
 | `smtp.ini` | smtp / smtp3 | confs 拉取 |
 | `captcha.ini` | captcha / captcha2 | confs 拉取 |

@@ -12,7 +12,6 @@
  */
 
 #include <us/RpcServer.hpp>
-#include <us/RpcClient.hpp>
 
 #include <boost/json.hpp>
 
@@ -88,46 +87,6 @@ static int safe_stoi(const std::string& s, const char* field_name) {
 }
 
 // ============================================================================
-// 工具：简单 INI 解析（白名单模式）
-// ============================================================================
-
-using IniMap = std::map<std::string, std::map<std::string, std::string>>;
-
-static IniMap parse_ini(const std::string& text) {
-    IniMap result;
-    std::string section;
-    std::istringstream ss(text);
-    std::string line;
-    while (std::getline(ss, line)) {
-        // 去首尾空白
-        auto b = line.find_first_not_of(" \t\r\n");
-        if (b == std::string::npos) continue;
-        line = line.substr(b);
-        auto e = line.find_last_not_of(" \t\r\n");
-        if (e != std::string::npos) line = line.substr(0, e + 1);
-
-        if (line.empty() || line[0] == '#' || line[0] == ';') continue;
-        if (line.front() == '[' && line.back() == ']') {
-            section = line.substr(1, line.size() - 2);
-            continue;
-        }
-        auto eq = line.find('=');
-        if (eq == std::string::npos || section.empty()) continue;
-        std::string key = line.substr(0, eq);
-        std::string val = line.substr(eq + 1);
-        // 去 key/val 空白
-        auto trim = [](std::string& s) {
-            auto bb = s.find_first_not_of(" \t");
-            auto ee = s.find_last_not_of(" \t");
-            s = (bb == std::string::npos) ? "" : s.substr(bb, ee - bb + 1);
-        };
-        trim(key); trim(val);
-        result[section][key] = val;
-    }
-    return result;
-}
-
-// ============================================================================
 // 配置
 // ============================================================================
 
@@ -142,14 +101,9 @@ struct Config {
     int         max_records      = 1000000;
     int         cleanup_interval = 3600;
 
-    // confs 地址（引导配置，不从 confs 自身获取）
-    std::string confs_host       = "127.0.0.1";
-    int         confs_port       = 8010;
-
     // 标准化 CLI 参数
     std::string log_level        = "info";   // debug|info|warn|error
     std::string instance         = "db2";    // 实例名（注册中心用）
-    std::string confs_config_name = "db.ini"; // confs 拉取的配置名
 };
 
 // 从 sqlite:///path 或 sqlite:////abs/path 提取文件路径
@@ -164,7 +118,7 @@ static std::string db_url_to_path(const std::string& url) {
 static Config load_config(int argc, char* argv[]) {
     Config cfg;
 
-    // 0. 预扫描 --help/-h 和 --config（需在 confs 拉取前处理）
+    // 0. 预扫描 --help/-h
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") {
@@ -172,93 +126,45 @@ static Config load_config(int argc, char* argv[]) {
                 "db2 — C++20 数据库 RPC 服务\n\n"
                 "用法: db2 [选项]\n\n"
                 "选项:\n"
-                "  --host <addr>       绑定地址 (别名: --addr/-a)\n"
-                "  --port <num>        监听端口 (别名: -p)\n"
-                "  --workers <num>     工作线程数 (别名: -w)\n"
-                "  --config <name>     confs 配置名 (默认: db.ini)\n"
-                "  --log-level <level> debug|info|warn|error (默认: info)\n"
-                "  --instance <name>   实例名 (默认: db2)\n"
-                "  --help, -h          显示帮助并退出\n\n"
-                "配置优先级: CLI > 环境变量 > confs > 默认值\n");
+                "  --host <addr>            绑定地址 (别名: --addr/-a)\n"
+                "  --port <num>             监听端口 (别名: -p)\n"
+                "  --workers <num>          工作线程数 (别名: -w)\n"
+                "  --db-url <url>           数据库路径 (如 sqlite:///database.db)\n"
+                "  --retention-days <num>   日志保留天数 (默认: 30)\n"
+                "  --max-records <num>      日志最大条数 (默认: 1000000)\n"
+                "  --cleanup-interval <num> 日志清理间隔秒数 (默认: 3600)\n"
+                "  --log-level <level>      debug|info|warn|error (默认: info)\n"
+                "  --instance <name>        实例名 (默认: db2)\n"
+                "  --help, -h               显示帮助并退出\n\n"
+                "配置优先级: CLI > 环境变量 > 默认值\n");
             std::exit(0);
         }
-        if (arg == "--config" && i + 1 < argc) cfg.confs_config_name = argv[++i];
     }
 
-    // 1. 从环境变量读取 confs 引导地址
-    if (const char* h = std::getenv("CONFS_HOST")) cfg.confs_host = h;
-    if (const char* p = std::getenv("CONFS_PORT")) cfg.confs_port = safe_stoi(p, "CONFS_PORT");
+    // 1. 环境变量覆盖（Docker 兼容）
+    if (const char* v = std::getenv("LISTEN_ADDR"))       cfg.listen_host      = v;
+    if (const char* v = std::getenv("LISTEN_PORT"))       cfg.listen_port      = safe_stoi(v, "LISTEN_PORT");
+    if (const char* v = std::getenv("WORKERS"))            cfg.workers          = safe_stoi(v, "WORKERS");
+    if (const char* v = std::getenv("DATABASE_URL"))       cfg.db_url           = v;
+    if (const char* v = std::getenv("RETENTION_DAYS"))    cfg.retention_days   = safe_stoi(v, "RETENTION_DAYS");
+    if (const char* v = std::getenv("MAX_RECORDS"))       cfg.max_records      = safe_stoi(v, "MAX_RECORDS");
+    if (const char* v = std::getenv("CLEANUP_INTERVAL"))  cfg.cleanup_interval = safe_stoi(v, "CLEANUP_INTERVAL");
 
-    // 2. 从 confs 服务拉取配置（retry_on_refused=true，等待 confs 就绪）
-    std::string ini_text;
-    try {
-        RpcClient confs_client(cfg.confs_host, cfg.confs_port, "db2",
-                               /*timeout=*/5.0, /*retry_on_refused=*/true);
-        json::value data = confs_client.call("get", {{"name", cfg.confs_config_name}});
-        if (data.is_object() && data.as_object().contains("content")) {
-            ini_text = std::string(data.as_object().at("content").as_string());
-        }
-    } catch (const std::exception& e) {
-        std::fprintf(stderr, "[db2] Failed to fetch %s from confs: %s\n",
-                     cfg.confs_config_name.c_str(), e.what());
-        std::exit(1);
-    }
-
-    // 3. 解析 INI（白名单字段）
-    IniMap ini = parse_ini(ini_text);
-
-    // 校验必需配置项（confs 提供的 db.ini 必须包含完整配置）
-    static const std::pair<const char*, const char*> required_keys[] = {
-        {"server",   "host"},
-        {"server",   "port"},
-        {"server",   "workers"},
-        {"database", "url"},
-        {"logs",     "retention_days"},
-        {"logs",     "max_records"},
-        {"logs",     "cleanup_interval"},
-    };
-    for (auto& [sec, key] : required_keys) {
-        auto si = ini.find(sec);
-        if (si == ini.end() || si->second.find(key) == si->second.end()) {
-            std::fprintf(stderr, "[db2] missing required config: [%s] %s\n", sec, key);
-            std::exit(1);
-        }
-    }
-
-    auto get = [&](const std::string& sec, const std::string& key,
-                   const std::string& def = "") -> std::string {
-        auto si = ini.find(sec);
-        if (si == ini.end()) return def;
-        auto ki = si->second.find(key);
-        return (ki == si->second.end()) ? def : ki->second;
-    };
-
-    cfg.listen_host      = get("server",   "host",             cfg.listen_host);
-    cfg.listen_port      = safe_stoi(get("server",   "port",   std::to_string(cfg.listen_port)), "[server] port");
-    cfg.workers          = safe_stoi(get("server",   "workers",std::to_string(cfg.workers)),     "[server] workers");
-    cfg.db_url           = get("database", "url",              cfg.db_url);
-    cfg.retention_days   = safe_stoi(get("logs", "retention_days",  std::to_string(cfg.retention_days)), "[logs] retention_days");
-    cfg.max_records      = safe_stoi(get("logs", "max_records",      std::to_string(cfg.max_records)), "[logs] max_records");
-    cfg.cleanup_interval = safe_stoi(get("logs", "cleanup_interval", std::to_string(cfg.cleanup_interval)), "[logs] cleanup_interval");
-
-    // 4. 环境变量最高优先级覆盖（Docker 兼容）
-    if (const char* v = std::getenv("LISTEN_ADDR"))   cfg.listen_host = v;
-    if (const char* v = std::getenv("LISTEN_PORT"))   cfg.listen_port = safe_stoi(v, "LISTEN_PORT");
-    if (const char* v = std::getenv("WORKERS"))       cfg.workers     = safe_stoi(v, "WORKERS");
-    if (const char* v = std::getenv("DATABASE_URL"))  cfg.db_url      = v;
-
-    // 5. 命令行参数（最高优先级）
+    // 2. 命令行参数（最高优先级）
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if ((arg == "--addr"    || arg == "-a" || arg == "--host") && i + 1 < argc) cfg.listen_host = argv[++i];
         else if ((arg == "--port" || arg == "-p") && i + 1 < argc) cfg.listen_port = safe_stoi(argv[++i], "--port");
         else if ((arg == "--workers" || arg == "-w") && i + 1 < argc) cfg.workers = safe_stoi(argv[++i], "--workers");
+        else if (arg == "--db-url" && i + 1 < argc) cfg.db_url = argv[++i];
+        else if (arg == "--retention-days" && i + 1 < argc) cfg.retention_days = safe_stoi(argv[++i], "--retention-days");
+        else if (arg == "--max-records" && i + 1 < argc) cfg.max_records = safe_stoi(argv[++i], "--max-records");
+        else if (arg == "--cleanup-interval" && i + 1 < argc) cfg.cleanup_interval = safe_stoi(argv[++i], "--cleanup-interval");
         else if (arg == "--log-level" && i + 1 < argc) cfg.log_level = argv[++i];
         else if (arg == "--instance" && i + 1 < argc) cfg.instance = argv[++i];
-        // --config 和 --help 已在预扫描阶段处理
     }
 
-    // 6. 数值配置范围校验（防误配置导致异常行为）
+    // 3. 数值配置范围校验（防误配置导致异常行为）
     if (cfg.listen_port < 1 || cfg.listen_port > 65535) {
         std::fprintf(stderr, "[db2] invalid listen_port: %d (must be 1-65535)\n", cfg.listen_port);
         std::exit(1);
@@ -1046,11 +952,10 @@ int main(int argc, char* argv[]) {
     try {
         Config cfg = load_config(argc, argv);
 
-        std::printf("[db2] listen=%s:%d workers=%d db=%s instance=%s log-level=%s config=%s\n",
+        std::printf("[db2] listen=%s:%d workers=%d db=%s instance=%s log-level=%s\n",
                     cfg.listen_host.c_str(), cfg.listen_port,
                     cfg.workers, cfg.db_url.c_str(),
-                    cfg.instance.c_str(), cfg.log_level.c_str(),
-                    cfg.confs_config_name.c_str());
+                    cfg.instance.c_str(), cfg.log_level.c_str());
         std::fflush(stdout);
 
         DB2Server server(cfg);
