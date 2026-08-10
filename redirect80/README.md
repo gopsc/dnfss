@@ -8,18 +8,18 @@
 - **智能重定向**：GET/HEAD → 301（搜索引擎友好永久重定向），POST/PUT/DELETE/PATCH → 308（保留方法和 body）
 - **Host 保留**：读取请求 `Host` 头构造重定向 URL（剥离端口），回退用配置的监听地址
 - **日志集成**：通过 `log_client.py` 异步批量推送运行日志到 `db:8005` 的 Logs 表（fail-safe）
-- **配置分层**：confs 强依赖 → 环境变量覆盖（`REDIRECT80_*`），confs 不可用时直接退出不做本地回退
+- **配置分层**：CLI 参数（由 core/services.yaml 传入） > 环境变量覆盖（`REDIRECT80_*`） > 代码默认值
 
 ## 配置
 
-配置通过 confs 统一配置服务分发（`confs/configs/redirect80.ini`），启动时经 pymsg 阻塞等待拉取（retry_on_refused），confs 不可用时进程直接退出。环境变量优先级最高。
+配置通过三层加载（CLI > 环境变量 > 默认值），全部配置项由 core/services.yaml 经 CLI 参数传入，不依赖 confs。
 
-| 配置项 | 环境变量 | 默认值 | 说明 |
-|--------|----------|--------|------|
-| `host` | `REDIRECT80_HOST` | `0.0.0.0` | 监听地址 |
-| `port` | `REDIRECT80_PORT` | `80` | 监听端口 |
-| `redirect_port` | `REDIRECT80_REDIRECT_PORT` | `443` | 重定向目标 HTTPS 端口 |
-| `redirect_code` | `REDIRECT80_REDIRECT_CODE` | `301` | 非 GET/HEAD 重定向状态码（308 vs 307） |
+| 配置项 | CLI 参数 | 环境变量 | 默认值 | 说明 |
+|--------|----------|----------|--------|------|
+| `host` | `--host` | `REDIRECT80_HOST` | `0.0.0.0` | 监听地址 |
+| `port` | `--port` | `REDIRECT80_PORT` | `80` | 监听端口 |
+| `redirect_port` | `--redirect-port` | `REDIRECT80_REDIRECT_PORT` | `443` | 重定向目标 HTTPS 端口 |
+| `redirect_code` | `--redirect-code` | `REDIRECT80_REDIRECT_CODE` | `301` | GET/HEAD 重定向状态码 |
 
 ## 安装 & 运行
 
@@ -45,21 +45,28 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 ExecStart=/opt/micro_servers/redirect80/_run.sh
 ```
 
-## 在 core 的 init.txt 中
+## 在 core 的 services.yaml 中
 
-```
-bash /opt/micro_servers/redirect80/_run.sh
-```
+redirect80 作为最后一个服务启动，配置全部经 CLI 传入：
 
-建议放在 waf 之前：
-
-```
-bash /opt/micro_servers/db/_run.sh
-bash /opt/micro_servers/confs/_run.sh
-bash /opt/micro_servers/redirect80/_run.sh   # ← 80→443 重定向
-bash /opt/micro_servers/waf/_run.sh
-bash /opt/micro_servers/gateway/_run.sh
-...
+```yaml
+- name: redirect80
+  cmd: bash /opt/micro_servers/redirect80/_run.sh
+  args:
+    - "--instance"
+    - "redirect80"
+    - "--log-level"
+    - "info"
+    - "--host"
+    - "0.0.0.0"
+    - "--port"
+    - "80"
+    - "--redirect-port"
+    - "443"
+    - "--redirect-code"
+    - "301"
+  depends_on: [waf]
+  sleep_before: 0
 ```
 
 ## 端口一览

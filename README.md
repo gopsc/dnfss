@@ -35,7 +35,7 @@
   └────────────┘
  日志链路: waf / ca / gateway / static / dnfs / ai_review / captcha / smtp / aibox / confs / redirect80 ──(log_client, pymsg)──► db:8005 (Logs 表)
  认证链路(v0.9.0 起): waf:443 ──HTTP──► ca:8443 (认证+前置转发) ──HTTP──► gateway:8445 (纯转发, 仅 loopback) ──► 内部服务
- 配置链路: gateway / db2 / static / redirect80 / smtp / captcha ──(pymsg get)──► confs:8010（配置统一存放于 confs/configs/，mtime 变化自动重载；ca/dnfs2 例外，配置纯 CLI 传递）
+ 配置链路: gateway / db2 / static / smtp / captcha ──(pymsg get)──► confs:8010（配置统一存放于 confs/configs/，mtime 变化自动重载；ca/dnfs2/redirect80 例外，配置纯 CLI 传递）
 ```
 
 > `db2` / `dnfs2` 分别是 `db` / `dnfs` 的 C++20 重实现（接口完全兼容，可平替），架构位置与 Python 版一致。`BotOps` 为 aibox 的终端前端（WebSocket 客户端），`lci` 为嵌入式帧缓冲图形界面，均不在上图中。
@@ -193,7 +193,7 @@
 - 智能重定向：GET/HEAD → 301（搜索引擎友好永久重定向），POST/PUT/DELETE/PATCH → 308（保留方法与 body）。
 - Host 保留：读取请求 `Host` 头构造重定向 URL（剥离端口），回退用配置的监听地址。
 - 日志集成：通过 `log_client.py` 异步批量推送运行日志到 db 的 Logs 表（fail-safe）。
-- 配置分层：confs 强依赖（`confs/configs/redirect80.ini`，启动时 pymsg 阻塞等待拉取，confs 不可用时直接退出不做本地回退），环境变量（`REDIRECT80_*`）优先级最高。
+- 配置分层：CLI 参数（由 core/services.yaml 传入） > 环境变量（`REDIRECT80_*`） > 代码默认值，不依赖 confs。
 - 80 端口为 Linux 特权端口（<1024），需 `CAP_NET_BIND_SERVICE` 或 root；`_run.sh` 自动尝试 `setcap`，或用 systemd `AmbientCapabilities`；详见 [redirect80/README.md](redirect80/README.md)。
 
 ### confs（统一配置服务）
@@ -210,7 +210,6 @@
 | `gateway.ini` | gateway | confs 拉取（0.7.0 起配置完全迁入） |
 | `db.ini` | db / db2 | 强依赖（confs 未就绪自动重试） |
 | `static.ini` | static（fsys.py）/ fsys | 强依赖（拉取失败直接退出） |
-| `redirect80.ini` | redirect80 | 强依赖（confs 不可用直接退出） |
 | `smtp.ini` | smtp / smtp3 | confs 拉取 |
 | `captcha.ini` | captcha / captcha2 | confs 拉取 |
 | `example.ini` | —（旧 gateway 示例模板） | 无消费方 |

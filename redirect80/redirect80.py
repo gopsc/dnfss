@@ -8,14 +8,12 @@ redirect80 — HTTP 80 端口重定向服务。
           日志通过 log_client 异步推送到 db 的 Logs 表（fail-safe）。
 
 配置（三层加载）：
-  1. confs 强依赖拉取 redirect80.ini（retry_on_refused 阻塞等待）
-  2. 环境变量覆盖（Docker/k8s 兼容）
-  3. 命令行参数（最高优先级）
-配置不可用时直接退出，不做本地回退。
+  1. 代码默认值
+  2. 环境变量覆盖（REDIRECT80_* 前缀，Docker/k8s 兼容）
+  3. 命令行参数（最高优先级，由 core/services.yaml 传入）
 """
 
 import argparse
-import configparser
 import os
 import sys as _sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -26,14 +24,11 @@ _here = os.path.dirname(os.path.abspath(__file__))
 _sys.path.insert(0, os.path.join(_here, ".."))
 from log_client import logs, set_log_level  # noqa: E402
 
-_sys.path.insert(0, os.path.join(_here, "..", "pymsg"))
-from pymsg import RpcClient  # noqa: E402
-
 
 # ── 配置加载 ─────────────────────────────────────────────────────────
 
 def load_config(argv):
-    """三层加载: confs → ENV → CLI（最高优先级）。"""
+    """三层加载: 默认值 → ENV → CLI（最高优先级）。"""
 
     # argparse 先行：--help 在任何网络调用前处理
     parser = argparse.ArgumentParser(
@@ -41,7 +36,7 @@ def load_config(argv):
         description="HTTP 80 端口重定向服务",
         add_help=False,
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="配置优先级: CLI > 环境变量 > confs > 默认值",
+        epilog="配置优先级: CLI > 环境变量 > 默认值",
     )
     parser.add_argument("--host", default=None,
                         help="绑定地址，默认 0.0.0.0")
@@ -69,35 +64,7 @@ def load_config(argv):
         "instance": "redirect80",
     }
 
-    # 1. confs 强依赖拉取配置（阻塞等待 confs 就绪，失败则退出）
-    confs_host = os.environ.get("CONFS_HOST", "127.0.0.1")
-    confs_port = int(os.environ.get("CONFS_PORT", "8010"))
-    try:
-        client = RpcClient(
-            confs_host, confs_port, "redirect80",
-            retry_on_refused=True, timeout=5,
-        )
-        data = client.call("get", {"name": "redirect80.ini"})
-        ini_text = data.get("content", "")
-        ini = configparser.ConfigParser(interpolation=None)
-        ini.read_string(ini_text)
-
-        _merge = {
-            ("server", "host"): "host",
-            ("server", "port"): "port",
-            ("server", "redirect_port"): "redirect_port",
-            ("server", "redirect_code"): "redirect_code",
-        }
-        for (sec, key), var in _merge.items():
-            if ini.has_option(sec, key):
-                val = ini.get(sec, key)
-                config[var] = type(config[var])(val)
-        logs.info("redirect80", "配置已从 confs 加载")
-    except Exception as e:
-        print(f"[redirect80] confs 获取失败: {e}", file=_sys.stderr)
-        _sys.exit(1)
-
-    # 2. 环境变量覆盖
+    # 1. 环境变量覆盖
     _env_map = {
         "REDIRECT80_HOST": "host",
         "REDIRECT80_PORT": ("port", int),
@@ -112,7 +79,7 @@ def load_config(argv):
             else:
                 config[mapping] = val
 
-    # 3. CLI 参数（最高优先级）
+    # 2. CLI 参数（最高优先级）
     if args.host is not None:
         config["host"] = args.host
     if args.port is not None:

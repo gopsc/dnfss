@@ -139,6 +139,19 @@ services:
   # --- 端口重定向（最后启动） ---
   - name: redirect80
     cmd: bash /opt/micro_servers/redirect80/_run.sh
-    args: ["--instance", "redirect80", "--log-level", "info"]
+    args:
+      - "--instance"
+      - "redirect80"
+      - "--log-level"
+      - "info"
+      # --- 配置全部经 CLI 传递（原 confs/configs/redirect80.ini 迁入） ---
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "80"
+      - "--redirect-port"
+      - "443"
+      - "--redirect-code"
+      - "301"
     depends_on: [waf]
     sleep_before: 0
