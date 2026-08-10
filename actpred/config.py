@@ -5,7 +5,7 @@ from typing import Optional
 
 @dataclass
 class DataConfig:
-    image_size: int = 64
+    image_size: int = 224
     action_dim: int = 18
     history_len: int = 5
     frame_len: int = 3

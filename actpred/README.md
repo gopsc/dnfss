@@ -9,7 +9,7 @@ Transformer（pre-LN）自注意力融合，取 [PRED] token 回归下一步动�
 ## 架构
 
 ```
-F 帧图像 (F×3×64×64) ─► 共享 CNN 编码器 ─► F 个 token ─► proj → d_model ┐
+F 帧图像 (F×3×224×224) ─► 共享 CNN 编码器 ─► F 个 token ─► proj → d_model ┐
                                                                           ├─► [img×F, act×H, PRED] + 位置编码
 动作历史 (H×D)      ─► Linear proj → d_model ─► H 个 token ────────┤        │
 可学习 [PRED] token ────────────────────────────────────────┘        ▼
@@ -110,7 +110,7 @@ recorder.flush()
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--image-size` | 64 | 图像缩放尺寸 |
+| `--image-size` | 224 | 图像缩放尺寸 |
 | `--action-dim` | 18 | 动作向量维度（对齐 bot4cj 18 列：10 舵机 + 2 云台 + 扬声器频率 + 延时 + 4 预留）|
 | `--history-len` | 5 | 历史动作窗口长度 |
 | `--frame-len` | 3 | 输入图像帧数（含当前帧，旧帧在前）|
