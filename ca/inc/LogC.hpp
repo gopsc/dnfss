@@ -18,6 +18,9 @@
  *
  *   // 进程退出前：
  *   qing::LogC::instance().shutdown();   // 停止后台线程并 flush 剩余日志（幂等）
+ *
+ *   // 设置日志级别（main 启动时调用，低于此级别的日志直接丢弃）
+ *   qing::LogC::instance().set_level("warn");  // 只输出 warn/error
  */
 
 #include <atomic>
@@ -27,6 +30,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <boost/json.hpp>
@@ -48,6 +52,17 @@ public:
 		std::optional<std::string> extra;	// 已序列化的 JSON 字符串（存 Logs.extra  TEXT）
 	};
 
+	// 日志级别 → 数值（大写兼容）
+	static const std::unordered_map<std::string, int>& level_order() {
+		static const std::unordered_map<std::string, int> k = {
+			{"debug", 0}, {"info", 1}, {"warn", 2}, {"warning", 2},
+			{"error", 3}, {"critical", 3},
+			{"DEBUG", 0}, {"INFO", 1}, {"WARN", 2}, {"WARNING", 2},
+			{"ERROR", 3}, {"CRITICAL", 3},
+		};
+		return k;
+	}
+
 	static LogC& instance() {
 		static LogC inst;
 		return inst;
@@ -55,11 +70,24 @@ public:
 
 	// ---- 公开接口 --------------------------------------------------------
 
+	// 设置日志级别阈值（debug|info|warn|error，大小写不限）
+	// 低于此级别的日志在 push 时直接丢弃
+	void set_level(const std::string& level) {
+		auto it = level_order().find(level);
+		if (it != level_order().end()) {
+			_level_threshold.store(it->second, std::memory_order_relaxed);
+		}
+	}
+
 	// 推送一条日志（非阻塞，立即返回）
 	void push(const std::string& service, const std::string& level,
 			const std::string& message,
 			std::optional<std::string> trace_id = std::nullopt,
 			std::optional<std::string> extra = std::nullopt) {
+		// 日志级别过滤：低于阈值直接丢弃
+		auto it = level_order().find(level);
+		int lvl = (it != level_order().end()) ? it->second : 1;
+		if (lvl < _level_threshold.load(std::memory_order_relaxed)) return;
 		_queue.push(Entry{service, level, message,
 				std::move(trace_id), std::move(extra)});
 	}
@@ -193,6 +221,7 @@ private:
 	std::string _db_addr = "127.0.0.1";
 	int _db_port = 8005;
 	std::mutex _endpoint_mtx;	// 保护 _db_addr/_db_port 读写（set_endpoint 与后台线程并发）
+	std::atomic<int> _level_threshold{1};	// 日志级别阈值，默认 INFO(1)
 
 	static constexpr size_t _BATCH_SIZE     = 50;      // 队列满 50 条时 flush
 	static constexpr double _FLUSH_INTERVAL = 2.0;     // 超时 2 秒强制 flush

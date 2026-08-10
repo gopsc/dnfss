@@ -406,6 +406,9 @@ static std::unordered_map<std::string, std::string> _WS_PROXY_ROUTES;
 /* instance items */
 static std::unique_ptr<HttpServer>		_SERVE;
 static std::unique_ptr<MyRSA::Generator>	_KEYGEN;
+/* CLI 标准化参数 */
+static std::string		_INSTANCE = "ca";		// --instance，注册中心用
+static std::string		_LOG_LEVEL = "info";		// --log-level，debug|info|warn|error
 //static std::unique_ptr<Sqlite3>			_SQLDB;
 static RateLimiter				_LOGIN_RATE;
 static RateLimiter				_REGISTER_RATE;
@@ -769,6 +772,11 @@ int main(int argc, char **argv) {
 	desc.add_options()
 		("help,h",					"output help message")
 		("version,v",					"output version message")
+		("host",		po::value<std::string>(),	"绑定地址（默认 127.0.0.1），覆盖 [Server] address")
+		("port",		po::value<int>(),		"监听端口（默认 8443），覆盖 [Server] port")
+		("config",		po::value<std::string>(),	"confs 拉取的配置名（默认 ca.ini）")
+		("log-level",	po::value<std::string>(),	"日志级别 debug|info|warn|error（默认 info）")
+		("instance",	po::value<std::string>(),	"实例名（注册中心用，默认 ca）")
 	;
 
 
@@ -815,15 +823,21 @@ int main(int argc, char **argv) {
 		_CONFS_HOST = ConfIni::env("CONFS_HOST", "127.0.0.1");
 		_CONFS_PORT = ConfIni::env_int("CONFS_PORT", 8010);
 
+		/* --config 覆盖 confs 拉取的配置名（在 confs 拉取前读取） */
+		std::string confs_config_name = "ca.ini";
+		if (vm.count("config")) {
+			confs_config_name = vm["config"].as<std::string>();
+		}
+
 		ConfIni cf;
 		try {
-			/* 从 confs 拉取 ca.ini */
+			/* 从 confs 拉取配置 */
 			std::cout << "[ca] 从 confs (" << _CONFS_HOST << ":" << _CONFS_PORT
-			          << ") 拉取 ca.ini ..." << std::endl;
+			          << ") 拉取 " << confs_config_name << " ..." << std::endl;
 			pmc::net::MsgClient confs_client(_CONFS_HOST, _CONFS_PORT, "ca");
 			json::object req;
 			req["_route"] = "get";
-			req["name"] = "ca.ini";
+			req["name"] = confs_config_name;
 			std::string resp_str = confs_client.call(
 				json::serialize(req), /*timeout=*/5.0,
 				/*retry_on_refused=*/true);
@@ -917,7 +931,28 @@ int main(int argc, char **argv) {
 		int env_smtp_port = ConfIni::env_int("SMTP_PORT", -1);
 		if (env_smtp_port > 0) _SMTP_PORT = env_smtp_port;
 
-		/* 4. 配置完整性校验 */
+		/* 4. CLI 参数覆盖（最高优先级） */
+		if (vm.count("host"))      _ADDR = vm["host"].as<std::string>();
+		if (vm.count("port"))      _PORT = vm["port"].as<int>();
+		if (vm.count("instance"))  _INSTANCE = vm["instance"].as<std::string>();
+		if (vm.count("log-level")) {
+			_LOG_LEVEL = vm["log-level"].as<std::string>();
+			// 归一化 warning → warn
+			if (_LOG_LEVEL == "warning") _LOG_LEVEL = "warn";
+			// 合法性校验
+			static const char* valid[] = {"debug", "info", "warn", "error"};
+			bool ok = false;
+			for (const char* v : valid) {
+				if (_LOG_LEVEL == v) { ok = true; break; }
+			}
+			if (!ok) {
+				std::cerr << "[ca] 致命错误: 非法 --log-level: " << _LOG_LEVEL
+				          << "（合法值: debug|info|warn|error）" << std::endl;
+				return 1;
+			}
+		}
+
+		/* 5. 配置完整性校验 */
 		if (_ADDR.empty() || _PORT == -1) {
 			std::cerr << "[ca] 致命错误: 配置项 [Server] address/port 缺失"
 			             "（ini 中未配置且无 LISTEN_ADDR/LISTEN_PORT 环境变量覆盖）" << std::endl;
@@ -937,8 +972,12 @@ int main(int argc, char **argv) {
 	DbC::init(_DB_HOST, _DB_PORT);
 	logs().set_endpoint(_DB_HOST, _DB_PORT);
 
+	/* 设置日志级别过滤 */
+	logs().set_level(_LOG_LEVEL);
+
 	std::cout << "[ca] 监听: " << _ADDR << ":" << _PORT
 	          << " (TLS: " << (_TLS ? "on" : "off") << ")" << std::endl;
+	std::cout << "[ca] 实例: " << _INSTANCE << " 日志级别: " << _LOG_LEVEL << std::endl;
 	std::cout << "[ca] 下游服务: db=" << _DB_HOST << ":" << _DB_PORT
 	          << ", captcha=" << _CAPTCHA_HOST << ":" << _CAPTCHA_PORT
 	          << ", smtp=" << _SMTP_HOST << ":" << _SMTP_PORT << std::endl;
@@ -984,7 +1023,7 @@ int main(int argc, char **argv) {
 	// 等待服务器启动完成（简单延迟，确保started日志打印后再输出提示）
 	std::this_thread::sleep_for(std::chrono::milliseconds(200));
 	std::cout << "CA " << _VER << " started" << std::endl;
-	logs().info("ca", std::string("CA ") + _VER + " started");
+	logs().info("ca", std::string("CA ") + _VER + " started (instance=" + _INSTANCE + ")");
 
 	/* 主线程：等待关闭信号，带超时轮询 */
 	while (!_stop_requested && !server_exited) {

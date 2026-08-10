@@ -77,7 +77,7 @@ services:
 
   - name: ca
     cmd: bash /opt/micro_servers/ca/_run.sh
-    args: []
+    args: ["--instance", "ca", "--log-level", "info"]
     depends_on: [db2]
     sleep_before: 2
 
