@@ -7,12 +7,14 @@ redirect80 — HTTP 80 端口重定向服务。
 技术选型：Python 内置 http.server + 多线程混合模式，无外部 Web 框架依赖。
           日志通过 log_client 异步推送到 db 的 Logs 表（fail-safe）。
 
-配置（两层加载）：
+配置（三层加载）：
   1. confs 强依赖拉取 redirect80.ini（retry_on_refused 阻塞等待）
   2. 环境变量覆盖（Docker/k8s 兼容）
-confs 不可用时直接退出，不做本地回退。
+  3. 命令行参数（最高优先级）
+配置不可用时直接退出，不做本地回退。
 """
 
+import argparse
 import configparser
 import os
 import sys as _sys
@@ -22,57 +24,124 @@ from socketserver import ThreadingMixIn
 # ── 路径设置 ──────────────────────────────────────────────────────────
 _here = os.path.dirname(os.path.abspath(__file__))
 _sys.path.insert(0, os.path.join(_here, ".."))
-from log_client import logs  # noqa: E402
+from log_client import logs, set_log_level  # noqa: E402
 
-# ── 配置加载（confs 强依赖 → 环境变量覆盖）────────────────────────
-_config = {
-    "host": "0.0.0.0",
-    "port": 80,
-    "redirect_port": 443,
-    "redirect_code": 301,
-}
-
-# 1. confs 强依赖拉取配置（阻塞等待 confs 就绪，失败则退出）
 _sys.path.insert(0, os.path.join(_here, "..", "pymsg"))
 from pymsg import RpcClient  # noqa: E402
 
-_confs_host = os.environ.get("CONFS_HOST", "127.0.0.1")
-_confs_port = int(os.environ.get("CONFS_PORT", "8010"))
-_confs_client = RpcClient(
-    _confs_host, _confs_port, "redirect80",
-    retry_on_refused=True, timeout=5,
-)
-_data = _confs_client.call("get", {"name": "redirect80.ini"})
-_ini_text = _data.get("content", "")
-_ini = configparser.ConfigParser(interpolation=None)
-_ini.read_string(_ini_text)
 
-_merge_map = {
-    ("server", "host"): "host",
-    ("server", "port"): "port",
-    ("server", "redirect_port"): "redirect_port",
-    ("server", "redirect_code"): "redirect_code",
-}
-for (sec, key), var in _merge_map.items():
-    if _ini.has_option(sec, key):
-        val = _ini.get(sec, key)
-        _config[var] = type(_config[var])(val)
-logs.info("redirect80", "配置已从 confs 加载")
+# ── 配置加载 ─────────────────────────────────────────────────────────
 
-# 2. 环境变量最高优先级覆盖
-_env_map = {
-    "REDIRECT80_HOST": "host",
-    "REDIRECT80_PORT": ("port", int),
-    "REDIRECT80_REDIRECT_PORT": ("redirect_port", int),
-    "REDIRECT80_REDIRECT_CODE": ("redirect_code", int),
-}
-for env_var, mapping in _env_map.items():
-    val = os.environ.get(env_var)
-    if val is not None:
-        if isinstance(mapping, tuple):
-            _config[mapping[0]] = mapping[1](val)
-        else:
-            _config[mapping] = val
+def load_config(argv):
+    """三层加载: confs → ENV → CLI（最高优先级）。"""
+
+    # argparse 先行：--help 在任何网络调用前处理
+    parser = argparse.ArgumentParser(
+        prog="redirect80",
+        description="HTTP 80 端口重定向服务",
+        add_help=False,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="配置优先级: CLI > 环境变量 > confs > 默认值",
+    )
+    parser.add_argument("--host", default=None,
+                        help="绑定地址，默认 0.0.0.0")
+    parser.add_argument("--port", type=int, default=None,
+                        help="监听端口，默认 80")
+    parser.add_argument("--redirect-port", type=int, default=None,
+                        help="重定向目标端口，默认 443")
+    parser.add_argument("--redirect-code", type=int, default=None,
+                        help="GET/HEAD 重定向状态码，默认 301")
+    parser.add_argument("--log-level", default=None,
+                        help="debug|info|warn|error，默认 info")
+    parser.add_argument("--instance", default=None,
+                        help="实例名（注册中心用），默认 redirect80")
+    parser.add_argument("--help", "-h", action="help",
+                        help="显示此帮助并退出")
+    args = parser.parse_args(argv)
+
+    # 默认值
+    config = {
+        "host": "0.0.0.0",
+        "port": 80,
+        "redirect_port": 443,
+        "redirect_code": 301,
+        "log_level": "info",
+        "instance": "redirect80",
+    }
+
+    # 1. confs 强依赖拉取配置（阻塞等待 confs 就绪，失败则退出）
+    confs_host = os.environ.get("CONFS_HOST", "127.0.0.1")
+    confs_port = int(os.environ.get("CONFS_PORT", "8010"))
+    try:
+        client = RpcClient(
+            confs_host, confs_port, "redirect80",
+            retry_on_refused=True, timeout=5,
+        )
+        data = client.call("get", {"name": "redirect80.ini"})
+        ini_text = data.get("content", "")
+        ini = configparser.ConfigParser(interpolation=None)
+        ini.read_string(ini_text)
+
+        _merge = {
+            ("server", "host"): "host",
+            ("server", "port"): "port",
+            ("server", "redirect_port"): "redirect_port",
+            ("server", "redirect_code"): "redirect_code",
+        }
+        for (sec, key), var in _merge.items():
+            if ini.has_option(sec, key):
+                val = ini.get(sec, key)
+                config[var] = type(config[var])(val)
+        logs.info("redirect80", "配置已从 confs 加载")
+    except Exception as e:
+        print(f"[redirect80] confs 获取失败: {e}", file=_sys.stderr)
+        _sys.exit(1)
+
+    # 2. 环境变量覆盖
+    _env_map = {
+        "REDIRECT80_HOST": "host",
+        "REDIRECT80_PORT": ("port", int),
+        "REDIRECT80_REDIRECT_PORT": ("redirect_port", int),
+        "REDIRECT80_REDIRECT_CODE": ("redirect_code", int),
+    }
+    for env_var, mapping in _env_map.items():
+        val = os.environ.get(env_var)
+        if val is not None:
+            if isinstance(mapping, tuple):
+                config[mapping[0]] = mapping[1](val)
+            else:
+                config[mapping] = val
+
+    # 3. CLI 参数（最高优先级）
+    if args.host is not None:
+        config["host"] = args.host
+    if args.port is not None:
+        config["port"] = args.port
+    if args.redirect_port is not None:
+        config["redirect_port"] = args.redirect_port
+    if args.redirect_code is not None:
+        config["redirect_code"] = args.redirect_code
+    if args.log_level is not None:
+        config["log_level"] = args.log_level
+    if args.instance is not None:
+        config["instance"] = args.instance
+
+    # log_level 合法性校验
+    lv = config["log_level"].lower()
+    if lv == "warning":
+        lv = "warn"
+    if lv not in ("debug", "info", "warn", "error"):
+        print(f"[redirect80] invalid log_level: {config['log_level']} "
+              f"(must be debug|info|warn|error)", file=_sys.stderr)
+        _sys.exit(1)
+    config["log_level"] = lv
+
+    return config
+
+
+# ── 模块级配置（main() 中赋值）──────────────────────────────────────
+_config = {}
+
 
 # ── 请求处理器 ──────────────────────────────────────────────────────────
 
@@ -110,10 +179,10 @@ class RedirectHandler(BaseHTTPRequestHandler):
                    f"{code} {self.command} {host} → {location}")
 
     def do_GET(self):
-        self._redirect(301)
+        self._redirect(_config["redirect_code"])
 
     def do_HEAD(self):
-        self._redirect(301)
+        self._redirect(_config["redirect_code"])
 
     def do_POST(self):
         self._redirect(308)
@@ -158,17 +227,24 @@ class ThreadingRedirectServer(ThreadingMixIn, HTTPServer):
 
 
 def main():
+    global _config
+    _config = load_config(_sys.argv[1:])
+
+    # 设置日志级别过滤
+    set_log_level(_config["log_level"])
+
     host = _config["host"]
     port = int(_config["port"])
 
     server = ThreadingRedirectServer((host, port), RedirectHandler)
 
     logs.info("redirect80",
-              f"HTTP→HTTPS 重定向服务启动 "
+              f"服务启动 instance={_config['instance']} "
               f"http://{host}:{port} → https://*:{_config['redirect_port']}")
 
-    print(f"[redirect80] 监听 http://{host}:{port} "
-          f"→ 重定向到 :{_config['redirect_port']}", file=_sys.stderr)
+    print(f"[redirect80] instance={_config['instance']} log-level={_config['log_level']} "
+          f"监听 http://{host}:{port} → 重定向到 :{_config['redirect_port']}",
+          file=_sys.stderr)
 
     try:
         server.serve_forever()

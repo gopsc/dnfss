@@ -8,6 +8,7 @@
   - 缓冲批量：队列满 50 条或超时 2 秒时自动 flush
   - 时间戳：日志入队时即记录 ts（UTC ISO 格式），反映事件真实发生时间
   - 底层复用 pymsg.AsyncRpcQueue 通用队列基础设施
+  - 日志级别过滤：set_level() 设定阈值，低于阈值的日志直接丢弃
 
 用法（与旧版完全兼容）：
     from log_client import logs
@@ -16,6 +17,10 @@
     logs.error("redirect80", "端口绑定失败", extra={"errno": 98})
     logs.push("redirect80", "WARNING", "confs 不可用，使用本地配置",
               trace_id="startup", extra={"fallback": "redirect80.ini"})
+
+    # 设置日志级别（main 启动时调用）
+    from log_client import set_log_level
+    set_log_level("warn")   # 只输出 warn/error
 """
 
 import json
@@ -36,6 +41,19 @@ _BATCH_SIZE = 50
 _FLUSH_INTERVAL = 2.0
 _TIMEOUT = 5
 _QUEUE_MAXSIZE = 10000
+
+# ── 日志级别过滤 ────────────────────────────────────────────────────
+_LEVEL_ORDER = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "WARN": 2, "ERROR": 3, "CRITICAL": 3}
+_level_threshold = 1  # 默认 INFO
+
+
+def set_log_level(level: str):
+    """设置全局日志级别阈值。低于此级别的日志直接丢弃。"""
+    global _level_threshold
+    lv = level.upper()
+    if lv == "WARNING":
+        lv = "WARN"
+    _level_threshold = _LEVEL_ORDER.get(lv, 1)
 
 
 def _safe_json(obj):
@@ -79,8 +97,11 @@ class LogClient:
              trace_id: str = None, extra=None):
         """推送一条日志（非阻塞，立即返回）。
 
+        低于设定级别的日志直接丢弃。
         队列满时静默丢弃最旧条目再放入新条目，保证不阻塞业务线程、不导致 OOM。
         """
+        if _LEVEL_ORDER.get(level.upper(), 1) < _level_threshold:
+            return
         entry = {
             'ts': _now_iso(),
             'service': service,
