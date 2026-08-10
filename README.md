@@ -120,7 +120,7 @@
 - **账号旁路**：`/api/check_user`、`/api/reset_password` 等接口直接读写 `gateway/sqlite3.db` 的 Users 表；`/yhdet_callback`、`/api/yhdet_*` 对接 yhdet.top OAuth 登录。
 - 统一品牌"树状菜单"，支持深色模式（`css/theme.css`）。
 - 可使用 Nuitka 编译为独立二进制（`fsys.bin`）。
-- 配置由 `confs` 统一配置服务分发（`confs/configs/static.ini`，启动时经 pymsg 拉取，`CONFS_HOST`/`CONFS_PORT` 环境变量可覆盖）；confs 为**强依赖**，拉取失败直接退出，无本地回退。
+- 配置全部经 CLI 传递（CLI > 环境变量 > 默认值，原 `confs/configs/static.ini` 迁入 `core/services.yaml` 的 fsys 条目 args），不依赖 confs。
 
 ### dnfs（树状菜单服务）
 
@@ -208,10 +208,9 @@
 | 配置文件 | 消费模块 | 依赖强度 |
 |----------|----------|----------|
 | `gateway.ini` | gateway | confs 拉取（0.7.0 起配置完全迁入） |
-| `static.ini` | static（fsys.py）/ fsys | 强依赖（拉取失败直接退出） |
 | `example.ini` | —（旧 gateway 示例模板） | 无消费方 |
 
-- **部署安全约定**：`confs/configs/*.ini` 含敏感字段，权限必须收紧为 `root:root 0640`，仅 root 可写；被同机普通用户篡改可劫持对应服务（详见 `docs/security/core_SECURITY_AUDIT_20260801.md` 2026-08-10 复审）。原 `ca.ini` 管理员白名单已随 ca v1.1.0 迁入 `core/services.yaml` 的 CLI args；原 `smtp.ini` 全部配置已随 smtp3 迁入 `core/services.yaml` 的 CLI args（SMTP 凭据仍经 `.env` 注入），防护对象相应转为 `services.yaml` 与 `.env` 的文件权限。
+- **部署安全约定**：`confs/configs/*.ini` 含敏感字段，权限必须收紧为 `root:root 0640`，仅 root 可写；被同机普通用户篡改可劫持对应服务（详见 `docs/security/core_SECURITY_AUDIT_20260801.md` 2026-08-10 复审）。原 `ca.ini` 管理员白名单已随 ca v1.1.0 迁入 `core/services.yaml` 的 CLI args；原 `smtp.ini` 全部配置已随 smtp3 迁入 `core/services.yaml` 的 CLI args（SMTP 凭据仍经 `.env` 注入）；原 `captcha.ini` 与 `static.ini` 已分别随 captcha2、fsys 迁入 CLI args，防护对象相应转为 `services.yaml` 与 `.env` 的文件权限。
 
 ### aibox（独立 AI 智能体系统）
 

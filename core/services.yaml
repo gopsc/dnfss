@@ -83,7 +83,34 @@ services:
   # --- 前端静态资源 ---
   - name: fsys
     cmd: bash /opt/micro_servers/fsys/_run.sh
-    args: ["--instance", "fsys", "--log-level", "info"]
+    args:
+      - "--instance"
+      - "fsys"
+      - "--log-level"
+      - "info"
+      # --- 配置全部经 CLI 传递（原 confs/configs/static.ini 迁入） ---
+      - "--addr"
+      - "127.0.0.1"
+      - "--port"
+      - "9200"
+      - "--threads"
+      - "4"
+      - "--root"
+      - "./public"
+      - "--ssl-enabled"
+      - "false"
+      - "--cert-file"
+      - "cert.pem"
+      - "--key-file"
+      - "key.pem"
+      - "--cors-origins"
+      - "https://qsont.me,https://yhdet.top"
+      - "--db-host"
+      - "127.0.0.1"
+      - "--db-port"
+      - "8005"
+      - "--dnfs-url"
+      - "http://127.0.0.1:8006"
     depends_on: []
     sleep_before: 0
 

@@ -14,11 +14,11 @@
  * 安全改进（相比 Python static）：
  *   F-1  server.setMaxBodySize(10MB) 限制请求体大小
  *   F-2  libhttp 原生 HTTPS 支持，无需回退开发服务器
- *   F-3  命令行参数 --host/--addr/-a --port/-p --threads/-t --log-level --instance --config --help
+ *   F-3  命令行参数 --addr/-a --port/-p --threads/-t
  *   F-4  所有端口/线程数有严格边界校验
  *   F-5  Boost.Beast 异步多线程替代 Flask 同步
  *   F-6  消除 Python/Flask/waitress 依赖
- *   F-7  日志客户端复用主配置（confs 拉取的 db host/port）
+ *   F-7  日志客户端复用主配置（CLI 传递的 db host/port）
  *
  * 依赖: libhttp (HttpServer/HttpClient), libmsg (RpcClient/AsyncQueue),
  *       boost::json, OpenSSL, libcurl
@@ -30,6 +30,7 @@
 #include <us/AsyncQueue.hpp>
 
 #include <boost/json.hpp>
+#include <boost/program_options.hpp>
 #include <curl/curl.h>
 #include <openssl/evp.h>
 
@@ -64,6 +65,7 @@
 #include <sys/types.h>
 
 namespace json = boost::json;
+namespace po   = boost::program_options;
 namespace http = boost::beast::http;
 namespace fs   = std::filesystem;
 using namespace pmc::net;
@@ -210,44 +212,6 @@ static std::string extract_path(const std::string& target) {
 }
 
 // ============================================================================
-// INI 解析（白名单模式，与 dnfs2 一致）
-// ============================================================================
-
-using IniMap = std::map<std::string, std::map<std::string, std::string>>;
-
-static IniMap parse_ini(const std::string& text) {
-    IniMap result;
-    std::string section;
-    std::istringstream ss(text);
-    std::string line;
-    while (std::getline(ss, line)) {
-        auto b = line.find_first_not_of(" \t\r\n");
-        if (b == std::string::npos) continue;
-        line = line.substr(b);
-        auto e = line.find_last_not_of(" \t\r\n");
-        if (e != std::string::npos) line = line.substr(0, e + 1);
-
-        if (line.empty() || line[0] == '#' || line[0] == ';') continue;
-        if (line.front() == '[' && line.back() == ']') {
-            section = line.substr(1, line.size() - 2);
-            continue;
-        }
-        auto eq = line.find('=');
-        if (eq == std::string::npos || section.empty()) continue;
-        std::string key = line.substr(0, eq);
-        std::string val = line.substr(eq + 1);
-        auto trim = [](std::string& s) {
-            auto bb = s.find_first_not_of(" \t");
-            auto ee = s.find_last_not_of(" \t");
-            s = (bb == std::string::npos) ? "" : s.substr(bb, ee - bb + 1);
-        };
-        trim(key); trim(val);
-        result[section][key] = val;
-    }
-    return result;
-}
-
-// ============================================================================
 // 配置
 // ============================================================================
 
@@ -264,105 +228,43 @@ struct Config {
 
     std::vector<std::string> cors_origins;
 
-    std::string confs_host   = "127.0.0.1";
-    int         confs_port   = 8010;
-
     std::string db_host      = "127.0.0.1";
     int         db_port      = 8005;
 
     std::string dnfs_url     = "http://127.0.0.1:8006";
-
-    // CLI 标准化参数（Step 3）
-    std::string log_level         = "info";       // debug|info|warn|error
-    std::string instance_name     = "fsys";       // 实例名（注册中心用）
-    std::string confs_config_name = "static.ini"; // confs 拉取的配置名
 };
 
 static Config load_config(int argc, char* argv[]) {
     Config cfg;
 
-    // 0. 预扫描 --help 和 --config（需在 confs 拉取前处理）
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        if (arg == "--help" || arg == "-h") {
-            std::printf(
-                "fsys — C++20 静态文件托管服务\n\n"
-                "Usage: fsys [OPTIONS]\n\n"
-                "Options:\n"
-                "  -h, --help              Show this help and exit\n"
-                "  -a, --addr <addr>       Listen address (alias: --host)\n"
-                "      --host <addr>       Listen address (canonical name)\n"
-                "  -p, --port <port>       Listen port\n"
-                "  -t, --threads <n>       Worker threads\n"
-                "      --config <name>     confs config name (default: static.ini)\n"
-                "      --log-level <level> debug|info|warn|error (default: info)\n"
-                "      --instance <name>   Instance name (default: fsys)\n\n"
-                "Config priority: CLI > env > confs > defaults\n");
-            std::exit(0);
-        }
-        if (arg == "--config" && i + 1 < argc) {
-            cfg.confs_config_name = argv[++i];
-        }
+    // ── 命令行参数 ──
+    po::options_description desc("fsys — 静态文件托管服务");
+    desc.add_options()
+        ("help,h", "显示帮助")
+        ("instance", po::value<std::string>()->default_value("fsys"), "实例名")
+        ("log-level", po::value<std::string>()->default_value("info"), "日志级别")
+        ("addr,a", po::value<std::string>(), "监听地址")
+        ("port,p", po::value<int>(), "监听端口")
+        ("threads,t", po::value<int>(), "工作线程数")
+        ("root", po::value<std::string>(), "静态文件根目录")
+        ("ssl-enabled", po::value<std::string>(), "SSL 开关 (true/false)")
+        ("cert-file", po::value<std::string>(), "SSL 证书路径")
+        ("key-file", po::value<std::string>(), "SSL 私钥路径")
+        ("cors-origins", po::value<std::string>(), "CORS 白名单（逗号分隔）")
+        ("db-host", po::value<std::string>(), "数据库 RPC 地址")
+        ("db-port", po::value<int>(), "数据库 RPC 端口")
+        ("dnfs-url", po::value<std::string>(), "dnfs2 服务 URL");
+    po::variables_map vm;
+    po::store(po::parse_command_line(argc, argv, desc), vm);
+    po::notify(vm);
+
+    if (vm.count("help")) {
+        std::cout << desc << std::endl;
+        std::exit(0);
     }
 
-    // 1. confs 引导地址
-    if (const char* h = std::getenv("CONFS_HOST")) cfg.confs_host = h;
-    if (const char* p = std::getenv("CONFS_PORT")) {
-        cfg.confs_port = safe_stoi(p, "CONFS_PORT");
-        if (cfg.confs_port < 1 || cfg.confs_port > 65535) {
-            std::fprintf(stderr, "[fsys] invalid CONFS_PORT: %d (must be 1-65535)\n", cfg.confs_port);
-            std::exit(1);
-        }
-    }
-
-    // 2. 从 confs 拉取配置（retry_on_refused=true）
-    std::string ini_text;
-    try {
-        RpcClient confs_client(cfg.confs_host, cfg.confs_port, "fsys",
-                               /*timeout=*/5.0, /*retry_on_refused=*/true);
-        json::value data = confs_client.call("get", {{"name", cfg.confs_config_name}});
-        if (data.is_object() && data.as_object().contains("content")) {
-            ini_text = std::string(data.as_object().at("content").as_string());
-        }
-    } catch (const std::exception& e) {
-        std::fprintf(stderr, "[fsys] 从 confs 获取 %s 失败: %s\n",
-                     cfg.confs_config_name.c_str(), e.what());
-        std::exit(1);
-    }
-
-    // 3. 解析 INI
-    IniMap ini = parse_ini(ini_text);
-
-    auto get = [&](const std::string& sec, const std::string& key,
-                   const std::string& def = "") -> std::string {
-        auto si = ini.find(sec);
-        if (si == ini.end()) return def;
-        auto ki = si->second.find(key);
-        return (ki == si->second.end()) ? def : ki->second;
-    };
-
-    cfg.listen_host = get("server",    "host", cfg.listen_host);
-    cfg.listen_port = safe_stoi(get("server", "port", std::to_string(cfg.listen_port)), "[server] port");
-    cfg.static_root = get("directory", "root", cfg.static_root);
-
-    std::string ssl_str = get("ssl", "enabled", "false");
-    cfg.ssl_enabled = (ssl_str == "true" || ssl_str == "True" || ssl_str == "1");
-    cfg.ssl_cert    = get("ssl", "cert_file", cfg.ssl_cert);
-    cfg.ssl_key     = get("ssl", "key_file",  cfg.ssl_key);
-
-    std::string origins_str = get("cors", "allowed_origins", "");
-    if (!origins_str.empty()) {
-        std::istringstream oss(origins_str);
-        std::string origin;
-        while (std::getline(oss, origin, ',')) {
-            auto b = origin.find_first_not_of(" \t");
-            auto e = origin.find_last_not_of(" \t");
-            if (b != std::string::npos)
-                cfg.cors_origins.push_back(origin.substr(b, e - b + 1));
-        }
-    }
-
-    // 4. 环境变量覆盖（Docker 兼容）
+    // ── 配置加载：CLI > 环境变量 > 默认值 ──
+    // 1. 环境变量覆盖（Docker 兼容）
     if (const char* v = std::getenv("LISTEN_ADDR"))  cfg.listen_host = v;
     if (const char* v = std::getenv("LISTEN_PORT"))  cfg.listen_port = safe_stoi(v, "LISTEN_PORT");
     if (const char* v = std::getenv("STATIC_ROOT"))  cfg.static_root = v;
@@ -370,32 +272,49 @@ static Config load_config(int argc, char* argv[]) {
     if (const char* v = std::getenv("DB_PORT"))      cfg.db_port = safe_stoi(v, "DB_PORT");
     if (const char* v = std::getenv("DNFS_URL"))     cfg.dnfs_url = v;
 
-    // 5. 命令行参数（最高优先级）
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        if ((arg == "--addr"    || arg == "-a" || arg == "--host") && i + 1 < argc) cfg.listen_host = argv[++i];
-        else if ((arg == "--port" || arg == "-p") && i + 1 < argc) cfg.listen_port = safe_stoi(argv[++i], "--port");
-        else if ((arg == "--threads" || arg == "-t") && i + 1 < argc) cfg.threads = safe_stoi(argv[++i], "--threads");
-        else if (arg == "--log-level" && i + 1 < argc) cfg.log_level = argv[++i];
-        else if (arg == "--instance" && i + 1 < argc) cfg.instance_name = argv[++i];
-        // --config 和 --help 已在预扫描阶段处理
+    // 2. CLI 参数覆盖（最高优先级）
+    if (vm.count("addr"))         cfg.listen_host = vm["addr"].as<std::string>();
+    if (vm.count("port"))         cfg.listen_port = vm["port"].as<int>();
+    if (vm.count("threads"))      cfg.threads = vm["threads"].as<int>();
+    if (vm.count("root"))         cfg.static_root = vm["root"].as<std::string>();
+    if (vm.count("ssl-enabled")) {
+        std::string s = vm["ssl-enabled"].as<std::string>();
+        cfg.ssl_enabled = (s == "true" || s == "True" || s == "1");
     }
+    if (vm.count("cert-file"))    cfg.ssl_cert = vm["cert-file"].as<std::string>();
+    if (vm.count("key-file"))     cfg.ssl_key = vm["key-file"].as<std::string>();
+    if (vm.count("cors-origins")) {
+        std::string origins_str = vm["cors-origins"].as<std::string>();
+        if (!origins_str.empty()) {
+            std::istringstream oss(origins_str);
+            std::string origin;
+            while (std::getline(oss, origin, ',')) {
+                auto b = origin.find_first_not_of(" \t");
+                auto e = origin.find_last_not_of(" \t");
+                if (b != std::string::npos)
+                    cfg.cors_origins.push_back(origin.substr(b, e - b + 1));
+            }
+        }
+    }
+    if (vm.count("db-host"))      cfg.db_host = vm["db-host"].as<std::string>();
+    if (vm.count("db-port"))      cfg.db_port = vm["db-port"].as<int>();
+    if (vm.count("dnfs-url"))     cfg.dnfs_url = vm["dnfs-url"].as<std::string>();
 
-    // 6. 校验必需配置项
+    // 3. 校验必需配置项
     if (cfg.listen_host.empty()) {
-        std::fprintf(stderr, "[fsys] 缺少必需配置: [server] host\n");
+        std::fprintf(stderr, "[fsys] 缺少必需配置: --addr\n");
         std::exit(1);
     }
     if (cfg.static_root.empty()) {
-        std::fprintf(stderr, "[fsys] 缺少必需配置: [directory] root\n");
+        std::fprintf(stderr, "[fsys] 缺少必需配置: --root\n");
         std::exit(1);
     }
     if (cfg.cors_origins.empty()) {
-        std::fprintf(stderr, "[fsys] 缺少必需配置: [cors] allowed_origins\n");
+        std::fprintf(stderr, "[fsys] 缺少必需配置: --cors-origins\n");
         std::exit(1);
     }
 
-    // 7. 数值范围校验
+    // 4. 数值范围校验
     if (cfg.listen_port < 1 || cfg.listen_port > 65535) {
         std::fprintf(stderr, "[fsys] invalid listen_port: %d (must be 1-65535)\n", cfg.listen_port);
         std::exit(1);
@@ -405,19 +324,7 @@ static Config load_config(int argc, char* argv[]) {
         std::exit(1);
     }
 
-    // log_level 校验
-    {
-        std::string ll = cfg.log_level;
-        std::transform(ll.begin(), ll.end(), ll.begin(), ::tolower);
-        if (ll != "debug" && ll != "info" && ll != "warn" && ll != "error") {
-            std::fprintf(stderr, "[fsys] invalid --log-level: %s (must be debug|info|warn|error)\n",
-                         cfg.log_level.c_str());
-            std::exit(1);
-        }
-        cfg.log_level = ll;
-    }
-
-    // 8. 路径规范化：static_root/SSL 相对路径基于当前工作目录
+    // 5. 路径规范化：static_root/SSL 相对路径基于当前工作目录
     //    （_run.sh 以模块目录为 cwd 启动，与 Python 版 BASE_DIR 语义一致；
     //      Docker 场景使用绝对路径 STATIC_ROOT，不受影响）
     if (!cfg.static_root.empty() && cfg.static_root[0] != '/') {
@@ -699,11 +606,7 @@ public:
             _filesystem_enabled = false;
         }
 
-        std::printf("[fsys] 配置来源: confs (%s @ %s:%d)\n",
-                    _cfg.confs_config_name.c_str(),
-                    _cfg.confs_host.c_str(), _cfg.confs_port);
-        std::printf("[fsys] 实例: %s | 日志级别: %s\n",
-                    _cfg.instance_name.c_str(), _cfg.log_level.c_str());
+        std::printf("[fsys] 配置来源: CLI > 环境变量 > 默认值\n");
         std::printf("[fsys] 静态目录: %s\n", _cfg.static_root.c_str());
     }
 
@@ -735,19 +638,6 @@ private:
     void _log(const std::string& level, const std::string& service,
               const std::string& message, const std::string& trace_id = "",
               const std::string& extra = "") {
-        // 日志级别过滤
-        static const std::unordered_map<std::string, int> kLogLevels = {
-            {"debug", 0}, {"DEBUG", 0},
-            {"info", 1}, {"INFO", 1},
-            {"warn", 2}, {"WARNING", 2},
-            {"error", 3}, {"ERROR", 3}
-        };
-        auto cfg_it = kLogLevels.find(_cfg.log_level);
-        auto msg_it = kLogLevels.find(level);
-        if (cfg_it != kLogLevels.end() && msg_it != kLogLevels.end()) {
-            if (msg_it->second < cfg_it->second) return;
-        }
-
         LogEntry e;
         e.ts = utc_now();
         e.service = service;
@@ -1637,9 +1527,6 @@ int main(int argc, char* argv[]) {
                     cfg.static_root.c_str(), cfg.ssl_enabled ? "on" : "off");
         std::printf("[fsys] db=%s:%d dnfs=%s\n",
                     cfg.db_host.c_str(), cfg.db_port, cfg.dnfs_url.c_str());
-        std::printf("[fsys] instance=%s log-level=%s config=%s\n",
-                    cfg.instance_name.c_str(), cfg.log_level.c_str(),
-                    cfg.confs_config_name.c_str());
         std::fflush(stdout);
 
         FsysServer server(std::move(cfg));
