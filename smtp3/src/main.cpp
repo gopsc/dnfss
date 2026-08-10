@@ -24,7 +24,6 @@
 
 #include <us/Msg.hpp>
 #include <us/RpcServer.hpp>
-#include <us/RpcClient.hpp>
 #include <us/AsyncQueue.hpp>
 
 #include <boost/json.hpp>
@@ -143,75 +142,7 @@ struct SmtpConfig {
 	int max_content_len = 4096;
 };
 
-// 从 confs 拉取 smtp.ini 全文，阻塞等待 confs 就绪
-static std::string fetch_config_from_confs(const std::string& confs_host, int confs_port) {
-	pmc::net::RpcClient client(confs_host, confs_port, "smtp3",
-		/*timeout=*/5.0, /*retry_on_refused=*/true);
-	try {
-		auto data = client.call("get", {{"name", "smtp.ini"}});
-		auto* content = data.as_object().if_contains("content");
-		if (!content || !content->is_string()) {
-			std::cerr << "[smtp3] confs 返回的 smtp.ini 无 content 字段" << std::endl;
-			std::exit(1);
-		}
-		return json::value_to<std::string>(*content);
-	} catch (const std::exception& e) {
-		std::cerr << "[smtp3] 致命错误: 从 confs 获取 smtp.ini 失败: " << e.what() << std::endl;
-		std::exit(1);
-	}
-}
-
-// 把 ini 文本合并进 config（仅覆盖已知 section/key，白名单策略）
-static void merge_ini(SmtpConfig& cfg, const std::string& text) {
-	std::istringstream stream(text);
-	std::string line, section;
-	while (std::getline(stream, line)) {
-		auto start = line.find_first_not_of(" \t\r");
-		if (start == std::string::npos || line[start] == '#' || line[start] == ';')
-			continue;
-		auto end = line.find_last_not_of(" \t\r");
-		line = line.substr(start, end - start + 1);
-
-		if (line.front() == '[' && line.back() == ']') {
-			section = line.substr(1, line.size() - 2);
-			continue;
-		}
-		auto eq = line.find('=');
-		if (eq == std::string::npos) continue;
-		std::string key = line.substr(0, eq);
-		std::string val = line.substr(eq + 1);
-		auto ke = key.find_last_not_of(" \t");
-		if (ke != std::string::npos) key = key.substr(0, ke + 1);
-		auto ks = key.find_first_not_of(" \t");
-		if (ks != std::string::npos) key = key.substr(ks);
-		auto vs = val.find_first_not_of(" \t");
-		if (vs != std::string::npos) val = val.substr(vs);
-		auto ve = val.find_last_not_of(" \t");
-		if (ve != std::string::npos) val = val.substr(0, ve + 1);
-
-		if (section == "server") {
-			if (key == "host") cfg.host = val;
-			else if (key == "port") cfg.port = parse_int(key, val);
-			else if (key == "workers") cfg.workers = parse_int(key, val);
-		} else if (section == "smtp") {
-			if (key == "server") cfg.smtp_server = val;
-			else if (key == "port") cfg.smtp_port = parse_int(key, val);
-			else if (key == "user") cfg.smtp_user = val;
-			else if (key == "password") cfg.smtp_password = val;
-			else if (key == "mail_from") cfg.mail_from = val;
-			else if (key == "code_len") cfg.code_len = parse_int(key, val);
-			else if (key == "code_ttl") cfg.code_ttl = parse_int(key, val);
-			else if (key == "send_interval") cfg.send_interval = parse_int(key, val);
-			else if (key == "max_verify_attempts") cfg.max_verify_attempts = parse_int(key, val);
-			else if (key == "email_hourly_limit") cfg.email_hourly_limit = parse_int(key, val);
-			else if (key == "email_daily_limit") cfg.email_daily_limit = parse_int(key, val);
-			else if (key == "smtp_hourly_limit") cfg.smtp_hourly_limit = parse_int(key, val);
-			else if (key == "default_subject") cfg.default_subject = val;
-		}
-	}
-}
-
-// 环境变量覆盖（最高优先级，Docker 兼容；兼容 Python 版 __PASSWORD）
+// 环境变量覆盖（Docker 兼容；CLI > 环境变量 > 默认值；兼容 Python 版 __PASSWORD）
 static void apply_env_overrides(SmtpConfig& cfg) {
 	if (auto* v = std::getenv("LISTEN_ADDR"))      cfg.host = v;
 	if (auto* v = std::getenv("LISTEN_PORT"))      cfg.port = parse_int("LISTEN_PORT", v);
@@ -481,6 +412,8 @@ public:
 			ssl = SSL_new(ctx);
 			if (!ssl) throw std::runtime_error("SSL_new 失败");
 			SSL_set_fd(ssl, sock);
+			// SNI: 某些 SMTP 服务器（如 Gmail、Outlook）要求 TLS SNI 扩展
+			SSL_set_tlsext_host_name(ssl, cfg_.server.c_str());
 			if (SSL_connect(ssl) != 1)
 				throw std::runtime_error("TLS 握手失败: " + ssl_error());
 
@@ -729,20 +662,35 @@ int main(int argc, char* argv[]) {
 		std::signal(SIGPIPE, SIG_IGN);
 
 		// ── 命令行参数 ──
-		std::string confs_host = "127.0.0.1";
-		int confs_port = 8010;
-		{
-			const char* env;
-			if ((env = std::getenv("CONFS_HOST"))) confs_host = env;
-			if ((env = std::getenv("CONFS_PORT"))) confs_port = std::stoi(env);
-		}
-
 		po::options_description desc("smtp3 — pymsg 邮箱验证码服务");
 		desc.add_options()
 			("help,h", "显示帮助")
-			("addr,a", po::value<std::string>(), "监听地址（覆盖 confs）")
-			("port,p", po::value<int>(), "监听端口（覆盖 confs）")
-			("workers,w", po::value<int>(), "工作线程数（覆盖 confs）");
+			("instance", po::value<std::string>()->default_value("smtp"),
+				"实例名（注册中心用）")
+			("log-level", po::value<std::string>()->default_value("info"),
+				"日志级别（debug|info|warn|error）")
+			("addr,a", po::value<std::string>(), "监听地址")
+			("port,p", po::value<int>(), "监听端口")
+			("workers,w", po::value<int>(), "工作线程数")
+			("smtp-port", po::value<int>(), "SMTP 服务器端口（SSL，默认 465）")
+			("code-len", po::value<int>(), "验证码长度（4~10，默认 6）")
+			("code-ttl", po::value<int>(), "验证码有效期秒数（默认 600）")
+			("send-interval", po::value<int>(),
+				"同一邮箱最小发送间隔秒数（默认 60）")
+			("max-verify-attempts", po::value<int>(),
+				"验证码最大校验失败次数（默认 5）")
+			("email-hourly-limit", po::value<int>(),
+				"单邮箱每小时发送上限（默认 3）")
+			("email-daily-limit", po::value<int>(),
+				"单邮箱每日发送上限（默认 10）")
+			("smtp-hourly-limit", po::value<int>(),
+				"全局每小时发送上限/熔断（默认 100）")
+			("default-subject", po::value<std::string>(),
+				"默认邮件标题")
+			("max-subject-len", po::value<int>(),
+				"邮件标题长度上限（默认 256）")
+			("max-content-len", po::value<int>(),
+				"邮件正文长度上限（默认 4096）");
 		po::variables_map vm;
 		po::store(po::parse_command_line(argc, argv, desc), vm);
 		po::notify(vm);
@@ -752,16 +700,30 @@ int main(int argc, char* argv[]) {
 			return 0;
 		}
 
-		// ── 配置加载：confs → env → 命令行 ──
-		std::string ini_text = fetch_config_from_confs(confs_host, confs_port);
-		merge_ini(g_config, ini_text);
+		// ── 配置加载：CLI > 环境变量 > 默认值（SMTP 账号经 .env 配置）──
 		apply_env_overrides(g_config);
 
-		if (vm.count("addr"))    g_config.host = vm["addr"].as<std::string>();
-		if (vm.count("port"))    g_config.port = vm["port"].as<int>();
-		if (vm.count("workers")) g_config.workers = vm["workers"].as<int>();
+		if (vm.count("addr"))               g_config.host = vm["addr"].as<std::string>();
+		if (vm.count("port"))               g_config.port = vm["port"].as<int>();
+		if (vm.count("workers"))            g_config.workers = vm["workers"].as<int>();
+		if (vm.count("smtp-port"))          g_config.smtp_port = vm["smtp-port"].as<int>();
+		if (vm.count("code-len"))           g_config.code_len = vm["code-len"].as<int>();
+		if (vm.count("code-ttl"))           g_config.code_ttl = vm["code-ttl"].as<int>();
+		if (vm.count("send-interval"))      g_config.send_interval = vm["send-interval"].as<int>();
+		if (vm.count("max-verify-attempts")) g_config.max_verify_attempts = vm["max-verify-attempts"].as<int>();
+		if (vm.count("email-hourly-limit"))  g_config.email_hourly_limit = vm["email-hourly-limit"].as<int>();
+		if (vm.count("email-daily-limit"))   g_config.email_daily_limit = vm["email-daily-limit"].as<int>();
+		if (vm.count("smtp-hourly-limit"))   g_config.smtp_hourly_limit = vm["smtp-hourly-limit"].as<int>();
+		if (vm.count("default-subject"))      g_config.default_subject = vm["default-subject"].as<std::string>();
+		if (vm.count("max-subject-len"))      g_config.max_subject_len = vm["max-subject-len"].as<int>();
+		if (vm.count("max-content-len"))      g_config.max_content_len = vm["max-content-len"].as<int>();
 
 		validate_config(g_config);
+
+		// 日志级别
+		std::string log_level = vm["log-level"].as<std::string>();
+		std::string instance = vm["instance"].as<std::string>();
+		g_log.set_level(log_level);
 
 		// 默认验证码有效期的文案
 		std::string default_content =
@@ -771,8 +733,8 @@ int main(int argc, char* argv[]) {
 		std::string mail_from = g_config.mail_from.empty()
 			? g_config.smtp_user : g_config.mail_from;
 
-		std::cerr << "[smtp3] 配置来源: confs smtp.ini @ "
-		          << confs_host << ":" << confs_port << std::endl;
+		std::cerr << "[smtp3] instance=" << instance << " log-level=" << log_level << std::endl;
+		std::cerr << "[smtp3] 配置来源: CLI > 环境变量 > 默认值（SMTP 账号经 .env 配置）" << std::endl;
 
 		// ── 启动 RpcServer ──
 		g_log.info("smtp3", "启动中... 监听 tcp://" + g_config.host + ":" + std::to_string(g_config.port));

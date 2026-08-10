@@ -73,6 +73,7 @@ services:
     sleep_before: 0
 
   # --- 邮件服务 ---
+  # smtp3 已修复 .env 加载 + TLS SNI，待生产验证后切换
   - name: smtp
     cmd: bash /opt/micro_servers/smtp/_run.sh
     args: ["--instance", "smtp", "--log-level", "info"]

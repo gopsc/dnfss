@@ -40,6 +40,7 @@ inst_module "dnfs2"
 inst_module "db"
 inst_module "db2"
 inst_module "smtp"
+inst_module "smtp3"
 inst_module "captcha"
 inst_module "confs"
 inst_module "ai_review"	# 需联网拉 chromadb onnx 模型（_fetch_onnx_model.sh 走 ModelScope 镜像）
