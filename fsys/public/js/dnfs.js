@@ -430,7 +430,7 @@ function renderMarkdown(element, content) {
 }
 
 /* ===== by qing — 特殊节点 =====
- * 信封：content 为 {"_sp":"link|js|file|style|theme", ...} JSON，普通内容走 Markdown。
+ * 信封：content 为 {"_sp":"js|file|style|theme", ...} JSON，普通内容走 Markdown。
  * 发布权限由后端 dnfs 强制（节点拥有者或管理员），前端仅做展示与表单切换。 */
 
 /* 与后端 base64 上限（3.5M 字符）对齐：原始文件约 2.5MB */
@@ -445,7 +445,7 @@ function parseSp(content) {
 	} catch (e) {
 		return null;	// 非法信封按普通文本展示（后端发布时已拦截，这里是兜底）
 	}
-	if (obj && typeof obj === 'object' && ['link', 'js', 'file', 'style', 'theme'].indexOf(obj._sp) !== -1) return obj;
+	if (obj && typeof obj === 'object' && ['js', 'file', 'style', 'theme'].indexOf(obj._sp) !== -1) return obj;
 	return null;
 }
 
@@ -464,32 +464,9 @@ function renderContent(container, item) {
 			container.appendChild(note);
 		}
 	}
-	if (sp._sp === 'link') renderSpLink(container, sp, appendNote);
-	else if (sp._sp === 'js') renderSpJs(container, sp, appendNote);
+	if (sp._sp === 'js') renderSpJs(container, sp, appendNote);
 	else if (sp._sp === 'file') renderSpFile(container, sp, appendNote);
 	else if (sp._sp === 'style' || sp._sp === 'theme') renderSpCss(container, sp, appendNote, item);
-}
-
-/* 链接节点：服务端代理拉取的 favicon + 可点击链接（卡片内交互需 stopPropagation） */
-function renderSpLink(container, sp, appendNote) {
-	var box = document.createElement('div');
-	box.className = 'sp-link';
-	var icon = document.createElement('img');
-	icon.className = 'sp-favicon';
-	icon.alt = '';
-	icon.src = '/api/favicon?url=' + encodeURIComponent(sp.url);
-	icon.addEventListener('error', function() { icon.style.display = 'none'; });
-	var anchor = document.createElement('a');
-	anchor.className = 'sp-anchor';
-	anchor.href = sp.url;
-	anchor.target = '_blank';
-	anchor.rel = 'noopener noreferrer';
-	anchor.textContent = sp.url;
-	anchor.addEventListener('click', function(e) { e.stopPropagation(); });
-	box.appendChild(icon);
-	box.appendChild(anchor);
-	container.appendChild(box);
-	appendNote();
 }
 
 /* 前端代码节点：含前端内容的节点在渲染到当前页面时自动执行（隔离 iframe 沙箱）。
@@ -806,8 +783,7 @@ sp_type.addEventListener('change', function() {
 		sp_file.value = '';
 		sp_edit_original = null;
 	}
-	if (t === 'link') input_note_content.placeholder = '请输入链接 URL（https://…）';
-	else if (t === 'js') input_note_content.placeholder = '请输入完整前端代码（可含 HTML/CSS/JS）';
+	if (t === 'js') input_note_content.placeholder = '请输入完整前端代码（可含 HTML/CSS/JS）';
 	else if (t === 'style') input_note_content.placeholder = '请输入 CSS（如 .card { border-radius: 16px }），发布后全界面生效';
 	else if (t === 'theme') input_note_content.placeholder = '每行一个变量，如 --accent: #e8853a';
 	else input_note_content.placeholder = '';
@@ -848,11 +824,6 @@ function parseThemeVars(text) {
 async function buildSubmitContent() {
 	var t = (current_user && current_user.login) ? sp_type.value : 'text';
 	if (t === 'text') return input_note_content.value;
-	if (t === 'link') {
-		var url = input_note_content.value.trim();
-		if (!/^https?:\/\//i.test(url)) { alert('链接必须以 http:// 或 https:// 开头'); return null; }
-		return JSON.stringify({ _sp: 'link', url: url });
-	}
 	if (t === 'js') {
 		var code = input_note_content.value;
 		if (!code.trim()) { alert('请输入前端代码'); return null; }
@@ -936,16 +907,16 @@ delete_note.addEventListener('click', (event) => {
 })
 
 /* by qing — 点击卡片"编辑"：把节点标题/内容载入下方表单，进入编辑模式。
- * 特殊节点：link/js/style/theme 回填对应文本到文本域；file 记住原信封（未选新文件则原样提交） */
+ * 特殊节点：js/style/theme 回填对应文本到文本域；file 记住原信封（未选新文件则原样提交） */
 function startEdit(item) {
 	editing_id = item.id;
 	input_note_title.value = item.title;
 	var sp = parseSp(item.content);
 	sp_edit_original = null;
-	if (sp && (sp._sp === 'link' || sp._sp === 'js')) {
-		sp_type.value = sp._sp;
+	if (sp && sp._sp === 'js') {
+		sp_type.value = 'js';
 		sp_type.dispatchEvent(new Event('change'));
-		input_note_content.value = (sp._sp === 'link') ? (sp.url || '') : (sp.code || '');
+		input_note_content.value = sp.code || '';
 	} else if (sp && sp._sp === 'style') {
 		sp_type.value = 'style';
 		sp_type.dispatchEvent(new Event('change'));
@@ -1123,9 +1094,6 @@ function itemSearchText(item) {
 		var sp = parseSp(c);
 		if (!sp) {
 			parts.push(c);
-		} else if (sp._sp === 'link') {
-			if (sp.url) parts.push(sp.url);
-			if (sp.note) parts.push(sp.note);
 		} else if (sp._sp === 'js') {
 			if (sp.code) parts.push(sp.code);
 			if (sp.note) parts.push(sp.note);

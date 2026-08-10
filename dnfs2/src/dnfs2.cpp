@@ -56,7 +56,6 @@ using namespace pmc::net;
 static constexpr size_t kMaxBodySize = 10 * 1024 * 1024;
 
 // 特殊节点
-static constexpr size_t kSpMaxUrl          = 2048;
 static constexpr size_t kSpMaxCode         = 512 * 1024;
 static constexpr size_t kSpMaxData         = 3500 * 1024;
 static constexpr size_t kSpReviewCodePrefix = 4000;
@@ -243,7 +242,7 @@ private:
 // 特殊节点校验
 // ============================================================================
 
-static const std::vector<std::string> kSpTypes = {"link", "js", "file", "style", "theme"};
+static const std::vector<std::string> kSpTypes = {"js", "file", "style", "theme"};
 
 // 识别特殊节点信封：合法信封返回 object；普通内容返回 nullptr；
 // 以 {"_sp" 开头但 JSON 非法视为格式错误（抛异常）。
@@ -279,15 +278,7 @@ static void validate_sp(const json::object& sp) {
     if (sp.contains("persist") && !sp.at("persist").is_bool())
         throw DnfsExp("persist 必须是布尔值", 400);
 
-    if (t == "link") {
-        if (!sp.contains("url") || !sp.at("url").is_string())
-            throw DnfsExp("链接节点缺少 url", 400);
-        std::string url = std::string(sp.at("url").as_string());
-        if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0)
-            throw DnfsExp("链接节点必须是 http/https URL", 400);
-        if (url.size() > kSpMaxUrl)
-            throw DnfsExp("链接过长", 400);
-    } else if (t == "js") {
+    if (t == "js") {
         if (!sp.contains("code") || !sp.at("code").is_string())
             throw DnfsExp("前端代码不能为空", 400);
         std::string code = std::string(sp.at("code").as_string());
@@ -364,10 +355,7 @@ static std::string sp_review_text(const std::string& title, const json::object& 
     }
 
     std::string t = std::string(sp.at("_sp").as_string());
-    if (t == "link") {
-        if (sp.contains("url") && sp.at("url").is_string())
-            parts.push_back(std::string(sp.at("url").as_string()));
-    } else if (t == "js") {
+    if (t == "js") {
         if (sp.contains("code") && sp.at("code").is_string()) {
             std::string code = std::string(sp.at("code").as_string());
             if (code.size() > kSpReviewCodePrefix) code = code.substr(0, kSpReviewCodePrefix);
