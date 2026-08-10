@@ -13,7 +13,8 @@ import atexit
 import logging
 
 from . import plugin
-from .hardvars import (AliasVar, I2CVar, MPU6050Var, ServoVar, SpeakerVar)
+from .hardvars import (AliasVar, CameraVar, I2CVar, MPU6050Var, ServoVar,
+                       SpeakerVar)
 from .parser import MatrixParser, MatrixSaver, get_mt, parse_mt
 
 log = logging.getLogger("pybot.robot")
@@ -25,6 +26,7 @@ _FACTORIES = {
     "Servo": ServoVar,
     "Speaker": SpeakerVar,
     "MPU6050_BIND": MPU6050Var,
+    "Camera": CameraVar,
 }
 
 

@@ -12,6 +12,7 @@ JsonValue 通信协议改为原生 dict/str（无跨语言边界后无需序列�
 import logging
 
 from .hd import i2c as hd_i2c
+from .hd.camera import Camera
 from .hd.mpu6050 import MPU6050
 from .hd.servo import Servo
 from .hd.speaker import Speaker
@@ -186,3 +187,41 @@ class SpeakerVar(HardwareVar):
                           volumn=volumn, max_f=max_f, min_f=min_f,
                           dry_run=dry_run)
         return cls(name, speaker)
+
+
+# ---------------- Camera 摄像头变量（pybot 新增，无仓颉版对应） ----------------
+
+class CameraVar(HardwareVar):
+    """摄像头：build 启动后台抓帧线程维护有界队列；play() 返回最新帧"""
+
+    def __init__(self, name, camera):
+        super().__init__(name)
+        self.camera = camera
+
+    def build(self):
+        log.info("Camera HVar: %s is starting now", self.name)
+        self.camera.setup()
+        self.camera.start_daemon()
+
+    def play(self, params):
+        """返回 (时间戳, frame) 或 None（队列空 / dry_run）"""
+        return self.camera.latest()
+
+    def destroy(self):
+        log.info("Camera HVar: %s is closing now", self.name)
+        self.camera.stop_daemon()
+        self.camera.wait_daemon()
+        self.camera.close()
+
+    @classmethod
+    def from_matrix(cls, matrix, i, M, dry_run=False, **kwargs):
+        name = matrix[i, matrix.index_of_col(0, "name")]
+        width = parse_mt(matrix, i, matrix.index_of_col(0, "width"), int)
+        height = parse_mt(matrix, i, matrix.index_of_col(0, "height"), int)
+        framerate = parse_mt(matrix, i, matrix.index_of_col(0, "framerate"))
+        capacity = parse_mt(matrix, i, matrix.index_of_col(0, "capacity"), int)
+        log.info("Create a Camera hard-Var: %s, %dx%d @ %.1ffps, capacity: %s",
+                 name, width, height, framerate, capacity)
+        camera = Camera(width=width, height=height, framerate=framerate,
+                        capacity=capacity, dry_run=dry_run)
+        return cls(name, camera)
