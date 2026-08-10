@@ -5,7 +5,7 @@ dnfs 的 C++ 重实现，接口与 Python dnfs 完全兼容，修复 P0/P1 安�
 ## 架构
 
 ```
-gateway (验签/转发)
+ca :8443 (验签 /whoami，验签通过后经 gateway 转发)
    │  Bearer Token
    ▼
 dnfs2 :8006 ──pymsg──► db2 :8005 (execute 路由) ──► SQLite
@@ -15,7 +15,7 @@ dnfs2 :8006 ──pymsg──► db2 :8005 (execute 路由) ──► SQLite
 ```
 
 - **HTTP 服务**: libhttp `HttpServer`（Boost.Beast 异步，多线程）
-- **Token 验签**: HttpClient POST gateway `/whoami`，fail-closed（503）
+- **Token 验签**: HttpClient POST ca `/whoami`（CLI 参数 `--gateway-url` 指向 ca:8443），fail-closed（503）
 - **数据操作**: libmsg `RpcClient` 调 db2 `execute` 路由
 - **内容审核**: HttpClient POST ai_review `/review`，fail-closed
 - **异步日志**: libmsg `AsyncQueue` → db2 Logs 表
@@ -45,7 +45,7 @@ dnfs2 :8006 ──pymsg──► db2 :8005 (execute 路由) ──► SQLite
 | 数据库超时 | `--db-timeout` | — | 10 |
 | AI 审核URL | `--review-url` | `REVIEW_URL` | http://127.0.0.1:8007/review |
 | AI 审核超时 | `--review-timeout` | — | 10 |
-| 网关验签URL | `--gateway-url` | `GATEWAY_URL` | http://127.0.0.1:8443/whoami |
+| ca 验签URL | `--gateway-url` | `GATEWAY_URL` | http://127.0.0.1:8443/whoami |
 | 网关超时 | `--gateway-timeout` | — | 5 |
 | 日志级别 | `--log-level` | — | info |
 | 实例名 | `--instance` | — | dnfs2 |

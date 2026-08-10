@@ -1,6 +1,6 @@
 # Blackbird 架构文档（UniServe Framework）
 
-> 权威架构参考。本文以 `core/init.txt`（实际运行清单）与 `git HEAD` 为事实来源。
+> 权威架构参考。本文以 `core/services.yaml`（实际运行清单）与 `git HEAD` 为事实来源。
 > 与根目录 `README.md` 的偏差见文末「§10 与 README 的偏差」。
 > 最后核对于：2026-08-10。
 
@@ -52,7 +52,7 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
                           ┌──────────────────────────────────────────────────┐
                           │                core (PMC / Nidus)                 │
                           │  进程托管 :5200 (HTTP 管理)  +  内嵌 confs :8010   │
-                          │  读 init.txt 拉起并守护下列子进程                  │
+                          │  读 services.yaml 拉起并守护下列子进程           │
                           └───────────────────────┬──────────────────────────┘
                                                  │ 启动 / 守护
         ┌────────────────┬───────────────────────┼──────────────────┬─────────────────┐
@@ -92,10 +92,10 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
     actpred / memdb / libtry (实验 / 支撑库)
 
   日志链路: 各服务 log_client ──pymsg──► db2:8005 Logs 表 (fail-safe, db 不可用时静默丢弃)
-  配置链路: core 内嵌 confs :8010 ──pymsg get──► 各服务 (confs/configs/*.ini, mtime 自动重载)
+  配置链路: gateway ──pymsg get──► core 内嵌 confs :8010 (confs/configs/gateway.ini, mtime 自动重载；其余服务配置纯 CLI 传递)
 ```
 
-> 注：`core` 启动参数为 `./nidus.out -i init.txt --serve 5200 --confs 8010`，`--confs` 启用内嵌配置服务（由 confs2 合并而来，与 Python confs 协议兼容）。
+> 注：`core` 启动参数为 `./nidus.out -i . --serve 5200 --confs 8010`（`-i .` 指向 services.yaml 所在目录），`--confs` 启用内嵌配置服务（由 confs2 合并而来，与 Python confs 协议兼容）。
 
 ---
 
@@ -122,7 +122,7 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
 
 ### 4.4 日志 / 配置（横切）
 - 各服务内置 `log_client`（异步队列 + 后台批量 flush）→ pymsg 写 `db2:8005` 的 `Logs` 表；`db2` 自带 30 天/100 万条清理线程。
-- 各服务启动时经 pymsg `get` 从 `core:8010` 拉取自身 `.ini`；`confs/configs/` 下 mtime 变化自动重载；环境变量覆盖；命令行参数最高优先级。
+- `gateway` 启动时经 pymsg `get` 从 `core:8010` 拉取 `gateway.ini`；`confs/configs/` 下 mtime 变化自动重载。其余服务配置纯 CLI 传递（CLI > 环境变量 > 默认值），不依赖 confs。
 
 ---
 
@@ -149,7 +149,7 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
 | **memdb** | C++20 | — | — | 内存数据库 | 实验/支撑 |
 | **libtry** | C | — | — | 嵌入式脚本解释器 | 支撑 |
 
-### 已被替代、不应再部署的遗留模块（不在 init.txt）
+### 已被替代、不应再部署的遗留模块（不在 services.yaml）
 | 遗留 | 替代 | 说明 |
 |------|------|------|
 | `static` (Python) | `fsys` | 前端托管已 C++ 重写 |
@@ -157,7 +157,7 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
 | `dnfs` (Python) | `dnfs2` | 笔记服务已 C++ 重写 |
 | `captcha` (Python) | `captcha2` | 验证码已 C++ 重写 |
 | `confs` (Python) | 并入 `core` | 配置服务内嵌进 core（ConfsTask） |
-| `smtp3` (C++) | （预备） | 代码就绪，init.txt 仍用 Python `smtp`，尚未平替 |
+| `smtp3` (C++) | （预备） | 代码就绪，services.yaml 仍用 Python `smtp`，尚未平替 |
 
 ---
 
@@ -226,22 +226,23 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
 ## 9. 演进策略与已知缺口
 
 - **无服务注册发现 / 容器编排**：服务地址在 `waf/config.yaml` 与 `gateway` 的 `Proxy.*` 中静态配置，由 `core` 进程托管。适合个人/中小规模 DIY，但扩展需手工。
-- **smtp3 待上线**：C++ 重写已完成并通过安全审计，但 init.txt 仍指向 Python `smtp`，建议择机平替以消除最后一块 Python 有状态服务。
+- **smtp3 待上线**：C++ 重写已完成并通过安全审计，但 services.yaml 仍指向 Python `smtp`，建议择机平替以消除最后一块 Python 有状态服务。
 - **可观测性缺口**：缺 tracing/metrics/告警，建议后续引入轻量方案（或复用 db2 Logs + 定时聚合）。
 - **水平扩展限制**：smtp/captcha 内存态为单点，若需多实例需引入 Redis 等共享存储。
 
 ---
 
-## 10. 与 README.md 的偏差（待同步）
+## 10. 与 README.md 的偏差（已同步，2026-08-10）
 
-以下为本文相对于根 `README.md` 的纠正点，建议择机回填 README：
+以下为本文相对于根 `README.md` 的纠正点。2026-08-10 已按本清单回填 README 并同步 MODULES.md，状态如下：
 
-1. **端口**：README 端口表写 `gateway 8443`，实际 `ca:8443`、`gateway:8445`（v0.9.0 起）。README 正文已正确，仅端口表需改。
-2. **前端模块**：README 仍列 `static`（Python）为主，实际生产为 `fsys`（C++ 重写），`static` 已废弃。
-3. **C++ 重写版未进主表**：README 模块表仍以 `db`/`dnfs`/`captcha`/`confs` 为主，实际生产跑 `db2`/`dnfs2`/`captcha2`，`confs` 已并入 `core`。
-4. **init.txt 不含 confs**：独立 confs 服务已不用，配置由 `core --confs 8010` 内嵌提供。
-5. **fsys README 图示滞后**：`fsys/README.md` 架构图仍写 `gateway :8443`，应为 `ca:8443 → gateway:8445`。
-6. **工作记忆偏差**：项目记忆中的 `gateway:8443 → fsys / dnfs` 与 `confs:8010` 需更新为 `ca:8443 → gateway:8445`、`dnfs2`、confs 内嵌 core。
+1. **端口**：✅ 已修正。README 端口表原写 `gateway 8443`，现已改为 `ca:8443`、`gateway:8445`。
+2. **前端模块**：✅ 已修正。README 现以 `fsys`（C++ 重写）为主表，`static` 标注遗留。
+3. **C++ 重写版未进主表**：✅ 已修正。README 模块表现以 `db2`/`dnfs2`/`captcha2` 为主，`db`/`dnfs`/`captcha` 标注遗留，`confs` 标注已并入 `core`。
+4. **init.txt**：✅ 已同步。core 已于 2026-08 移除 init.txt 兼容，仅支持 `services.yaml`（提交 b0d71a4）；README/本文件均已更新为 `-i . --serve 5200 --confs 8010`。
+5. **fsys README 图示滞后**：✅ 已修正（2026-08-10）。`fsys/README.md` 架构图与配置章节已更新为 `ca:8443 → gateway:8445`、纯 CLI 配置。
+6. **工作记忆偏差**：✅ 已同步。`ca:8443 → gateway:8445`、`dnfs2`、confs 内嵌 core 均已写入各文档。
+7. **dnfs2 README 图示滞后**：✅ 已修正（2026-08-10）。`dnfs2/README.md` 架构图与验签描述已更新为 ca:8443（CLI 参数 `--gateway-url` 指向 ca）。
 
 ---
 

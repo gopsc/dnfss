@@ -1,41 +1,43 @@
 # 模块清单（blackbird / micro_servers）
 
 > 一套 DIY 的轻量级「进程托管式微服务」（UniServe Framework）。
-> 混合语言：C++20（core/gateway/dnfs2/db2/lib*）、Python（fsys/dnfs/db/ai_review/smtp/captcha/confs/redirect80/BotOps/aibox/actpred/pymsg）、Go（waf）、仓颉/Cangjie（bot4cj）。
-> 由 `core` 读 `init.txt` 拉起并守护各子进程；`waf:443 → gateway:8443 → 业务服务` 为对外主链路。
+> 混合语言：C++20（core/gateway/ca/dnfs2/db2/fsys/captcha2/lib*）、Python（static/dnfs/db/ai_review/smtp/captcha/confs/redirect80/BotOps/aibox/actpred/pymsg，多为遗留）、Go（waf）、仓颉/Cangjie（bot4cj）。
+> 由 `core` 读 `services.yaml` 拉起并守护各子进程；`waf:443 → ca:8443 → gateway:8445 → 业务服务` 为对外主链路。
 
 ## 一、核心与编排
 
 | 模块 | 语言 | 端口 | 职责 |
 |------|------|------|------|
-| core | C++20 | 5200 | 进程托管服务 PMC / Nidus，读 `init.txt` 拉起守护子进程，提供 HTTP 管理接口（`--send/--exec/--list/--kill/--serve`） |
+| core | C++20 | 5200 / 8010 | 进程托管服务 PMC / Nidus，读 `services.yaml` 拉起守护子进程，提供 HTTP 管理接口（`--send/--exec/--list/--kill/--serve`），内嵌 confs 配置服务（`--confs 8010`） |
 
 ## 二、入口与网关层
 
 | 模块 | 语言 | 端口 | 职责 |
 |------|------|------|------|
 | redirect80 | Python | 80 | HTTP→HTTPS 重定向（GET/HEAD 301，其余 308 保留 body）；纯标准库 `http.server` |
-| waf | Go | 443 | 唯一对外入口，终止 TLS + coraza 规则匹配（SecLang）+ 反代到 gateway；`kill -HUP` 热加载；规则库 `waf/rules/` |
-| gateway | C++20 | 8443 | 应用层网关（内部 HTTP），注册/登录鉴权、PBKDF2 密码哈希、RSA Token 签发校验、Cookie 认证、速率限制、反向代理（`Proxy.opened` 白名单） |
+| waf | Go | 443 | 唯一对外入口，终止 TLS + coraza 规则匹配（SecLang）+ 反代到 ca；`kill -HUP` 热加载；规则库 `waf/rules/` |
+| ca | C++20 | 8443 | 中央认证服务（内部 HTTP），注册/登录鉴权、PBKDF2 密码哈希、RSA Token 签发校验、Cookie 认证、速率限制、身份头注入后前置转发到 gateway |
+| gateway | C++20 | 8445 | 应用层网关（仅 loopback 纯转发，v0.9.0 起认证迁至 ca），反向代理（`Proxy.opened` 白名单），不验签 |
 
 ## 三、业务服务（对外，经 gateway 代理）
 
 | 模块 | 语言 | 端口 | 职责 |
 |------|------|------|------|
-| fsys | Python/Flask | 9200 | 前端托管（社区首页/静态页面/媒体流/文件浏览）；**原为 static，2026-08 重命名为 fsys**（core/init.txt 已同步），过渡期仍保留 legacy `static/` 目录存放 `fsys.py` |
-| dnfs | Python/Flask | 8006 | 树状菜单（Dendrachy Network File-System），基于 pid 的节点树 CRUD，新增节点前调 ai_review 审核 |
-| dnfs2 | C++20 | 8006 | dnfs 的 C++20 重实现（libhttp + libmsg），接口兼容可平替，修复 P0/P1（fail-closed 验签/所有权校验/脱敏） |
+| fsys | C++20 | 9200 | 前端托管（社区首页/静态页面/媒体流/文件浏览）；Python/Flask `static` 的 C++ 重写（legacy `static/` 目录保留），代理 dnfs2 笔记请求 |
+| dnfs | Python/Flask | 8006 | 树状菜单（Dendrachy Network File-System），基于 pid 的节点树 CRUD，新增节点前调 ai_review 审核（遗留，已由 dnfs2 平替） |
+| dnfs2 | C++20 | 8006 | dnfs 的 C++20 重实现（libhttp + libmsg），接口兼容可平替，修复 P0/P1（fail-closed 验签/所有权校验/脱敏）；支持 js/file/style/theme 特殊节点 |
 | ai_review | Python/Flask | 8007 | AI 内容审核，DeepSeek + ChromaDB RAG（色情/违禁药/赌博/诈骗/仇恨暴力），fail-closed 宁可误拦 |
 
 ## 四、基础设施 / 支撑服务（仅内部调用）
 
 | 模块 | 语言 | 端口 | 职责 |
 |------|------|------|------|
-| db | Python/pymsg | 8005 | 通用数据库服务，SQL-over-TCP（SQLAlchemy Core 参数化防注入），内置集中式日志（Logs 表 + 自动清理） |
+| db | Python/pymsg | 8005 | 通用数据库服务，SQL-over-TCP（SQLAlchemy Core 参数化防注入），内置集中式日志（Logs 表 + 自动清理）（遗留，已由 db2 平替） |
 | db2 | C++20 | 8005 | db 的 C++20 重实现（libmsg + boost::json + libsqlite3），`execute` 路由/where 语法/响应格式对齐，可平替 |
-| confs | Python/pymsg | 8010 | 统一配置分发，集中存放各服务配置（`confs/configs/`），内存缓存 + mtime 自动重载，路径遍历防护 |
-| smtp | Python/pymsg | 8008 | 邮件服务，注册邮箱验证码后端（路由 send_email/verify_email/health），6 位码内存存储、冷却/限流/熔断 |
-| captcha | Python/pymsg | 8009 | 验证码服务，图形验证码（一次性、5 分钟过期），经 gateway `GET /captcha/image` 代理给浏览器 |
+| confs | Python/pymsg | 8010 | 统一配置分发（遗留，已内嵌进 core 的 ConfsTask）；`confs/configs/` 现仅剩 `gateway.ini` 仍由 confs 分发 |
+| smtp | Python/pymsg | 8008 | 邮件服务，注册邮箱验证码后端（路由 send_email/verify_email/health），6 位码内存存储、冷却/限流/熔断（smtp3 C++ 重写待上线） |
+| captcha | Python/pymsg | 8009 | 验证码服务，图形验证码（一次性、5 分钟过期），经 ca `GET /captcha/image` 代理给浏览器（遗留，已由 captcha2 平替） |
+| captcha2 | C++20 | 8009 | captcha 的 C++20 重实现（pymsg），路由 image/verify/health 对齐 |
 
 ## 五、AI 智能体与前端
 
@@ -78,12 +80,12 @@
 - `_inst.sh`：一键按依赖顺序构建安装（库先行，core 最后）
 - `_setup.deb.sh` / `_setup.rhel.sh`：系统依赖安装（Debian/Ubuntu、RHEL 系）
 - `docker.sh` / `docker-compose.yml`：容器化部署
-- 部署路径约定 `/opt/micro_servers/`，`core` 的 `init.txt` 即从该路径拉起其余服务
+- 部署路径约定 `/opt/micro_servers/`，`core` 的 `services.yaml` 即从该路径拉起其余服务
 
 ## 关键链路速记
 
-- **请求主链路**：client → `redirect80`(:80→443) → `waf`(:443 TLS + WAF) → `gateway`(:8443 鉴权) → `fsys`(:9200) / `dnfs`(:8006)
-- **日志链路**：各服务 `log_client.py`（异步批量）→ `db:8005` Logs 表（fail-safe，db 不可用时静默丢弃）
-- **配置链路**：业务服务 → `confs:8010`（内存缓存 + mtime 重载，confs 不可用时回退本地配置）
-- **数据/审核/邮件**：`dnfs` → `db:8005`（pymsg 持久化）；`dnfs` → `ai_review:8007`（审核）；注册邮件 `gateway` → `smtp:8008`
-- **端口一览**：80 redirect80 · 443 waf · 8443 gateway · 5200 core · 9200 fsys · 8006 dnfs/dnfs2 · 8005 db/db2 · 8007 ai_review · 8009 captcha · 8008 smtp · 8010 confs · 8765 aibox
+- **请求主链路**：client → `redirect80`(:80→443) → `waf`(:443 TLS + WAF) → `ca`(:8443 认证+前置转发) → `gateway`(:8445 纯转发) → `fsys`(:9200) / `dnfs2`(:8006)
+- **日志链路**：各服务 `log_client.py`（异步批量）→ `db2:8005` Logs 表（fail-safe，db2 不可用时静默丢弃）
+- **配置链路**：`gateway` → `core` 内嵌 confs:8010（内存缓存 + mtime 重载，仅 gateway.ini）；其余服务配置纯 CLI 传递
+- **数据/审核/邮件**：`dnfs2` → `db2:8005`（pymsg 持久化）；`dnfs2` → `ai_review:8007`（审核）；注册邮件 `ca` → `smtp:8008`；登录验证码 `ca` → `captcha2:8009`
+- **端口一览**：80 redirect80 · 443 waf · 8443 ca · 8445 gateway · 5200/8010 core · 9200 fsys · 8006 dnfs2 · 8005 db2 · 8007 ai_review · 8009 captcha2 · 8008 smtp · 8765 aibox

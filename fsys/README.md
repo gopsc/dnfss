@@ -10,7 +10,10 @@ Python/Flask `static` 模块的生产级 C++ 重写，前端零改动兼容（�
 waf :443 (TLS 终止 + 安全规则)
     │
     ▼
-gateway :8443 (反向代理 + 认证)
+ca :8443 (认证 + 身份头注入 + 前置转发)
+    │
+    ▼
+gateway :8445 (纯转发反向代理, 仅 loopback)
     │
     ▼
 fsys :9200 (libhttp 异步多线程 + CORS)
@@ -18,7 +21,7 @@ fsys :9200 (libhttp 异步多线程 + CORS)
     ├── public/          静态文件根目录
     ├── dnfs2 :8006      笔记代理（反向代理）
     ├── db2 :8005        用户查询 + 日志写入
-    └── confs :8010      配置拉取
+    └── (配置纯 CLI 传递，不依赖 confs)
 ```
 
 ## 路由
@@ -54,36 +57,20 @@ fsys :9200 (libhttp 异步多线程 + CORS)
 
 ## 配置
 
-与 `static` 模块完全兼容，使用相同的 `static.ini`（由 confs 服务分发）。
+纯 CLI + 环境变量 + 默认值（CLI > 环境变量 > 默认值），不依赖 confs；原 `static.ini` 各值已迁入 `core/services.yaml` 的 fsys 条目 args。
 
-| Section | Key | 说明 |
-|---------|-----|------|
-| `[server]` | `host` | 监听地址（默认 127.0.0.1） |
-| `[server]` | `port` | 监听端口（默认 9200） |
-| `[directory]` | `root` | 静态文件根目录（相对路径基于工作目录，_run.sh 以模块目录启动） |
-| `[ssl]` | `enabled` | TLS 开关（默认 false） |
-| `[ssl]` | `cert_file` | 证书路径 |
-| `[ssl]` | `key_file` | 私钥路径 |
-| `[cors]` | `allowed_origins` | CORS 白名单，逗号分隔 |
-
-### 环境变量
-
-| 变量 | 说明 |
-|------|------|
-| `LISTEN_ADDR` | 覆盖监听地址 |
-| `LISTEN_PORT` | 覆盖监听端口 |
-| `STATIC_ROOT` | 覆盖静态文件根目录 |
-| `DB_HOST` / `DB_PORT` | 覆盖 db 服务地址 |
-| `DNFS_URL` | 覆盖 dnfs2 上游地址 |
-| `CONFS_HOST` / `CONFS_PORT` | 覆盖 confs 引导地址 |
-
-### 命令行参数
-
-| 参数 | 说明 |
-|------|------|
-| `--addr` / `-a` | 监听地址 |
-| `--port` / `-p` | 监听端口 |
-| `--threads` / `-t` | 工作线程数 |
+| 配置项 | CLI 参数 | 环境变量 | 默认值 |
+|---------|---------|----------|--------|
+| 监听地址 | `--addr` / `-a` | `LISTEN_ADDR` | 127.0.0.1 |
+| 监听端口 | `--port` / `-p` | `LISTEN_PORT` | 9200 |
+| 工作线程数 | `--threads` / `-t` | — | 4 |
+| 静态根目录 | `--root` | `STATIC_ROOT` | ./public |
+| TLS 开关 | `--ssl-enabled` | — | false |
+| 证书 / 私钥 | `--cert-file` / `--key-file` | — | cert.pem / key.pem |
+| CORS 白名单 | `--cors-origins` | — | 逗号分隔，必需 |
+| db2 地址 | `--db-host` / `--db-port` | `DB_HOST` / `DB_PORT` | 127.0.0.1:8005 |
+| dnfs2 上游 | `--dnfs-url` | `DNFS_URL` | http://127.0.0.1:8006 |
+| 实例名 / 日志级别 | `--instance` / `--log-level` | — | fsys / info |
 
 ## 相比 Python static 的改进
 
@@ -95,7 +82,7 @@ fsys :9200 (libhttp 异步多线程 + CORS)
 | 消除 Python 依赖 | 不再需要 venv/pip/Flask/waitress |
 | 命令行参数 | 支持 `--addr/-a --port/-p --threads/-t` |
 | 数值范围校验 | 所有端口/线程数有严格边界检查 |
-| 统一日志配置 | 复用主配置 confs 拉取的 db host/port |
+| 统一日志配置 | 复用主配置（CLI/环境变量）的 db host/port |
 
 ## 运行
 

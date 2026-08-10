@@ -15,41 +15,44 @@
                          │              core (PMC / Nidus)              │
                          │   进程托管服务 · 监听 :5200 (HTTP 管理接口)    │
                          │   读取 services.yaml 拉起并守护下列子进程      │
+                         │   内嵌 confs :8010 (仅 gateway.ini 分发)      │
                          └───────────────┬──────────────────────────────┘
                                          │ 启动 / 守护
           ┌──────────────────┬───────────┼───────────┬──────────────────┬──────────────┐
           ▼                  ▼           ▼           ▼                  ▼              ▼
  ┌──────────────┐  ┌──────────────┐  ┌────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
- │     waf      │  │   gateway    │  │ static │  │     dnfs     │  │      db      │  │  ai_review   │
- │  WAF 网关    │  │  应用层网关  │  │前端托管│  │  树状菜单    │  │ 通用数据库   │  │ AI内容审核   │
+ │     waf      │  │     ca       │  │  fsys  │  │    dnfs2     │  │     db2      │  │  ai_review   │
+ │  WAF 网关    │  │ 中央认证     │  │前端托管│  │  树状菜单    │  │ 通用数据库   │  │ AI内容审核   │
  │ :443 (入口)  │  │ :8443 (内部) │  │ :9200  │  │    :8006     │  │    :8005     │  │    :8007     │
- │ coraza+反代  │  │ 鉴权 + 反代  │  │静态/媒体│  │  节点CRUD    │  │ pymsg/TCP    │  │ DeepSeek+RAG │
+ │ coraza+反代  │  │ 认证+前置转发│  │静态/媒体│  │  节点CRUD    │  │ pymsg/TCP    │  │ DeepSeek+RAG │
  └──────┬───────┘  └──────┬───────┘  └───┬────┘  └──────┬───────┘  └──────▲───────┘  └──────▲───────┘
-        │ HTTPS终止         │ 反向代理     │ 代理笔记请求   │ pymsg           │ pymsg           │ HTTP
+        │ HTTPS终止         │ 认证+转发   │ 代理笔记请求   │ pymsg           │ pymsg           │ HTTP
         ▲                   └─────────────►│             ├─────────────►│─────────────────┘                 │
-        │                                  ├────────────►│              └─────── HTTP /review ──────────────┘
-        │                                  └────────────►│
+        │                     ┌───────────►│             │              └─────── HTTP /review ──────────────┘
+        │                     │ gateway    │             │
+        │                     │ :8445 纯转发│             │
+        │                     └────────────►│             │
         │
   ┌─────┴──────┐
   │ redirect80 │  :80 → :443（GET/HEAD 301 / 其余 308，重定向到 waf）
   └────────────┘
- 日志链路: waf / ca / gateway / static / dnfs / ai_review / captcha / smtp / aibox / confs / redirect80 ──(log_client, pymsg)──► db:8005 (Logs 表)
+ 日志链路: waf / ca / gateway / fsys / dnfs2 / ai_review / captcha2 / smtp / aibox / redirect80 ──(log_client, pymsg)──► db2:8005 (Logs 表)
  认证链路(v0.9.0 起): waf:443 ──HTTP──► ca:8443 (认证+前置转发) ──HTTP──► gateway:8445 (纯转发, 仅 loopback) ──► 内部服务
- 配置链路: gateway / static / smtp / captcha ──(pymsg get)──► confs:8010（配置统一存放于 confs/configs/，mtime 变化自动重载；ca/dnfs2/redirect80/db2 例外，配置纯 CLI 传递）
+ 配置链路: gateway ──(pymsg get)──► core:8010 内嵌 confs（配置统一存放于 confs/configs/，mtime 变化自动重载）；ca/dnfs2/db2/fsys/captcha2/smtp/redirect80 例外，配置纯 CLI 传递
 ```
 
-> `db2` / `dnfs2` 分别是 `db` / `dnfs` 的 C++20 重实现（接口完全兼容，可平替），架构位置与 Python 版一致。`BotOps` 为 aibox 的终端前端（WebSocket 客户端），`lci` 为嵌入式帧缓冲图形界面，均不在上图中。
+> `db2` / `dnfs2` / `fsys` / `captcha2` 分别是 `db` / `dnfs` / `static` / `captcha` 的 C++20 重实现（接口完全兼容，可平替），架构位置与 Python 版一致；`confs` 已内嵌进 `core`。`BotOps` 为 aibox 的终端前端（WebSocket 客户端），`lci` 为嵌入式帧缓冲图形界面，均不在上图中。
 
 ### 请求链路
 
 1. 客户端若以 HTTP 访问 `:80`，由 `redirect80` 重定向到 HTTPS `:443`（GET/HEAD 返回 301，其余方法返回 308 保留 body）。
 2. 客户端所有请求先打到 `waf:443`（HTTPS），WAF 终止 TLS、运行 coraza 规则匹配，命中则直接返回 403。
 3. 未命中规则的请求由 WAF 以明文 HTTP 转发到 `ca:8443`，并设置 `X-Forwarded-For` / `X-Forwarded-Proto` 头。
-4. `ca` 对 `/login`、`/register` 做账号鉴权（PBKDF2 密码哈希 + RSA 签名 Token + 可选 CAPTCHA + 速率限制；注册需邮箱验证码，经 pymsg/TCP 调 `smtp:8008` 发送与校验），用户数据通过 pymsg/TCP 调用 `db:8005` 存取。
-5. 其余请求携带 Token，经 `ca` 验签后注入 `X-Auth-User` 身份头转发到 `gateway:8445`（仅 loopback，不验签仅做存在性检查），再由 gateway 反向代理到 `Proxy.opened` 中放开的内部服务（`static:9200` / `dnfs:8006`）。
-6. `db:8005` 与 `ai_review:8007` 在 `Proxy.closed` 中，仅允许内部服务间调用，不对外暴露。
-7. `dnfs` 处理节点增删改查时，通过 pymsg/TCP 调用 `db` 服务完成数据持久化，新增节点前调用 `ai_review` 进行内容审核。
-8. 各服务通过 `log_client.py` SDK 异步批量推送运行日志（pymsg/TCP 写入 db 的 `Logs` 表），实现集中式日志收集（fail-safe，db 不可用时静默丢弃）。
+4. `ca` 对 `/login`、`/register` 做账号鉴权（PBKDF2 密码哈希 + RSA 签名 Token + 可选 CAPTCHA + 速率限制；注册需邮箱验证码，经 pymsg/TCP 调 `smtp:8008` 发送与校验），用户数据通过 pymsg/TCP 调用 `db2:8005` 存取。
+5. 其余请求携带 Token，经 `ca` 验签后注入 `X-Auth-User` 身份头转发到 `gateway:8445`（仅 loopback，不验签仅做存在性检查），再由 gateway 反向代理到 `Proxy.opened` 中放开的内部服务（`fsys:9200` / `dnfs2:8006`）。
+6. `db2:8005` 与 `ai_review:8007` 在 `Proxy.closed` 中，仅允许内部服务间调用，不对外暴露。
+7. `dnfs2` 处理节点增删改查时，通过 pymsg/TCP 调用 `db2` 服务完成数据持久化，新增节点前调用 `ai_review` 进行内容审核。
+8. 各服务通过 `log_client.py` SDK 异步批量推送运行日志（pymsg/TCP 写入 db2 的 `Logs` 表），实现集中式日志收集（fail-safe，db2 不可用时静默丢弃）。
 
 ## 各服务说明
 
@@ -60,15 +63,17 @@
 | [waf](waf/) | Go | 443 | WAF 网关（入口），终止 TLS、coraza 规则匹配（SecLang）、反向代理到 ca，支持 SIGHUP 热加载规则 |
 | [ca](ca/) | C++20 | 8443 | 中央认证服务（内部 HTTP），用户注册/登录鉴权、Token 签发与校验、身份头注入后前置转发到 gateway |
 | [gateway](gateway/) | C++20 | 8445 | 应用层网关（仅 loopback），纯转发反向代理到内部服务，不验签（v0.9.0 起认证迁至 ca） |
-| [static](static/) | Python(Flask) | 9200 | 前端托管服务，社区首页、静态页面与文件浏览、视频/音频流媒体播放、路径遍历防护 |
-| [dnfs](dnfs/) | Python(Flask) | 8006 | 树状网络文件系统（Dendrachy Network File-System），基于父子 pid 的节点树增删改查，集成 AI 内容审核 |
-| [dnfs2](dnfs2/) | C++20 | 8006 | dnfs 的 C++20 重实现（libhttp + libmsg），接口与 Python 版完全兼容，修复 P0/P1 安全问题，可平替 |
-| [db](db/) | Python(pymsg) | 8005 | 通用数据库服务，基于 pymsg 协议（TCP 长度前缀帧 + JSON）的 SQL-over-TCP，SQLAlchemy Core 参数化查询防注入；内置集中式日志收集（Logs 表 + 自动清理） |
-| [db2](db2/) | C++20 | 8005 | db 的 C++20 重实现（libmsg + boost::json + libsqlite3），execute 路由/where 语法/响应格式完全对齐 Python 版，可平替 |
+| [fsys](fsys/) | C++20 | 9200 | 前端托管服务（static 的 C++ 重写），社区首页、静态页面与文件浏览、视频/音频流媒体播放、路径遍历防护，代理 dnfs2 笔记请求 |
+| [static](static/) | Python(Flask) | 9200 | ~~前端托管服务~~（遗留，已由 fsys 平替） |
+| [dnfs2](dnfs2/) | C++20 | 8006 | 树状网络文件系统（Dendrachy Network File-System），基于父子 pid 的节点树增删改查，集成 AI 内容审核；接口与 Python 版完全兼容，修复 P0/P1 安全问题 |
+| [dnfs](dnfs/) | Python(Flask) | 8006 | ~~树状网络文件系统~~（遗留，已由 dnfs2 平替） |
+| [db2](db2/) | C++20 | 8005 | 通用数据库服务，基于 pymsg 协议（TCP 长度前缀帧 + JSON）的 SQL-over-TCP，参数化查询防注入；内置集中式日志收集（Logs 表 + 自动清理） |
+| [db](db/) | Python(pymsg) | 8005 | ~~通用数据库服务~~（遗留，已由 db2 平替） |
 | [ai_review](ai_review/) | Python(Flask) | 8007 | AI 内容审核服务，DeepSeek LLM + ChromaDB RAG，支持人工反馈纠偏 |
-| [captcha](captcha/) | Python(pymsg) | 8009 | 验证码服务（pymsg/TCP），生成图形验证码（5 分钟过期、一次性），经 ca 的 `GET /captcha/image` 代理给浏览器 |
-| [smtp](smtp/) | Python(pymsg) | 8008 | 邮件服务，发送/校验邮箱验证码（pymsg 路由 send_email/verify_email/health），注册流程的邮件验证码后端，SMTP 账号配置在 .env |
-| [confs](confs/) | Python(pymsg) | 8010 | 统一配置服务，集中存放并分发各服务配置文件（pymsg 路由 get/list/reload/health），内存缓存 + mtime 自动重载，路径遍历防护 |
+| [captcha2](captcha2/) | C++20 | 8009 | 验证码服务（pymsg/TCP），生成图形验证码（5 分钟过期、一次性），经 ca 的 `GET /captcha/image` 代理给浏览器 |
+| [captcha](captcha/) | Python(pymsg) | 8009 | ~~验证码服务~~（遗留，已由 captcha2 平替） |
+| [smtp](smtp/) | Python(pymsg) | 8008 | 邮件服务，发送/校验邮箱验证码（pymsg 路由 send_email/verify_email/health），注册流程的邮件验证码后端，SMTP 账号配置在 .env（smtp3 C++ 重写待上线） |
+| [confs](confs/) | Python(pymsg) | 8010 | ~~统一配置服务~~（遗留，已内嵌进 core，仅 gateway.ini 仍由 confs 分发） |
 | [aibox](aibox/) | Python | 8765 | 独立 AI 智能体系统（DeepSeek + WebSocket），自带技能系统/记忆/任务调度，由 core 拉起但与主干微服务无调用关系 |
 | [BotOps](BotOps/) | Python | — | aibox 智能体 TUI 前端（Textual），WebSocket 连接 aibox，支持 Markdown 增量流式渲染、思考模式展示、任务独立侧栏、自动重连 |
 | [bot4cj](bot4cj/) | 仓颉(Cangjie) | — | 机器人硬件脚本解析器，解析 .mt 矩阵脚本通过 I2C 驱动 PCA9685 舵机 / MPU6050 陀螺仪，面向树莓派 Dashun 蜘蛛机器人平台（独立硬件项目） |
@@ -95,7 +100,7 @@
 - 内部 HTTP 服务，默认监听 127.0.0.1:8443（接管原 gateway 端口，WAF upstream 不变），不再承载 TLS（TLS 已由 WAF 终止）。
 - **配置体系（v1.1.0）**：彻底移除 confs 依赖，配置全部经 CLI 传递（CLI > 环境变量 > 默认值三层），原 `ca.ini` 配置值迁入 [core/services.yaml](core/services.yaml) 的 ca 条目 args；兼容旧环境变量名（`LISTEN_ADDR`/`UPSTREAM_GATEWAY`/`DB_*` 等）。
 - **密码安全**：PBKDF2-HMAC-SHA256（10 万轮 + 16 字节随机盐），密码强度校验（8+ 字符、4 类中至少 3 类），常数时间比较防 timing attack。
-- **用户存储**：用户数据通过 pymsg/TCP 调用 `db:8005`（`DbC::call_msg`）存取；登录成功即更新 `Users.last_login`（`"$now"` 哨兵）。
+- **用户存储**：用户数据通过 pymsg/TCP 调用 `db2:8005`（`DbC::call_msg`）存取；登录成功即更新 `Users.last_login`（`"$now"` 哨兵）。
 - **Token 机制**：`Base64(payload) + "_" + RSA-Sign(payload)`，默认 1 小时过期；RSA 密钥对启动时内存生成，重启后旧 Token 全部失效；jti 黑名单 + 用户版本号双轨吊销。
 - **Cookie 认证**：登录成功同时签发 `HttpOnly + Secure + SameSite=Lax` 的 `q4_token` Cookie；验签时无 `Authorization` 头则回退读 Cookie，并向下游注入 `Authorization: Bearer`（下游零改动）；`POST /logout` 清除 Cookie。
 - **前置转发**：无 `Target-Url` 为公开请求（剥身份头直转 gateway）；有 `Target-Url` 为受保护请求（验签后注入 `X-Auth-User`/`X-Auth-Admin` 转发，strip-then-set 契约剥离客户端伪造值）；上游不可达统一 502。
@@ -111,18 +116,19 @@
 - **反向代理**：`Target-Url` 必须在 `Proxy.opened` 白名单中，缺省走 `Proxy.default`；`X-Auth-User`/`X-Auth-Admin`/`Authorization` 原样透传下游。
 - 详见 [gateway/README.md](gateway/README.md)。
 
-### static（前端托管服务）
+### fsys（前端托管服务 · C++20 重实现）
 
-- 托管 `public/` 下的前端页面：社区首页（`index.html`）、登录/注册、树状笔记（`dnfs.html`）、文件浏览（`__view.html`）等。
+- static 的 C++20 重实现（原 Python/Flask `static/` 目录保留为遗留，不再部署），托管 `public/` 下的前端页面：社区首页（`index.html`）、登录/注册、树状笔记（`dnfs.html`）、文件浏览（`__view.html`）等。
 - 支持文件浏览、视频/音频在线播放（HTTP Range 分段请求，返回 206/416）、一键下载。
-- 路径遍历防护（`safe_path_join`：realpath 前缀校验），仅允许访问 `directory.root` 之内。
-- **dnfs 代理**：`/get_notes`、`/add_note`、`/delete_note`、`/update_note` 透传 Authorization 转发到 `dnfs:8006`（解决浏览器跨域）。
+- 路径遍历防护（realpath 前缀校验），仅允许访问 `--root` 之内。
+- **dnfs2 代理**：`/get_notes`、`/add_note`、`/delete_note`、`/update_note` 透传 Authorization 转发到 `dnfs2:8006`（解决浏览器跨域）。
 - **账号旁路**：`/api/check_user`、`/api/reset_password` 等接口直接读写 `gateway/sqlite3.db` 的 Users 表；`/yhdet_callback`、`/api/yhdet_*` 对接 yhdet.top OAuth 登录。
-- 统一品牌"树状菜单"，支持深色模式（`css/theme.css`）。
-- 可使用 Nuitka 编译为独立二进制（`fsys.bin`）。
+- 统一品牌"树状菜单"，支持深色模式（`css/theme.css`）与样式节点注入的自定义主题/样式（见 [docs/dnfs_custom_themes.md](docs/dnfs_custom_themes.md)）。
 - 配置全部经 CLI 传递（CLI > 环境变量 > 默认值，原 `confs/configs/static.ini` 迁入 `core/services.yaml` 的 fsys 条目 args），不依赖 confs。
 
-### dnfs（树状菜单服务）
+### dnfs（树状菜单服务 · 遗留）
+
+> 已由 [dnfs2](#dnfs2树状菜单服务--c20-重实现)（C++20 重实现）平替，不再部署；以下为 Python 版说明。
 
 - 基于 `pid`（父节点 id）组织的树状节点，节点含 `title` 与 `content`。
 - 提供 `/get_notes`、`/add_note`、`/delete_note`、`/update_note` 四个接口。
@@ -133,13 +139,16 @@
 
 - dnfs 的 C++20 重实现，基于 [libhttp](libhttp/) + [libmsg](libmsg/) + boost::json，接口与 Python dnfs 完全兼容，前端零改动。
 - 修复 Python 版的 P0/P1 安全问题（Token 验签 fail-closed、所有权校验、子节点检查、错误响应脱敏避免 IP/用户名泄露）。
-- Token 验签：HttpClient POST gateway `/whoami`，验签失败返回 503（fail-closed）。
+- Token 验签：HttpClient POST ca `/whoami`（CLI 参数 `--gateway-url` 指向 ca:8443），验签失败返回 503（fail-closed）。
 - 数据操作：libmsg `RpcClient` 调 db2 `execute` 路由（与 Python 版调 db 路径一致）。
 - 内容审核：HttpClient POST ai_review `/review`，fail-closed。
 - 异步日志：libmsg `AsyncQueue` 写入 db2 Logs 表。
+- 特殊节点：`js` / `file` / `style` / `theme` 四类，样式与主题节点支持界面注入换肤（节点作用域生效，详见 [docs/dnfs_custom_themes.md](docs/dnfs_custom_themes.md)）。
 - 配置通过 CLI 参数 + 环境变量 + 默认值，不依赖 confs；详见 [dnfs2/README.md](dnfs2/README.md)。
 
-### db（通用数据库服务）
+### db（通用数据库服务 · 遗留）
+
+> 已由 [db2](#db2通用数据库服务--c20-重实现)（C++20 重实现）平替，不再部署；以下为 Python 版说明。
 
 - 基于自研 [pymsg](pymsg/) 协议（TCP 长度前缀帧 + JSON），单一路由 `_route: "execute"`，接收结构化 JSON（action + table + where + values），翻译为 SQL 执行。
 - 支持 select / insert / update / delete，运算符包括 eq、ne、gt、lt、ge、le、like、in，支持排序与分页。
@@ -152,7 +161,7 @@
   - 外部服务通过 `log_client.py` 以 pymsg 调 execute 路由逐条 INSERT 写入日志。
   - `_log_internal()` — db 进程内部直接写 Logs 表，无网络往返，防递归设计。
   - 后台守护线程每小时自动清理：保留 30 天 / 上限 100 万条。
-- **统一日志客户端 SDK**（各服务目录下的 `log_client.py`，如 [dnfs/log_client.py](dnfs/log_client.py)）：各服务复制即用，纯标准库实现，异步非阻塞（内存队列 + 后台线程，50 条/2 秒批量 flush），fail-safe 设计（db 不可用时静默丢弃，不影响业务）。
+- **统一日志客户端 SDK**（各服务目录下的 `log_client.py`，如 [smtp/log_client.py](smtp/log_client.py)）：各服务复制即用，纯标准库实现，异步非阻塞（内存队列 + 后台线程，50 条/2 秒批量 flush），fail-safe 设计（db2 不可用时静默丢弃，不影响业务）。
 
 ### db2（通用数据库服务 · C++20 重实现）
 
@@ -171,14 +180,14 @@
 - **fail-closed 设计**：API 异常或响应解析失败时一律返回 `{"invalid": "true"}`（拦截），宁可误拦不可漏放。
 - 配置通过 `.env` 文件（已 gitignore），含 DeepSeek API 密钥、模型参数、监听地址。
 
-### captcha（验证码服务）
+### captcha2（验证码服务 · C++20 重实现）
 
-- 生成图形验证码，Token 一次性使用、5 分钟过期；基于 [pymsg](pymsg/) 协议（TCP 长度前缀帧 + JSON），仅依赖 PIL。
+- captcha 的 C++20 重实现（原 Python `captcha/` 目录保留为遗留，不再部署），生成图形验证码，Token 一次性使用、5 分钟过期；基于 [pymsg](pymsg/) 协议（TCP 长度前缀帧 + JSON）。
 - pymsg 路由：`image`（生成，返回 token + base64 PNG）、`verify`（校验，一次性消费）、`health`。
 - 答案比较采用 XOR 防时序攻击；错误答案与无效 Token 分别返回 `{valid:false}` 与 `{valid:false, error:...}`。
-- **gateway 代理路由**：`GET /captcha/image` 经 pymsg 调 captcha 后解码 PNG，以 `image/png` + `X-Captcha-Token` 响应头返回浏览器（`Cache-Control: no-store`）。
-- 由 `gateway` 在 `/login`、`/register` 中可选启用 CAPTCHA 校验（字段 `captcha_token` / `captcha_answer`）。
-- 内存存储，不支持多实例水平扩展（需换 Redis）；详见 [captcha/README.md](captcha/README.md)。
+- **ca 代理路由**：`GET /captcha/image` 经 pymsg 调 captcha2 后解码 PNG，以 `image/png` + `X-Captcha-Token` 响应头返回浏览器（`Cache-Control: no-store`）。
+- 由 `ca` 在 `/login`、`/register` 中可选启用 CAPTCHA 校验（字段 `captcha_token` / `captcha_answer`）。
+- 内存存储，不支持多实例水平扩展（需换 Redis）；详见 [captcha2/README.md](captcha2/README.md)。
 
 ### smtp（邮件服务）
 
@@ -192,28 +201,29 @@
 - 零 Web 框架依赖：纯 Python 标准库 `http.server` + `ThreadingMixIn` 多线程并发。
 - 智能重定向：GET/HEAD → 301（搜索引擎友好永久重定向），POST/PUT/DELETE/PATCH → 308（保留方法与 body）。
 - Host 保留：读取请求 `Host` 头构造重定向 URL（剥离端口），回退用配置的监听地址。
-- 日志集成：通过 `log_client.py` 异步批量推送运行日志到 db 的 Logs 表（fail-safe）。
+- 日志集成：通过 `log_client.py` 异步批量推送运行日志到 db2 的 Logs 表（fail-safe）。
 - 配置分层：CLI 参数（由 core/services.yaml 传入） > 环境变量（`REDIRECT80_*`） > 代码默认值，不依赖 confs。
 - 80 端口为 Linux 特权端口（<1024），需 `CAP_NET_BIND_SERVICE` 或 root；`_run.sh` 自动尝试 `setcap`，或用 systemd `AmbientCapabilities`；详见 [redirect80/README.md](redirect80/README.md)。
 
-### confs（统一配置服务）
+### confs（统一配置服务 · 已内嵌进 core）
 
-- 集中存放各微服务的配置文件（`confs/configs/`），基于 pymsg（RpcServer，TCP 长度前缀帧 + JSON）分发，监听 127.0.0.1:8010。
+- 独立 Python `confs` 服务已废弃（不再部署），配置分发逻辑已内嵌进 `core`（`ConfsTask`，由 `--confs 8010` 启用，协议与 Python 版字节级兼容，消费方零改动）。
+- 集中存放各服务的配置文件（`confs/configs/`），基于 pymsg（RpcServer，TCP 长度前缀帧 + JSON）分发。
 - pymsg 路由：`get`（取配置文件全文；带 `key` 时按键提取，ini 用 `Section.option`、json 用点号路径）、`list`（列出全部配置及元信息）、`reload`（重载指定配置，缺省清空全部缓存）、`health`。
-- 内存缓存 + 文件 mtime 变化自动重载，改配置无需重启 confs；配置名校验（basename + realpath 前缀 + 扩展名白名单）防路径遍历。
+- 内存缓存 + 文件 mtime 变化自动重载，改配置无需重启；配置名校验（basename + realpath 前缀 + 扩展名白名单）防路径遍历。
 - 消费方约定：服务启动时用 `RpcClient(8010).call("get", {"name": "<服务名>.ini"})` 拉取配置。各模块目录不再保留本地 ini（fail-safe 回退已废除）。
 
 **配置文件清单与依赖强度**（均位于 `confs/configs/`）：
 
 | 配置文件 | 消费模块 | 依赖强度 |
 |----------|----------|----------|
-| `gateway.ini` | gateway | confs 拉取（0.7.0 起配置完全迁入） |
+| `gateway.ini` | gateway | confs 拉取（0.7.0 起配置完全迁入；其余服务已全部改为 CLI 传递，不再依赖 confs） |
 
 - **部署安全约定**：`confs/configs/*.ini` 含敏感字段，权限必须收紧为 `root:root 0640`，仅 root 可写；被同机普通用户篡改可劫持对应服务（详见 `docs/security/core_SECURITY_AUDIT_20260801.md` 2026-08-10 复审）。原 `ca.ini` 管理员白名单已随 ca v1.1.0 迁入 `core/services.yaml` 的 CLI args；原 `smtp.ini` 全部配置已随 smtp3 迁入 `core/services.yaml` 的 CLI args（SMTP 凭据仍经 `.env` 注入）；原 `captcha.ini` 与 `static.ini` 已分别随 captcha2、fsys 迁入 CLI args，防护对象相应转为 `services.yaml` 与 `.env` 的文件权限。
 
 ### aibox（独立 AI 智能体系统）
 
-- 一套相对独立的单智能体产品，基于 DeepSeek + WebSocket（:8765），由 `core` 拉起但与 waf / gateway / dnfs 等主干微服务无调用关系。
+- 一套相对独立的单智能体产品，基于 DeepSeek + WebSocket（:8765），由 `core` 拉起但与 waf / gateway / dnfs2 等主干微服务无调用关系。
 - 自带技能系统（`skills/`）、任务调度器、记忆管理、前端页面与语音客户端（`voice_client.py`）。
 - 默认模型 `deepseek-v4-flash`，配置在 `config.json`；详见 [aibox/README.md](aibox/README.md)。
 
@@ -260,8 +270,8 @@
 
 | 文件 | 说明 |
 |------|------|
-| [pymsg](pymsg/) | 自研 RPC 基础库（setuptools 包），协议为 `[4字节大端长度][UTF-8 JSON]`，提供 `send/recv/MsgClient/MsgServer`；db 服务端与各 log_client 的基础依赖，requirements 以 `../pymsg` 本地路径引用 |
-| log_client.py | 统一日志客户端 SDK，各服务目录各持一份副本（如 [dnfs/log_client.py](dnfs/log_client.py)），纯标准库 + pymsg，异步批量推送 |
+| [pymsg](pymsg/) | 自研 RPC 基础库（setuptools 包），协议为 `[4字节大端长度][UTF-8 JSON]`，提供 `send/recv/MsgClient/MsgServer`；db/db2 服务端与各 log_client 的基础依赖，requirements 以 `../pymsg` 本地路径引用 |
+| log_client.py | 统一日志客户端 SDK，各服务目录各持一份副本（如 [smtp/log_client.py](smtp/log_client.py)），纯标准库 + pymsg，异步批量推送 |
 | security_middleware.py | Flask 安全响应头中间件（CSP / X-Frame-Options / nosniff 等），各服务各持一份副本 |
 
 ## 端口一览
@@ -270,15 +280,16 @@
 |------|------|----------|------|
 | 80 | redirect80 | 0.0.0.0 | HTTP 入口，301/308 重定向到 HTTPS :443 |
 | 443 | waf | 0.0.0.0 | HTTPS 对外入口（终止 TLS + coraza 规则匹配） |
-| 8443 | gateway | 127.0.0.1 | 应用层网关（内部 HTTP，由 waf 转发） |
+| 8443 | ca | 127.0.0.1 | 中央认证服务（内部 HTTP，由 waf 转发，认证+前置转发） |
+| 8445 | gateway | 127.0.0.1 | 应用层网关（内部 HTTP，仅 loopback 纯转发） |
 | 5200 | core | — | PMC HTTP 管理接口 |
-| 9200 | static | 127.0.0.1 | 前端托管（经 gateway 代理） |
-| 8006 | dnfs | 127.0.0.1 | 树状菜单（经 gateway 代理） |
-| 8005 | db | 127.0.0.1 | 数据库服务（pymsg/TCP，仅内部调用） |
+| 8010 | core（内嵌 confs） | 127.0.0.1 | 统一配置服务（pymsg/TCP，仅 gateway.ini 仍由其分发） |
+| 9200 | fsys | 127.0.0.1 | 前端托管（经 gateway 代理） |
+| 8006 | dnfs2 | 127.0.0.1 | 树状菜单（经 gateway 代理） |
+| 8005 | db2 | 127.0.0.1 | 数据库服务（pymsg/TCP，仅内部调用） |
 | 8007 | ai_review | 127.0.0.1 | AI 审核（仅内部调用） |
-| 8009 | captcha | 127.0.0.1 | 验证码服务（pymsg/TCP，经 gateway 代理） |
+| 8009 | captcha2 | 127.0.0.1 | 验证码服务（pymsg/TCP，经 ca 代理） |
 | 8008 | smtp | 127.0.0.1 | 邮件服务（仅内部调用，注册验证码邮件后端） |
-| 8010 | confs | 127.0.0.1 | 统一配置服务（pymsg/TCP，仅内部调用） |
 | 8765 | aibox | 127.0.0.1 | AI 智能体（WebSocket，独立产品） |
 | — | bot4cj | — (树莓派 I2C) | 机器人硬件脚本解析器（独立硬件项目，不联网） |
 | — | lci | — (树莓派 /dev/fb0) | 嵌入式帧缓冲图形界面（独立硬件项目，不联网） |
@@ -314,7 +325,7 @@ bash _setup.deb.sh        # Debian/Ubuntu
 # 或
 bash _setup.rhel.sh       # RHEL/CentOS/Rocky/Fedora
 
-# 2. 依次安装各模块（libth -> libhttp -> libcrypt -> libsqlite3 -> libmsg -> gateway -> waf -> static -> dnfs -> db -> smtp -> captcha -> confs -> ai_review -> aibox -> redirect80 -> core）
+# 2. 依次安装各模块（libth -> libhttp -> libcrypt -> libsqlite3 -> libmsg -> liblogc -> gateway -> waf -> static -> fsys -> dnfs -> dnfs2 -> db -> db2 -> smtp -> smtp3 -> captcha -> captcha2 -> confs -> ai_review -> aibox -> redirect80 -> core；legacy Python 版与 C++ 重写版均构建，生产由 core 按 services.yaml 拉起新版）
 bash _inst.sh
 ```
 
@@ -351,9 +362,9 @@ services:
 systemctl start Nidus      # 或 bash core/_run.sh
 ```
 
-对外访问入口：`https://<host>:443`（由 waf 终止 TLS 后转发到 gateway）。
+对外访问入口：`https://<host>:443`（由 waf 终止 TLS 后转发到 ca）。
 
-### WAF 与 gateway 的协作
+### WAF 与 ca 的协作
 
 WAF 启用后，证书从 gateway 迁移到 waf：
 
@@ -362,28 +373,28 @@ mkdir -p /opt/micro_servers/waf/certs
 cp /opt/micro_servers/gateway/full_chain.crt /opt/micro_servers/gateway/server.key /opt/micro_servers/waf/certs/
 ```
 
-gateway 改为内部 HTTP 模式（[example.ini](gateway/example.ini) 中 `tls = off`、`address = 127.0.0.1`、`port = 8443`）。
+ca 改为内部 HTTP 模式（`core/services.yaml` 中 ca 条目 args：`--host 127.0.0.1`、`--port 8443`）。
 
-如需独立部署（不使用 WAF），把 gateway 的 `tls = on`、`port = 443`、`address = 0.0.0.0`，证书留在 gateway 目录即可。
+如需独立部署（不使用 WAF），把 waf 从 `services.yaml` 移除，ca 的 `--port` 设为 443、证书留在 ca 目录即可。
 
 ## 关于架构定位
 
 本项目具备微服务架构的核心特征，是一种**进程托管式轻量微服务**：
 
 - **服务按业务能力拆分**：WAF 网关、应用网关、前端托管、节点树、数据库、内容审核各自独立、独立端口、独立数据存储。
-- **API 网关模式**：`waf` 作为边缘网关统一入口，`gateway` 承担鉴权与反向代理，内部服务通过 `closed` 列表隔离。
+- **API 网关模式**：`waf` 作为边缘网关统一入口，`ca` 承担应用层鉴权与前置转发，`gateway` 纯转发，内部服务通过 `closed` 列表隔离。
 - **进程编排/守护**：`core` 作为服务管理器拉起并守护子进程，类似简易版 supervisor。
-- **多语言异构**：C++（core / gateway / db2 / dnfs2）、Python（static / dnfs / db / ai_review / redirect80 / BotOps）、Go（waf）、仓颉/Cangjie（bot4cj）混合，对外 HTTP、内部数据访问走 pymsg/TCP。
-- **数据访问层解耦**：`db` 服务将数据库操作收敛为统一的 pymsg/TCP 接口，业务服务无需直连数据库。
+- **多语言异构**：C++（core / gateway / ca / db2 / dnfs2 / fsys / captcha2）、Python（ai_review / smtp / redirect80 / aibox / BotOps，及 static / dnfs / db / captcha / confs 等遗留）、Go（waf）、仓颉/Cangjie（bot4cj）混合，对外 HTTP、内部数据访问走 pymsg/TCP。
+- **数据访问层解耦**：`db2` 服务将数据库操作收敛为统一的 pymsg/TCP 接口，业务服务无需直连数据库。
 - **AI 能力集成**：`ai_review` 以 RAG 增强的 LLM 审核为业务层提供内容安全能力，支持人工反馈闭环。
-- **集中式可观测性**：`db` 内置日志表与自动清理，各服务通过 `log_client.py` SDK 异步推送日志（pymsg），实现全链路汇聚，无需引入额外中间件。
-- **安全分层**：`waf` 在边缘做规则匹配（OWASP CRS / 自定义 SecLang 规则），`gateway` 在应用层做鉴权，`db` 仅监听本机，多层防护。
+- **集中式可观测性**：`db2` 内置日志表与自动清理，各服务通过 `log_client.py` SDK 异步推送日志（pymsg），实现全链路汇聚，无需引入额外中间件。
+- **安全分层**：`waf` 在边缘做规则匹配（OWASP CRS / 自定义 SecLang 规则），`ca` 在应用层做鉴权，`db2` 仅监听本机，多层防护。
 
-与云原生微服务的差异：未引入服务注册发现、容器编排、消息总线，服务地址在 `waf/config.yaml` 与 `gateway/example.ini` 中静态配置。对于个人/中小规模的 DIY 场景，这种取舍在简洁性与可控性上是合理的。
+与云原生微服务的差异：未引入服务注册发现、容器编排、消息总线，服务地址在 `waf/config.yaml` 与 `confs/configs/gateway.ini` 中静态配置。对于个人/中小规模的 DIY 场景，这种取舍在简洁性与可控性上是合理的。
 
 ## 文档管理约定
 
-所有项目文档统一通过根目录 [docs/](docs/) 聚合管理，入口索引见 [docs/INDEX.md](docs/INDEX.md)。文档分类与存放规则如下：
+所有项目文档统一通过根目录 [docs/](docs/) 聚合管理。文档分类与存放规则如下：
 
 | 文档类型 | 存放位置 | 说明 |
 |----------|----------|------|
