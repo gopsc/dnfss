@@ -1,5 +1,6 @@
 import argparse
 import torch
+from torch.export import Dim
 from config import parse_checkpoint_config
 from model import ActionPredictor
 
@@ -23,17 +24,17 @@ def main():
         1, data_cfg.frame_len, 3, data_cfg.image_size, data_cfg.image_size)
     dummy_history = torch.randn(1, data_cfg.history_len, data_cfg.action_dim)
 
+    batch = Dim("batch")
     torch.onnx.export(
         model, (dummy_images, dummy_history),
         args.output,
         input_names=["images", "action_history"],
         output_names=["predicted_action"],
-        dynamic_axes={
-            "images": {0: "batch"},
-            "action_history": {0: "batch"},
-            "predicted_action": {0: "batch"},
+        dynamic_shapes={
+            "images": {0: batch},
+            "action_history": {0: batch},
         },
-        opset_version=17,
+        opset_version=18,
     )
     print(f"ONNX model exported to: {args.output}")
 

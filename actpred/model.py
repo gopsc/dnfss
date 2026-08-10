@@ -36,13 +36,30 @@ class MobileNetEncoder(nn.Module):
         except Exception as e:
             if not pretrained:
                 raise RuntimeError("加载 MobileNetV2 架构失败") from e
-            raise RuntimeError(
-                "MobileNetV2 预训练权重下载失败，可能是网络受限。"
-                "请在联网环境中预下载权重"
-                "（运行 torchvision.models.mobilenet_v2(weights='IMAGENET1K_V1')），"
-                "并将 ~/.cache/torch/hub/checkpoints/ 下的权重文件"
-                "拷贝到目标机器同路径。"
-            ) from e
+            # 主源下载失败，尝试加载已缓存的权重文件
+            try:
+                import os
+                hub_dir = torch.hub.get_dir()
+                cache_dir = os.path.join(hub_dir, "checkpoints")
+                weight_file = getattr(weights, "file_name",
+                                      "mobilenet_v2-b0353104.pth")
+                cached_path = os.path.join(cache_dir, weight_file)
+                if os.path.exists(cached_path):
+                    print(f"INFO: 使用缓存权重 {cached_path}")
+                    backbone = mobilenet_v2(weights=None)
+                    backbone.load_state_dict(torch.load(
+                        cached_path, map_location="cpu",
+                        weights_only=True))
+                else:
+                    raise FileNotFoundError(cached_path)
+            except Exception:
+                raise RuntimeError(
+                    "MobileNetV2 预训练权重下载失败，可能是网络受限。"
+                    "请在联网环境中预下载权重"
+                    "（运行 torchvision.models.mobilenet_v2(weights='IMAGENET1K_V1')），"
+                    "并将 ~/.cache/torch/hub/checkpoints/ 下的权重文件"
+                    "拷贝到目标机器同路径。"
+                ) from e
         self.features = backbone.features
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.proj = nn.Linear(1280, feature_dim)

@@ -85,6 +85,8 @@ def build_argparser(description: str = "") -> argparse.ArgumentParser:
     parser.add_argument("--max-grad-norm", type=float, default=None)
     parser.add_argument("--init-from", type=str, default=None,
                         help="预训练 checkpoint 路径，作为微调起点（strict=False 加载兼容权重）")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="从 last.pt 断点续训（恢复 model/optimizer/scheduler/epoch）")
     parser.add_argument("--save-config", type=str, default=None, help="保存配置到 JSON 文件")
     return parser
 

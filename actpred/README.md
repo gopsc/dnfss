@@ -30,6 +30,9 @@ cd actpred && bash _set.sh
 # 训练
 bash _run.sh train --data-dir ./data --epochs 100 --action-dim 18
 
+# 断点续训练（从 last.pt 恢复 model/optimizer/scheduler/epoch）
+bash _run.sh train --data-dir ./data --epochs 100 --resume checkpoints/last.pt
+
 # 推理（--images 按时间顺序旧→新传入 frame_len 个图像路径，冷启动时可重复传同一帧；
 #      --action-history 格式：冒号分隔各步，每步 action_dim 个值，共 history_len 步）
 bash _run.sh --model checkpoints/best_inference.pt \
@@ -54,6 +57,10 @@ python test_actpred.py
 ```bash
 # 预训练（解析 ../bot4cj/scripts/*.mt）
 bash _run.sh pretrain --mt-dir ../bot4cj/scripts --epochs 200 --noise-std 1.0
+
+# 预训练断点续训
+bash _run.sh pretrain --mt-dir ../bot4cj/scripts --epochs 200 --noise-std 1.0 \
+    --resume checkpoints/pretrain_last.pt
 
 # 用预训练权重作为微调起点
 # 注意：预训练在非归一化动作空间进行，微调时请勿开启 --normalize-actions，
@@ -123,6 +130,9 @@ recorder.flush()
 | `--seed` | 42 | 随机种子 |
 | `--num-workers` | 2 | DataLoader 工作进程数 |
 | `--checkpoint-dir` | ./checkpoints | 检查点保存目录 |
+| `--init-from` | 无 | 预训练 checkpoint 路径，作为微调起点（strict=False） |
+| `--resume` | 无 | 从 last.pt 断点续训练（恢复 model/optimizer/scheduler/epoch） |
+| `--save-config` | 无 | 保存配置到 JSON 文件 |
 
 ## 部署注意
 

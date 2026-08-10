@@ -132,9 +132,22 @@ def main():
 
     best_val_loss = float("inf")
     patience_counter = 0
+    start_epoch = 1
     best_path = os.path.join(cfg.train.checkpoint_dir, "best.pt")
+    last_path = os.path.join(cfg.train.checkpoint_dir, "last.pt")
 
-    for epoch in range(1, cfg.train.epochs + 1):
+    if args.resume:
+        resume_ckpt = torch.load(args.resume, map_location=device, weights_only=True)
+        model.load_state_dict(resume_ckpt["model_state_dict"])
+        optimizer.load_state_dict(resume_ckpt["optimizer_state_dict"])
+        scheduler.load_state_dict(resume_ckpt["scheduler_state_dict"])
+        start_epoch = resume_ckpt["epoch"] + 1
+        best_val_loss = resume_ckpt.get("best_val_loss", float("inf"))
+        patience_counter = resume_ckpt.get("patience_counter", 0)
+        print(f"Resumed from {args.resume} at epoch {start_epoch} "
+              f"(best_val_loss={best_val_loss:.6f})")
+
+    for epoch in range(start_epoch, cfg.train.epochs + 1):
         print(f"\nEpoch {epoch}/{cfg.train.epochs}  lr={optimizer.param_groups[0]['lr']:.6f}")
         train_loss = train_one_epoch(model, train_loader, optimizer, device,
                                      cfg.train.max_grad_norm)
@@ -163,6 +176,17 @@ def main():
             if patience_counter >= cfg.train.patience:
                 print(f"\nEarly stopping at epoch {epoch} (patience={cfg.train.patience})")
                 break
+
+        # 每 epoch 保存 last.pt，支持 --resume 断点续训
+        torch.save({
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "best_val_loss": best_val_loss,
+            "patience_counter": patience_counter,
+            "config": cfg.to_dict(),
+        }, last_path)
 
     print(f"\nTraining done. Best val_loss={best_val_loss:.6f}")
 

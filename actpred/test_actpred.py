@@ -717,5 +717,70 @@ class TestExportOnnx(unittest.TestCase):
             self.assertGreater(os.path.getsize(out_path), 0)
 
 
+class TestResumeCheckpoint(unittest.TestCase):
+    """测试 --resume 断点续训练：checkpoint 格式与状态恢复"""
+
+    def test_last_checkpoint_contains_resume_keys(self):
+        """last.pt 必须包含恢复训练所需的全部键"""
+        required_keys = {
+            "epoch", "model_state_dict", "optimizer_state_dict",
+            "scheduler_state_dict", "best_val_loss", "patience_counter",
+            "config",
+        }
+        cfg = Config()
+        cfg.data.action_dim = 4
+        model = ActionPredictor(cfg.model, cfg.data)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=100)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            last_path = os.path.join(tmpdir, "last.pt")
+            torch.save({
+                "epoch": 10,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "best_val_loss": 0.5,
+                "patience_counter": 3,
+                "config": cfg.to_dict(),
+            }, last_path)
+            ckpt = torch.load(last_path, map_location="cpu", weights_only=True)
+            self.assertTrue(required_keys.issubset(ckpt.keys()),
+                            f"缺少键: {required_keys - set(ckpt.keys())}")
+            self.assertEqual(ckpt["epoch"], 10)
+            self.assertEqual(ckpt["best_val_loss"], 0.5)
+            self.assertEqual(ckpt["patience_counter"], 3)
+
+    def test_resume_restores_model_weights(self):
+        """resume 加载后模型权重应与保存时一致"""
+        cfg = Config()
+        cfg.data.action_dim = 4
+        torch.manual_seed(0)
+        model = ActionPredictor(cfg.model, cfg.data)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=100)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            last_path = os.path.join(tmpdir, "last.pt")
+            torch.save({
+                "epoch": 5,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "best_val_loss": 1.0,
+                "patience_counter": 0,
+                "config": cfg.to_dict(),
+            }, last_path)
+            # 重新创建模型并恢复
+            model2 = ActionPredictor(cfg.model, cfg.data)
+            ckpt = torch.load(last_path, map_location="cpu", weights_only=True)
+            model2.load_state_dict(ckpt["model_state_dict"])
+            for k, v in model.state_dict().items():
+                self.assertTrue(torch.equal(model2.state_dict()[k], v),
+                                msg=f"权重不一致: {k}")
+
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

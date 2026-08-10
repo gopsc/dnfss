@@ -58,8 +58,8 @@ class ActionPredictorInference:
                 raise ValueError(
                     f"action_stats.npy 形状应为 (2, {self._data_cfg.action_dim})，"
                     f"实际为 {stats.shape}，请检查文件: {stats_path}")
-            self._action_mean = stats[0].astype(np.float32)
-            self._action_std = stats[1].astype(np.float32)
+            self._action_mean = torch.from_numpy(stats[0].astype(np.float32)).to(self._device)
+            self._action_std = torch.from_numpy(stats[1].astype(np.float32)).to(self._device)
 
     @torch.no_grad()
     def predict(self, images, action_history: np.ndarray) -> np.ndarray:
@@ -83,10 +83,10 @@ class ActionPredictorInference:
         if self._action_mean is not None:
             history = (history - self._action_mean) / self._action_std
         history = history.unsqueeze(0).to(self._device)
-        pred = self._model(img_tensor, history).squeeze(0).cpu().numpy()
+        pred = self._model(img_tensor, history).squeeze(0)
         if self._action_mean is not None:
             pred = pred * self._action_std + self._action_mean
-        return pred
+        return pred.cpu().numpy()
 
 
 def parse_action_history(s: str, action_dim: int) -> np.ndarray:
