@@ -16,6 +16,8 @@
 #include <vector>
 #include <chrono>
 #include <cstdlib>
+#include <atomic>
+#include <unordered_map>
 
 namespace captcha2 {
 
@@ -30,9 +32,29 @@ struct LogEntry {
 
 class LogC {
 public:
+	// 日志级别 → 数值（大写兼容）
+	static const std::unordered_map<std::string, int>& level_order() {
+		static const std::unordered_map<std::string, int> k = {
+			{"debug", 0}, {"info", 1}, {"warn", 2}, {"warning", 2},
+			{"error", 3}, {"critical", 3},
+			{"DEBUG", 0}, {"INFO", 1}, {"WARN", 2}, {"WARNING", 2},
+			{"ERROR", 3}, {"CRITICAL", 3},
+		};
+		return k;
+	}
+
 	static LogC& instance() {
 		static LogC inst;
 		return inst;
+	}
+
+	// 设置日志级别阈值（debug|info|warn|error，大小写不限）
+	// 低于此级别的日志在 push 时直接丢弃
+	void set_level(const std::string& level) {
+		auto it = level_order().find(level);
+		if (it != level_order().end()) {
+			level_threshold_.store(it->second, std::memory_order_relaxed);
+		}
 	}
 
 	void info(const std::string& svc, const std::string& msg) {
@@ -64,6 +86,11 @@ private:
 	~LogC() { if (queue_) queue_->shutdown(); }
 
 	void push(const std::string& svc, const std::string& level, const std::string& msg) {
+		// 日志级别过滤：低于阈值直接丢弃
+		auto it = level_order().find(level);
+		int lvl = (it != level_order().end()) ? it->second : 1;
+		if (lvl < level_threshold_.load(std::memory_order_relaxed)) return;
+
 		auto now = std::chrono::system_clock::now();
 		auto t = std::chrono::system_clock::to_time_t(now);
 		char buf[32];
@@ -105,6 +132,7 @@ private:
 
 	std::string db_host_;
 	int db_port_;
+	std::atomic<int> level_threshold_{1};	// 日志级别阈值，默认 INFO(1)
 	std::unique_ptr<pmc::net::AsyncQueue<LogEntry>> queue_;
 };
 

@@ -90,7 +90,7 @@ services:
   # --- 验证码 ---
   - name: captcha2
     cmd: bash /opt/micro_servers/captcha2/_run.sh
-    args: []
+    args: ["--instance", "captcha2", "--log-level", "info"]
     depends_on: []
     sleep_before: 1
 
