@@ -35,7 +35,7 @@
   └────────────┘
  日志链路: waf / ca / gateway / static / dnfs / ai_review / captcha / smtp / aibox / confs / redirect80 ──(log_client, pymsg)──► db:8005 (Logs 表)
  认证链路(v0.9.0 起): waf:443 ──HTTP──► ca:8443 (认证+前置转发) ──HTTP──► gateway:8445 (纯转发, 仅 loopback) ──► 内部服务
- 配置链路: static 等业务服务 ──(pymsg get)──► confs:8010（配置统一存放于 confs/configs/，mtime 变化自动重载）
+ 配置链路: ca / gateway / db2 / static / redirect80 / smtp / captcha ──(pymsg get)──► confs:8010（配置统一存放于 confs/configs/，mtime 变化自动重载）
 ```
 
 > `db2` / `dnfs2` 分别是 `db` / `dnfs` 的 C++20 重实现（接口完全兼容，可平替），架构位置与 Python 版一致。`BotOps` 为 aibox 的终端前端（WebSocket 客户端），`lci` 为嵌入式帧缓冲图形界面，均不在上图中。
@@ -119,7 +119,7 @@
 - **账号旁路**：`/api/check_user`、`/api/reset_password` 等接口直接读写 `gateway/sqlite3.db` 的 Users 表；`/yhdet_callback`、`/api/yhdet_*` 对接 yhdet.top OAuth 登录。
 - 统一品牌"树状菜单"，支持深色模式（`css/theme.css`）。
 - 可使用 Nuitka 编译为独立二进制（`fsys.bin`）。
-- 配置由 `confs` 统一配置服务分发（`confs/configs/static.ini`，启动时经 pymsg 拉取，`CONFS_HOST`/`CONFS_PORT` 环境变量可覆盖）；本地 [static/config.ini](static/config.ini) 作为 confs 不可用时的 fail-safe 回退。
+- 配置由 `confs` 统一配置服务分发（`confs/configs/static.ini`，启动时经 pymsg 拉取，`CONFS_HOST`/`CONFS_PORT` 环境变量可覆盖）；confs 为**强依赖**，拉取失败直接退出，无本地回退。
 
 ### dnfs（树状菜单服务）
 
@@ -200,7 +200,22 @@
 - 集中存放各微服务的配置文件（`confs/configs/`），基于 pymsg（RpcServer，TCP 长度前缀帧 + JSON）分发，监听 127.0.0.1:8010。
 - pymsg 路由：`get`（取配置文件全文；带 `key` 时按键提取，ini 用 `Section.option`、json 用点号路径）、`list`（列出全部配置及元信息）、`reload`（重载指定配置，缺省清空全部缓存）、`health`。
 - 内存缓存 + 文件 mtime 变化自动重载，改配置无需重启 confs；配置名校验（basename + realpath 前缀 + 扩展名白名单）防路径遍历。
-- 消费方约定：服务启动时用 `RpcClient(8010).call("get", {"name": "<服务名>.ini"})` 拉取配置，confs 不可用时回退本地配置文件（fail-safe）。目前 `static` 已接入。
+- 消费方约定：服务启动时用 `RpcClient(8010).call("get", {"name": "<服务名>.ini"})` 拉取配置。各模块目录不再保留本地 ini（fail-safe 回退已废除）。
+
+**配置文件清单与依赖强度**（均位于 `confs/configs/`）：
+
+| 配置文件 | 消费模块 | 依赖强度 |
+|----------|----------|----------|
+| `ca.ini` | ca | confs 拉取 |
+| `gateway.ini` | gateway | confs 拉取（0.7.0 起配置完全迁入） |
+| `db.ini` | db / db2 | 强依赖（confs 未就绪自动重试） |
+| `static.ini` | static（fsys.py）/ fsys | 强依赖（拉取失败直接退出） |
+| `redirect80.ini` | redirect80 | 强依赖（confs 不可用直接退出） |
+| `smtp.ini` | smtp / smtp3 | confs 拉取 |
+| `captcha.ini` | captcha / captcha2 | confs 拉取 |
+| `example.ini` | —（旧 gateway 示例模板） | 无消费方 |
+
+- **部署安全约定**：`confs/configs/*.ini` 含敏感字段（`ca.ini` 管理员白名单是 `is_admin` 判定依据、`smtp.ini` 密码字段），权限必须收紧为 `root:root 0640`，仅 root 可写；被同机普通用户篡改可直接提权为管理员或劫持邮件验证码（详见 `docs/security/core_SECURITY_AUDIT_20260801.md` 2026-08-10 复审）。
 
 ### aibox（独立 AI 智能体系统）
 
