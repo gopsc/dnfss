@@ -38,6 +38,7 @@ private:
     size_t __size = 0;
     int MAX_TIME = 60 * 10;       // 10分钟
     void flush();
+    void update_queue();
 
 
 public:

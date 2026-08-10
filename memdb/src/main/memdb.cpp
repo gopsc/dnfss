@@ -16,20 +16,35 @@ void Memdb <T, U>::flush() {
         return;
     }
     std::chrono::system_clock::time_point now_time = std::chrono::system_clock::now();
-    std::list <memdb_column>::iterator it = this -> time_touch.front().item;
+    typename std::list <memdb_column>::iterator it = this -> time_touch.top().item;
 
     while (now_time > it -> timestamp || it -> be_del == true) {
+        if (it -> be_del != true) this -> __size--;
+        key_t to_be_del_k = it -> key;
         this -> db.erase(it);
+        this -> keys.erase(to_be_del_k);
 		this -> time_touch.pop();
-		this -> __size--;
 
         if (this -> time_touch.empty() == true) {
             return;
         }
-        it = this -> time_touch.front().item;
+        it = this -> time_touch.top().item;
         now_time = std::chrono::system_clock::now();
     }
 }
+
+
+template <typename T, typename U>
+
+void Memdb <T, U>::update_queue() {
+    std::priority_queue <index_timestamp> new_time_touch;
+    while (this -> time_touch.empty() == false) {
+        new_time_touch.push(this -> time_touch.top());
+        this -> time_touch.pop();
+    }
+    this -> time_touch = new_time_touch;
+}
+
 
 template <typename T, typename U>
 
@@ -98,7 +113,7 @@ bool Memdb <T, U>::insert(key_t to_be_ins_k, value_t ins_v) {
     Memdb::index_keys new_key;
     new_key.key = to_be_ins_k;
     new_key.item = std::prev(this -> db.end());
-    this -> keys.insert(new_key);
+    this -> keys[to_be_ins_k] = new_key;
 
     Memdb::index_timestamp new_time_touch;
     new_time_touch.item = std::prev(this -> db.end());
@@ -118,9 +133,10 @@ bool Memdb <T, U>::remove(key_t to_be_del_k) {
         return this -> fail;
     }
 
-    std::list <memdb_column>::iterator it = this -> keys[to_be_del_k].item;
+    typename std::list <memdb_column>::iterator it = this -> keys[to_be_del_k].item;
     it -> be_del = true;
     this -> keys.erase(it -> key);
+    this -> __size--;
 
     return this -> succ;
 }
@@ -134,11 +150,12 @@ bool Memdb <T, U>::update(key_t to_be_udt_k, value_t udt_v, bool need_to_udt_tim
         return this -> fail;
     }
 
-    std::list <memdb_column>::iterator it = this -> keys[to_be_udt_k].item;
+    typename std::list <memdb_column>::iterator it = this -> keys[to_be_udt_k].item;
     it -> value = udt_v;
     if (need_to_udt_timetouch == true) {
         std::chrono::system_clock::time_point now_time = std::chrono::system_clock::now();
-        it -> timestamp = now_time + std::chrono::seconds(MAX_TIME);        //! 排序失效
+        it -> timestamp = now_time + std::chrono::seconds(MAX_TIME);
+        this -> update_queue();
     }
 
     return this -> succ;
@@ -153,6 +170,6 @@ std::optional<U> Memdb <T, U>::search(key_t to_be_sch_k){
         return std::nullopt;
     }
 
-    std::list <memdb_column>::iterator it = this -> keys[to_be_sch_k].item;
+    typename std::list <memdb_column>::iterator it = this -> keys[to_be_sch_k].item;
     return it -> value;
 }
