@@ -139,6 +139,13 @@ class LogClient:
     def critical(self, service, message, **kw):
         self.push(service, 'CRITICAL', message, **kw)
 
+    def set_log_level(self, level):
+        """设置日志过滤阈值（低于该级别的日志将被丢弃）。
+
+        委托给模块级 set_log_level，统一通过 logs 单例对外暴露接口。
+        """
+        set_log_level(level)
+
     def flush(self):
         """手动 flush 队列中剩余的日志（含后台线程持有的局部 batch）。"""
         self._flush_done.clear()
