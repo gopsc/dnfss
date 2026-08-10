@@ -30,12 +30,46 @@ const (
 	maxMsgSize = 64 * 1024 * 1024
 )
 
+// 日志级别数值（越小越详细）。
+const (
+	levelDebug = 0
+	levelInfo  = 1
+	levelWarn  = 2
+	levelError = 3
+)
+
+var levelMap = map[string]int{
+	"debug":   levelDebug,
+	"info":    levelInfo,
+	"warn":    levelWarn,
+	"warning": levelWarn,
+	"error":   levelError,
+	"DEBUG":   levelDebug,
+	"INFO":    levelInfo,
+	"WARN":    levelWarn,
+	"WARNING": levelWarn,
+	"ERROR":   levelError,
+}
+
 // dbAddr 通过环境变量 LOG_DB_ADDR 配置（默认 127.0.0.1:8005），支持非标准部署场景。
 var dbAddr = defaultDBAddr
+
+// minLevel 控制最低输出级别，默认 info（debug 被过滤）。
+var minLevel = levelInfo
 
 func init() {
 	if v := os.Getenv("LOG_DB_ADDR"); v != "" {
 		dbAddr = v
+	}
+	if v := os.Getenv("LOG_LEVEL"); v != "" {
+		SetLevel(v)
+	}
+}
+
+// SetLevel 设置最低日志级别（debug|info|warn|error，大小写不敏感）。
+func SetLevel(level string) {
+	if n, ok := levelMap[level]; ok {
+		minLevel = n
 	}
 }
 
@@ -93,8 +127,13 @@ func New() *Client {
 }
 
 // Push 推送一条日志（非阻塞，队列满时丢弃）。
+// 低于 SetLevel 设定的最低级别的日志将被静默丢弃。
 func Push(service, level, message string, extra map[string]any) {
 	if global == nil {
+		return
+	}
+	n, ok := levelMap[level]
+	if !ok || n < minLevel {
 		return
 	}
 	global.push(Entry{
@@ -103,6 +142,11 @@ func Push(service, level, message string, extra map[string]any) {
 		Message: message,
 		Extra:   extra,
 	})
+}
+
+// Debug 推送 DEBUG 级别日志。
+func Debug(service, message string, extra map[string]any) {
+	Push(service, "DEBUG", message, extra)
 }
 
 // Info 推送 INFO 级别日志。

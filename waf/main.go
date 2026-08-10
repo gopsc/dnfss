@@ -42,14 +42,65 @@ type Config struct {
 
 func main() {
 	var (
-		configFile = flag.String("c", "config.yaml", "配置文件路径")
-		doList     = flag.Bool("list", false, "列出所有规则后退出")
-		doTest     = flag.String("test", "", "校验单个规则文件语法后退出")
-		doCheck    = flag.String("check", "", "用当前规则测试输入字符串（URI/path）后退出")
+		configFile  = flag.String("c", "config.yaml", "配置文件路径")
+		doList      = flag.Bool("list", false, "列出所有规则后退出")
+		doTest      = flag.String("test", "", "校验单个规则文件语法后退出")
+		doCheck     = flag.String("check", "", "用当前规则测试输入字符串（URI/path）后退出")
+		// CLI 标准化参数（覆盖 config.yaml）
+		cliListen   = flag.String("listen", "", "监听地址（别名: --host），覆盖 config.yaml")
+		cliHost     = flag.String("host", "", "监听地址（--listen 别名）")
+		cliUpstream = flag.String("upstream", "", "gateway 地址，覆盖 config.yaml")
+		cliTLSCert  = flag.String("tls-cert", "", "TLS 证书文件，覆盖 config.yaml")
+		cliTLSKey   = flag.String("tls-key", "", "TLS 私钥文件，覆盖 config.yaml")
+		cliRulesDir = flag.String("rules-dir", "", "规则根目录，覆盖 config.yaml")
+		logLevel    = flag.String("log-level", "info", "日志级别: debug|info|warn|error")
+		instance    = flag.String("instance", "waf", "实例名（注册中心用）")
 	)
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr,
+			"waf — WAF 入口网关\n\n"+
+				"用法: waf [选项]\n\n"+
+				"选项:\n"+
+				"  -c <file>         配置文件路径，默认 config.yaml\n"+
+				"  --listen <addr>   监听地址（别名: --host），覆盖 config.yaml\n"+
+				"  --upstream <url>  gateway 地址，覆盖 config.yaml\n"+
+				"  --tls-cert <file> TLS 证书文件，覆盖 config.yaml\n"+
+				"  --tls-key <file>  TLS 私钥文件，覆盖 config.yaml\n"+
+				"  --rules-dir <dir> 规则根目录，覆盖 config.yaml\n"+
+				"  --log-level <lv>  debug|info|warn|error，默认 info\n"+
+				"  --instance <name> 实例名，默认 waf\n"+
+				"  -list             列出所有规则后退出\n"+
+				"  -test <file>      校验单个规则文件语法后退出\n"+
+				"  -check <input>    用当前规则测试输入字符串后退出\n"+
+				"  -h, --help        显示此帮助并退出\n\n"+
+				"配置优先级: CLI > config.yaml\n")
+	}
 	flag.Parse()
 
+	// 日志级别
+	logclient.SetLevel(*logLevel)
+
 	cfg := loadConfig(*configFile)
+
+	// CLI 覆盖 config.yaml
+	if *cliListen != "" {
+		cfg.Listen = *cliListen
+	}
+	if *cliHost != "" {
+		cfg.Listen = *cliHost
+	}
+	if *cliUpstream != "" {
+		cfg.Upstream = *cliUpstream
+	}
+	if *cliTLSCert != "" {
+		cfg.TLSCert = *cliTLSCert
+	}
+	if *cliTLSKey != "" {
+		cfg.TLSKey = *cliTLSKey
+	}
+	if *cliRulesDir != "" {
+		cfg.RulesDir = *cliRulesDir
+	}
 
 	// 子命令：极客 CLI 工具
 	if *doTest != "" {
@@ -146,8 +197,8 @@ func main() {
 	termCh := make(chan os.Signal, 1)
 	signal.Notify(termCh, syscall.SIGINT, syscall.SIGTERM)
 
-	logclient.Info("waf", fmt.Sprintf("服务启动 listen=%s upstream=%s rules=%s pid=%d",
-		cfg.Listen, cfg.Upstream, cfg.RulesDir, os.Getpid()), nil)
+	logclient.Info("waf", fmt.Sprintf("服务启动 instance=%s listen=%s upstream=%s rules=%s pid=%d",
+		*instance, cfg.Listen, cfg.Upstream, cfg.RulesDir, os.Getpid()), nil)
 
 	errCh := make(chan error, 1)
 	go func() {

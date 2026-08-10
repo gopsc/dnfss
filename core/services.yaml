@@ -71,7 +71,7 @@ services:
   # --- 安全链路 ---
   - name: waf
     cmd: bash /opt/micro_servers/waf/_run.sh
-    args: []           # -c config.yaml 保留在 _run.sh 作为默认值
+    args: ["--instance", "waf", "--log-level", "info"]
     depends_on: [ca, gateway]
     sleep_before: 0
 
