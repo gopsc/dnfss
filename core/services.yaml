@@ -145,9 +145,30 @@ services:
   # --- 验证码 ---
   - name: captcha2
     cmd: bash /opt/micro_servers/captcha2/_run.sh
-    args: ["--instance", "captcha2", "--log-level", "info"]
+    args:
+      - "--instance"
+      - "captcha2"
+      - "--log-level"
+      - "info"
+      # --- 配置全部经 CLI 传递（原 confs/configs/captcha.ini 迁入） ---
+      - "--addr"
+      - "127.0.0.1"
+      - "--port"
+      - "8009"
+      - "--workers"
+      - "4"
+      - "--len"
+      - "4"
+      - "--ttl"
+      - "300"
+      - "--font-path"
+      - "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+      - "--max-store"
+      - "10000"
+      - "--rate-limit"
+      - "600"
     depends_on: []
-    sleep_before: 1
+    sleep_before: 0
 
   # --- AI 工具箱 ---
   - name: aibox

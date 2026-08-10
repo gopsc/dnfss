@@ -10,7 +10,6 @@
 
 #include <us/Msg.hpp>
 #include <us/RpcServer.hpp>
-#include <us/RpcClient.hpp>
 #include <us/AsyncQueue.hpp>
 
 #include <boost/json.hpp>
@@ -70,70 +69,7 @@ struct CaptchaConfig {
 	int rate_limit_per_min = 600;  // P1-1: 全局限流仅作最后防线，主要限流由 gateway 按 IP 负责
 };
 
-// 从 confs 拉取 captcha.ini 全文，阻塞等待 confs 就绪
-static std::string fetch_config_from_confs(const std::string& confs_host, int confs_port) {
-	pmc::net::RpcClient client(confs_host, confs_port, "captcha2",
-		/*timeout=*/5.0, /*retry_on_refused=*/true);
-	try {
-		auto data = client.call("get", {{"name", "captcha.ini"}});
-		auto* content = data.as_object().if_contains("content");
-		if (!content || !content->is_string()) {
-			std::cerr << "[captcha2] confs 返回的 captcha.ini 无 content 字段" << std::endl;
-			std::exit(1);
-		}
-		return json::value_to<std::string>(*content);
-	} catch (const std::exception& e) {
-		std::cerr << "[captcha2] 致命错误: 从 confs 获取 captcha.ini 失败: " << e.what() << std::endl;
-		std::exit(1);
-	}
-}
-
-// 把 ini 文本合并进 config（仅覆盖已知 section/key，白名单策略）
-static void merge_ini(CaptchaConfig& cfg, const std::string& text) {
-	std::istringstream stream(text);
-	std::string line, section;
-	while (std::getline(stream, line)) {
-		// trim
-		auto start = line.find_first_not_of(" \t\r");
-		if (start == std::string::npos || line[start] == '#' || line[start] == ';')
-			continue;
-		auto end = line.find_last_not_of(" \t\r");
-		line = line.substr(start, end - start + 1);
-
-		if (line.front() == '[' && line.back() == ']') {
-			section = line.substr(1, line.size() - 2);
-			continue;
-		}
-		auto eq = line.find('=');
-		if (eq == std::string::npos) continue;
-		std::string key = line.substr(0, eq);
-		std::string val = line.substr(eq + 1);
-		// trim key
-		auto ke = key.find_last_not_of(" \t");
-		if (ke != std::string::npos) key = key.substr(0, ke + 1);
-		auto ks = key.find_first_not_of(" \t");
-		if (ks != std::string::npos) key = key.substr(ks);
-		// trim val
-		auto vs = val.find_first_not_of(" \t");
-		if (vs != std::string::npos) val = val.substr(vs);
-		auto ve = val.find_last_not_of(" \t");
-		if (ve != std::string::npos) val = val.substr(0, ve + 1);
-
-		if (section == "server") {
-			if (key == "host") cfg.host = val;
-			else if (key == "port") cfg.port = parse_int(key, val);
-			else if (key == "workers") cfg.workers = parse_int(key, val);
-		} else if (section == "captcha") {
-			if (key == "len") cfg.len = parse_int(key, val);
-			else if (key == "ttl") cfg.ttl = parse_int(key, val);
-			else if (key == "font_path") cfg.font_path = val;
-			else if (key == "max_store") cfg.max_store = parse_int(key, val);
-			else if (key == "rate_limit_per_min") cfg.rate_limit_per_min = parse_int(key, val);
-		}
-	}
-}
-
-// 环境变量覆盖（最高优先级，Docker 兼容）
+// 环境变量覆盖（Docker 兼容；CLI > 环境变量 > 默认值）
 static void apply_env_overrides(CaptchaConfig& cfg) {
 	if (auto* v = std::getenv("LISTEN_ADDR"))       cfg.host = v;
 	if (auto* v = std::getenv("LISTEN_PORT"))       cfg.port = parse_int("LISTEN_PORT", v);
@@ -530,20 +466,24 @@ static const auto _log_init = (LogC::instance().set_service_name("captcha2-log")
 int main(int argc, char* argv[]) {
 	try {
 		// ── 命令行参数 ──
-		std::string confs_host = "127.0.0.1";
-		int confs_port = 8010;
-		{
-			const char* env;
-			if ((env = std::getenv("CONFS_HOST"))) confs_host = env;
-			if ((env = std::getenv("CONFS_PORT"))) confs_port = std::stoi(env);
-		}
-
 		po::options_description desc("captcha2 — pymsg 验证码服务");
 		desc.add_options()
 			("help,h", "显示帮助")
-			("addr,a", po::value<std::string>(), "监听地址（覆盖 confs）")
-			("port,p", po::value<int>(), "监听端口（覆盖 confs）")
-			("workers,w", po::value<int>(), "工作线程数（覆盖 confs）");
+			("instance", po::value<std::string>()->default_value("captcha2"),
+				"实例名（注册中心用）")
+			("log-level", po::value<std::string>()->default_value("info"),
+				"日志级别（debug|info|warn|error）")
+			("addr,a", po::value<std::string>(), "监听地址")
+			("port,p", po::value<int>(), "监听端口")
+			("workers,w", po::value<int>(), "工作线程数")
+			("len", po::value<int>(), "验证码长度（2~8，默认 4）")
+			("ttl", po::value<int>(), "验证码有效期秒数（默认 300）")
+			("font-path", po::value<std::string>(),
+				"TrueType 字体路径")
+			("max-store", po::value<int>(),
+				"内存中最大待验证 token 数（默认 10000）")
+			("rate-limit", po::value<int>(),
+				"全局每分钟生成上限（默认 600）");
 		po::variables_map vm;
 		po::store(po::parse_command_line(argc, argv, desc), vm);
 		po::notify(vm);
@@ -553,20 +493,27 @@ int main(int argc, char* argv[]) {
 			return 0;
 		}
 
-		// ── 配置加载：confs → env → 命令行 ──
-		std::string ini_text = fetch_config_from_confs(confs_host, confs_port);
-		merge_ini(g_config, ini_text);
-
+		// ── 配置加载：CLI > 环境变量 > 默认值 ──
 		apply_env_overrides(g_config);
 
-		if (vm.count("addr"))    g_config.host = vm["addr"].as<std::string>();
-		if (vm.count("port"))    g_config.port = vm["port"].as<int>();
-		if (vm.count("workers")) g_config.workers = vm["workers"].as<int>();
+		if (vm.count("addr"))       g_config.host = vm["addr"].as<std::string>();
+		if (vm.count("port"))       g_config.port = vm["port"].as<int>();
+		if (vm.count("workers"))    g_config.workers = vm["workers"].as<int>();
+		if (vm.count("len"))        g_config.len = vm["len"].as<int>();
+		if (vm.count("ttl"))        g_config.ttl = vm["ttl"].as<int>();
+		if (vm.count("font-path"))  g_config.font_path = vm["font-path"].as<std::string>();
+		if (vm.count("max-store"))  g_config.max_store = vm["max-store"].as<int>();
+		if (vm.count("rate-limit")) g_config.rate_limit_per_min = vm["rate-limit"].as<int>();
 
 		validate_config(g_config);
 
-		std::cerr << "[captcha2] 配置来源: confs captcha.ini @ "
-			<< confs_host << ":" << confs_port << std::endl;
+		// 日志级别
+		std::string log_level = vm["log-level"].as<std::string>();
+		std::string instance = vm["instance"].as<std::string>();
+		g_log.set_level(log_level);
+
+		std::cerr << "[captcha2] instance=" << instance << " log-level=" << log_level << std::endl;
+		std::cerr << "[captcha2] 配置来源: CLI > 环境变量 > 默认值" << std::endl;
 		std::cerr << "[captcha2] captcha_len=" << g_config.len
 			<< " ttl=" << g_config.ttl
 			<< " max_store=" << g_config.max_store
