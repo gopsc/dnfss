@@ -10,21 +10,21 @@ SERVICES = {
         "name": "gateway",
         "host": "127.0.0.1",
         "port": 8443,
-        "description": "应用网关 (认证+反向代理)",
+        "description": "中央认证 ca :8443 (认证+前置转发，原 gateway 认证职责；gateway 纯转发在 8445)",
         "test_file": "test_gateway.py",
     },
     "static": {
         "name": "static",
         "host": "127.0.0.1",
         "port": 9200,
-        "description": "前端静态服务 (文件托管+视频流)",
+        "description": "前端托管 fsys :9200 (文件托管+视频流，static 的 C++ 重写)",
         "test_file": "test_static.py",
     },
     "dnfs": {
         "name": "dnfs",
         "host": "127.0.0.1",
         "port": 8006,
-        "description": "树状笔记服务 (CRUD+内容审核)",
+        "description": "树状笔记 dnfs2 :8006 (CRUD+内容审核，dnfs 的 C++ 重写)",
         "test_file": "test_dnfs.py",
     },
     "db": {
@@ -32,7 +32,7 @@ SERVICES = {
         "host": "127.0.0.1",
         "port": 8005,
         "protocol": "pymsg",
-        "description": "通用数据库服务 (CRUD+集中日志)",
+        "description": "通用数据库 db2 :8005 (CRUD+集中日志，db 的 C++ 重写)",
         "test_file": "test_db.py",
     },
     "ai_review": {
@@ -46,7 +46,7 @@ SERVICES = {
         "name": "captcha",
         "host": "127.0.0.1",
         "port": 8009,
-        "description": "验证码服务 (图片生成+校验)",
+        "description": "验证码 captcha2 :8009 (图片生成+校验，captcha 的 C++ 重写)",
         "test_file": "test_captcha.py",
     },
     "smtp": {

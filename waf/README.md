@@ -1,9 +1,9 @@
 # waf — Web 应用防火墙网关
 
-基于 Go + [coraza](https://github.com/corazawaf/coraza) 的 WAF 网关，部署在 `gateway` 之前，终止 TLS 并按 SecLang 规则库匹配请求，未命中则转发到 gateway。
+基于 Go + [coraza](https://github.com/corazawaf/coraza) 的 WAF 网关，作为唯一对外入口，终止 TLS 并按 SecLang 规则库匹配请求，未命中则转发到 ca（`ca:8443` 认证后由 `gateway:8445` 纯转发）。
 
 ```
-客户端 ──HTTPS──▶ waf:443 (终止 TLS + coraza 规则匹配) ──明文 HTTP──▶ gateway:8443 (鉴权 + 反代)
+客户端 ──HTTPS──▶ waf:443 (终止 TLS + coraza 规则匹配) ──明文 HTTP──▶ ca:8443 (认证 + 前置转发) ──▶ gateway:8445 (纯转发) ──▶ 内部服务
 ```
 
 ## 为什么是 Go
@@ -11,7 +11,7 @@
 - `coraza-waf/coraza` 是 ModSecurity SecLang 的 Go 实现，100% 兼容 OWASP CRS v4
 - `net/http/httputil.ReverseProxy` 标准库反向代理，零第三方依赖
 - goroutine + net/http 吞吐量比 Python 高一个数量级
-- `go build` 出单二进制，`core/init.txt` 直接拉起
+- `go build` 出单二进制，由 `core` 经 `services.yaml` 拉起
 
 ## 极客友好的规则系统
 
@@ -182,17 +182,20 @@ bash _run.sh
 
 ## 接入 core 自启动
 
-在 `core/init.txt` 增加：
+在 `core/services.yaml` 增加：
 
-```
-bash /opt/micro_servers/waf/_run.sh
+```yaml
+- name: waf
+  cmd: bash /opt/micro_servers/waf/_run.sh
+  args: ["--instance", "waf", "--log-level", "info"]
+  depends_on: [ca, gateway]
 ```
 
-并把 `gateway` 改为内部 HTTP 端口（不再监听 443）。
+并把 `ca` 改为内部 HTTP 端口（不再监听 443）。
 
 ## 安全响应头
 
-WAF 在边缘层统一注入安全响应头（[proxy.go:54-77](internal/proxy/proxy.go#L54-L77) `setSecurityHeaders`），覆盖所有出站响应（包括正常转发、命中拦截、上游 502）。下游服务（static/dnfs 等）的同名头会被 WAF 覆盖，避免 CSP 绕过。
+WAF 在边缘层统一注入安全响应头（[proxy.go:54-77](internal/proxy/proxy.go#L54-L77) `setSecurityHeaders`），覆盖所有出站响应（包括正常转发、命中拦截、上游 502）。下游服务（fsys/dnfs2 等）的同名头会被 WAF 覆盖，避免 CSP 绕过。
 
 | Header | 值 | 说明 |
 |--------|----|------|

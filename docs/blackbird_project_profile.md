@@ -11,8 +11,8 @@
 
 本文档将 Blackbird（仓库名 `micro_servers`，框架名 **UniServe Framework**）过去分散在 40+ 篇说明、审计与报告中的信息，整合为一份可按章节查阅的项目资料。
 
-- **事实边界**：所有模块职责、端口、协议描述以主 `README.md`（2026-08-10 口径，已含 `ca` 中央认证模块）为准；安全发现以 `blackbird_research_report.md`（2026-08-08 快照）与 `docs/security/` 逐模块审计为准。
-- **口径差异提醒**：`docs/MODULES.md` 仍记 `gateway:8443`，属 `ca` 认证前置化之前的旧口径；当前拓扑为 `waf:443 → ca:8443 → gateway:8445`，以主 `README.md` 为准。
+- **事实边界**：所有模块职责、端口、协议描述以主 `README.md`（2026-08-10 口径，已含 `ca` 中央认证模块与 `services.yaml` 编排）为准；安全发现以 `blackbird_research_report.md`（2026-08-08 快照）与 `docs/security/` 逐模块审计为准。
+- **口径说明**：当前拓扑为 `waf:443 → ca:8443 → gateway:8445 → 内部服务`；编排清单为 `core/services.yaml`（2026-08 起 init.txt 已废弃）。
 - **质量状态约定**：基于文档推断与整合的结论标记为 `advisory`；涉及"代码是否已修复某高危项"的判断标记为 `human_review_pending`，因其需对照最新提交逐文件核验。
 
 ---
@@ -28,7 +28,7 @@ Blackbird 是一套 **DIY 的轻量级"进程托管式微服务"框架**，用 C
 - **能力拆分但重量极轻**：保留微服务"拆分、统一入口、安全分层、可观测"的真正收益，砍掉服务注册发现、容器编排、消息总线等重型组件。
 - **你完全掌控**：数据自托管、代码 MIT 开源，不绑定任何云厂商。
 - **多语言自由组合**：核心用 C++（性能/系统），胶水与业务用 Python（效率），边缘网关用 Go（coraza 生态），硬件控制用仓颉（树莓派）。
-- **进程托管式编排**：一个 `core` 进程当"保姆"，读 `init.txt` 拉起并守护所有子服务。
+- **进程托管式编排**：一个 `core` 进程当"保姆"，读 `services.yaml` 拉起并守护所有子服务。
 
 ### 1.3 适用对象
 
@@ -53,7 +53,7 @@ Blackbird 是一套 **DIY 的轻量级"进程托管式微服务"框架**，用 C
 
 ### 2.1 UniServe 架构定义
 
-以 `core`（C++20）为统一宿主进程，读取 `init.txt` 并经 shell 拉起多语言微服务。各服务通过内部 HTTP 对外暴露业务能力，通过 `pymsg/TCP`（自研 RPC）做数据访问与日志汇聚。
+以 `core`（C++20）为统一宿主进程，读取 `services.yaml` 声明式配置并经 shell 拉起多语言微服务。各服务通过内部 HTTP 对外暴露业务能力，通过 `pymsg/TCP`（自研 RPC）做数据访问与日志汇聚。
 
 ### 2.2 当前拓扑（含 ca 认证前置化）
 
@@ -61,41 +61,42 @@ Blackbird 是一套 **DIY 的轻量级"进程托管式微服务"框架**，用 C
                          ┌──────────────────────────────────────────────┐
                          │              core (PMC / Nidus)              │
                          │   进程托管服务 · 监听 :5200 (HTTP 管理接口)    │
-                         │   读取 init.txt 拉起并守护下列子进程          │
+                         │   读取 services.yaml 拉起并守护下列子进程      │
+                         │   内嵌 confs :8010 (仅 gateway.ini 分发)      │
                          └───────────────┬──────────────────────────────┘
                                          │ 启动 / 守护
           ┌──────────────┬──────────────┼──────────────┬──────────────────┬──────────────┐
           ▼              ▼              ▼              ▼                  ▼              ▼
    ┌──────────────┐ ┌─────────┐ ┌──────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-   │   redirect80 │ │   waf   │ │    ca    │ │   gateway    │ │    fsys      │ │    dnfs      │
+   │   redirect80 │ │   waf   │ │    ca    │ │   gateway    │ │    fsys      │ │    dnfs2     │
    │  :80 重定向  │ │ :443 入口│ │ :8443 认证│ │ :8445 纯转发 │ │  :9200 前端  │ │  :8006 树状  │
    └──────────────┘ └────┬────┘ └────┬─────┘ └──────┬───────┘ └──────┬───────┘ └──────┬───────┘
                          │ TLS终止   │ 鉴权+前置   │ 反向代理         │ 代理笔记        │ pymsg
                          │ coraza   │ 转发        │ (loopback)       │                 │
                          └──────────┴─────►───────┴──────────────────┴─────────────────┘
    认证链路(v0.9.0 起): waf:443 ──HTTP──► ca:8443 (认证+前置转发) ──HTTP──► gateway:8445 (纯转发, 仅 loopback) ──► 内部服务
-   日志链路: 各服务 ──(log_client, pymsg)──► db:8005 (Logs 表，fail-safe 静默丢弃)
-   配置链路: 业务服务 ──(pymsg get)──► confs:8010（mtime 自动重载）
+   日志链路: 各服务 ──(log_client, pymsg)──► db2:8005 (Logs 表，fail-safe 静默丢弃)
+   配置链路: gateway ──(pymsg get)──► core:8010 内嵌 confs（mtime 自动重载）；其余服务配置纯 CLI 传递
 ```
 
-> `db2` / `dnfs2` 分别是 `db` / `dnfs` 的 C++20 重实现，架构位置与 Python 版一致，接口兼容可平替。`BotOps`、`lci`、`bot4cj` 不在主图中（终端前端 / 帧缓冲界面 / 树莓派硬件，不联网）。
+> `db2` / `dnfs2` / `fsys` / `captcha2` 分别是 `db` / `dnfs` / `static` / `captcha` 的 C++20 重实现，架构位置与 Python 版一致，接口兼容可平替；`confs` 已内嵌进 `core`。`BotOps`、`lci`、`bot4cj` 不在主图中（终端前端 / 帧缓冲界面 / 树莓派硬件，不联网）。
 
 ### 2.3 core 进程托管模型
 
 - 可执行文件 `nidus.out`，以 systemd 单元 `Nidus.service` 常驻（崩溃守护由 systemd 负责，core 自身不含自动重启逻辑）。
 - 两种模式：命令行子系统（`--send/--exec/--list/--kill`）与 HTTP 伺服器（`--serve <port>`）。
-- 经命名管道(Pipe)与消息队列(Mq)实现进程间通信；读 `init.txt` 自启动列表，按行拉起 ai_review / db / dnfs / smtp / static / waf / ca / gateway / captcha / aibox。
+- 经命名管道(Pipe)与消息队列(Mq)实现进程间通信；读 `services.yaml` 自启动清单（`-i .`），按声明顺序拉起 db2 / ai_review / dnfs2 / smtp / fsys / waf / ca / gateway / captcha2 / aibox / redirect80。
 
 ### 2.4 请求链路（8 步）
 
 1. 客户端以 HTTP 访问 `:80`，由 `redirect80` 重定向到 HTTPS `:443`（GET/HEAD 301，其余 308 保留 body）。
 2. 所有请求先打到 `waf:443`，终止 TLS、运行 coraza 规则，命中即 403。
 3. 未命中请求以明文 HTTP 转发到 `ca:8443`，透传 `X-Forwarded-For` / `X-Forwarded-Proto`。
-4. `ca` 对 `/login`、`/register` 做账号鉴权（PBKDF2 + RSA Token + 可选 CAPTCHA + 速率限制；注册经 pymsg/TCP 调 `smtp:8008` 发码），用户数据走 `db:8005`。
-5. 其余请求携带 Token，经 `ca` 验签后注入 `X-Auth-User` 转发到 `gateway:8445`（仅 loopback，仅做存在性检查），再由 gateway 反代到 `Proxy.opened` 放开的内部服务（`fsys:9200` / `dnfs:8006`）。
-6. `db:8005` 与 `ai_review:8007` 在 `Proxy.closed` 中，仅允许内部调用。
-7. `dnfs` 处理节点 CRUD 时经 pymsg/TCP 调 `db` 持久化，新增节点前调 `ai_review` 审核。
-8. 各服务经 `log_client.py` 异步批量推送日志到 `db` 的 `Logs` 表（fail-safe）。
+4. `ca` 对 `/login`、`/register` 做账号鉴权（PBKDF2 + RSA Token + 可选 CAPTCHA + 速率限制；注册经 pymsg/TCP 调 `smtp:8008` 发码），用户数据走 `db2:8005`。
+5. 其余请求携带 Token，经 `ca` 验签后注入 `X-Auth-User` 转发到 `gateway:8445`（仅 loopback，仅做存在性检查），再由 gateway 反代到 `Proxy.opened` 放开的内部服务（`fsys:9200` / `dnfs2:8006`）。
+6. `db2:8005` 与 `ai_review:8007` 在 `Proxy.closed` 中，仅允许内部调用。
+7. `dnfs2` 处理节点 CRUD 时经 pymsg/TCP 调 `db2` 持久化，新增节点前调 `ai_review` 审核。
+8. 各服务经 `log_client.py` 异步批量推送日志到 `db2` 的 `Logs` 表（fail-safe）。
 
 ### 2.5 端口一览
 
@@ -106,13 +107,13 @@ Blackbird 是一套 **DIY 的轻量级"进程托管式微服务"框架**，用 C
 | 8443 | ca | 127.0.0.1 | 中央认证（内部 HTTP） |
 | 8445 | gateway | 127.0.0.1 | 纯转发反代（loopback） |
 | 5200 | core | 127.0.0.1 | PMC HTTP 管理接口 |
+| 8010 | core（内嵌 confs） | 127.0.0.1 | 统一配置（pymsg/TCP，仅 gateway.ini） |
 | 9200 | fsys | 127.0.0.1 | 前端托管（经 gateway 代理） |
-| 8006 | dnfs/dnfs2 | 127.0.0.1 | 树状菜单（经 gateway 代理） |
-| 8005 | db/db2 | 127.0.0.1 | 数据库服务（pymsg/TCP） |
+| 8006 | dnfs2 | 127.0.0.1 | 树状菜单（经 gateway 代理） |
+| 8005 | db2 | 127.0.0.1 | 数据库服务（pymsg/TCP） |
 | 8007 | ai_review | 127.0.0.1 | AI 审核（仅内部调用） |
-| 8009 | captcha | 127.0.0.1 | 验证码（经 gateway 代理） |
+| 8009 | captcha2 | 127.0.0.1 | 验证码（经 ca 代理） |
 | 8008 | smtp | 127.0.0.1 | 邮件服务（仅内部调用） |
-| 8010 | confs | 127.0.0.1 | 统一配置（pymsg/TCP） |
 | 8765 | aibox | 127.0.0.1 | AI 智能体（WebSocket，独立产品） |
 
 ---
@@ -123,7 +124,7 @@ Blackbird 是一套 **DIY 的轻量级"进程托管式微服务"框架**，用 C
 
 | 模块 | 语言 | 端口 | 职责 |
 |------|------|------|------|
-| **core** | C++20 | 5200 | 进程托管服务 PMC/Nidus，读 `init.txt` 拉起守护子进程，提供 HTTP 管理接口（`--send/--exec/--list/--kill/--serve`） |
+| **core** | C++20 | 5200 / 8010 | 进程托管服务 PMC/Nidus，读 `services.yaml` 拉起守护子进程，提供 HTTP 管理接口（`--send/--exec/--list/--kill/--serve`），内嵌 confs（`--confs 8010`） |
 
 核心设计：systemd 常驻、root 运行（见第 5 章风险）、Pipe/Mq 进程通信、无内置看门狗（崩溃自愈依赖 systemd）。
 
@@ -144,20 +145,21 @@ Blackbird 是一套 **DIY 的轻量级"进程托管式微服务"框架**，用 C
 
 | 模块 | 语言 | 端口 | 职责 |
 |------|------|------|------|
-| **fsys**（原 static） | Python/Flask | 9200 | 前端托管：社区首页/静态页/媒体流/文件浏览；**2026-08 由 static 重命名为 fsys**（core/init.txt 已同步），过渡期仍保留 legacy `static/` 目录 |
-| **dnfs** | Python/Flask | 8006 | 树状菜单（Dendrachy Network File-System），基于 pid 的节点树 CRUD，新增节点前调 ai_review 审核 |
-| **dnfs2** | C++20 | 8006 | dnfs 的 C++20 重实现（libhttp + libmsg），接口完全兼容，修复 P0/P1（fail-closed 验签/所有权校验/脱敏） |
+| **fsys** | C++20 | 9200 | 前端托管：社区首页/静态页/媒体流/文件浏览；static 的 C++ 重写（legacy `static/` 目录保留，不再部署） |
+| **dnfs** | Python/Flask | 8006 | 树状菜单（Dendrachy Network File-System），基于 pid 的节点树 CRUD，新增节点前调 ai_review 审核（遗留，已由 dnfs2 平替） |
+| **dnfs2** | C++20 | 8006 | dnfs 的 C++20 重实现（libhttp + libmsg），接口完全兼容，修复 P0/P1（fail-closed 验签/所有权校验/脱敏）；支持 js/file/style/theme 特殊节点 |
 | **ai_review** | Python/Flask | 8007 | AI 内容审核，DeepSeek + ChromaDB RAG（色情/违禁药/赌博/诈骗/仇恨暴力），fail-closed 宁可误拦 |
 
 ### 3.4 基础设施 / 支撑服务（仅内部调用）
 
 | 模块 | 语言 | 端口 | 职责 |
 |------|------|------|------|
-| **db** | Python/pymsg | 8005 | 通用数据库服务，SQL-over-TCP（SQLAlchemy Core 参数化防注入），内置集中式日志（Logs 表 + 自动清理） |
+| **db** | Python/pymsg | 8005 | 通用数据库服务，SQL-over-TCP（SQLAlchemy Core 参数化防注入），内置集中式日志（Logs 表 + 自动清理）（遗留，已由 db2 平替） |
 | **db2** | C++20 | 8005 | db 的 C++20 重实现（libmsg + boost::json + libsqlite3），`execute` 路由/where 语法/响应格式对齐，可平替 |
-| **confs** | Python/pymsg | 8010 | 统一配置分发，集中存放各服务配置（`confs/configs/`），内存缓存 + mtime 自动重载，路径遍历防护 |
-| **smtp** | Python/pymsg | 8008 | 邮件服务，注册邮箱验证码后端（send_email/verify_email/health），6 位码内存存储、冷却/限流/熔断 |
-| **captcha** | Python/pymsg | 8009 | 验证码服务，图形验证码（一次性、5 分钟过期），经 ca 的 `GET /captcha/image` 代理给浏览器 |
+| **confs** | Python/pymsg | 8010 | 统一配置分发（遗留，已内嵌进 core 的 ConfsTask）；`confs/configs/` 现仅剩 `gateway.ini` 仍由 confs 分发 |
+| **smtp** | Python/pymsg | 8008 | 邮件服务，注册邮箱验证码后端（send_email/verify_email/health），6 位码内存存储、冷却/限流/熔断（smtp3 C++ 重写待上线） |
+| **captcha** | Python/pymsg | 8009 | 验证码服务，图形验证码（一次性、5 分钟过期），经 ca 的 `GET /captcha/image` 代理给浏览器（遗留，已由 captcha2 平替） |
+| **captcha2** | C++20 | 8009 | captcha 的 C++20 重实现（pymsg），路由 image/verify/health 对齐 |
 
 ### 3.5 AI 智能体与前端
 
@@ -271,21 +273,21 @@ bash _inst.sh
 
 ### 6.3 运行
 
-`init.txt` 自启动顺序重要（redirect80 → waf → gateway → …）。启动 core：
+`services.yaml` 自启动顺序重要（db2 → ai_review → dnfs2 → smtp → fsys → waf → ca → gateway → captcha2 → aibox → redirect80）。启动 core：
 
 ```bash
 systemctl start Nidus      # 或 bash core/_run.sh
 ```
 
-对外入口：`https://<host>:443`（waf 终止 TLS 后转发）。
+对外入口：`https://<host>:443`（waf 终止 TLS 后转发到 ca）。
 
-### 6.4 WAF 与 gateway 协作
+### 6.4 WAF 与 ca 协作
 
-启用 WAF 后证书从 gateway 迁到 waf：`cp gateway/full_chain.crt gateway/server.key waf/certs/`。gateway 改内部 HTTP 模式（`tls=off`、`address=127.0.0.1`、`port=8443`→现 8445）。独立部署（不用 WAF）时 gateway 自行 `tls=on`、`port=443`、`address=0.0.0.0`。
+启用 WAF 后证书从 gateway 迁到 waf：`cp gateway/full_chain.crt gateway/server.key waf/certs/`。ca 改内部 HTTP 模式（`core/services.yaml` 中 `--host 127.0.0.1`、`--port 8443`）。独立部署（不用 WAF）时把 waf 从 `services.yaml` 移除、ca 的 `--port` 设为 443。
 
 ### 6.5 容器化现状
 
-`docker-compose.yml` 的 services 块**仅纳入 db / ai_review / dnfs 三个服务**（另含 networks 与 volumes），core/waf/gateway/fsys/confs/captcha/smtp 未纳入 → 编排不完整。生产部署当前以 systemd 链路为准。
+`docker-compose.yml` 的 services 块**仅纳入 db / ai_review / dnfs 三个服务**（另含 networks 与 volumes），core/waf/ca/gateway/fsys/captcha2/smtp 未纳入 → 编排不完整。生产部署当前以 systemd 链路为准。
 
 ---
 
@@ -346,7 +348,7 @@ Gateway v0.8.0 修复 P0 后，**安全评级 B+ → A-**；随 ca 引入与 C++
 | docker-compose 仅 3 服务，不完整 | P2 | `advisory` | 研究报告 |
 | 无单元测试 / 无 CI | P2 | `advisory` | 研究报告 |
 | v1/v2 双实现维护成本 | 结构性 | `advisory`（建议收口合并） | 研究报告 |
-| 文档口径差异（MODULES 记 gateway:8443） | 低 | `advisory`（以 README 为准） | 本文档核实 |
+| 文档口径差异（MODULES 记 gateway:8443） | 低 | ✅ 已同步（2026-08-10 统一为 ca:8443 → gateway:8445） | 本文档核实 |
 
 ### 建议交付清单
 

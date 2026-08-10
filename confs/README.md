@@ -1,5 +1,7 @@
 # confs 统一配置服务（pymsg RpcServer/TCP）
 
+> **已废弃**：配置分发已内嵌进 [core](../core/)（ConfsTask，--confs 8010），仅 `confs/configs/gateway.ini` 仍由其分发；本 README 为历史说明。
+
 集中存放各微服务的配置文件，通过 pymsg RPC 协议分发给内部服务，替代各服务本地散落的 ini/json/yaml 配置，实现配置的统一管理与下发。
 
 服务由 `core`（PMC）的 `init.txt` 拉起，监听 `127.0.0.1:8010`（TCP），仅允许本机调用。

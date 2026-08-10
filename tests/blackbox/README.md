@@ -29,18 +29,18 @@ tests/blackbox/
 
 ## 覆盖的用户旅程
 
-### 1. 注册与登录 (gateway + captcha + smtp)
+### 1. 注册与登录 (ca + captcha2 + smtp)
 ```
-用户访问 captcha:8009 获取图形验证码
+用户访问 captcha2:8009 获取图形验证码
     → 提交 captcha_token + answer 校验
     → 访问 smtp:8008 发送邮箱验证码
     → 提交 email + code 完成邮箱验证
-    → 访问 gateway:8443 POST /register 注册账号
-    → 访问 gateway:8443 POST /login 登录获取 Token
-    → 使用 Token 通过 gateway 代理访问后端服务
+    → 访问 ca:8443 POST /register 注册账号
+    → 访问 ca:8443 POST /login 登录获取 Token
+    → 使用 Token 通过 ca → gateway:8445 代理访问后端服务
 ```
 
-### 2. 笔记管理 (dnfs + ai_review + db)
+### 2. 笔记管理 (dnfs2 + ai_review + db2)
 ```
 已登录用户携带 Bearer Token
     → POST /add_note 创建笔记（内容经 ai_review:8007 审核）
@@ -56,7 +56,7 @@ tests/blackbox/
 提交误判反馈 → RAG 知识库更新
 ```
 
-### 4. 集中日志 (db)
+### 4. 集中日志 (db2)
 ```
 各服务通过 /log/ingest 推送日志
     → /log/query 按条件查询
@@ -64,7 +64,7 @@ tests/blackbox/
     → /log/purge 按时间清理
 ```
 
-### 5. 前端静态服务 (static)
+### 5. 前端静态服务 (fsys)
 ```
 访问首页 → 返回 login.html
 访问文件浏览 → /api/filelist 返回目录结构
@@ -74,7 +74,7 @@ tests/blackbox/
 
 ### 6. WAF 安全防护 (waf)
 ```
-正常请求 → 通过代理到达 gateway
+正常请求 → 通过代理到达 ca
 SQL 注入载荷 → 返回 403 blocked by WAF
 XSS 跨站脚本 → 返回 403
 命令注入 → 返回 403
@@ -102,20 +102,22 @@ python3 test_runner.py --list
 
 ## 服务端口默认值
 
-| 服务 | 默认端口 | 绑定地址 |
-|------|---------|---------|
-| gateway | 8443 | 127.0.0.1 |
-| static | 9200 | 127.0.0.1 |
-| dnfs | 8006 | 127.0.0.1 |
-| db | 8005 | 127.0.0.1 |
-| ai_review | 8007 | 127.0.0.1 |
-| captcha | 8009 | 127.0.0.1 |
-| smtp | 8008 | 127.0.0.1 |
-| waf | 443 | 0.0.0.0 |
+| 测试条目 | 目标生产服务 | 默认端口 | 绑定地址 |
+|------|---------|---------|---------|
+| gateway（认证） | ca | 8443 | 127.0.0.1 |
+| static | fsys | 9200 | 127.0.0.1 |
+| dnfs | dnfs2 | 8006 | 127.0.0.1 |
+| db | db2 | 8005 | 127.0.0.1 |
+| ai_review | ai_review | 8007 | 127.0.0.1 |
+| captcha | captcha2 | 8009 | 127.0.0.1 |
+| smtp | smtp | 8008 | 127.0.0.1 |
+| waf | waf | 443 | 0.0.0.0 |
+
+> 测试条目名沿用历史命名（gateway/static/dnfs/db/captcha），实际命中生产对应端口上的 C++20 重写服务；`config.py` 中 description 已标注映射。
 
 ## 注意事项
 
-- 测试依赖服务运行中，请先通过 `core/init.txt` 启动全部服务
+- 测试依赖服务运行中，请先通过 `core` 启动全部服务（`systemctl start Nidus` 或 `bash core/_run.sh`，按 `core/services.yaml` 拉起）
 - 注册测试会创建真实数据库记录，测试完成后可手动清理
 - SMTP 测试需要真实的邮件服务配置，若未配置则相关测试标记为 SKIP
 - WAF 测试需要服务监听 443 端口（可能需要 sudo）

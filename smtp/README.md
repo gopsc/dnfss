@@ -2,12 +2,12 @@
 
 基于自研 [pymsg](../pymsg/) 协议（TCP 长度前缀帧 + JSON）的邮箱验证码服务，通过 SMTP_SSL 发送 6 位数字验证码，支持发送冷却和防暴力枚举。
 
-服务由 `core`（PMC）的 `init.txt` 拉起，监听 `127.0.0.1:8008`（TCP），仅允许本机调用。`gateway` 在 `/register` 流程中经 pymsg 调用本服务完成邮箱验证。
+服务由 `core`（PMC）经 `services.yaml` 拉起，监听 `127.0.0.1:8008`（TCP），仅允许本机调用。`ca` 在 `/register` 流程中经 pymsg 调用本服务完成邮箱验证。
 
 ## 架构
 
 ```
-gateway :8443 (注册流程)
+ca :8443 (注册流程)
     │  pymsg TCP
     ▼
 smtp :8008 (MsgServer)
@@ -135,9 +135,9 @@ python3 smtp_v2.py --addr 127.0.0.1 --port 8008
 
 ## 集成关系
 
-- 由 `core` 通过 `init.txt` 拉起的 `bash _run.sh` 守护运行。
-- `gateway` 在 `/register` 时经 pymsg 调 `send_email` 发送验证码，调 `verify_email` 校验。需在 gateway 的 `example.ini` 中启用邮箱验证功能。
-- 日志通过 `log_client.py` 异步批量推送至 db:8005 的 Logs 表（缓冲 50 条 / 2 秒）。
+- 由 `core` 经 `services.yaml` 拉起的 `bash _run.sh` 守护运行。
+- `ca` 在 `/register` 时经 pymsg 调 `send_email` 发送验证码，调 `verify_email` 校验。需在 `core/services.yaml` 的 ca 条目 args 中传入 `--smtp-host/--smtp-port` 启用邮箱验证功能。
+- 日志通过 `log_client.py` 异步批量推送至 db2:8005 的 Logs 表（缓冲 50 条 / 2 秒）。
 
 ## 项目结构
 

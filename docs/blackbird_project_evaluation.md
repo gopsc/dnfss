@@ -18,14 +18,14 @@
 2. **WAF 实际不拦截**：定位"唯一对外入口 + coraza"，但 `waf/rules/local/custom.conf` 的 6 条 SecRule 全被注释、无 `crs/` 目录 → 实际仅 TLS 终止 + 响应头，SQLi/XSS/命令注入零防护。
 3. **core 本地 root RCE**：`parse_data_from_mq` 对 list/kill/exec 未鉴权即经 `/bin/sh -c` 执行，且 core 以 root 运行。这是致命项却被标 `human_review_pending`。
 4. **内部零信任缺失**：pymsg 无握手/无鉴权/明文无 TLS，db `execute` 接受任意 action/table/where，完全依赖 127.0.0.1 隔离。
-5. **端口口径漂移**：MODULES.md 记 gateway:8443，README 记 8445，未同步。
+5. ~~**端口口径漂移**：MODULES.md 记 gateway:8443，README 记 8445，未同步~~ → ✅ 2026-08-10 已统一（ca:8443 → gateway:8445，含 MODULES.md/ARCHITECTURE.md/各模块 README）。
 6. **密钥变量静默失效**：`.env.example` 写 `OPENAI_API_KEY`，代码读 `DEEPSEEK_API_KEY`。
 7. **质量债**：v1/v2 双实现（db/db2、dnfs/dnfs2、pymsg/libmsg…）并存，无单元测试、无 CI（无 `.github/workflows`），回归与语义漂移风险高。
 8. **部署半成品**：docker-compose 仅纳 3 服务，生产以 systemd 为准——容器化链路不完整。
 
 ## 缺证项（需人工复核）
 - 3 高危是否在 2026-08-08 之后的提交中已修复（研究报告基于快照，文档未给代码证据）。
-- docker-compose 补全状态、MODULES.md 端口同步状态。
+- docker-compose 补全状态；~~MODULES.md 端口同步状态~~（✅ 2026-08-10 已同步）。
 
 ## 优先级建议（收口路径）
 - P0：启用 WAF 规则 + 补 `crs/`（直击高危 1）。

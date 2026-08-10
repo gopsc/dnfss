@@ -1,5 +1,7 @@
 # CAPTCHA 验证码服务
 
+> **已废弃**：生产已由 [captcha2](../captcha2/)（C++20 重写）平替，不再部署；本 README 为历史说明。
+
 一个轻量级的图片验证码服务，基于自研 [pymsg](../pymsg/) 协议（TCP 长度前缀帧 + JSON），配合 Pillow 生成验证码图片。提供图片生成、Token 校验、健康检查三个路由，由 `gateway` 经 pymsg 调用并代理给浏览器。
 
 服务由 `core`（PMC）的 `init.txt` 拉起，监听 `127.0.0.1:8009`（TCP），仅允许本机/内网调用。

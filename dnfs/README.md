@@ -1,5 +1,7 @@
 # dnfs — 树状网络文件系统
 
+> **已废弃**：生产已由 [dnfs2](../dnfs2/)（C++20 重写）平替，不再部署；本 README 为历史说明。
+
 Dendrachy Network File-System，基于父子关系（pid）组织的树状节点服务。
 
 监听 `127.0.0.1:8006`，提供节点的增删改查，支持以 Base64 编码形式在 `content` 中存储文件数据。所有写操作需携带由 gateway 签发的 Token。
