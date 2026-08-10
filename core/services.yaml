@@ -143,7 +143,7 @@ services:
       - "10"
       # 管理员白名单（分号分隔）：登录命中时 Token 写入 is_admin=true
       - "--admin-users"
-      - "1776177662@qq.com;277665039@qq.com"
+      - "1776177662@qq.com"
       - "--cors-origins"
       - "https://qsont.me;https://www.qsont.me;http://127.0.0.1:8443;http://localhost:8443"
       - "--ws-proxy-routes"
