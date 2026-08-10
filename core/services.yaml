@@ -21,7 +21,7 @@ services:
   # --- AI 审核 ---
   - name: ai_review
     cmd: bash /opt/micro_servers/ai_review/_run.sh
-    args: []
+    args: ["--instance", "ai_review", "--log-level", "info"]
     depends_on: [db2]
     sleep_before: 2
 

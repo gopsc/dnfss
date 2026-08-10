@@ -165,9 +165,39 @@ def rag_list():
     return jsonify({"total": len(entries), "entries": entries}), 200
 
 
+def _parse_args():
+    """解析命令行参数（标准化：CLI > ENV > 默认值）。"""
+    import argparse
+    p = argparse.ArgumentParser(
+        prog="ai_review",
+        description="AI Review Service — 基于 DeepSeek + RAG 的内容审核微服务",
+    )
+    p.add_argument("--host", default=None,
+                   help="绑定地址（默认读取 $AI_REVIEW_HOST，否则 127.0.0.1）")
+    p.add_argument("--port", type=int, default=None,
+                   help="监听端口（默认读取 $AI_REVIEW_PORT，否则 8007）")
+    p.add_argument("--log-level", default="info",
+                   choices=["debug", "info", "warn", "error"],
+                   help="日志级别（默认 info）")
+    p.add_argument("--instance", default="ai_review",
+                   help="实例名（注册中心用，默认 ai_review）")
+    return p.parse_args()
+
+
+# ── 配置默认值（ENV 覆盖，CLI 最高优先级）───────────────────────────
 ADDR = os.getenv("AI_REVIEW_HOST", "127.0.0.1")
 PORT = int(os.getenv("AI_REVIEW_PORT", "8007"))
 
 if __name__ == "__main__":
+    args = _parse_args()
+
+    # CLI 覆盖（最高优先级）
+    if args.host is not None:
+        ADDR = args.host
+    if args.port is not None:
+        PORT = args.port
+
     print(f'AI Review Service listening at http://{ADDR}:{PORT}')
+    print(f'[ai_review] instance={args.instance} log-level={args.log_level}')
+    print(f'[ai_review] 配置来源: CLI > ENV > 默认值')
     serve(app, host=ADDR, port=PORT)
