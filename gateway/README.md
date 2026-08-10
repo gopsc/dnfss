@@ -14,13 +14,13 @@ UniServe Framework 的应用层网关，C++20 实现。
 ## 信任模型
 
 ```
-waf:443 ──HTTP──▶ ca:8443 ──(注入 X-Auth-User)──▶ gateway:8445 ──▶ static:9200 / dnfs2:8006 / core:5200
+waf:443 ──HTTP──▶ ca:8443 ──(注入 X-Auth-User)──▶ gateway:8445 ──▶ fsys:9200 / dnfs2:8006 / core:5200
                   ▲ 安全边界                     ▲ 仅 loopback
 ```
 
 - gateway 不持有 RSA 密钥、不验签；身份完全信任 ca 注入的头。
 - 因此 **启动强制 loopback 自检**：`Server.address` 非 `127.0.0.1`/`::1`/`localhost` 时拒绝启动（防止误配导致外部直连伪造身份）。
-- `db:8005` 的 `execute` 路由本就无认证，loopback 信任模型与既有基线一致。
+- `db2:8005` 的 `execute` 路由本就无认证，loopback 信任模型与既有基线一致。
 
 ## 接口
 

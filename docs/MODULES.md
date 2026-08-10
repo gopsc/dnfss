@@ -64,6 +64,7 @@
 | libcrypt | C++ | 加密库：`AES_CBC`、`MyRSA`、`SHA256`、`Base64`、`Crypto_Basic` |
 | libsqlite3 | C++ | SQLite3 header-only 封装 |
 | libmsg | C++ | pymsg 协议 C++ 实现（4B 大端长度前缀 + UTF-8 载荷），`MsgClient/Server`、`RpcClient/Server`、`AsyncQueue`，与 Python pymsg 字节级兼容 |
+| liblogc | C++ | 统一集中式日志客户端（`us/LogC.hpp`，对应 Python `log_client.py`）：pymsg/TCP 异步批量写 db2 Logs 表，队列上限 1 万条 + 级别过滤 + fail-safe，ca/core/gateway/captcha2/smtp3 等 C++ 服务共用 |
 | libtry | C | 嵌入式脚本解释器（~741 行），手写递归下降，支持中文标识符，用于嵌入式操作界面 shell |
 | pymsg | Python | 自研 RPC 基础库（`[4B 长度][UTF-8 JSON]`），db 服务端与各 `log_client.py` 的基础依赖（setuptools 包） |
 | memdb | C++ | 内存数据库（include/src），内部组件，未在主 README 模块表列出 |
@@ -72,8 +73,8 @@
 
 | 模块 | 说明 |
 |------|------|
-| tests | 黑盒测试套件（`test_db_*`/`test_gateway_*`/`test_waf_*`/`test_dnfs_*`），子进程 + HTTP 验证，前后自动备份恢复 db |
-| docs | 文档聚合（security/ 审计、reviews/ 审查、reports/ 分析），41+ 篇 md |
+| tests | 黑盒测试套件（`test_db.py`/`test_gateway.py`/`test_waf.py`/`test_dnfs.py`/`test_captcha.py`/`test_smtp.py`/`test_ai_review.py`/`test_static.py`/`test_core_confs.py`），纯标准库 HTTP/TCP 用户旅程模拟，经 `test_runner.py` 统一调度（详见 [tests/blackbox/README.md](../tests/blackbox/README.md)） |
+| docs | 文档聚合（security/ 审计、reviews/ 审查、reports/ 分析），57 篇 md |
 
 ## 九、根级构建与部署脚本
 

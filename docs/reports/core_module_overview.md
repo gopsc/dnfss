@@ -71,7 +71,7 @@ core 把所有常驻能力抽象为 `ITask`，用 `libth` 的 `Thread`（带 `st
 
 - 仅监听 `127.0.0.1:5200`，纯 HTTP（WAF 已终止 TLS，无证书）。
 - 三个 POST 路由：`/list` `/exec` `/kill`，返回 `{"success", "message", "data"}`。
-- **管理员鉴权**（`verify_admin_token`）：每个操作都先调 `gateway /admin/verify`（gateway 是 Token 签发/验签唯一权威，RSA 验签 + is_admin + 过期检查），Authorization 头优先、回退 `q4_token` Cookie；gateway 地址由 `GATEWAY_HOST`/`GATEWAY_PORT` 配置（默认 `127.0.0.1:8443`）。gateway 不可用或异常一律 `fail-closed` 返回 401。
+- **管理员鉴权**（`verify_admin_token`）：每个操作都先调 `ca /admin/verify`（认证 v0.9.0 起由 gateway 迁至 ca，RSA 验签 + is_admin + 过期检查），Authorization 头优先、回退 `q4_token` Cookie；ca 地址由 `GATEWAY_HOST`/`GATEWAY_PORT` 环境变量配置（沿用旧名，默认 `127.0.0.1:8443`）。ca 不可用或异常一律 `fail-closed` 返回 401。
 - 命令执行（`exec`）与 pid 解析同时支持 query 参数与 JSON body。
 
 ## 7. 内嵌配置服务（`ConfsTask` + `ConfigStore`）
@@ -98,7 +98,7 @@ core 把所有常驻能力抽象为 `ITask`，用 `libth` 的 `Thread`（带 `st
 2. **`PPool` 用下标而非 pid 索引**：`kill(idx)` 语义不自然，FIXME 仍在。
 3. **内存泄漏 TODO**：`HttpTask`/`ConfsTask` 的 `start()` 获取资源后未确认释放（代码注释标注）。
 4. **`/tmp/pst-*` FIFO 残留**：`subsys_call` 异常路径可能留下管道文件。
-5. **管理接口强依赖 gateway**：`/admin/verify` 不可用时所有管理操作 fail-closed 拒绝（安全优先，但运维注意 gateway 必须在线）。
+5. **管理接口强依赖 ca**：`/admin/verify` 不可用时所有管理操作 fail-closed 拒绝（安全优先，但运维注意 ca 必须在线）。
 6. **`exec` 命令注入面**：`pmc_mtd::exec` 直接 `boost::process::child(cmd)` 以 shell 执行，仅在已通过管理员鉴权后可用——务必保证鉴权不被绕过。
 
 ## 10. 上手要点

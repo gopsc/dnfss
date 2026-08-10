@@ -1,5 +1,5 @@
 """
-gateway 黑盒用户模拟测试（v2 — 对齐 gateway v0.8.0 契约）
+认证/网关黑盒用户模拟测试（v2 — 目标 ca:8443，原 gateway 认证契约随 v0.9.0 迁至 ca）
 
 覆盖范围（P0，无需测试钩子）:
   A. 输入校验与错误语义（v0.8.0 新契约：/login 强制 CAPTCHA、/register 强制 email_code）
@@ -9,7 +9,7 @@ gateway 黑盒用户模拟测试（v2 — 对齐 gateway v0.8.0 契约）
   E. 速率限制（随机 XFF 隔离限流桶，避免用例互斥）
   F. CORS 预检现状固化 + 错误响应脱敏回归（P0-2/P0-3）
 
-已知待修复缺陷（断言目标行为，gateway 修复前会 FAIL）:
+已知待修复缺陷（断言目标行为，ca 修复前会 FAIL）:
   - A3: 缺失 JSON 字段 → 当前 500，应为 400（场景 A5/A8）
   - A2: 白名单外 Target-Url → 当前 500，应为 403（需有效 Token 才能触达，待测试钩子）
 
@@ -17,9 +17,9 @@ gateway 黑盒用户模拟测试（v2 — 对齐 gateway v0.8.0 契约）
 captcha2/smtp 测试模式（固定验证码答案钩子），落地前黑盒无法覆盖（P1 清单）。
 
 依赖说明:
-  - gateway 必须运行，否则全部 SKIP
+  - ca (:8443) 必须运行，否则全部 SKIP
   - captcha2 (pymsg:8009) 不在线时 C/E5 段 SKIP（其余用例不受影响）
-  - static (:9200) 不在线时 D3 段 SKIP
+  - fsys (:9200) 不在线时 D3 段 SKIP
   - smtp 不在线不影响本文件（相关用例均为 fail-closed 400 路径）
 """
 

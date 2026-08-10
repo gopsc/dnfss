@@ -152,10 +152,10 @@ namespace process_http_server {
 		return "";
 	}
 
-	/* 管理员验证：调用 gateway 的 /admin/verify 验签端点，验证请求携带的 Token 是否为有效管理员。
-	 * gateway 是 Token 签发与验证的唯一权威（RSA 验签 + is_admin + 过期检查）。
-	 * gateway 地址由环境变量 GATEWAY_HOST/GATEWAY_PORT 配置，默认 127.0.0.1:8443。
-	 * gateway 不可用或响应异常一律视为未授权（fail-closed）。 */
+	/* 管理员验证：调用 ca 的 /admin/verify 验签端点，验证请求携带的 Token 是否为有效管理员。
+	 * ca 是 Token 签发与验证的唯一权威（RSA 验签 + is_admin + 过期检查，v0.9.0 起由 gateway 迁至 ca）。
+	 * ca 地址由环境变量 GATEWAY_HOST/GATEWAY_PORT 配置（沿用旧名），默认 127.0.0.1:8443。
+	 * ca 不可用或响应异常一律视为未授权（fail-closed）。 */
 	static bool verify_admin_token(const http::request<http::string_body>& req) {
 		try {
 			/* 提取 Token：Authorization 头优先，回退 Cookie */
@@ -173,7 +173,7 @@ namespace process_http_server {
 			}
 			if (raw.empty() || raw.substr(0, 7) != "Bearer ") return false;
 
-			/* gateway 地址 */
+			/* ca 地址 */
 			std::string host = "127.0.0.1";
 			int port = 8443;
 			if (const char* h = std::getenv("GATEWAY_HOST")) host = h;
@@ -276,7 +276,7 @@ namespace process_http_server {
 		res.version(req.version());
 		res.set(http::field::content_type, "application/json");
 
-		/* 管理员认证：调用 gateway 验签，未授权直接拒绝 */
+		/* 管理员认证：调用 ca 验签，未授权直接拒绝 */
 		if (!verify_admin_token(req)) {
 			res.result(http::status::unauthorized);
 			res.body() = buildJsonResponse(false, "Unauthorized: admin token required");
@@ -311,7 +311,7 @@ namespace process_http_server {
 		res.version(req.version());
 		res.set(http::field::content_type, "application/json");
 
-		/* 管理员认证：调用 gateway 验签，未授权直接拒绝 */
+		/* 管理员认证：调用 ca 验签，未授权直接拒绝 */
 		if (!verify_admin_token(req)) {
 			res.result(http::status::unauthorized);
 			res.body() = buildJsonResponse(false, "Unauthorized: admin token required");
@@ -364,7 +364,7 @@ namespace process_http_server {
 		res.version(req.version());
 		res.set(http::field::content_type, "application/json");
 
-		/* 管理员认证：调用 gateway 验签，未授权直接拒绝 */
+		/* 管理员认证：调用 ca 验签，未授权直接拒绝 */
 		if (!verify_admin_token(req)) {
 			res.result(http::status::unauthorized);
 			res.body() = buildJsonResponse(false, "Unauthorized: admin token required");

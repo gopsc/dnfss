@@ -5,7 +5,7 @@ UniServe Framework 的中央认证服务（Central Auth），C++20 实现，v1.0
 ## 拓扑定位（waf → ca → gateway 前置拓扑）
 
 ```
-客户端 ──HTTPS──▶ waf:443 (终止 TLS + coraza 规则) ──HTTP──▶ ca:8443 (认证+前置转发) ──HTTP──▶ gateway:8445 (纯转发) ──▶ static:9200 / dnfs2:8006 / core:5200
+客户端 ──HTTPS──▶ waf:443 (终止 TLS + coraza 规则) ──HTTP──▶ ca:8443 (认证+前置转发) ──HTTP──▶ gateway:8445 (纯转发) ──▶ fsys:9200 / dnfs2:8006 / core:5200
 ```
 
 - CA 接管原 gateway 的 **8443** 端口，WAF upstream 配置不变（`waf/config.yaml` 仍指向 8443）。

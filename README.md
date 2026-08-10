@@ -307,6 +307,7 @@
 | `test_waf.py` | waf | coraza 规则匹配与拦截（SQLi/XSS/命令注入/路径遍历/扫描器）、正常请求放行 |
 | `test_dnfs.py` | dnfs2 | 节点树 CRUD、AI 审核集成 |
 | `test_captcha.py` / `test_smtp.py` / `test_ai_review.py` / `test_static.py` | captcha2 / smtp / ai_review / fsys | 验证码一次性消费、邮件验证码、内容审核纠偏、文件浏览与视频流 |
+| `test_core_confs.py` | core（内嵌 confs） | confs get/list/reload/health 与 Python 版基线行为对比 |
 
 - 默认使用 `tests/blackbox/config.py` 中的生产地址（127.0.0.1，条目名映射见该文件），运行方式见 [tests/blackbox/README.md](tests/blackbox/README.md)。
 - 注册测试会创建真实数据库记录，测试完成后可手动清理。

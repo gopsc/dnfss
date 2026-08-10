@@ -133,7 +133,7 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
 | **core** | C++20 | 5200 / 8010 | 5200 管理 / 8010 loopback | 进程托管(PMC) + 内嵌 confs 配置服务 | 生产 |
 | **redirect80** | Python | 80 | 0.0.0.0 | HTTP→HTTPS 重定向 | 生产 |
 | **waf** | Go | 443 | 0.0.0.0 | 边缘网关：TLS 终止 + coraza WAF | 生产 |
-| **ca** | C++20 | 8443 | 127.0.0.1 | 中央认证 + 身份头注入 + 前置转发 | 生产 (v1.0.0) |
+| **ca** | C++20 | 8443 | 127.0.0.1 | 中央认证 + 身份头注入 + 前置转发 | 生产 (v1.1.0) |
 | **gateway** | C++20 | 8445 | 127.0.0.1 | 纯转发反向代理（loopback 强制自检） | 生产 (v0.9.0) |
 | **fsys** | C++20 | 9200 | 127.0.0.1 | 前端托管 + dnfs 代理（static 的 C++ 重写） | 生产 |
 | **dnfs2** | C++20 | 8006 | 127.0.0.1 | 树状笔记 CRUD | 生产（dnfs 的 C++ 重写） |
@@ -170,6 +170,7 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
 | libcrypt | C++20 | AES_CBC / RSA / SHA256 / Base64 |
 | libsqlite3 | C++20 | SQLite3 header-only 封装 |
 | libmsg | C++20 | pymsg 协议 C++ 实现（4B 大端长度前缀 + UTF-8 JSON），与 Python pymsg 字节级兼容，提供 RpcClient/RpcServer/AsyncQueue |
+| liblogc | C++20 | 统一集中式日志客户端（`us/LogC.hpp`，对应 Python `log_client.py`）：pymsg/TCP 异步批量写 db2 Logs 表，队列上限 1 万条 + 级别过滤 + fail-safe，C++ 服务共用 |
 | libtry | C | 嵌入式脚本解释器（递归下降，中文标识符） |
 | pymsg | Python | 自研 RPC 基础库（`[4B 大端长度][UTF-8 JSON]`），Python 侧 db/log_client 依赖 |
 

@@ -111,7 +111,7 @@ PMC 把所有常驻能力抽象为 `ITask`，用 `libth` 的 `Thread`（带 `sto
 
 - 仅监听 `127.0.0.1:5200`，纯 HTTP（WAF 已终止 TLS，无证书）。
 - 三个 POST 路由：`/list` `/exec` `/kill`，返回 `{"success", "message", "data"}`。
-- **管理员鉴权**（`verify_admin_token`）：每个操作都先调 `gateway /admin/verify`（gateway 是 Token 签发/验签唯一权威，RSA 验签 + is_admin + 过期检查），`Authorization` 头优先、回退 `q4_token` Cookie；gateway 地址由 `GATEWAY_HOST`/`GATEWAY_PORT` 配置（默认 `127.0.0.1:8443`）。gateway 不可用或异常一律 `fail-closed` 返回 401。
+- **管理员鉴权**（`verify_admin_token`）：每个操作都先调 `ca /admin/verify`（认证 v0.9.0 起由 gateway 迁至 ca，RSA 验签 + is_admin + 过期检查），`Authorization` 头优先、回退 `q4_token` Cookie；ca 地址由 `GATEWAY_HOST`/`GATEWAY_PORT` 环境变量配置（沿用旧名，默认 `127.0.0.1:8443`）。ca 不可用或异常一律 `fail-closed` 返回 401。
 - 命令执行（`exec`）与 pid 解析同时支持 query 参数与 JSON body。
 
 ## 内嵌 confs 配置服务（v0.1.0 起）

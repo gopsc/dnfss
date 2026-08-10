@@ -17,14 +17,15 @@ tests/blackbox/
 ├── config.py           # 服务地址与端口映射
 ├── helpers.py          # HTTP/TCP 请求封装 + 断言工具 + 计数器
 ├── test_runner.py      # 统一入口，--url 自动识别目标服务
-├── test_gateway.py     # 输入校验/Token契约/代理路径安全/限流/CORS（v0.8.0 契约，认证链路待测试钩子）
+├── test_gateway.py     # 输入校验/Token契约/代理路径安全/限流/CORS（目标 ca:8443，认证 happy path 待测试钩子）
 ├── test_captcha.py     # 获取验证码 → 校验 → 一次性消费
 ├── test_smtp.py        # 发送邮箱验证码 → 校验
 ├── test_dnfs.py        # 创建笔记 → 查询 → 更新 → 删除（含内容审核）
 ├── test_db.py          # 日志写入 → 查询 → 统计 → 清理
 ├── test_ai_review.py   # 内容审核 → 人工反馈纠正
 ├── test_static.py      # 首页加载 → 文件浏览 → 视频流 → 路径遍历防护
-└── test_waf.py         # 正常请求通行 → SQLi/XSS/命令注入/路径遍历/扫描器拦截
+├── test_waf.py         # 正常请求通行 → SQLi/XSS/命令注入/路径遍历/扫描器拦截
+└── test_core_confs.py  # core 内嵌 confs（与 Python confs 基线行为对比）
 ```
 
 ## 覆盖的用户旅程
