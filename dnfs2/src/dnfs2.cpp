@@ -243,7 +243,7 @@ private:
 // 特殊节点校验
 // ============================================================================
 
-static const std::vector<std::string> kSpTypes = {"link", "js", "image", "file", "style", "theme"};
+static const std::vector<std::string> kSpTypes = {"link", "js", "file", "style", "theme"};
 
 // 识别特殊节点信封：合法信封返回 object；普通内容返回 nullptr；
 // 以 {"_sp" 开头但 JSON 非法视为格式错误（抛异常）。
@@ -295,14 +295,6 @@ static void validate_sp(const json::object& sp) {
             throw DnfsExp("前端代码不能为空", 400);
         if (code.size() > kSpMaxCode)
             throw DnfsExp("前端代码过大（上限 512KB）", 400);
-    } else if (t == "image") {
-        if (!sp.contains("data") || !sp.at("data").is_string())
-            throw DnfsExp("图片节点缺少 data", 400);
-        std::string data = std::string(sp.at("data").as_string());
-        if (data.rfind("data:image/", 0) != 0)
-            throw DnfsExp("图片节点 data 必须是 data:image/ 开头的 DataURL", 400);
-        if (data.size() > kSpMaxData)
-            throw DnfsExp("图片过大（上限约 2.6MB）", 400);
     } else if (t == "file") {
         if (!sp.contains("name") || !sp.at("name").is_string())
             throw DnfsExp("文件节点缺少文件名", 400);
@@ -652,6 +644,29 @@ private:
         return r.data.is_array() && !r.data.as_array().empty();
     }
 
+    // 查询节点 owner：节点不存在返回 nullopt；存在但无 owner 字段返回空字符串（无人匹配，仅管理员有权）
+    std::optional<std::string> _note_owner(int64_t id) {
+        json::object payload;
+        payload["action"] = "select";
+        payload["table"]  = "Notes";
+        payload["where"]  = json::object{{"id", id}};
+        payload["limit"]  = 1;
+
+        DbResult r = _call_db(payload);
+        if (!r.success) {
+            _log("ERROR", "dnfs2", "查询节点 owner 失败 id=" + std::to_string(id)
+                 + " err=" + r.error);
+            throw DnfsExp("查询节点失败", 500);
+        }
+        if (!r.data.is_array() || r.data.as_array().empty()) return std::nullopt;
+        const auto& note = r.data.as_array()[0];
+        if (note.is_object() && note.as_object().contains("owner")
+            && note.as_object().at("owner").is_string()) {
+            return std::string(note.as_object().at("owner").as_string());
+        }
+        return std::string();
+    }
+
     // ---- Token 验签（通过 gateway /whoami）---------------------------------
 
     struct UserInfo {
@@ -909,16 +924,21 @@ private:
                 throw DnfsExp("未授权访问", 401);
             }
 
-            // 父节点是否存在
-            if (pid != 0 && !_note_exists(pid)) {
-                throw DnfsExp("父节点不存在", 400);
+            // 父节点存在性 + 拥有者（特殊节点发布权限判定用）
+            std::optional<std::string> parent_owner;
+            if (pid != 0) {
+                parent_owner = _note_owner(pid);
+                if (!parent_owner) {
+                    throw DnfsExp("父节点不存在", 400);
+                }
             }
 
-            // 特殊节点校验（管理员专属）
+            // 特殊节点校验：父节点拥有者或管理员可发布（根层 pid=0 无拥有者，仅管理员）
             json::value sp = parse_sp(content);
             if (!sp.is_null()) {
-                if (!info->is_admin) {
-                    throw DnfsExp("特殊节点仅管理员可发布", 403);
+                if (!info->is_admin
+                    && !(parent_owner && *parent_owner == info->user)) {
+                    throw DnfsExp("特殊节点仅当前节点拥有者或管理员可发布", 403);
                 }
                 validate_sp(sp.as_object());
             }
@@ -1103,17 +1123,19 @@ private:
                 throw DnfsExp("节点不存在", 404);
             }
 
-            if (!info->is_admin) {
+            // 提取节点 owner（所有权校验与特殊节点发布判定共用）
+            std::string note_owner;
+            {
                 const auto& note = owner_r.data.as_array()[0];
-                std::string owner;
                 if (note.is_object() && note.as_object().contains("owner")
                     && note.as_object().at("owner").is_string()) {
-                    owner = std::string(note.as_object().at("owner").as_string());
+                    note_owner = std::string(note.as_object().at("owner").as_string());
                 }
-                if (owner != info->user) {
-                    _log("WARNING", "dnfs2", "update_note 所有权拒绝 id=" + std::to_string(id));
-                    throw DnfsExp("It's not your note", 403);
-                }
+            }
+
+            if (!info->is_admin && note_owner != info->user) {
+                _log("WARNING", "dnfs2", "update_note 所有权拒绝 id=" + std::to_string(id));
+                throw DnfsExp("It's not your note", 403);
             }
 
             // P1-8 修复：pid≠0 时校验父节点存在
@@ -1121,12 +1143,9 @@ private:
                 throw DnfsExp("父节点不存在", 400);
             }
 
-            // 特殊节点校验
+            // 特殊节点校验：上方所有权校验已保证是节点拥有者或管理员，此处仅校验信封格式
             json::value sp = parse_sp(content);
             if (!sp.is_null()) {
-                if (!info->is_admin) {
-                    throw DnfsExp("特殊节点仅管理员可发布", 403);
-                }
                 validate_sp(sp.as_object());
             }
 

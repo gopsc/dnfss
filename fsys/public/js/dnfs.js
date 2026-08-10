@@ -102,7 +102,7 @@ async function addNode(pid, title, content) {
 		}
 
 		if (!res.ok) {
-			throw new Error(`添加节点失败（HTTP ${res.status}）`);
+			throw new Error(result.error || `添加节点失败（HTTP ${res.status}）`);
 		}
 
 		input_note_title.value = "";
@@ -429,9 +429,9 @@ function renderMarkdown(element, content) {
 	element.innerHTML = md.render(content);
 }
 
-/* ===== by qing — 特殊节点（管理员专属）=====
- * 信封：content 为 {"_sp":"link|js|image|file", ...} JSON，普通内容走 Markdown。
- * 发布权限由后端 dnfs 强制（is_admin），前端仅做展示与表单切换。 */
+/* ===== by qing — 特殊节点 =====
+ * 信封：content 为 {"_sp":"link|js|file|style|theme", ...} JSON，普通内容走 Markdown。
+ * 发布权限由后端 dnfs 强制（节点拥有者或管理员），前端仅做展示与表单切换。 */
 
 /* 与后端 base64 上限（3.5M 字符）对齐：原始文件约 2.5MB */
 var SP_MAX_FILE_BYTES = 2.5 * 1024 * 1024;
@@ -445,7 +445,7 @@ function parseSp(content) {
 	} catch (e) {
 		return null;	// 非法信封按普通文本展示（后端发布时已拦截，这里是兜底）
 	}
-	if (obj && typeof obj === 'object' && ['link', 'js', 'image', 'file', 'style', 'theme'].indexOf(obj._sp) !== -1) return obj;
+	if (obj && typeof obj === 'object' && ['link', 'js', 'file', 'style', 'theme'].indexOf(obj._sp) !== -1) return obj;
 	return null;
 }
 
@@ -466,7 +466,6 @@ function renderContent(container, item) {
 	}
 	if (sp._sp === 'link') renderSpLink(container, sp, appendNote);
 	else if (sp._sp === 'js') renderSpJs(container, sp, appendNote);
-	else if (sp._sp === 'image') renderSpImage(container, sp, appendNote);
 	else if (sp._sp === 'file') renderSpFile(container, sp, appendNote);
 	else if (sp._sp === 'style' || sp._sp === 'theme') renderSpCss(container, sp, appendNote, item);
 }
@@ -500,7 +499,7 @@ function renderSpLink(container, sp, appendNote) {
  *   - 全屏特效 iframe 挂载到 document.body（z-index:9999 在根层叠上下文生效，
  *     不被后续卡片盖住），pointer-events:none 不拦截父页面点击，不影响卡片点击/节点导航；
  *   - 不使用 new Function/eval（CSP 未开 unsafe-eval），srcdoc 内联脚本由 CSP 'unsafe-inline' 放行。
- * 仅管理员可发布（后端强制）。 */
+ * 仅节点拥有者或管理员可发布（后端强制）。 */
 /* 无特效模式：true 为关闭自动执行（用户面板开关控制，localStorage 持久化） */
 var sp_effects_disabled = (function() {
 	try { return localStorage.getItem('sp_effects_disabled') === '1'; } catch (e) { return false; }
@@ -587,16 +586,6 @@ function renderSpJs(container, sp, appendNote) {
 	if (!sp_effects_disabled) startEffect();
 }
 
-/* 图片节点：DataURL 直接显示（CSP img-src 允许 data:） */
-function renderSpImage(container, sp, appendNote) {
-	var img = document.createElement('img');
-	img.className = 'sp-image';
-	img.src = sp.data;
-	img.alt = sp.name || '图片';
-	container.appendChild(img);
-	appendNote();
-}
-
 /* 文件节点：base64 → Blob → 触发下载（blob: 下载不受 CSP 限制） */
 function renderSpFile(container, sp, appendNote) {
 	var bar = document.createElement('div');
@@ -632,7 +621,7 @@ function renderSpFile(container, sp, appendNote) {
  *   - 节点作用域（默认）：.sp-injected-style 无 data-persist 标记，随 load_notes 的
  *     clearAllEffects 移除，离开节点界面自动还原；
  *   - persist:true：data-persist="1" 标记，跨节点保留，由用户面板"还原界面样式"统一清除。
- * 安全：仅管理员可发布（后端强制）且经 AI 送审；CSS 无法执行脚本，风险面仅为界面外观，
+ * 安全：节点拥有者或管理员可发布（后端强制）且经 AI 送审；CSS 无法执行脚本，风险面仅为界面外观，
  * 可随时由用户一键还原。theme 是 style 的克制子集——仅允许覆盖 CSS 变量（:root 块），
  * 变量名/值合法性由后端 validate_sp 强制，前端这里只做兜底过滤。 */
 var sp_style_reset = false;	/* 用户手动还原后，本会话不再自动注入 persist 样式（仍可在卡片手动启用） */
@@ -775,7 +764,7 @@ var sp_file = document.getElementById('sp-file');
 var sp_file_tip = document.getElementById('sp-file-tip');
 var sp_persist_wrap = document.getElementById('sp-persist-wrap');
 var sp_persist = document.getElementById('sp-persist');
-var sp_edit_original = null;	/* 编辑图片/文件节点时的原信封字符串：未选新文件则原样提交 */
+var sp_edit_original = null;	/* 编辑文件节点时的原信封字符串：未选新文件则原样提交 */
 /* 搜索框：当前层卡片标题/内容关键词过滤 */
 var searchtext = document.getElementById('searchtext');
 var searchsubmit = document.getElementById('searchsubmit');
@@ -804,7 +793,7 @@ autoResizeTextarea(input_note_content);	/* 初始化高度 */
 /* ===== 特殊节点表单：类型切换控制输入区形态 ===== */
 sp_type.addEventListener('change', function() {
 	var t = sp_type.value;
-	var is_file = (t === 'image' || t === 'file');
+	var is_file = (t === 'file');
 	sp_file.style.display = is_file ? '' : 'none';
 	input_note_content.style.display = is_file ? 'none' : '';
 	/* persist 选项仅样式类节点（style/theme）可见，切走时复位勾选 */
@@ -855,9 +844,9 @@ function parseThemeVars(text) {
 }
 
 /* by qing — 构造提交内容：普通节点返回原文本，特殊节点返回信封 JSON 字符串。
- * 校验失败返回 null（已弹提示）；非管理员永远按普通文本提交。 */
+ * 校验失败返回 null（已弹提示）；未登录永远按普通文本提交。 */
 async function buildSubmitContent() {
-	var t = (current_user && current_user.is_admin) ? sp_type.value : 'text';
+	var t = (current_user && current_user.login) ? sp_type.value : 'text';
 	if (t === 'text') return input_note_content.value;
 	if (t === 'link') {
 		var url = input_note_content.value.trim();
@@ -883,10 +872,10 @@ async function buildSubmitContent() {
 		if (sp_persist.checked) theme_env.persist = true;
 		return JSON.stringify(theme_env);
 	}
-	/* image / file：优先使用新选择的文件；编辑模式下未选新文件则保留原信封 */
+	/* file：优先使用新选择的文件；编辑模式下未选新文件则保留原信封 */
 	if (sp_file.files.length === 0) {
 		if (sp_edit_original) return sp_edit_original;
-		alert('请选择要上传的' + (t === 'image' ? '图片' : '文件'));
+		alert('请选择要上传的文件');
 		return null;
 	}
 	var f = sp_file.files[0];
@@ -895,10 +884,6 @@ async function buildSubmitContent() {
 		return null;
 	}
 	var dataUrl = await readFileAsDataURL(f);
-	if (t === 'image') {
-		if (dataUrl.indexOf('data:image/') !== 0) { alert('所选文件不是图片'); return null; }
-		return JSON.stringify({ _sp: 'image', name: f.name, data: dataUrl });
-	}
 	return JSON.stringify({ _sp: 'file', name: f.name, mime: f.type || 'application/octet-stream', data: dataUrl.split(',')[1] });
 }
 
@@ -951,7 +936,7 @@ delete_note.addEventListener('click', (event) => {
 })
 
 /* by qing — 点击卡片"编辑"：把节点标题/内容载入下方表单，进入编辑模式。
- * 特殊节点：link/js 回填 url/code 到文本域；image/file 记住原信封（未选新文件则原样提交） */
+ * 特殊节点：link/js/style/theme 回填对应文本到文本域；file 记住原信封（未选新文件则原样提交） */
 function startEdit(item) {
 	editing_id = item.id;
 	input_note_title.value = item.title;
@@ -975,7 +960,7 @@ function startEdit(item) {
 		sp_type.value = sp._sp;
 		sp_type.dispatchEvent(new Event('change'));
 		sp_edit_original = item.content;
-		sp_file_tip.textContent = '不选择新文件则保持原' + (sp._sp === 'image' ? '图片' : '文件');
+		sp_file_tip.textContent = '不选择新文件则保持原文件';
 		input_note_content.value = '';
 	} else {
 		sp_type.value = 'text';
@@ -1150,7 +1135,7 @@ function itemSearchText(item) {
 		} else if (sp._sp === 'theme') {
 			parts.push(themeVarsToText(sp.vars || {}));
 			if (sp.note) parts.push(sp.note);
-		} else {	/* image / file：不把 base64 数据纳入搜索 */
+		} else {	/* file：不把 base64 数据纳入搜索 */
 			if (sp.name) parts.push(sp.name);
 			if (sp.note) parts.push(sp.note);
 		}
@@ -1256,8 +1241,9 @@ async function loadUserPanel() {
 		});
 		if (!res.ok) return;
 		current_user = await res.json();
-		/* 管理员显示特殊节点面板（普通用户始终普通文本） */
-		if (current_user.login && current_user.is_admin) {
+		/* 登录用户显示特殊节点面板（发布权限由后端按"节点拥有者或管理员"强制，
+		 * 非拥有者在他人节点下提交特殊节点会被 403 拒绝并提示） */
+		if (current_user.login) {
 			sp_panel.style.display = '';
 		}
 		renderUserPanel();

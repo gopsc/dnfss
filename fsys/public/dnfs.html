@@ -26,14 +26,13 @@
 			<div class="card node-form">
 				<h3>节点操作</h3>
 			<label>新增节点</label><input id="input-note-title">
-			<!-- 特殊节点面板：仅管理员可见（dnfs.js 按 /whoami is_admin 显示） -->
+			<!-- 特殊节点面板：登录用户可见（dnfs.js 按 /whoami login 显示；发布权限由后端按节点拥有者/管理员强制） -->
 			<div id="sp-panel" style="display:none">
 				<label>节点类型</label>
 				<select id="sp-type">
 					<option value="text">普通文本</option>
 					<option value="link">链接（自动显示站点图标）</option>
 					<option value="js">前端代码（可审计/可运行）</option>
-					<option value="image">图片（自动显示）</option>
 					<option value="file">文件（可下载）</option>
 					<option value="style">界面样式（CSS 注入，控制整个界面）</option>
 					<option value="theme">主题变量（换肤，仅 CSS 变量）</option>
