@@ -65,6 +65,7 @@ class ReviewAgent:
                 ],
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
+                timeout=8.0,
             )
             raw = response.choices[0].message.content.strip()
         except Exception as e:
