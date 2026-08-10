@@ -5,7 +5,7 @@
 
 ## pmc 是一个什么项目？
 
-PMC（Process Machine，进程机器）是一个可以创建、管理子进程以及模块的进程托管程序。你可以在它的托管下运行独立的业务模块，由 PMC 负责拉起与守护。它是整个 UniServe Framework 的**进程编排中枢**——读取 `init.txt` 自启动列表，顺序拉起并托管全部业务子进程（fsys / dnfs2 / db2 / ca / gateway / waf / captcha2 / smtp / ai_review / aibox / redirect80），并提供本地 HTTP 管理接口与内嵌配置服务。
+PMC（Process Machine，进程机器）是一个可以创建、管理子进程以及模块的进程托管程序。你可以在它的托管下运行独立的业务模块，由 PMC 负责拉起与守护。它是整个 UniServe Framework 的**进程编排中枢**——读取 `services.yaml` 声明式配置，顺序拉起并托管全部业务子进程（fsys / dnfs2 / db2 / ca / gateway / waf / captcha2 / smtp / ai_review / aibox / redirect80），并提供本地 HTTP 管理接口与内嵌配置服务。
 
 崩溃守护由 systemd（`Nidus.service`）负责，PMC 自身**不含**自动重启子进程逻辑。
 
@@ -18,34 +18,36 @@ PMC（Process Machine，进程机器）是一个可以创建、管理子进程�
 ```
 core/
 ├── Makefile            # 构建 / 安装（VERSION=0.1.0, APP_NAME=nidus）
-├── init.txt            # 自启动列表（逐行 bash 命令，# 开头为注释）
+├── services.yaml      # 声明式服务启动配置（name/cmd/args/env/depends_on/sleep_before）
 ├── Nidus.service       # systemd 单元（User=root, ExecStart=_run.sh）
-├── _run.sh             # 启动：nidus.out -i init.txt --serve 5200 --confs 8010
+├── _run.sh             # 启动：nidus.out -i . --serve 5200 --confs 8010
 ├── _set.sh             # 构建 + 创建 configs 符号链接 + make install
 ├── src/
 │   ├── main.cpp        # 入口：双模式 + 信号 + taskPool 生命周期
-│   └── main/
-│       ├── PPool.cpp           # 子进程池
-│       ├── ProcessTask.cpp     # boost.process 子进程封装
-│       ├── pmc_mtd.cpp         # list / kill / exec / parse_self_init_list
-│       ├── subsys_call.cpp     # 跨机子系统调用（MQ 发令 + Pipe 回传）
-│       ├── Tttask.cpp          # 消息队列通信任务
-│       ├── HttpTask.cpp        # 管理 HTTP 接口（:5200）
-│       └── ConfsTask.cpp       # 内嵌配置服务（:8010）
+│   ├── main/
+│   │   ├── PPool.cpp           # 子进程池
+│   │   ├── ProcessTask.cpp     # boost.process 子进程封装
+│   │   ├── pmc_mtd.cpp         # list / kill / exec / parse_self_init_list
+│   │   ├── subsys_call.cpp     # 跨机子系统调用（MQ 发令 + Pipe 回传）
+│   │   ├── Tttask.cpp          # 消息队列通信任务
+│   │   ├── HttpTask.cpp        # 管理 HTTP 接口（:5200）
+│   │   └── ConfsTask.cpp       # 内嵌配置服务（:8010）
+│   └── registry/
+│       └── InitParser.cpp     # services.yaml 解析器
 └── include/
     ├── main/*.hh       # PPool / ProcessTask / pmc_mtd / subsys_call / Tttask / HttpTask / ConfsTask
+    ├── registry/InitParser.hh  # services.yaml 解析器
     ├── tt/Pipe.h       # IPC：命名管道（FIFO）
     ├── tt/Mq.h         # IPC：消息队列
     ├── logs/Logger.hpp # 单例日志
-    ├── main/ConfsLogC.hpp   # 内嵌 confs 异步日志客户端
     └── cn/*.hpp        # 中文化编程宏
 ```
 
-> 注：早期 README 提到的 `users/`、`extra/` 子模块目录已不再使用，模块托管统一改为通过 `init.txt` 启动列表拉起各业务服务。
+> 注：早期 README 提到的 `users/`、`extra/` 子模块目录已不再使用，模块托管统一改为通过 `services.yaml` 配置拉起各业务服务。
 
 ## 如何托管外部模块
 
-编辑启动列表 `init.txt`，每行写一条启动命令（以 `#` 开头的行视为注释）。PMC 启动时会逐行拉起（先 `clr()` 清理已退出进程，再 `crtp()` 创建）。**启动顺序很重要**（redirect80 → waf → ca → gateway …）。
+编辑 `services.yaml`，在 `services` 列表中声明每个服务的 `name`、`cmd`、`args`、`env`、`depends_on`、`sleep_before` 等字段。PMC 启动时按声明顺序逐个拉起（先 `clr()` 清理已退出进程，再 `crtp()` 创建）。**启动顺序很重要**（redirect80 → waf → ca → gateway …）。
 
 ## 运行模式与命令行
 
@@ -59,7 +61,7 @@ PMC 支持两种工作模式：
 
 此外：
 
-- `-i <file>` / `--init`：指定自启动列表（常用 `init.txt`）
+- `-i <dir/file>` / `--init`：指定自启动配置（目录路径自动查找 `services.yaml`，或直接指定 `.yaml` 文件）
 - `--confs <port>`：启用内嵌 confs 配置服务（默认 `127.0.0.1:8010`）
 - `-h` / `--help`：打印帮助与 API MAP（`/list` `/exec` `/kill` 路由）
 - `-v` / `--version`：打印版本号
@@ -67,7 +69,7 @@ PMC 支持两种工作模式：
 实际启动命令（`_run.sh`）：
 
 ```bash
-./nidus.out -i init.txt --serve 5200 --confs 8010
+./nidus.out -i . --serve 5200 --confs 8010
 ```
 
 **生命周期**：注册 `SIGINT`/`SIGTERM` → `signalHandler` 唤醒条件变量 `cv` → 主线程 `cv.Wait()` 返回后遍历 `taskPool` 调用 `stop()` 优雅退出。
@@ -90,7 +92,7 @@ PMC 把所有常驻能力抽象为 `ITask`，用 `libth` 的 `Thread`（带 `sto
   - `list()` → 序列化所有子进程 `{index, pid, running, command}`。
   - `kill(pid)` → 按 pid 遍历 `ppool` 匹配后 `kill(i)`。
   - `exec(cmd)` → `ppool.crtp(cmd)`。
-  - `parse_self_init_list(path)` → 逐行读 `init.txt`，去 `#` 注释与空行后 `clr()` + `crtp(row)`。
+  - `parse_self_init_list(path)` → 经 `InitParser` 解析 `services.yaml`，按声明顺序 `clr()` + `crtp()` 拉起，支持 `sleep_before` 延时与 `env` 环境变量注入。
 
 ## 架构：进程间通信层（`include/tt/`）
 
@@ -117,7 +119,7 @@ PMC 把所有常驻能力抽象为 `ITask`，用 `libth` 的 `Thread`（带 `sto
 core 内置了统一配置服务（由 confs2 合并而来，pymsg RPC 协议，与 Python confs 完全兼容）：
 
 ```bash
-./nidus.out -i init.txt --serve 5200 --confs 8010
+./nidus.out -i . --serve 5200 --confs 8010
 ```
 
 - `--confs <port>`：启用内嵌 confs 配置服务（get/list/reload/health 四个路由）
@@ -139,7 +141,7 @@ core 内置了统一配置服务（由 confs2 合并而来，pymsg RPC 协议，
 
 - **`Logger`**（`logs/Logger.hpp`）：单例，控制台输出，支持 DEBUG/INFO/WARNING/ERROR/CRITICAL 级别（注释标注为 DeepSeek 创作，TODO 改为文件存储）。
 - **`include/cn/`**：中文化编程宏（`中文化.hpp` 等），提供 C++ 关键字中文别名。
-- **依赖库**（Makefile）：`libth` `libhttp`/`libhttpclient` `libmsg` `libcurl` + boost（`program_options`/`json`/`thread`/`filesystem`）+ `ssl`/`crypto`/`pthread`。
+- **依赖库**（Makefile）：`libth` `libhttp`/`libhttpclient` `libmsg` `liblogc` `libcurl` + boost（`program_options`/`json`/`thread`/`filesystem`）+ `yaml-cpp` + `ssl`/`crypto`/`pthread`。
 
 ## PMC 的安装方式
 
@@ -154,6 +156,7 @@ sudo bash _set.sh
 sudo apt update
 sudo apt install git g++ make
 sudo apt install libboost-all-dev
+sudo apt install libyaml-cpp-dev
 #sudo apt install libssl-dev
 #sudo apt install libcurl4-openssl-dev
 #sudo apt install libcurl4-gnutls-dev
@@ -165,13 +168,13 @@ make               # 等价于 make clear && make
 sudo make install  # 装入 /usr/local/bin/nidus + systemd
 ```
 
-> `make install` 会把 `init.txt` 拷到 `/etc/Nidus/`、`Nidus.service` 拷到 `/etc/systemd/system`，并 `daemon-reload` + `enable` + `restart`。
+> `make install` 会把 `services.yaml` 拷到 `/etc/Nidus/`、`Nidus.service` 拷到 `/etc/systemd/system`，并 `daemon-reload` + `enable` + `restart`。
 
 本仓库内的快捷方式：
 
 ```bash
 bash core/_set.sh   # make clear && make + 建 configs 符号链接 + make install
-bash core/_run.sh   # 直接 ./nidus.out -i init.txt --serve 5200 --confs 8010
+bash core/_run.sh   # 直接 ./nidus.out -i . --serve 5200 --confs 8010
 ```
 
 ## 加密通信机制（废弃）
@@ -180,7 +183,7 @@ bash core/_run.sh   # 直接 ./nidus.out -i init.txt --serve 5200 --confs 8010
 
 ## 如何使用并发机器运行程序
 
-首先应该在模块中创建一个启动脚本，脚本中应该完成工作目录的切换、虚拟环境的激活，以及程序的启动。PMC 通过 `init.txt` 逐行执行这些启动脚本，从而把多个业务模块拉起并纳入托管。
+首先应该在模块中创建一个启动脚本，脚本中应该完成工作目录的切换、虚拟环境的激活，以及程序的启动。在 `services.yaml` 中声明该脚本后，PMC 会按声明顺序执行这些启动脚本，从而把多个业务模块拉起并纳入托管。
 
 ## 已知待办与风险
 
@@ -193,6 +196,6 @@ bash core/_run.sh   # 直接 ./nidus.out -i init.txt --serve 5200 --confs 8010
 
 ## 上手要点
 
-- 调整自启动服务/顺序：编辑 `init.txt`（注释用 `#`）。
+- 调整自启动服务/顺序：编辑 `services.yaml`（在 `services` 列表中增删条目，调整声明顺序）。
 - 管理接口调用：必须携带 admin token（经 gateway 签发），例如带 `Authorization: Bearer <token>` 或 `q4_token` Cookie 访问 `:5200`。
 - 构建：`core/_set.sh`（会先创建 `configs → ../confs/configs` 符号链接，保证内嵌 confs 零迁移）；`make clear && make` 后 `make install` 装入 systemd。

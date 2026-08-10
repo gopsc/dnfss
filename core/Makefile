@@ -68,7 +68,6 @@ install: $(APP_NAME).out
 	@echo "正在配置 $(APP_NAME)"
 	@mkdir -p $(CONF_DIR)
 	@cp $(CONF_NAME) $(CONF_DIR)/$(CONF_NAME)
-	@cp init.txt $(CONF_DIR)/init.txt
 	@cp $(SRV_NAME) $(SRV_DIR)/$(SRV_NAME)
 	@systemctl daemon-reload
 	@systemctl enable $(SRV_NAME)
@@ -81,7 +80,6 @@ uninstall:
 	@
 	@rm -f $(INSTL_DIRS)/$(APP_NAME)
 	@rm -f $(CONF_DIRS)/$(CONF_NAME)
-	@rm -f $(CONF_DIRS)/init.txt
 	@rm -f -d ${CONF_DIRS}
 	@
 	@systemctl stop $(SRV_NAME)

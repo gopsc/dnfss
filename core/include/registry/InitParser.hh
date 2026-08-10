@@ -8,8 +8,7 @@ namespace qing::registry {
 
 /* 服务启动配置项
  *
- * 从 services.yaml 或 init.txt 解析出的单个服务声明。
- * YAML 模式下包含完整的元数据；TXT 模式下仅 cmd 有值。
+ * 从 services.yaml 解析出的单个服务声明，包含完整的元数据。
  */
 struct ServiceConfig {
     std::string name;                           /* 服务唯一标识 */
@@ -25,25 +24,20 @@ struct ServiceConfig {
 
 /* 启动配置解析器
  *
- * 优先读 services.yaml（结构化声明），不存在则回退 init.txt（纯命令列表）。
- * 两种格式都输出 std::vector<ServiceConfig>，调用方无需关心来源。
+ * 仅读 services.yaml（结构化声明），输出 std::vector<ServiceConfig>。
  */
 class InitParser {
 public:
     /* 入口：传入配置目录（如 /etc/Nidus）
      *
-     * 查找顺序：
-     *   1. <dir>/services.yaml  → parseYaml()
-     *   2. <dir>/init.txt       → parseTxt()
-     *   3. 都不存在 → 返回空 vector，调用方自行处理
+     * 查找：
+     *   <dir>/services.yaml → parseYaml()
+     *   不存在 → 返回空 vector，调用方自行处理
      */
     static std::vector<ServiceConfig> load(const std::string& dir);
 
     /* 解析 services.yaml */
     static std::vector<ServiceConfig> parseYaml(const std::string& path);
-
-    /* 解析 init.txt（向后兼容，每行一条命令，# 开头为注释） */
-    static std::vector<ServiceConfig> parseTxt(const std::string& path);
 };
 
 } // namespace qing::registry

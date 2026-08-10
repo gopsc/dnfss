@@ -93,14 +93,11 @@ catch(std::exception& exp) {
 
 /* 解析自启动列表、添加自启动项
  *
- * 兼容两种格式：
- *   - services.yaml（结构化声明，含 args/env/depends_on/sleep_before）
- *   - init.txt（纯命令列表，每行一条 bash 命令，# 开头为注释）
+ * 仅支持 services.yaml 格式（结构化声明，含 args/env/depends_on/sleep_before）
  *
  * path 可以是：
- *   - 目录路径 → 自动查找 services.yaml 或 init.txt
+ *   - 目录路径 → 自动查找目录下的 services.yaml
  *   - .yaml 文件 → 按 YAML 解析
- *   - 其他文件 → 按 TXT 解析（向后兼容 init.txt）
  *
  * 如果在解析过程中出错，只是打印异常 */
 void parse_self_init_list(std::string &path)
@@ -110,14 +107,15 @@ try {
 	std::vector<registry::ServiceConfig> services;
 
 	if (fs::is_directory(path)) {
-		/* 目录模式：InitParser::load 自动查找 services.yaml → init.txt */
+		/* 目录模式：InitParser::load 查找 services.yaml */
 		services = registry::InitParser::load(path);
 	} else if (path.size() > 5 && path.substr(path.size() - 5) == ".yaml") {
 		/* YAML 文件模式 */
 		services = registry::InitParser::parseYaml(path);
 	} else {
-		/* TXT 文件模式（向后兼容 init.txt） */
-		services = registry::InitParser::parseTxt(path);
+		/* 不再支持 init.txt 纯命令列表格式 */
+		std::cerr << "parse_self_init_list: 不支持的配置格式，请使用 services.yaml" << std::endl;
+		return;
 	}
 
 	if (services.empty()) {

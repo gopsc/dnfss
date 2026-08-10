@@ -14,7 +14,7 @@
                          ┌──────────────────────────────────────────────┐
                          │              core (PMC / Nidus)              │
                          │   进程托管服务 · 监听 :5200 (HTTP 管理接口)    │
-                         │   读取 init.txt 拉起并守护下列子进程          │
+                         │   读取 services.yaml 拉起并守护下列子进程      │
                          └───────────────┬──────────────────────────────┘
                                          │ 启动 / 守护
           ┌──────────────────┬───────────┼───────────┬──────────────────┬──────────────┐
@@ -79,7 +79,7 @@
 - 可执行文件 `nidus.out`，作为 systemd 服务（`Nidus.service`）常驻运行（崩溃守护由 systemd 负责，core 自身不含自动重启逻辑）。
 - 支持两种工作模式：命令行子系统调用（`--send/--exec/--list/--kill`）与 HTTP 伺服器模式（`--serve <port>`）。
 - 通过命名管道（Pipe）与消息队列（Mq）实现进程间通信。
-- 读取 `init.txt` 自启动列表，按行拉起各业务服务（ai_review / db / dnfs / smtp / static / waf / ca / gateway / captcha / aibox）。
+- 读取 `services.yaml` 声明式配置，按声明顺序拉起各业务服务（db2 / ai_review / dnfs2 / smtp / fsys / waf / ca / gateway / captcha2 / aibox / redirect80）。
 
 ### waf（WAF 网关）
 
@@ -316,7 +316,7 @@ bash _set.sh   # 构建 + 安装
 bash _run.sh   # 运行
 ```
 
-部署路径约定为 `/opt/micro_servers/`，`core` 的 `init.txt` 即从该路径拉起其余服务。
+部署路径约定为 `/opt/micro_servers/`，`core` 的 `services.yaml` 即从该路径拉起其余服务。
 
 > **注意**：`ai_review` / `aibox` / `redirect80` 已纳入 `_inst.sh`（分别依赖 chromadb ONNX 模型下载、`~/.cert/deepseek.key`、本地 `pymsg` 包）。`ai_review` 额外需配置 `.env` 文件（DeepSeek API 密钥等，参考 [ai_review/README.md](ai_review/README.md)）。
 
@@ -324,20 +324,16 @@ bash _run.sh   # 运行
 
 ## 运行
 
-由 `core` 守护的子进程通过 `init.txt` 自启动（顺序很重要，redirect80 先于 waf、waf 先于 gateway）：
+由 `core` 守护的子进程通过 `services.yaml` 声明式配置自启动（顺序很重要，db2 先于 ai_review、waf 先于 redirect80）。配置详见 [core/services.yaml](core/services.yaml)，摘录如下：
 
-```
-bash /opt/micro_servers/db/_run.sh
-bash /opt/micro_servers/confs/_run.sh
-bash /opt/micro_servers/ai_review/_run.sh
-bash /opt/micro_servers/dnfs/_run.sh
-bash /opt/micro_servers/smtp/_run.sh
-bash /opt/micro_servers/static/_run.sh
-bash /opt/micro_servers/redirect80/_run.sh
-bash /opt/micro_servers/waf/_run.sh
-bash /opt/micro_servers/gateway/_run.sh
-bash /opt/micro_servers/captcha/_run.sh
-bash /opt/micro_servers/aibox/_run.sh
+```yaml
+services:
+  - name: db2
+    cmd: bash /opt/micro_servers/db2/_run.sh
+    args: ["--instance", "db2", "--log-level", "info"]
+    depends_on: []
+    sleep_before: 0
+  # ... 其余 10 个服务（ai_review / dnfs2 / smtp / fsys / waf / ca / gateway / captcha2 / aibox / redirect80）
 ```
 
 启动 `core`（需 root 或 systemd）：
