@@ -35,7 +35,7 @@
   └────────────┘
  日志链路: waf / ca / gateway / static / dnfs / ai_review / captcha / smtp / aibox / confs / redirect80 ──(log_client, pymsg)──► db:8005 (Logs 表)
  认证链路(v0.9.0 起): waf:443 ──HTTP──► ca:8443 (认证+前置转发) ──HTTP──► gateway:8445 (纯转发, 仅 loopback) ──► 内部服务
- 配置链路: ca / gateway / db2 / static / redirect80 / smtp / captcha ──(pymsg get)──► confs:8010（配置统一存放于 confs/configs/，mtime 变化自动重载）
+ 配置链路: gateway / db2 / static / redirect80 / smtp / captcha ──(pymsg get)──► confs:8010（配置统一存放于 confs/configs/，mtime 变化自动重载；ca/dnfs2 例外，配置纯 CLI 传递）
 ```
 
 > `db2` / `dnfs2` 分别是 `db` / `dnfs` 的 C++20 重实现（接口完全兼容，可平替），架构位置与 Python 版一致。`BotOps` 为 aibox 的终端前端（WebSocket 客户端），`lci` 为嵌入式帧缓冲图形界面，均不在上图中。
@@ -90,9 +90,10 @@
 - 极客操作：`kill -HUP <pid>` 热加载规则；`waf -list` 列规则；`waf -test <file>` 校验语法；`waf -check "<input>"` 测试单条输入。
 - 配置见 [waf/config.yaml](waf/config.yaml)，详见 [waf/README.md](waf/README.md)。
 
-### ca（中央认证服务 · v1.0.0）
+### ca（中央认证服务 · v1.1.0）
 
 - 内部 HTTP 服务，默认监听 127.0.0.1:8443（接管原 gateway 端口，WAF upstream 不变），不再承载 TLS（TLS 已由 WAF 终止）。
+- **配置体系（v1.1.0）**：彻底移除 confs 依赖，配置全部经 CLI 传递（CLI > 环境变量 > 默认值三层），原 `ca.ini` 配置值迁入 [core/services.yaml](core/services.yaml) 的 ca 条目 args；兼容旧环境变量名（`LISTEN_ADDR`/`UPSTREAM_GATEWAY`/`DB_*` 等）。
 - **密码安全**：PBKDF2-HMAC-SHA256（10 万轮 + 16 字节随机盐），密码强度校验（8+ 字符、4 类中至少 3 类），常数时间比较防 timing attack。
 - **用户存储**：用户数据通过 pymsg/TCP 调用 `db:8005`（`DbC::call_msg`）存取；登录成功即更新 `Users.last_login`（`"$now"` 哨兵）。
 - **Token 机制**：`Base64(payload) + "_" + RSA-Sign(payload)`，默认 1 小时过期；RSA 密钥对启动时内存生成，重启后旧 Token 全部失效；jti 黑名单 + 用户版本号双轨吊销。
@@ -206,7 +207,6 @@
 
 | 配置文件 | 消费模块 | 依赖强度 |
 |----------|----------|----------|
-| `ca.ini` | ca | confs 拉取 |
 | `gateway.ini` | gateway | confs 拉取（0.7.0 起配置完全迁入） |
 | `db.ini` | db / db2 | 强依赖（confs 未就绪自动重试） |
 | `static.ini` | static（fsys.py）/ fsys | 强依赖（拉取失败直接退出） |
@@ -215,7 +215,7 @@
 | `captcha.ini` | captcha / captcha2 | confs 拉取 |
 | `example.ini` | —（旧 gateway 示例模板） | 无消费方 |
 
-- **部署安全约定**：`confs/configs/*.ini` 含敏感字段（`ca.ini` 管理员白名单是 `is_admin` 判定依据、`smtp.ini` 密码字段），权限必须收紧为 `root:root 0640`，仅 root 可写；被同机普通用户篡改可直接提权为管理员或劫持邮件验证码（详见 `docs/security/core_SECURITY_AUDIT_20260801.md` 2026-08-10 复审）。
+- **部署安全约定**：`confs/configs/*.ini` 含敏感字段（如 `smtp.ini` 密码字段），权限必须收紧为 `root:root 0640`，仅 root 可写；被同机普通用户篡改可直接劫持邮件验证码（详见 `docs/security/core_SECURITY_AUDIT_20260801.md` 2026-08-10 复审）。原 `ca.ini` 管理员白名单已随 ca v1.1.0 迁入 `core/services.yaml` 的 CLI args，其防护对象相应转为 `services.yaml` 的文件权限。
 
 ### aibox（独立 AI 智能体系统）
 

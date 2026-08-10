@@ -10,6 +10,7 @@
 #include <typeinfo>
 #include <memory>
 #include <csignal>
+#include <cstdlib>
 #include <random>
 #include <regex>
 #include <thread>
@@ -23,7 +24,6 @@
 #include <openssl/kdf.h>
 #include "ExpBase.hpp"
 #include "LocalTime.hpp"
-#include "Conf.hpp"
 #include "DbC.hpp"
 #include <us/LogC.hpp>
 
@@ -32,7 +32,7 @@ using namespace qing;
 namespace json = boost::json;
 namespace po = boost::program_options;
 
-constexpr const char *_VER = "1.0.0";
+constexpr const char *_VER = "1.1.0";
 
 //////////////////////////////////
 #include <sstream>
@@ -376,28 +376,41 @@ std::string extract_token_from_request(const http::request<http::string_body>& r
 // 参数 raw_token："base64data_signature" 格式（不含 "Bearer " 前缀）
 TokenInfo verify_token(const std::string& raw_token);
 
-/* configure items */
-static std::string		_ADDR;
-static int			_PORT;
-static bool			_TLS = false;
-/* 上游 gateway 地址（前置拓扑：ca 认证后转发至此），由 [Upstream] gateway 配置 */
-static std::string		_UPSTREAM_GATEWAY = "http://127.0.0.1:8445";
-static int			_TOKEN_KEEP_TIME = 3600;	// Token 有效期（秒），可由 [Token] keep_time 配置
-static int			_TOKEN_REFRESH_GRACE_MULTIPLIER = 2;	// Token 刷新宽限期倍数，过期后 iat + keep_time*倍数 窗口内仍可刷新
-static int			_TOKEN_MAX_REFRESH = 10;	// Token 生命周期内最大刷新次数，可由 [Token] max_refresh 配置
-static std::vector<std::string>	_CORS_ORIGINS;			// CORS 允许的 Origin 白名单，可由 [CORS] allowed_origins 配置
-static std::vector<std::string>	_ADMIN_USERS;			// 管理员账号白名单，可由 [Admin] users 配置（分号分隔），登录时写入 Token payload 的 is_admin
+/* 环境变量读取辅助（v1.1.0 配置体系 CLI > env > 默认值） */
+static std::string env_or(const char* name, const std::string& def = "") {
+	const char* v = std::getenv(name);
+	return (v && *v) ? std::string(v) : def;
+}
+static int env_int_or(const char* name, int def) {
+	const char* v = std::getenv(name);
+	if (!v || !*v) return def;
+	try { return std::stoi(v); }
+	catch (...) { return def; }
+}
+static bool env_flag(const char* name) {
+	std::string v = env_or(name);
+	return v == "1" || v == "on" || v == "true" || v == "yes";
+}
 
-/* 下游 pymsg 服务地址（从 confs [Downstream] 段加载，可被环境变量覆盖） */
+/* configure items（默认值即声明处初值，env 与 CLI 依次覆盖） */
+static std::string		_ADDR = "127.0.0.1";
+static int			_PORT = 8443;
+static bool			_TLS = false;
+/* 上游 gateway 地址（前置拓扑：ca 认证后转发至此） */
+static std::string		_UPSTREAM_GATEWAY = "http://127.0.0.1:8445";
+static int			_TOKEN_KEEP_TIME = 3600;	// Token 有效期（秒）
+static int			_TOKEN_REFRESH_GRACE_MULTIPLIER = 2;	// Token 刷新宽限期倍数，过期后 iat + keep_time*倍数 窗口内仍可刷新
+static int			_TOKEN_MAX_REFRESH = 10;	// Token 生命周期内最大刷新次数
+static std::vector<std::string>	_CORS_ORIGINS;			// CORS 允许的 Origin 白名单（分号分隔）
+static std::vector<std::string>	_ADMIN_USERS;			// 管理员账号白名单（分号分隔），登录时写入 Token payload 的 is_admin
+
+/* 下游 pymsg 服务地址 */
 static std::string		_DB_HOST = "127.0.0.1";
 static int			_DB_PORT = 8005;
 static std::string		_CAPTCHA_HOST = "127.0.0.1";
 static int			_CAPTCHA_PORT = 8009;
 static std::string		_SMTP_HOST = "127.0.0.1";
 static int			_SMTP_PORT = 8008;
-/* confs 引导配置（不依赖 confs 本身，环境变量 CONFS_HOST/CONFS_PORT 覆盖，默认 127.0.0.1:8010） */
-static std::string		_CONFS_HOST = "127.0.0.1";
-static int			_CONFS_PORT = 8010;
 
 /* WebSocket 代理路由：path -> ws://backend-host:port/target
  * 仅管理员用户可访问，握手阶段由 ws_proxy 回调验签 Token 中的 is_admin */
@@ -620,9 +633,16 @@ TokenInfo verify_token(const std::string& raw_token) {
 		return info;
 	}
 
-	// RSA 验签
+	// RSA 验签（Verify 对非法签名格式（如奇数长度 hex）会抛异常，
+	// 此处统一捕获按验签失败处理，避免伪造 Token 触发 500——审计 B3/B4 契约要求 401）
 	auto publ = MyRSA::Public_Key::from_pem(_KEYGEN->get_public_key_pem());
-	if (!publ.Verify(auth, sign)) {
+	bool sig_ok = false;
+	try {
+		sig_ok = publ.Verify(auth, sign);
+	} catch (const std::exception&) {
+		sig_ok = false;
+	}
+	if (!sig_ok) {
 		info.http_status = 401;
 		return info;
 	}
@@ -767,14 +787,27 @@ void set_signal_action() {
 /* -------- 入口 --------*/
 int main(int argc, char **argv) {
 
-	/* 首先处理命令行参数 */
+	/* 首先处理命令行参数（v1.1.0 起配置全部经 CLI 传递） */
 	po::options_description desc("cpp language web ca (central auth)");
 	desc.add_options()
 		("help,h",					"output help message")
 		("version,v",					"output version message")
-		("host",		po::value<std::string>(),	"绑定地址（默认 127.0.0.1），覆盖 [Server] address")
-		("port",		po::value<int>(),		"监听端口（默认 8443），覆盖 [Server] port")
-		("config",		po::value<std::string>(),	"confs 拉取的配置名（默认 ca.ini）")
+		("host",		po::value<std::string>(),	"绑定地址（默认 127.0.0.1，env CA_HOST/LISTEN_ADDR）")
+		("port",		po::value<int>(),		"监听端口（默认 8443，env CA_PORT/LISTEN_PORT）")
+		("tls",						"启用 HTTPS（证书 full_chain.crt/server.key；缺省纯 HTTP，env CA_TLS=on）")
+		("upstream-gateway",	po::value<std::string>(),	"上游 gateway 地址（默认 http://127.0.0.1:8445，env CA_UPSTREAM_GATEWAY/UPSTREAM_GATEWAY）")
+		("token-keep-time",	po::value<int>(),		"Token 有效期秒数（默认 3600，env CA_TOKEN_KEEP_TIME）")
+		("token-refresh-grace-multiplier", po::value<int>(),	"Token 刷新宽限期倍数（默认 2，env CA_TOKEN_REFRESH_GRACE_MULTIPLIER）")
+		("token-max-refresh",	po::value<int>(),		"Token 最大刷新次数（默认 10，env CA_TOKEN_MAX_REFRESH）")
+		("cors-origins",	po::value<std::string>(),	"CORS Origin 白名单，分号分隔（env CA_CORS_ORIGINS）")
+		("admin-users",		po::value<std::string>(),	"管理员账号白名单，分号分隔（env CA_ADMIN_USERS）")
+		("ws-proxy-routes",	po::value<std::string>(),	"WS 代理路由 /path=ws://host:port，分号分隔（env CA_WS_PROXY_ROUTES）")
+		("db-host",		po::value<std::string>(),	"db 服务地址（默认 127.0.0.1，env CA_DB_HOST/DB_HOST）")
+		("db-port",		po::value<int>(),		"db 服务端口（默认 8005，env CA_DB_PORT/DB_PORT）")
+		("captcha-host",	po::value<std::string>(),	"captcha 服务地址（默认 127.0.0.1，env CA_CAPTCHA_HOST/CAPTCHA_HOST）")
+		("captcha-port",	po::value<int>(),		"captcha 服务端口（默认 8009，env CA_CAPTCHA_PORT/CAPTCHA_PORT）")
+		("smtp-host",		po::value<std::string>(),	"smtp 服务地址（默认 127.0.0.1，env CA_SMTP_HOST/SMTP_HOST）")
+		("smtp-port",		po::value<int>(),		"smtp 服务端口（默认 8008，env CA_SMTP_PORT/SMTP_PORT）")
 		("log-level",	po::value<std::string>(),	"日志级别 debug|info|warn|error（默认 info）")
 		("instance",	po::value<std::string>(),	"实例名（注册中心用，默认 ca）")
 	;
@@ -808,133 +841,98 @@ int main(int argc, char **argv) {
 		return 0;
 	}
 
-	/* ==================== 配置加载（两层：confs 强依赖 → 环境变量覆盖） ====================
-	 * 与 Python 服务（dnfs/db/static）保持一致的加载模式：
-	 *   1. 引导配置：confs 地址从 CONFS_HOST/CONFS_PORT 环境变量读取，缺省 127.0.0.1:8010
-	 *   2. 从 confs 拉取 ca.ini 全文（retry_on_refused=true 等待 confs 就绪）
-	 *   3. 用 boost::property_tree 解析 ini
-	 *   4. 环境变量覆盖（最高优先级，Docker 环境需要服务名而非 127.0.0.1）
-	 *   5. 配置完整性校验：必需字段缺失则启动失败
-	 * 不再支持本地 ini 文件回退（与 static 模块一致，配置统一由 confs 管理）。
-	 * ==================================================================================== */
+	/* ==================== 配置加载（v1.1.0：CLI > 环境变量 > 默认值） ====================
+	 * 配置完全经命令行传递（与 dnfs2 同模式），不再依赖 confs 统一配置服务：
+	 *   1. 默认值：各配置项声明处初值（与原 ca.ini 默认值一致）
+	 *   2. 环境变量覆盖：CA_ 前缀为主，兼容旧名（LISTEN_ADDR / LISTEN_PORT / UPSTREAM_GATEWAY / DB_x / CAPTCHA_x / SMTP_x，Docker 环境需要服务名而非 127.0.0.1）
+	 *   3. CLI 参数覆盖：最高优先级
+	 *   4. 配置完整性校验：必需字段非法则启动失败
+	 * 部署侧由 core/services.yaml 的 args 声明完整传入配置。
+	 * ============================================================================== */
 
 	{
-		/* 1. 引导配置：confs 连接地址（不依赖 confs 本身，避免循环依赖） */
-		_CONFS_HOST = ConfIni::env("CONFS_HOST", "127.0.0.1");
-		_CONFS_PORT = ConfIni::env_int("CONFS_PORT", 8010);
-
-		/* --config 覆盖 confs 拉取的配置名（在 confs 拉取前读取） */
-		std::string confs_config_name = "ca.ini";
-		if (vm.count("config")) {
-			confs_config_name = vm["config"].as<std::string>();
-		}
-
-		ConfIni cf;
-		try {
-			/* 从 confs 拉取配置 */
-			std::cout << "[ca] 从 confs (" << _CONFS_HOST << ":" << _CONFS_PORT
-			          << ") 拉取 " << confs_config_name << " ..." << std::endl;
-			pmc::net::MsgClient confs_client(_CONFS_HOST, _CONFS_PORT, "ca");
-			json::object req;
-			req["_route"] = "get";
-			req["name"] = confs_config_name;
-			std::string resp_str = confs_client.call(
-				json::serialize(req), /*timeout=*/5.0,
-				/*retry_on_refused=*/true);
-			auto resp = json::parse(resp_str).as_object();
-			if (!resp.at("success").as_bool()) {
-				std::string err = "unknown";
-				if (auto* ev = resp.if_contains("error")) {
-					if (ev->is_string()) err = ev->as_string().c_str();
-				}
-				std::cerr << "[ca] 致命错误: 从 confs 获取 ca.ini 失败: " << err << std::endl;
-				return 1;
-			}
-			std::string ini_content = resp.at("data").as_object().at("content").as_string().c_str();
-			cf = ConfIni::fromString(ini_content);
-			std::cout << "[ca] 配置来源: confs (ca.ini @ "
-			          << _CONFS_HOST << ":" << _CONFS_PORT << ")" << std::endl;
-		}
-		catch (ConfIni::IniConfigureFileParseException &e) {
-			std::cerr << "ERROR: " << e.what() << std::endl;
-			std::cerr << "ini parse error" << std::endl;
-			return 1;
-		}
-		catch (const std::exception &e) {
-			std::cerr << "[ca] 致命错误: 配置加载失败: " << e.what() << std::endl;
-			return 1;
-		}
-
-		/* 2. 从 ini 读取配置 */
-		_ADDR = cf.get<std::string>("Server.address", "");
-		_PORT = cf.get<int>("Server.port", -1);
-		_TLS = cf.get<bool>("Server.tls", false);
-		_UPSTREAM_GATEWAY = cf.get<std::string>("Upstream.gateway", "http://127.0.0.1:8445");
-		_TOKEN_KEEP_TIME = cf.get<int>("Token.keep_time", 3600);
-		_TOKEN_REFRESH_GRACE_MULTIPLIER = cf.get<int>("Token.refresh_grace_multiplier", 2);
-		_TOKEN_MAX_REFRESH = cf.get<int>("Token.max_refresh", 10);
-		_CORS_ORIGINS = split(cf.get<std::string>("CORS.allowed_origins", ""), ';');
-		_ADMIN_USERS = split(cf.get<std::string>("Admin.users", ""), ';');
-
-		/* 下游服务地址 */
-		_DB_HOST = cf.get<std::string>("Downstream.db_host", "127.0.0.1");
-		_DB_PORT = cf.get<int>("Downstream.db_port", 8005);
-		_CAPTCHA_HOST = cf.get<std::string>("Downstream.captcha_host", "127.0.0.1");
-		_CAPTCHA_PORT = cf.get<int>("Downstream.captcha_port", 8009);
-		_SMTP_HOST = cf.get<std::string>("Downstream.smtp_host", "127.0.0.1");
-		_SMTP_PORT = cf.get<int>("Downstream.smtp_port", 8008);
-
-		/* [WsProxy] WebSocket 代理路由：格式 /path=ws://host:port/target;... */
+		/* 1. 环境变量覆盖（默认值之上） */
 		{
-			std::string ws_cfg = cf.get<std::string>("WsProxy.routes", "");
-			if (!ws_cfg.empty()) {
-				auto entries = split(ws_cfg, ';');
-				for (auto& entry : entries) {
-					auto eq = entry.find('=');
-					if (eq != std::string::npos) {
-						std::string path = entry.substr(0, eq);
-						std::string url  = entry.substr(eq + 1);
-						auto trim = [](std::string& s) {
-							while (!s.empty() && std::isspace((unsigned char)s.front())) s.erase(s.begin());
-							while (!s.empty() && std::isspace((unsigned char)s.back())) s.pop_back();
-						};
-						trim(path); trim(url);
-						if (!path.empty() && !url.empty()) {
-							_WS_PROXY_ROUTES[path] = url;
-						}
-					}
-				}
-			}
+			std::string v = env_or("CA_HOST", env_or("LISTEN_ADDR"));
+			if (!v.empty()) _ADDR = v;
+		}
+		{
+			int v = env_int_or("CA_PORT", env_int_or("LISTEN_PORT", -1));
+			if (v > 0) _PORT = v;
+		}
+		if (env_flag("CA_TLS")) _TLS = true;
+
+		{
+			std::string v = env_or("CA_UPSTREAM_GATEWAY", env_or("UPSTREAM_GATEWAY"));
+			if (!v.empty()) _UPSTREAM_GATEWAY = v;
+		}
+		{
+			int v = env_int_or("CA_TOKEN_KEEP_TIME", -1);
+			if (v > 0) _TOKEN_KEEP_TIME = v;
+		}
+		{
+			int v = env_int_or("CA_TOKEN_REFRESH_GRACE_MULTIPLIER", -1);
+			if (v > 0) _TOKEN_REFRESH_GRACE_MULTIPLIER = v;
+		}
+		{
+			int v = env_int_or("CA_TOKEN_MAX_REFRESH", -1);
+			if (v > 0) _TOKEN_MAX_REFRESH = v;
+		}
+		{
+			std::string v = env_or("CA_CORS_ORIGINS");
+			if (!v.empty()) _CORS_ORIGINS = split(v, ';');
+		}
+		{
+			std::string v = env_or("CA_ADMIN_USERS");
+			if (!v.empty()) _ADMIN_USERS = split(v, ';');
 		}
 
-		/* 3. 环境变量覆盖（优先级最高，Docker 环境使用服务名而非 127.0.0.1） */
-		std::string env_listen_addr = ConfIni::env("LISTEN_ADDR");
-		if (!env_listen_addr.empty()) _ADDR = env_listen_addr;
-		int env_listen_port = ConfIni::env_int("LISTEN_PORT", -1);
-		if (env_listen_port > 0) _PORT = env_listen_port;
+		{
+			std::string v = env_or("CA_DB_HOST", env_or("DB_HOST"));
+			if (!v.empty()) _DB_HOST = v;
+		}
+		{
+			int v = env_int_or("CA_DB_PORT", env_int_or("DB_PORT", -1));
+			if (v > 0) _DB_PORT = v;
+		}
+		{
+			std::string v = env_or("CA_CAPTCHA_HOST", env_or("CAPTCHA_HOST"));
+			if (!v.empty()) _CAPTCHA_HOST = v;
+		}
+		{
+			int v = env_int_or("CA_CAPTCHA_PORT", env_int_or("CAPTCHA_PORT", -1));
+			if (v > 0) _CAPTCHA_PORT = v;
+		}
+		{
+			std::string v = env_or("CA_SMTP_HOST", env_or("SMTP_HOST"));
+			if (!v.empty()) _SMTP_HOST = v;
+		}
+		{
+			int v = env_int_or("CA_SMTP_PORT", env_int_or("SMTP_PORT", -1));
+			if (v > 0) _SMTP_PORT = v;
+		}
 
-		std::string env_upstream = ConfIni::env("UPSTREAM_GATEWAY");
-		if (!env_upstream.empty()) _UPSTREAM_GATEWAY = env_upstream;
+		/* WS 代理路由 env：/path=ws://host:port/target;...（解析逻辑与 CLI 共用） */
+		std::string ws_cfg = env_or("CA_WS_PROXY_ROUTES");
 
-		std::string env_db_host = ConfIni::env("DB_HOST");
-		if (!env_db_host.empty()) _DB_HOST = env_db_host;
-		int env_db_port = ConfIni::env_int("DB_PORT", -1);
-		if (env_db_port > 0) _DB_PORT = env_db_port;
-
-		std::string env_captcha_host = ConfIni::env("CAPTCHA_HOST");
-		if (!env_captcha_host.empty()) _CAPTCHA_HOST = env_captcha_host;
-		int env_captcha_port = ConfIni::env_int("CAPTCHA_PORT", -1);
-		if (env_captcha_port > 0) _CAPTCHA_PORT = env_captcha_port;
-
-		std::string env_smtp_host = ConfIni::env("SMTP_HOST");
-		if (!env_smtp_host.empty()) _SMTP_HOST = env_smtp_host;
-		int env_smtp_port = ConfIni::env_int("SMTP_PORT", -1);
-		if (env_smtp_port > 0) _SMTP_PORT = env_smtp_port;
-
-		/* 4. CLI 参数覆盖（最高优先级） */
-		if (vm.count("host"))      _ADDR = vm["host"].as<std::string>();
-		if (vm.count("port"))      _PORT = vm["port"].as<int>();
-		if (vm.count("instance"))  _INSTANCE = vm["instance"].as<std::string>();
+		/* 2. CLI 参数覆盖（最高优先级） */
+		if (vm.count("host"))	_ADDR = vm["host"].as<std::string>();
+		if (vm.count("port"))	_PORT = vm["port"].as<int>();
+		if (vm.count("tls"))	_TLS = true;
+		if (vm.count("upstream-gateway"))	_UPSTREAM_GATEWAY = vm["upstream-gateway"].as<std::string>();
+		if (vm.count("token-keep-time"))	_TOKEN_KEEP_TIME = vm["token-keep-time"].as<int>();
+		if (vm.count("token-refresh-grace-multiplier"))	_TOKEN_REFRESH_GRACE_MULTIPLIER = vm["token-refresh-grace-multiplier"].as<int>();
+		if (vm.count("token-max-refresh"))	_TOKEN_MAX_REFRESH = vm["token-max-refresh"].as<int>();
+		if (vm.count("cors-origins"))	_CORS_ORIGINS = split(vm["cors-origins"].as<std::string>(), ';');
+		if (vm.count("admin-users"))	_ADMIN_USERS = split(vm["admin-users"].as<std::string>(), ';');
+		if (vm.count("ws-proxy-routes"))	ws_cfg = vm["ws-proxy-routes"].as<std::string>();
+		if (vm.count("db-host"))	_DB_HOST = vm["db-host"].as<std::string>();
+		if (vm.count("db-port"))	_DB_PORT = vm["db-port"].as<int>();
+		if (vm.count("captcha-host"))	_CAPTCHA_HOST = vm["captcha-host"].as<std::string>();
+		if (vm.count("captcha-port"))	_CAPTCHA_PORT = vm["captcha-port"].as<int>();
+		if (vm.count("smtp-host"))	_SMTP_HOST = vm["smtp-host"].as<std::string>();
+		if (vm.count("smtp-port"))	_SMTP_PORT = vm["smtp-port"].as<int>();
+		if (vm.count("instance"))	_INSTANCE = vm["instance"].as<std::string>();
 		if (vm.count("log-level")) {
 			_LOG_LEVEL = vm["log-level"].as<std::string>();
 			// 归一化 warning → warn
@@ -952,18 +950,38 @@ int main(int argc, char **argv) {
 			}
 		}
 
-		/* 5. 配置完整性校验 */
-		if (_ADDR.empty() || _PORT == -1) {
-			std::cerr << "[ca] 致命错误: 配置项 [Server] address/port 缺失"
-			             "（ini 中未配置且无 LISTEN_ADDR/LISTEN_PORT 环境变量覆盖）" << std::endl;
+		/* WS 代理路由解析：/path=ws://host:port/target;... */
+		if (!ws_cfg.empty()) {
+			auto entries = split(ws_cfg, ';');
+			for (auto& entry : entries) {
+				auto eq = entry.find('=');
+				if (eq != std::string::npos) {
+					std::string path = entry.substr(0, eq);
+					std::string url  = entry.substr(eq + 1);
+					auto trim = [](std::string& s) {
+						while (!s.empty() && std::isspace((unsigned char)s.front())) s.erase(s.begin());
+						while (!s.empty() && std::isspace((unsigned char)s.back())) s.pop_back();
+					};
+					trim(path); trim(url);
+					if (!path.empty() && !url.empty()) {
+						_WS_PROXY_ROUTES[path] = url;
+					}
+				}
+			}
+		}
+
+		/* 3. 配置完整性校验 */
+		if (_ADDR.empty() || _PORT <= 0) {
+			std::cerr << "[ca] 致命错误: 监听地址/端口非法"
+			             "（--host/--port 或 CA_HOST/CA_PORT 环境变量）" << std::endl;
 			return 1;
 		}
 		if (_UPSTREAM_GATEWAY.empty()) {
-			std::cerr << "[ca] 致命错误: 配置项 [Upstream] gateway 缺失" << std::endl;
+			std::cerr << "[ca] 致命错误: 上游 gateway 地址缺失（--upstream-gateway）" << std::endl;
 			return 1;
 		}
 		if (_DB_HOST.empty() || _DB_PORT <= 0) {
-			std::cerr << "[ca] 致命错误: 配置项 [Downstream] db_host/db_port 缺失" << std::endl;
+			std::cerr << "[ca] 致命错误: db 服务地址缺失（--db-host/--db-port）" << std::endl;
 			return 1;
 		}
 	}

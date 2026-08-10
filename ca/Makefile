@@ -1,4 +1,4 @@
-VERSION := 1.0.0
+VERSION := 1.1.0
 APP_NAME := ca
 INSTL_DIR := /usr/local/bin
 CPP := g++
@@ -13,7 +13,7 @@ $(shell mkdir -p $(BUILD_DIR))
 all: $(BUILD_DIR)/$(APP_NAME).out
 $(BUILD_DIR)/$(APP_NAME).out:	$(BUILD_DIR)/main.o
 	$(CPP) $^ $(LIBS) $(MY_LIBS) -o $@
-$(BUILD_DIR)/main.o:	src/main.cpp inc/DbC.hpp inc/Conf.hpp inc/ExpBase.hpp inc/LocalTime.hpp
+$(BUILD_DIR)/main.o:	src/main.cpp inc/DbC.hpp inc/ExpBase.hpp inc/LocalTime.hpp
 	$(CPP) $(CPPFLAGS) -c $< $(INCS) -o $@
 clear:
 	@rm -rvf build/
