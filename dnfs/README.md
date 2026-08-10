@@ -29,7 +29,7 @@ Dendrachy Network File-System，基于父子关系（pid）组织的树状节点
 
 ## 数据模型
 
-对应 `db` 服务中的 `Notes` 表（见 [db/create_sqlite3.sql](../db/create_sqlite3.sql)）：
+对应 `db` 服务中的 `Notes` 表（见 [db2/scripts/create_sqlite3.sql](../db2/scripts/create_sqlite3.sql)）：
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -324,7 +324,7 @@ bash _run.sh   # 启动服务（waitress）
    - 现两函数均已加 `@_handle_exp`（[dnfs.py:469](dnfs.py#L469)、[dnfs.py:572](dnfs.py#L572)），异常统一返回结构化 JSON，不再出 Flask 默认 500 页。
 
 4. **有子节点的父节点可能被删除（树结构完整性保护缺陷）** — ❌ 未修复
-   - **数据库层缺失外键约束**: Notes 表 `pid` 列未定义 `FOREIGN KEY ... ON DELETE RESTRICT`（[db/create_sqlite3.sql](../db/create_sqlite3.sql)）。
+   - **数据库层缺失外键约束**: Notes 表 `pid` 列未定义 `FOREIGN KEY ... ON DELETE RESTRICT`（[db2/scripts/create_sqlite3.sql](../db2/scripts/create_sqlite3.sql)）。
    - **应用层 TOCTOU 竞态**: 子节点查询（SELECT）与删除（DELETE）是两个独立 RPC，无事务保护。
    - **错误处理缺陷**: 多处直接访问 `notes['data']` 而未先确认 `success`（如 [dnfs.py:387](dnfs.py#L387)、[L519](dnfs.py#L519)），`success=False` 时可能抛 KeyError。
 

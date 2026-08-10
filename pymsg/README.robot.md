@@ -158,10 +158,10 @@ pymsg/
 
 | 语言 | 文件 | 说明 |
 |------|------|------|
-| Python | [pymsg/__init__.py](file:///Users/qingsong/micro_servers/pymsg/pymsg/__init__.py) | 主实现 |
-| C++ | [gateway/inc/Msg.hpp](file:///Users/qingsong/micro_servers/gateway/inc/Msg.hpp) | gateway 使用 |
-| Go | [waf/internal/logclient/logclient.go](file:///Users/qingsong/micro_servers/waf/internal/logclient/logclient.go) | waf 使用 |
-| Python (黑盒) | [tests/blackbox/helpers.py](file:///Users/qingsong/micro_servers/tests/blackbox/helpers.py) | 纯 stdlib 测试实现 |
+| Python | [pymsg/__init__.py](pymsg/__init__.py) | 主实现 |
+| C++ | [gateway/inc/Msg.hpp](../libmsg/inc/us/Msg.hpp) | gateway 使用 |
+| Go | [waf/internal/logclient/logclient.go](../waf/internal/logclient/logclient.go) | waf 使用 |
+| Python (黑盒) | [tests/blackbox/helpers.py](../tests/blackbox/helpers.py) | 纯 stdlib 测试实现 |
 
 ### 3.3 代码索引
 
@@ -797,10 +797,10 @@ Modes:
 
 | 语言 | 文件 | 类型 |
 |------|------|------|
-| Python | [pymsg/__init__.py](file:///Users/qingsong/micro_servers/pymsg/pymsg/__init__.py) | 主实现 |
-| Python | [tests/blackbox/helpers.py](file:///Users/qingsong/micro_servers/tests/blackbox/helpers.py) | 测试客户端 |
-| C++ | [gateway/inc/Msg.hpp](file:///Users/qingsong/micro_servers/gateway/inc/Msg.hpp) | gateway 客户端 |
-| Go | [waf/internal/logclient/logclient.go](file:///Users/qingsong/micro_servers/waf/internal/logclient/logclient.go) | waf 客户端 |
+| Python | [pymsg/__init__.py](pymsg/__init__.py) | 主实现 |
+| Python | [tests/blackbox/helpers.py](../tests/blackbox/helpers.py) | 测试客户端 |
+| C++ | [gateway/inc/Msg.hpp](../libmsg/inc/us/Msg.hpp) | gateway 客户端 |
+| Go | [waf/internal/logclient/logclient.go](../waf/internal/logclient/logclient.go) | waf 客户端 |
 
 ### D. 参考资源
 

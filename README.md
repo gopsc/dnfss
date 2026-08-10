@@ -106,7 +106,7 @@
 - **前置转发**：无 `Target-Url` 为公开请求（剥身份头直转 gateway）；有 `Target-Url` 为受保护请求（验签后注入 `X-Auth-User`/`X-Auth-Admin` 转发，strip-then-set 契约剥离客户端伪造值）；上游不可达统一 502。
 - **CAPTCHA**：`GET /captcha/image` 为 captcha 服务（pymsg/TCP :8009）的图形验证码代理路由；`/login` 强制 CAPTCHA。
 - **速率限制**：登录 5 次/5 分钟、注册 3 次/10 分钟、发码 IP 级 + 邮箱级双窗口，按 `X-Forwarded-For`（WAF 注入）客户端 IP 计数。
-- **用户表**：`Users` 表由 [db/create_sqlite3.sql](db/create_sqlite3.sql) 建立，无默认管理员账号，首位注册者即为管理员。
+- **用户表**：`Users` 表由 [db2/scripts/create_sqlite3.sql](db2/scripts/create_sqlite3.sql) 建立，无默认管理员账号，首位注册者即为管理员。
 - 详见 [ca/README.md](ca/README.md)。
 
 ### gateway（应用层网关 · v0.9.0）
@@ -207,7 +207,7 @@
 
 ### confs（统一配置服务 · 已内嵌进 core）
 
-- 独立 Python `confs` 服务已废弃（不再部署），配置分发逻辑已内嵌进 `core`（`ConfsTask`，由 `--confs 8010` 启用，协议与 Python 版字节级兼容，消费方零改动）。
+- 独立 Python `confs` 服务已废弃（不再部署），配置分发逻辑已内嵌进 `core`（`ConfsTask`，由 `--confs 8010` 启用，协议与 Python 版字节级兼容，消费方零改动）；C++20 重写版 [confs2/](confs2/) 目录保留为开发存档。
 - 集中存放各服务的配置文件（`confs/configs/`），基于 pymsg（RpcServer，TCP 长度前缀帧 + JSON）分发。
 - pymsg 路由：`get`（取配置文件全文；带 `key` 时按键提取，ini 用 `Section.option`、json 用点号路径）、`list`（列出全部配置及元信息）、`reload`（重载指定配置，缺省清空全部缓存）、`health`。
 - 内存缓存 + 文件 mtime 变化自动重载，改配置无需重启；配置名校验（basename + realpath 前缀 + 扩展名白名单）防路径遍历。
@@ -264,6 +264,7 @@
 | [libcrypt](libcrypt/) | 加密库：`AES_CBC`、`MyRSA`、`SHA256`、`Base64`、`Crypto_Basic` |
 | [libsqlite3](libsqlite3/) | SQLite3 C++ 封装（Header-only） |
 | [libmsg](libmsg/) | 消息通信库：pymsg 协议 C++ 实现（4B 大端长度前缀 + UTF-8 载荷），提供 `MsgClient`/`MsgServer`/`AsyncQueue`/`RpcClient`/`RpcServer`，与 Python pymsg 字节级兼容 |
+| [liblogc](liblogc/) | 统一集中式日志客户端（C++ 版，`us/LogC.hpp`），对应 Python `log_client.py`：pymsg/TCP 异步批量写入 db2 Logs 表，队列上限 1 万条 + 级别过滤 + fail-safe，ca/core/gateway/captcha2/smtp3 等 C++ 服务共用 |
 | [libtry](libtry/) | 嵌入式脚本解释器（~741 行 C），手写递归下降词法/语法/执行引擎，支持变量/数组/函数/控制流，宽字符（中文标识符），用于嵌入式操作界面 shell |
 
 ### Python 共享组件
@@ -326,7 +327,7 @@ bash _setup.deb.sh        # Debian/Ubuntu
 # 或
 bash _setup.rhel.sh       # RHEL/CentOS/Rocky/Fedora
 
-# 2. 依次安装各模块（libth -> libhttp -> libcrypt -> libsqlite3 -> libmsg -> liblogc -> gateway -> waf -> static -> fsys -> dnfs -> dnfs2 -> db -> db2 -> smtp -> smtp3 -> captcha -> captcha2 -> confs -> ai_review -> aibox -> redirect80 -> core；legacy Python 版与 C++ 重写版均构建，生产由 core 按 services.yaml 拉起新版）
+# 2. 依次安装各模块（libth -> libhttp -> libcrypt -> libsqlite3 -> libmsg -> liblogc -> gateway -> waf -> ca -> static -> fsys -> dnfs -> dnfs2 -> db -> db2 -> smtp -> smtp3 -> captcha -> captcha2 -> confs -> ai_review -> aibox -> redirect80 -> core；legacy Python 版与 C++ 重写版均构建，生产由 core 按 services.yaml 拉起新版）
 bash _inst.sh
 ```
 

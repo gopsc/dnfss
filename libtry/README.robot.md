@@ -580,20 +580,20 @@ puts("1");
 
 | ID | 位置 | 描述 | 影响 |
 |----|------|------|------|
-| L1 | [L20](file:///Users/qingsong/micro_servers/libtry/try.c#L20) | **缓冲区大小固定**：`POOLSIZE = 128` 字节，无法修改 | 长脚本将溢出 |
-| L2 | [L702](file:///Users/qingsong/micro_servers/libtry/try.c#L702) | **`__exit()` 死循环**：`while(1);` 错误时直接挂死程序 | 无法恢复 |
-| L3 | [L186](file:///Users/qingsong/micro_servers/libtry/try.c#L186) | **字符串内存泄漏**：`malloc` 分配的字符串在重新赋值时未释放 | 长期运行泄漏 |
-| L4 | [L528](file:///Users/qingsong/micro_servers/libtry/try.c#L528) | **数组越界**：无越界检查 | 未定义行为 |
+| L1 | [L20](try.c#L20) | **缓冲区大小固定**：`POOLSIZE = 128` 字节，无法修改 | 长脚本将溢出 |
+| L2 | [L702](try.c#L702) | **`__exit()` 死循环**：`while(1);` 错误时直接挂死程序 | 无法恢复 |
+| L3 | [L186](try.c#L186) | **字符串内存泄漏**：`malloc` 分配的字符串在重新赋值时未释放 | 长期运行泄漏 |
+| L4 | [L528](try.c#L528) | **数组越界**：无越界检查 | 未定义行为 |
 
 ### 🟡 中等问题
 
 | ID | 位置 | 描述 |
 |----|------|------|
-| L5 | [L598](file:///Users/qingsong/micro_servers/libtry/try.c#L598) | **`puts` 实现存疑**：原 `wprintf` 被注释，改用 `printtovga` |
-| L6 | [L518](file:///Users/qingsong/micro_servers/libtry/try.c#L518) | **`clearThis()` 被注释**：作者注释说"不知为何需要注释了才能跑" |
-| L7 | [L706](file:///Users/qingsong/micro_servers/libtry/try.c#L706) | **文件模式仅限 `_DEBUG`**：正常构建时 `main()` 不编译 |
-| L8 | [L103](file:///Users/qingsong/micro_servers/libtry/try.c#L103) | **栈缓冲区溢出风险**：`nameBuffer[16]` 但标识符长度限制由 `MAXNAMESIZE=16` 控制 |
-| L9 | [L21](file:///Users/qingsong/micro_servers/libtry/try.c#L21) | **符号表大小固定**：`SYMTABSIZE = 128` 个符号 |
+| L5 | [L598](try.c#L598) | **`puts` 实现存疑**：原 `wprintf` 被注释，改用 `printtovga` |
+| L6 | [L518](try.c#L518) | **`clearThis()` 被注释**：作者注释说"不知为何需要注释了才能跑" |
+| L7 | [L706](try.c#L706) | **文件模式仅限 `_DEBUG`**：正常构建时 `main()` 不编译 |
+| L8 | [L103](try.c#L103) | **栈缓冲区溢出风险**：`nameBuffer[16]` 但标识符长度限制由 `MAXNAMESIZE=16` 控制 |
+| L9 | [L21](try.c#L21) | **符号表大小固定**：`SYMTABSIZE = 128` 个符号 |
 
 ### 🟢 轻微问题
 
@@ -609,7 +609,7 @@ puts("1");
 
 #### 优先级 1（安全相关）
 
-1. **修复数组越界**：在 [L528](file:///Users/qingsong/micro_servers/libtry/try.c#L528) 添加检查
+1. **修复数组越界**：在 [L528](try.c#L528) 添加检查
    ```c
    if (index < 0 || index >= s->value) {
        printtovga(L"Array index out of bounds\n");
@@ -650,7 +650,7 @@ puts("1");
 
 ### 8.1 添加新关键字
 
-在 [init_tryc()](file:///Users/qingsong/micro_servers/libtry/try.c#L650) 中添加：
+在 [init_tryc()](try.c#L650) 中添加：
 
 ```c
 // 1. 在 enum 中添加新 token 类型
@@ -678,7 +678,7 @@ else if (token == NewKeyword) {
 
 ### 8.2 添加新运算符
 
-在 [next()](file:///Users/qingsong/micro_servers/libtry/try.c#L85) 中添加识别逻辑：
+在 [next()](try.c#L85) 中添加识别逻辑：
 
 ```c
 // 例如：+= 运算符
@@ -690,7 +690,7 @@ else if (token == L'+') {
 }
 ```
 
-在 [statement()](file:///Users/qingsong/micro_servers/libtry/try.c#L466) 中添加执行逻辑。
+在 [statement()](try.c#L466) 中添加执行逻辑。
 
 ### 8.3 自定义输出
 

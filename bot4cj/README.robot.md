@@ -317,7 +317,7 @@ cat scripts/std.mt | bash _run.sh
 
 ## 神经网络支持
 
-项目内置了全连接层 Nn1（[math/nn.cj](src/math/nn.cj)）与 CNN（[math/cnn.cj](src/math/cnn.cj) + [cpp/cnn/](src/cpp/cnn/)）：
+项目内置了全连接层 Nn1（[math/nn.cj](src/math/nn.cj)）与 CNN（[math/cnn.cj](src/math/cnn.cj) + [cuda/](src/cuda/)）：
 
 - **Nn1**：多层感知机，支持前向传播、反向传播、权重更新
 - **CNN**：Conv → ReLU → Pool → GA-Pool → Flatten → FC
@@ -374,7 +374,7 @@ main.cj 中预留了 DRL 流程（注释状态）：加载预训练权重 → �
 ## 相关资源
 
 - [Dashun 蜘蛛机器人建模](https://github.com/gopsc/Dashun)
-- [深度分析报告](docs/Reports/analysis_20260525_00.md)（28 章节，1280 行）
+- [深度分析报告](../docs/reports/bot4cj_analysis_20260525_00.md)（28 章节，1280 行）
 - [仓颉编程语言](https://cangjie-lang.org/)
 - [PCA9685 数据手册](https://www.nxp.com/docs/en/data-sheet/PCA9685.pdf)
 - [MPU6050 数据手册](https://invensense.tdk.com/wp-content/uploads/2015/02/MPU-6000-Datasheet1.pdf)

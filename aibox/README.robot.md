@@ -469,7 +469,7 @@ CREATE TABLE memos (
 
 ### 9.4 技能格式规范
 
-详见 [SKILLS_FORMAT.md](file:///Users/qingsong/micro_servers/aibox/SKILLS_FORMAT.md)
+详见 [SKILLS_FORMAT.md](SKILLS_FORMAT.md)
 
 ---
 
@@ -805,19 +805,19 @@ sqlite3 ~/.aibox/memos.db "SELECT * FROM memos WHERE status='pending';"
 
 ### A. 配置文件示例
 
-完整默认配置见 [main.py:1100-1180](file:///Users/qingsong/micro_servers/aibox/main.py#L1100-L1180)
+完整默认配置见 [aibox.py:1100-1180](aibox.py#L1100-L1180)
 
 ### B. 数据库 Schema
 
 完整建表语句见：
-- 记忆库：[main.py](file:///Users/qingsong/micro_servers/aibox/main.py) 中 `MemoryManager._init_db()`
-- 任务库：[main.py](file:///Users/qingsong/micro_servers/aibox/main.py) 中 `MemoScheduler._init_db()`
+- 记忆库：[aibox.py](aibox.py) 中 `MemoryManager._init_db()`
+- 任务库：[aibox.py](aibox.py) 中 `MemoScheduler._init_db()`
 
 ### C. 参考文档
 
 - [DeepSeek API 文档](https://platform.deepseek.com/docs)
 - [websockets 库文档](https://websockets.readthedocs.io/)
-- [SKILLS_FORMAT.md](file:///Users/qingsong/micro_servers/aibox/SKILLS_FORMAT.md)
+- [SKILLS_FORMAT.md](SKILLS_FORMAT.md)
 
 ---
 
