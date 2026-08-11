@@ -42,7 +42,7 @@ Target-Url: http://127.0.0.1:8006    // 可选，缺省取 Proxy.default
 
 两层加载：confs 拉取（pymsg `get`，`retry_on_refused=true`）→ 环境变量覆盖。
 
-配置文件：[confs/configs/gateway.ini](../confs/configs/gateway.ini)。
+配置文件：[core/configs/gateway.ini](../core/configs/gateway.ini)。
 
 - `Server.address`/`port`/`tls`：默认 `127.0.0.1:8445`（v0.9.0 起 8443 归 ca）；env `LISTEN_ADDR`/`LISTEN_PORT`。
 - `Proxy.default` / `Proxy.opened` / `Proxy.closed`：转发目标与白名单（分号分隔）。
