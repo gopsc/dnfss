@@ -1,7 +1,0 @@
-nuitka
-flask
-flask-cors
-flask_sqlalchemy
-#gunicorn
-waitress
-../pymsg
