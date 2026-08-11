@@ -1,3 +1,4 @@
 # 运行时零第三方依赖（纯标准库：fcntl/struct/threading/wave/argparse）
+# picamera2 为可选运行时依赖（仅 @Camera 需要，树莓派 OS 预装，勿 pip 安装）
 # 以下仅开发测试用
 pytest>=7.0

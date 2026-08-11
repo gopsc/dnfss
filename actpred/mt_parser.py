@@ -1,7 +1,9 @@
 """轻量级 .mt 脚本 @Action 矩阵解析器
 
 从 .mt 文件中提取 @Action 块，解析为 (n_rows, n_cols) 的 float32 矩阵。
-支持 `-` 占位符（沿用上一行同列的值）；首行 `-` 从 @Servo 块的初始角度填充。
+支持 `-` 占位符（沿用上一行同列的值）；首行 `-` 填 0，
+与 pybot/bot4cj 运行时语义一致（2026-08 统一，见
+docs/reports/bot4cj_python_migration_dev_doc.md §2.3）。
 """
 
 import re
@@ -15,27 +17,6 @@ def _natural_key(p: Path):
     return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", p.name)]
 
 
-def _parse_servo_init(text: str) -> dict:
-    """从 @Servo 块提取 {servo_name: initial_angle}（max 列）"""
-    match = re.search(r"@Servo\s+(.*?)\s*@", text, re.DOTALL)
-    if not match:
-        return {}
-    servo_init = {}
-    for line in match.group(1).split("\n"):
-        line = re.sub(r"#.*$", "", line).strip()
-        if line.endswith(";"):
-            line = line[:-1].strip()
-        if not line:
-            continue
-        cols = re.split(r"\s+", line)
-        if len(cols) >= 2 and cols[0] != "name":
-            try:
-                servo_init[cols[0]] = float(cols[1])
-            except ValueError:
-                pass
-    return servo_init
-
-
 def parse_mt_action(path) -> np.ndarray:
     """解析 .mt 文件中的 @Action 矩阵
 
@@ -44,7 +25,7 @@ def parse_mt_action(path) -> np.ndarray:
 
     Returns:
         (n_data_rows, n_cols) float32 矩阵，表头行已跳过，`-` 已前向填充。
-        首行 `-` 从 @Servo 块的初始角度填充。
+        首行 `-` 填 0（与 pybot/bot4cj 运行时语义一致）。
 
     Raises:
         ValueError: 文件中无 @Action 块、数据行不足、行列不一致或数值非法
@@ -52,9 +33,6 @@ def parse_mt_action(path) -> np.ndarray:
     text = Path(path).read_text(encoding="utf-8")
     # 先去除整行注释（# 开头），避免注释中的 @Action 干扰正则匹配
     text = re.sub(r"(?m)^[ \t]*#.*$", "", text)
-
-    # 解析 @Servo 块的初始角度，用于首行 `-` 前向填充
-    servo_init = _parse_servo_init(text)
 
     match = re.search(r"@Action\s+(.*?)\s*@", text, re.DOTALL)
     if not match:
@@ -84,12 +62,6 @@ def parse_mt_action(path) -> np.ndarray:
     data_rows = rows[1:]
     n_cols = len(header)
 
-    # 为每列计算初始值：s1.A → @Servo 中 s1 的 max 角度，其余为 0.0
-    col_init = []
-    for col_name in header:
-        servo_name = col_name.split(".")[0] if "." in col_name else None
-        col_init.append(servo_init.get(servo_name, 0.0))
-
     matrix = np.zeros((len(data_rows), n_cols), dtype=np.float32)
     for i, row in enumerate(data_rows):
         if len(row) != n_cols:
@@ -98,7 +70,7 @@ def parse_mt_action(path) -> np.ndarray:
                 f"不一致: {path}")
         for j, val in enumerate(row):
             if val == "-":
-                matrix[i, j] = matrix[i - 1, j] if i > 0 else col_init[j]
+                matrix[i, j] = matrix[i - 1, j] if i > 0 else 0.0
             else:
                 try:
                     matrix[i, j] = float(val)
