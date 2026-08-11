@@ -15,11 +15,17 @@ CREATE TABLE IF NOT EXISTS Notes (
     pid INTEGER NOT NULL,
     owner VARCHAR(128) DEFAULT 'Unknow',
     title VARCHAR(128) NOT NULL,
-    content TEXT NOT NULL
+    content TEXT NOT NULL,
+    views INTEGER NOT NULL DEFAULT 0
 );
 
 -- 旧版增量
 -- ALTER TABLE Notes ADD COLUMN owner VARCHAR(128) DEFAULT 'Unknow';
+-- ALTER TABLE Notes ADD COLUMN views INTEGER NOT NULL DEFAULT 0;  -- patch_001 观看人数列
+
+-- Notes 索引：get_notes 按 pid 查子节点、所有权校验按 owner（patch_001 并入）
+CREATE INDEX IF NOT EXISTS idx_notes_pid   ON Notes(pid);
+CREATE INDEX IF NOT EXISTS idx_notes_owner ON Notes(owner);
 
 -- ── 日志表（db 内置日志模块）─────────────────────────────────────────
 
