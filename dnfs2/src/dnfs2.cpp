@@ -89,6 +89,16 @@ static std::string utc_now() {
     return buf;
 }
 
+static std::string local_now() {
+    auto now = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t(now);
+    struct tm tmbuf;
+    localtime_r(&t, &tmbuf);
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tmbuf);
+    return buf;
+}
+
 static int safe_stoi(const std::string& s, const char* field_name) {
     try {
         size_t pos = 0;
@@ -1034,10 +1044,12 @@ private:
 
             // 执行插入
             json::object values;
-            values["pid"]     = pid;
-            values["owner"]   = info->user;
-            values["title"]   = title;
-            values["content"] = content;
+            values["pid"]        = pid;
+            values["owner"]      = info->user;
+            values["title"]      = title;
+            values["content"]    = content;
+            values["created_at"] = local_now();
+            values["updated_at"] = local_now();
 
             json::object payload;
             payload["action"] = "insert";
@@ -1241,9 +1253,10 @@ private:
 
             // 执行更新
             json::object values;
-            values["pid"]     = pid;
-            values["title"]   = title;
-            values["content"] = content;
+            values["pid"]        = pid;
+            values["title"]      = title;
+            values["content"]    = content;
+            values["updated_at"] = local_now();
 
             json::object payload;
             payload["action"] = "update";
