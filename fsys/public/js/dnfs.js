@@ -1011,12 +1011,13 @@ function renderCards(list) {
 		owner_name.textContent = owner_text;
 		wrt_div.appendChild(owner_avatar);
 		wrt_div.appendChild(owner_name);
-		// 互动统计：眼睛=观看、爱心=点赞、转发=分享（后端 Notes 表暂无计数字段，缺省显示 0）
+		// 互动统计：眼睛=观看数（后端 views 列）、爱心=点赞、转发=子节点数（后端 child_count）。
+		// views / child_count 由 dnfs2 get_notes 返回；like_count 后端暂无字段，缺省显示 0。
 		let sts_div = document.createElement('div');
 		sts_div.className = "card-stats";
-		sts_div.appendChild(makeStatItem(ICON_EYE, item.visit_count));
+		sts_div.appendChild(makeStatItem(ICON_EYE, item.views));
 		sts_div.appendChild(makeStatItem(ICON_HEART, item.like_count));
-		sts_div.appendChild(makeStatItem(ICON_SHARE, item.share_count));
+		sts_div.appendChild(makeStatItem(ICON_SHARE, item.child_count));
 		// 卡片操作按钮：编辑 / 移动 / 删除（stopPropagation 防止触发卡片自身的点入跳转）
 		// 按钮组整体按 can_operate 显隐：操作权由后端 get_notes 按 owner / is_admin 判定，
 		// 与 delete_note / update_note 鉴权口径一致（移动本质也是 update_note）；

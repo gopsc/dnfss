@@ -693,6 +693,45 @@ private:
         }
     }
 
+    // 统计各节点的子节点数（get_notes 用于前端"分享数"展示）。
+    // 用一次 IN 批量查询所有孙节点（仅取 pid 列，避免拉取 content），按 pid 分组计数，
+    // 避免对每个节点单独查询。best-effort：任何失败仅记 WARNING 并返回已有结果，
+    // 绝不影响 get_notes 主流程（前端缺省显示 0）。
+    std::unordered_map<int64_t, int64_t> _child_counts(const json::array& items) {
+        std::unordered_map<int64_t, int64_t> counts;
+        try {
+            json::array ids;
+            for (const auto& item : items) {
+                if (item.is_object() && item.as_object().contains("id")
+                    && item.as_object().at("id").is_int64()) {
+                    ids.push_back(item.as_object().at("id").as_int64());
+                }
+            }
+            if (ids.empty()) return counts;
+
+            json::object payload;
+            payload["action"]  = "select";
+            payload["table"]   = "Notes";
+            payload["columns"] = json::array{"pid"};
+            payload["where"]   = json::object{{"pid", json::object{{"in", ids}}}};
+
+            DbResult r = _call_db(payload);
+            if (!r.success || !r.data.is_array()) {
+                _log("WARNING", "dnfs2", "child_count 统计失败: " + r.error);
+                return counts;
+            }
+            for (const auto& row : r.data.as_array()) {
+                if (row.is_object() && row.as_object().contains("pid")
+                    && row.as_object().at("pid").is_int64()) {
+                    counts[row.as_object().at("pid").as_int64()]++;
+                }
+            }
+        } catch (const std::exception& e) {
+            _log("WARNING", "dnfs2", std::string("child_count 统计异常: ") + e.what());
+        }
+        return counts;
+    }
+
     // ---- Token 验签（通过 gateway /whoami）---------------------------------
 
     struct UserInfo {
@@ -904,6 +943,8 @@ private:
 
             if (r.data.is_array()) {
                 json::array result = r.data.as_array();
+                // 一次性统计各节点的子节点数（供前端"分享数"展示），避免逐节点查询
+                auto child_counts = _child_counts(result);
                 for (auto& item : result) {
                     if (item.is_object()) {
                         json::object& note = item.as_object();
@@ -916,6 +957,10 @@ private:
                             }
                         }
                         note["can_operate"] = can_operate;
+                        int64_t nid = (note.contains("id") && note.at("id").is_int64())
+                                      ? note.at("id").as_int64() : 0;
+                        auto cit = child_counts.find(nid);
+                        note["child_count"] = (cit != child_counts.end()) ? cit->second : 0;
                     }
                 }
                 _log("INFO", "dnfs2", "get_notes 查询 pid=" + std::to_string(pid)
