@@ -81,7 +81,7 @@ RobotStruct（r.cj）createHardVars()：按 @块名分发到硬件变量工厂
 ### 2.3 关键语义（必须逐项对齐）
 
 1. **占位符 `-`**：递归沿用上一行同列值；首行为 `-` 时，`parseMt` 解析为 `0`（数值列），`getMt` 返回字面 `-`。
-   ⚠️ 注意与 actpred `mt_parser.py` 的差异：后者首行 `-` 用 `@Servo` 初始角度填充（这是 ML 数据管线的语义）。**pybot 运行时语义以仓颉版为准（填 0）**，因为运行时 Servo 有 max/min 钳位保护；数据管线语义留在 actpred 不变。
+   actpred `mt_parser.py` 曾与此不同（首行 `-` 用 `@Servo` max 列填充），2026-08 已统一为本语义（填 0）：运行时 Servo 有 max/min 钳位保护，且 max 列是钳位上限而非初始位姿（反装舵机 max 为负值，会填出指令空间 0~180 之外的非法值）。
 2. **@Action 列名 `dev.param`**：点号拆分为硬件名 + 参数名；参数名经 `@Alias` 表转换（`A`→`angle`、`F`→`frequency`）后传入硬件。
 3. **每行执行**：同一行按硬件聚合参数字典，逐硬件调用一次 `play()`；行间时延由 `spk.delay` 参数承担。
 4. **硬件生命周期**：`active()` 按创建顺序 build，`deactive()` 倒序 destroy，且必须在 `try/finally` 中保证执行。
@@ -276,7 +276,7 @@ class I2CBus:
 | 用例组 | 覆盖 |
 |--------|------|
 | test_parser | 全部 `scripts/*.mt` 解析成功；列数不一致抛 DoesNotSync；漏分号跨行；注释/空行/CRLF；roundtrip（解析→save→再解析等价） |
-| test_placeholder | `-` 递归沿用；首行 `-` 数值列=0；与 actpred mt_parser 语义差异的显式断言（防止两边被误"统一"） |
+| test_placeholder | `-` 递归沿用；首行 `-` 数值列=0；actpred mt_parser 已统一为同一语义（2026-08），两侧测试互为语义锚点 |
 | test_servo | 正装/反装翻转/offset/钳位边界 |
 | test_hardvars | @Alias 转换；@Action 列名拆分；同行参数聚合；重名覆盖警告 |
 | test_plugin | 插件三级路径查找；PluginNotFound 报错内容；PCA9685.py 用 Mock I2C 断言寄存器写序列（prescale=121、reg=0x06+4*ch、offval 字节序） |
@@ -315,7 +315,7 @@ class I2CBus:
 | Python GIL + 解释器抖动影响动作时序 | 舵机动作节奏轻微不均 | 动作行间延时 ≥ 20ms，抖动 <1ms 不可感知；MPU6050 采样用 Event.wait 定时，不忙等；量化依据见附录 A |
 | aplay 子进程首次启动延迟 | 首个音符滞后 | build() 时预热（播放 0 长度静音）；或后续可选接 alsaaudio |
 | 仓颉版行为的未记录细节 | 等价性缺口 | §6.3 写序列逐字节 diff 兜底 |
-| .mt 脚本方言分裂（pybot vs actpred 解析器） | 语义漂移 | test_placeholder 显式断言两者差异；长期可评估 actpred 复用 pybot parser 的只读模式 |
+| .mt 脚本方言分裂（pybot vs actpred 解析器） | 语义漂移 | 占位符语义已统一（2026-08，首行 `-` 均填 0）；长期可评估 actpred 复用 pybot parser 的只读模式 |
 | 树莓派 Python 版本参差 | 语法兼容 | 目标 Python ≥ 3.9（树莓派 OS Bullseye 起自带 3.9） |
 
 ---

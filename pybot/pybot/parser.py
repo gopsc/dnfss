@@ -213,9 +213,9 @@ class MatrixSaver:
 
 # ---------------- 占位符语义（与仓颉版 MatrixVars_Hardware.getMt/parseMt 对齐） ----------------
 #
-# ⚠️ 与 actpred/mt_parser.py 的语义差异（不得误统一）：
-#    actpred 数据管线首行 '-' 用 @Servo 初始角度填充；
-#    pybot 运行时首行 '-' 数值列解析为 0（Servo 有 max/min 钳位保护）。
+# 首行 '-' 数值列解析为 0（Servo 有 max/min 钳位保护）。
+# actpred/mt_parser.py 曾用 @Servo max 列填充首行 '-'，2026-08 已统一
+# 为本语义（填 0），见 docs/reports/bot4cj_python_migration_dev_doc.md §2.3。
 
 def get_mt(obj, row, col):
     """获得项目值：原始值是占位符且非首行（row>1），递归取上一行同列值"""

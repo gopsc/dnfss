@@ -91,7 +91,7 @@ def test_placeholder_recursion():
 
 def test_placeholder_first_row():
     """首行 '-'：get_mt 返回字面 '-'；parse_mt 解析为 typ("0")
-    ⚠️ 与 actpred/mt_parser.py 不同（后者用 @Servo 初始角度填充），不得误统一"""
+    actpred/mt_parser.py 已统一为本语义（首行 '-' 填 0），本测试即两侧共同的语义锚点"""
     m = _matrix("@T\nname v;\na -;\n@\n")
     assert get_mt(m, 1, 1) == "-"
     assert parse_mt(m, 1, 1) == 0.0

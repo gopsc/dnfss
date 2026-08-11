@@ -321,8 +321,8 @@ class TestMtParser(unittest.TestCase):
         np.testing.assert_array_equal(matrix[0], [10, 20, 100])
         np.testing.assert_array_equal(matrix[2], [11, 22, 101])
 
-    def test_first_row_dash_uses_servo_init(self):
-        """首行 `-` 从 @Servo 初始角度（max 列）填充，无映射列填 0"""
+    def test_first_row_dash_fills_zero(self):
+        """首行 `-` 填 0（与 pybot/bot4cj 运行时语义一致），后续行 `-` 沿用"""
         content = (
             "@Servo\n"
             " name   max  min;\n"
@@ -339,8 +339,34 @@ class TestMtParser(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = _write_mt(tmpdir, "servo.mt", content)
             matrix = parse_mt_action(path)
-        np.testing.assert_array_equal(matrix[0], [90, 180, 0])
-        np.testing.assert_array_equal(matrix[1], [45, 180, 10])
+        np.testing.assert_array_equal(matrix[0], [0, 0, 0])
+        np.testing.assert_array_equal(matrix[1], [45, 0, 10])
+
+    def test_std_mt_first_row_matches_pybot(self):
+        """跨模块回归锚点：std.mt 首行解析结果与 pybot 运行时执行值一致
+
+        与 pybot/tests/test_hardvars.py 的 journal 期望值互为对照：
+        首行 `-`（s2/s4/s6/s8）解析为 0，而非 @Servo max 列。
+        """
+        content = (
+            "@Servo\n"
+            " name   max  min  offset  controller  channel;\n"
+            "  s1    90     -       -   pca9685-0        0;\n"
+            "  s2   180     -       -           -        1;\n"
+            "  s3   -90     -       -           -        2;\n"
+            "  s4  -180     -       -           -        3;\n"
+            "@\n"
+            "\n"
+            "@Action\n"
+            "s1.A  s2.A  s3.A  s4.A  s5.A  s6.A  s7.A  s8.A  s9.A  s10.A  spk.F  spk.delay;\n"
+            "  45     -    45     -    45     -    45     -    90     90     10       200;\n"
+            "@\n"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _write_mt(tmpdir, "std.mt", content)
+            matrix = parse_mt_action(path)
+        np.testing.assert_array_equal(
+            matrix[0], [45, 0, 45, 0, 45, 0, 45, 0, 90, 90, 10, 200])
 
     def test_no_action_block_raises(self):
         """无 @Action 块应抛 ValueError"""
