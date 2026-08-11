@@ -651,6 +651,48 @@ private:
         return std::string();
     }
 
+    // 观看人数自增（get_notes 打开节点 pid 时调用）。
+    // db2 的 update 仅支持字面量绑定（SET col = ?），无法表达 views = views + 1，
+    // 故采用「读当前值 → 写 +1」。读改写非原子，高并发下可能少计，作为浏览计数可接受。
+    // 任何失败仅记 WARNING 日志并吞掉，绝不影响 get_notes 主流程。
+    void _bump_views(int64_t id) {
+        try {
+            json::object sel;
+            sel["action"]  = "select";
+            sel["table"]   = "Notes";
+            sel["columns"] = json::array{"views"};
+            sel["where"]   = json::object{{"id", id}};
+            sel["limit"]   = 1;
+
+            DbResult r = _call_db(sel);
+            if (!r.success || !r.data.is_array() || r.data.as_array().empty())
+                return;  // 节点不存在或查询失败：静默跳过
+
+            const auto& note = r.data.as_array()[0];
+            int64_t views = 0;
+            if (note.is_object() && note.as_object().contains("views")
+                && note.as_object().at("views").is_int64()) {
+                views = note.as_object().at("views").as_int64();
+            }
+
+            json::object upd;
+            upd["action"] = "update";
+            upd["table"]  = "Notes";
+            upd["values"] = json::object{{"views", views + 1}};
+            upd["where"]  = json::object{{"id", id}};
+
+            DbResult ur = _call_db(upd);
+            if (!ur.success) {
+                _log("WARNING", "dnfs2", "views 自增失败 id=" + std::to_string(id)
+                     + " err=" + ur.error);
+            }
+        } catch (const std::exception& e) {
+            // _call_db 网络异常会抛 DnfsExp(502)，一并捕获，绝不影响主流程
+            _log("WARNING", "dnfs2", std::string("views 自增异常 id=")
+                 + std::to_string(id) + ": " + e.what());
+        }
+    }
+
     // ---- Token 验签（通过 gateway /whoami）---------------------------------
 
     struct UserInfo {
@@ -841,6 +883,12 @@ private:
                 json::object err;
                 err["error"] = "查询失败";
                 return make_json_obj(http::status::internal_server_error, err, req);
+            }
+
+            // 打开节点 pid 时观看人数 +1（pid=0 为虚拟根节点，无对应行，跳过）。
+            // best-effort：失败仅记日志，不影响返回结果。
+            if (pid != 0) {
+                _bump_views(pid);
             }
 
             // 解析当前用户（可选）：为每个节点附带 can_operate 标记
