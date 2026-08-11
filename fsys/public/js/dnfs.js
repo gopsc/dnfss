@@ -108,8 +108,7 @@ async function addNode(pid, title, content) {
 		input_note_title.value = "";
 		input_note_content.value = "";
 		cancelEdit();	/* 退出编辑模式并重置高度 */
-		getNode(stack[stack.length - 1]).then(load_notes);
-		getNode(stack[stack.length - 1]).then(loadMap)
+		getNode(stack[stack.length - 1]).then(function(r) { load_notes(r); loadMap(r); })
 
 		//if (result.success) {
 		alert(`添加节点成功`, result);
@@ -167,8 +166,7 @@ async function deleteNode(id) {
 		}
 
 		stack.pop();
-		getNode(stack[stack.length - 1]).then(load_notes);
-		getNode(stack[stack.length - 1]).then(loadMap)
+		getNode(stack[stack.length - 1]).then(function(r) { load_notes(r); loadMap(r); })
 
 		console.log(`删除节点成功`);
 		return result
@@ -225,8 +223,7 @@ async function deleteChild(id) {
 			input_note_content.value = "";
 		}
 		var cur = (stack.length == 0) ? 0 : stack[stack.length - 1];
-		getNode(cur).then(load_notes);
-		getNode(cur).then(loadMap);
+		getNode(cur).then(function(r) { load_notes(r); loadMap(r); });
 
 		console.log(`删除节点成功`);
 		return result;
@@ -281,8 +278,7 @@ async function updateNode(id, pid, title, content) {
 		input_note_content.value = "";
 		cancelEdit();
 		var cur = (stack.length == 0) ? 0 : stack[stack.length - 1];
-		getNode(cur).then(load_notes);
-		getNode(cur).then(loadMap);
+		getNode(cur).then(function(r) { load_notes(r); loadMap(r); });
 
 		alert('修改成功');
 		return result;
@@ -334,8 +330,7 @@ async function moveNode(id, pid, title, content) {
 		}
 
 		var cur = (stack.length == 0) ? 0 : stack[stack.length - 1];
-		getNode(cur).then(load_notes);
-		getNode(cur).then(loadMap);
+		getNode(cur).then(function(r) { load_notes(r); loadMap(r); });
 
 		alert('移动成功');
 		return result;
@@ -994,8 +989,7 @@ function renderCards(list) {
 			if (!confirmLeaveIfDirty()) return;	/* 未放弃输入则不跳转，stack 保持原样 */
 			var id = Number(item.id)
 			stack.push(id)
-			getNode(id).then(load_notes)
-			getNode(id).then(loadMap)
+			getNode(id).then(function(r) { load_notes(r); loadMap(r); })
 		});
 		ttl.appendChild(ttl1);
 		card.appendChild(ttl);
@@ -1152,8 +1146,7 @@ function loadMap(children_json) {
             stack.pop();
             /* 栈空（回到根）时取 0：原判断 stack.length >= 0 恒真，空栈取 stack[-1] 得 undefined */
             var id = (stack.length > 0) ? stack[stack.length - 1] : 0;
-            getNode(id).then(load_notes);
-            getNode(id).then(loadMap);
+            getNode(id).then(function(r) { load_notes(r); loadMap(r); });
         });
         minimap.appendChild(back);
     }
@@ -1271,8 +1264,7 @@ function renderUserPanel() {
 	userpanel.appendChild(logout_tag);
 }
 
-getNode(0).then(load_notes);
-getNode(0).then(loadMap)
+getNode(0).then(function(r) { load_notes(r); loadMap(r); })
 loadUserPanel();
 
 /* ===== 搜索框事件绑定：实时过滤当前层卡片；ESC 清空；回车不提交 ===== */
