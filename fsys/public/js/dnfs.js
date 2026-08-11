@@ -1005,6 +1005,13 @@ function renderCards(list) {
 		owner_name.textContent = owner_text;
 		wrt_div.appendChild(owner_avatar);
 		wrt_div.appendChild(owner_name);
+		// 最后编辑时间（新增时 created_at = updated_at，仅更新时 updated_at 变化）
+		let time_span = document.createElement('span');
+		time_span.className = "owner-time";
+		if (item.updated_at) {
+			time_span.textContent = ' · ' + item.updated_at.substring(0, 16);
+		}
+		wrt_div.appendChild(time_span);
 		// 互动统计：眼睛=观看数（后端 views 列）、爱心=点赞、转发=子节点数（后端 child_count）。
 		// views / child_count 由 dnfs2 get_notes 返回；like_count 后端暂无字段，缺省显示 0。
 		let sts_div = document.createElement('div');

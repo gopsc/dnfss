@@ -366,6 +366,11 @@ input[type="button"]:disabled {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+.owner-time {
+    font-size: 0.7rem;
+    color: var(--fg-tertiary);
+    white-space: nowrap;
+}
 
 /* ===== Card Stats (dnfs 互动统计：观看/点赞/分享) ===== */
 .card-stats {
