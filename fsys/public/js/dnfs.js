@@ -700,8 +700,7 @@ function formatBytes(n) {
 /* ===== 祖先主题/样式继承 =====
  * 当前节点不存在 theme/style 子节点时，沿 stack 向根搜索最近祖先的对应节点，
  * 自动注入其 CSS。已存在的不重复搜索（hasTheme/hasStyle 分别控制）。
- * 异步 getNode 可能跨导航——用 _inherit_gen 做取消，新导航的 clearAllEffects
- * 会移除旧注入。 */
+ * 用静默 fetch 替代 getNode（不弹 alert、不抛异常），仅日志输出。 */
 var _inherit_gen = 0;
 function inheritThemeStyle() {
 	var hasTheme = false, hasStyle = false;
@@ -718,21 +717,26 @@ function inheritThemeStyle() {
 		for (var i = stack.length - 1; i >= 0; i--) {
 			if (hasTheme && hasStyle) break;
 			if (gen !== _inherit_gen) return;
-			// stack[i] 的父节点：首层父为 0，其余为 stack[i-1]
 			var pid = (i === 0) ? 0 : stack[i - 1];
 			try {
-				var children = await getNode(pid);
+				var res = await fetch('/get_notes', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ pid: pid })
+				});
 				if (gen !== _inherit_gen) return;
-				if (!Array.isArray(children)) continue;
-				for (var j = 0; j < children.length; j++) {
-					var sp = parseSp(children[j].content);
+				if (!res.ok) continue;
+				var data = await res.json();
+				if (!Array.isArray(data)) continue;
+				for (var j = 0; j < data.length; j++) {
+					var sp = parseSp(data[j].content);
 					if (!sp) continue;
 					if (!hasTheme && sp._sp === 'theme') {
-						injectSpCss(sp, 'inh-' + children[j].id);
+						injectSpCss(sp, 'inh-' + data[j].id);
 						hasTheme = true;
 					}
 					if (!hasStyle && sp._sp === 'style') {
-						injectSpCss(sp, 'inh-' + children[j].id);
+						injectSpCss(sp, 'inh-' + data[j].id);
 						hasStyle = true;
 					}
 				}
