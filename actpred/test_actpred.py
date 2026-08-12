@@ -810,6 +810,104 @@ class TestResumeCheckpoint(unittest.TestCase):
 
 
 
+@unittest.skipUnless(
+    importlib.util.find_spec("onnxscript") is not None
+    and importlib.util.find_spec("onnxruntime") is not None,
+    "OnnxPredictor 测试需要 onnxscript + onnxruntime")
+class TestOnnxPredictor(unittest.TestCase):
+    """ONNX Runtime 后端测试：导出小模型后与 torch 前向对齐"""
+
+    @staticmethod
+    def _export_small_onnx(tmpdir):
+        cfg = Config()
+        cfg.data.image_size = 32
+        cfg.data.action_dim = 4
+        cfg.data.history_len = 3
+        cfg.data.frame_len = 3
+        model = ActionPredictor(cfg.model, cfg.data)
+        model.eval()
+        out_path = os.path.join(tmpdir, "model.onnx")
+        torch.onnx.export(
+            model,
+            (torch.randn(1, 3, 3, 32, 32), torch.randn(1, 3, 4)),
+            out_path,
+            input_names=["images", "action_history"],
+            output_names=["predicted_action"],
+            opset_version=18)
+        return out_path, model
+
+    def _frames(self, n):
+        return [np.random.randint(0, 255, (48, 64, 3), dtype=np.uint8)
+                for _ in range(n)]
+
+    def test_dims_derived_from_session(self):
+        from onnx_infer import OnnxPredictor
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path, _ = self._export_small_onnx(tmpdir)
+            with OnnxPredictor(path) as p:
+                self.assertEqual((p.frame_len, p.history_len, p.action_dim),
+                                 (3, 3, 4))
+                self.assertEqual(p.image_size, 32)
+
+    def test_matches_torch_forward(self):
+        from onnx_infer import OnnxPredictor
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path, model = self._export_small_onnx(tmpdir)
+            frames = self._frames(3)
+            history = np.random.randn(3, 4).astype(np.float32)
+            with OnnxPredictor(path) as p:
+                onnx_out = p.predict(frames, history)
+                pre = np.stack([p._preprocess(f) for f in frames])
+                with torch.no_grad():
+                    torch_out = model(
+                        torch.from_numpy(pre[np.newaxis]),
+                        torch.from_numpy(history[np.newaxis])).numpy()
+            self.assertEqual(onnx_out.shape, (4,))
+            np.testing.assert_allclose(onnx_out, torch_out.reshape(-1),
+                                       atol=1e-4)
+
+    def test_frame_count_mismatch_raises(self):
+        from onnx_infer import OnnxPredictor
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path, _ = self._export_small_onnx(tmpdir)
+            with OnnxPredictor(path) as p:
+                with self.assertRaises(ValueError):
+                    p.predict(self._frames(1), np.zeros((3, 4), np.float32))
+
+    def test_history_shape_mismatch_raises(self):
+        from onnx_infer import OnnxPredictor
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path, _ = self._export_small_onnx(tmpdir)
+            with OnnxPredictor(path) as p:
+                with self.assertRaises(ValueError):
+                    p.predict(self._frames(3), np.zeros((2, 4), np.float32))
+
+    def test_stats_normalization_roundtrip(self):
+        from onnx_infer import OnnxPredictor
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path, _ = self._export_small_onnx(tmpdir)
+            stats_path = os.path.join(tmpdir, "action_stats.npy")
+            mean, std = np.full(4, 0.5), np.full(4, 2.0)
+            np.save(stats_path, np.stack([mean, std]))
+            frames = self._frames(3)
+            history = np.random.randn(3, 4).astype(np.float32)
+            with OnnxPredictor(path) as plain, \
+                    OnnxPredictor(path, stats_path=stats_path) as normed:
+                expected = plain.predict(frames, (history - mean) / std)
+                result = normed.predict(frames, history)
+            np.testing.assert_allclose(result, expected * std + mean,
+                                       atol=1e-5)
+
+    def test_bad_stats_shape_raises(self):
+        from onnx_infer import OnnxPredictor
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path, _ = self._export_small_onnx(tmpdir)
+            stats_path = os.path.join(tmpdir, "action_stats.npy")
+            np.save(stats_path, np.zeros((2, 5)))
+            with self.assertRaises(ValueError):
+                OnnxPredictor(path, stats_path=stats_path)
+
+
 # ---------------- HailoPredictor 测试用 fake hailo_platform ----------------
 
 class _FakeFormatType:

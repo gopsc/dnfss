@@ -153,6 +153,30 @@ action = predictor.predict(images, action_history)  # np.ndarray (action_dim,)
 # action_history 形状须为 (history_len, action_dim)
 ```
 
+## ONNX Runtime 后端（CPU 加速）
+
+`onnx_infer.py` 的 `OnnxPredictor` 走 ONNX Runtime CPU 推理，接口与
+`ActionPredictorInference` 对齐，维度从 ONNX 输入元数据自动推导（无需
+checkpoint）。Pi 5 实测 12ms/次含预处理（纯推理 5.9ms），比 PyTorch 快 ~5 倍，
+与 torch 前向输出差异 <1e-5。数据见
+[测速报告](../docs/reports/actpred_inference_speed_benchmark_20260813.md)。
+
+```bash
+bash _run.sh export --model checkpoints/best_inference.pt --output model.onnx
+```
+
+```python
+from onnx_infer import OnnxPredictor
+
+with OnnxPredictor("model.onnx") as predictor:    # stats_path= 仅归一化模型需要
+    action = predictor.predict(images, action_history)
+```
+
+```bash
+python3 onnx_infer.py --model model.onnx --images f1.jpg f2.jpg f3.jpg \
+    --action-history "45,0,...:45,0,..." [--stats action_stats.npy]
+```
+
 ## Hailo 部署（AI HAT 2 / Hailo-10H）
 
 树莓派 AI HAT 2 上通过 `hailo_infer.py` 的 `HailoPredictor` 走 NPU 推理，
