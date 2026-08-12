@@ -174,7 +174,7 @@ class PromptManager:
 ## 我的角色定位
 - **助手**：帮助用户解决问题、完成任务
 - **顾问**：提供建议和指导
-- **执行者**：使用工具执行具体操作
+- **编排者**：拆解任务并通过 create_subagent 派生子代理执行具体操作（命令/文件/网页），自己负责记忆、情绪与调度管理，不直接执行命令
 - **记录者**：保存重要信息和对话记忆
 - **学习者**：从对话中学习用户偏好，不断优化服务
 
@@ -189,15 +189,14 @@ class PromptManager:
 
 ## 我的能力边界
 ### 我能做的事情
-- 文件操作：读写文件、列出目录
-- 网页访问：获取网页内容、搜索信息
 - 记忆管理：保存和检索重要信息
 - 任务管理：创建和管理定时任务
-- 命令执行：运行系统命令
-- 扩展技能：支持自定义Python脚本扩展
+- 任务编排：派生子代理执行命令、文件操作、网页访问、扩展技能
+- 扩展技能：支持自定义技能文件扩展
 
 ### 我不能做的事情
-- 无法访问互联网（除非使用web工具）
+- 不能直接执行系统命令或读写文件（须派生子代理）
+- 无法访问互联网（除非派生子代理使用 web 工具）
 - 无法执行危险操作
 - 无法保证100%准确（我会尽力）
 - 无法替代专业医疗、法律建议
@@ -319,57 +318,38 @@ save_memory_and_end_conversation(
             },
             {
                 'filename': '3_file_operations.md',
-                'content': """# 文件操作能力
+                'content': """# 文件操作能力（编排者模式）
+
+## 重要：你不直接操作文件
+你（主对话）没有 `read_file` / `write_file` / `list_files` / `run_command` 工具。文件读写、
+目录列举等操作一律通过 `create_subagent` 派生子代理完成——子代理拥有这些工具。
 
 ## 工作目录规范（重要）
-**所有你主动创建的临时文件、脚本、数据文件，必须写入 `~/.aibox/workspace/` 目录，不要在其他目录随便写文件。**
-- 该目录是你的专用工作区，用于存放代码片段、临时脚本、下载的数据、生成的文件等
-- 用户明确指定文件路径时，按照用户要求的路径操作
-- 读取系统文件、项目文件时使用实际路径，不限制
+派生子代理执行文件任务时，**所有主动创建的临时文件、脚本、数据文件必须写入 `~/.aibox/workspace/`**，
+不要在其他目录随便写文件；用户明确指定路径时按用户要求操作。
 
-## 重要：文件操作改用命令行
-`read_file` / `write_file` / `list_files` 工具会返回提示你使用 `run_command` 的 markdown 指引，**请按指引执行命令完成实际操作**，不要直接返回指引内容。
+## 派生执行的标准流程
+1. 调用 `create_subagent`，在 `task` 中写清文件路径与操作要求
+2. 大文件（>500KB 或 >2000 行）要求子代理用 `head`/`tail`/行范围分段读取，不要全文返回
+3. 子代理返回总结后向用户汇报；需要原文细节时可要求子代理落盘 `~/.aibox/workspace/` 后再分段读取
 
-优先使用以下命令行工具：
-- **读取文件**：`head -n N 文件`、`tail -n N 文件`、`sed -n 'A,Bp' 文件`
-- **统计行数**：`wc -l 文件`
-- **查看编码**：`file -b --mime-encoding 文件`
-- **写入文件**：`mkdir -p 目录 && cat > 文件 <<'EOF' ... EOF`（覆盖）或 `cat >> 文件`（追加）
-- **列出目录**：`ls -l 目录`、`ls -la 目录`（含隐藏文件）
-- **目录大小**：`du -sh 目录`
-
-## 大文件处理规则
-当遇到以下情况时，**必须分页读取**，不要一次性读取整个文件：
-1. 文件大小超过 500KB
-2. 文件行数超过 2000 行
-
-对于大文件，应该：
-- 先用 `head -n 50` 读取前50行了解文件结构
-- 使用 `sed -n 'A,Bp'` 指定行范围
-- 使用 `tail -n N` 读取文件末尾
-- 对于二进制文件或特殊格式文件，使用 `head`/`strings` 等命令查看
-- 建议用户提供更具体的查询条件以缩小范围
-
-## 安全限制
-- 单次最多读取 500 行，单行最长 10000 字符（超长用 `cut -c 1-10000` 截断）
-- 文件大小上限 10MB，路径参数需用引号包裹
+## 示例
+```
+create_subagent role="文件处理助手" task="读取 /var/log/syslog 的最后 50 行，总结是否有报错"
+```
 """
             },
             {
                 'filename': '4_web_access.md',
-                'content': """# 网页访问能力
+                'content': """# 网页访问能力（编排者模式）
 
-## 重要：网页访问改用 curl
-`web` 工具会返回提示你使用 `run_command` 执行 `curl` 命令的 markdown 指引，**请按指引执行命令完成实际访问**，不要直接返回指引内容。
+## 重要：你不直接访问网页
+你（主对话）没有 `web` / `run_command` 工具。网页访问一律通过 `create_subagent` 派生子代理
+完成——子代理拥有 `web` 工具与 `run_command`（可用 `curl`）。
 
-## 常用 curl 命令
-- **获取网页**：`curl -sL --max-time 10 URL`
-- **查看状态码**：`curl -sL -o /dev/null -w '%{http_code}' URL`
-- **提取纯文本**：`curl -sL URL | sed -r 's/<[^>]+>//g'`（有 lynx 时用 `lynx -dump -stdin` 更准）
-- **提取标题**：`curl -sL URL | grep -oP '<title>\\K[^<]+'`
-- **提取链接**：`curl -sL URL | grep -oP 'href="\\K[^"]+'`
-- **搜索关键词**：`curl -sL URL | grep -c 关键词`
-- **下载文件**：`curl -sL URL -o 文件名`
+## 派生执行的标准流程
+1. 调用 `create_subagent`，在 `task` 中写明目标 URL 与要提取的信息（标题/正文/链接）
+2. 子代理返回总结后向用户汇报
 
 ## 推荐搜索引擎
 - 百度：https://www.baidu.com
@@ -377,8 +357,12 @@ save_memory_and_end_conversation(
 - 搜狗：https://www.sogou.com
 
 ## 注意
-- 下载大小默认上限 100MB，可用 `| head -c 100M` 限制
-- 如需代理，先调用 `set_proxy` 工具配置，`curl` 会自动附带 `--socks5`
+- 如需代理，先调用 `set_proxy` 工具配置 SOCKS5 代理（这是你的管理面工具），子代理的 `curl` 会自动附带代理参数
+
+## 示例
+```
+create_subagent role="网页信息提取助手" task="访问 https://www.baidu.com/s?wd=人工智能，提取搜索结果前5条的标题与链接"
+```
 """
             },
             {
@@ -407,34 +391,26 @@ save_memory_and_end_conversation(
             },
             {
                 'filename': '6_command_execution.md',
-                'content': """# 命令执行能力
+                'content': """# 命令执行能力（编排者模式）
 
-## 工作目录规范（重要）
-**执行命令时，默认 work_dir 设置为 `~/.aibox/workspace/`**，所有命令执行产生的文件都落在这个专用工作区，不会污染其他目录。
-- 只有当用户明确要求在特定目录执行命令时，才修改 work_dir
-- 技能调用（~/.aibox/skills/）不受此限制
-- 需要在用户项目目录操作时，按用户指定路径设置 work_dir
+## 重要：你不直接执行命令
+你（主对话）没有 `run_command` 工具。所有系统命令、脚本执行等**执行类操作**，
+一律通过 `create_subagent` 派生子代理完成——子代理拥有 `run_command` 与文件、网页工具。
 
-## 可用工具
-- **run_command**: 执行系统命令
-
-## 参数说明
-- command: 要执行的命令（必填）
-- timeout: 超时时间（秒），默认30秒
-- stream: 是否实时输出，默认true
-- work_dir: 工作目录，默认 `~/.aibox/workspace/`
-
-## 安全提醒
-- 命令执行功能可能被禁用（根据配置）
-- 执行危险命令前请三思
-- 超时机制可以防止命令卡死
-- 命令输出有大小限制（1MB），超出会自动截断
+## 派生执行的标准流程
+1. 明确任务目标与验收标准
+2. 调用 `create_subagent`，在 `role` 中写明执行者身份，在 `task` 中写清要执行的具体命令或步骤
+3. 子代理返回执行总结后，向用户汇报关键结论；产物文件在 `~/.aibox/workspace/` 下，可再派生子代理读取细节
 
 ## 示例
 ```
-run_command command="ls -la" timeout=10
-run_command command="python script.py" stream=true work_dir="~/.aibox/workspace"
+create_subagent role="Linux 系统运维工程师" task="执行 free -h 与 df -h，汇总内存与磁盘使用情况"
 ```
+
+## 注意事项
+- 简单问答、记忆/任务管理不需要派生子代理，直接回答或使用管理面工具
+- 危险命令（删除、重启服务等）派生前先向用户确认（用 `ask_user`）
+- 子代理无法向你提问，任务描述必须自包含、无歧义
 """
             },
             {
@@ -453,10 +429,20 @@ run_command command="python script.py" stream=true work_dir="~/.aibox/workspace"
 
 ## 如何搜索和调用扩展技能
 1. 使用 `search_skills` 工具搜索关键字，获取匹配技能的名称和简介列表（传入空字符串可列出全部）。
-2. 根据技能内容，按其说明执行相应操作。
+2. Markdown 技能（.md）：设置 show_content=true 直接读取技能内容，按其说明行事。
+3. 可执行技能：调用 `create_subagent` 派生子代理执行，在 `task` 中写明：
+   - 先执行 `技能名 --help` 获取完整命令手册
+   - 按手册以正确的命令行格式调用该技能
+   - 汇报执行结果
+4. 子代理返回总结后，向用户汇报关键结论。
+
+示例：
+```
+create_subagent role="技能执行助手" task="执行 bing_search 技能搜索'天气预报'：先运行 bing_search --help 查看用法，再按手册执行搜索，汇总前5条结果"
+```
 
 ## 如何创建新技能（AI自主编写）
-调用 `create_skill` 工具，工具会返回一段指令提示词，指导你自行完成技能文件的编写和部署：
+调用 `create_skill` 工具，工具会返回一段指令提示词，指导你完成技能文件的编写和部署：
 ```
 create_skill skill_name="my-tool" description="一个将摄氏度转换为华氏度的工具，接受 -t 参数输入温度值"
 ```
@@ -465,7 +451,7 @@ create_skill skill_name="my-tool" description="一个将摄氏度转换为华氏
 
 收到提示词后，你需要依次：
 1. 自行编写满足格式要求的 Markdown 技能文件
-2. 用 `write_file` 写入 `~/.aibox/skills/<skill_name>.md`
+2. 调用 `create_subagent` 派生子代理，将完整内容写入 `~/.aibox/skills/<skill_name>.md` 并验证
 3. 调用 `reload_skills` 热重载
 
 ## 如何手动安装新技能
@@ -3186,7 +3172,7 @@ class SearchSkillsTool(Tool):
     工作流程：
     1. 用关键字调用本工具，获取匹配技能的名称和简介列表
     2. 对于 Markdown 技能，可以直接读取 content 字段获取完整技能内容
-    3. 对于可执行技能，通过 run_command 执行 "技能名 --help" 查看完整命令手册
+    3. 对于可执行技能，通过 create_subagent 派生子代理执行 "技能名 --help" 查看完整命令手册
     4. 根据内容，使用相应方式调用技能
     """
     
@@ -3206,9 +3192,9 @@ class SearchSkillsTool(Tool):
             "  2. Markdown 文件 (.md)：第一行为简介，其余为技能内容\n\n"
             "使用方法：\n"
             "1. 调用本工具搜索关键字，获取匹配技能列表（空字符串列出全部）。\n"
-            "2. 对于 Markdown 技能：直接读取返回的 content 字段获取完整技能内容。\n"
-            "3. 对于可执行技能：用 run_command 执行 \"技能名 --help\" 获取完整命令手册。\n"
-            "4. 按照内容说明，使用相应方式调用该技能。"
+            "2. 对于 Markdown 技能：设置 show_content=true 读取返回的内容获取完整技能说明。\n"
+            "3. 对于可执行技能：用 create_subagent 派生子代理执行 \"技能名 --help\" 获取完整命令手册，再按手册调用该技能。\n"
+            "4. 按照内容说明，使用相应方式调用该技能（执行类操作一律经 create_subagent 派生子代理完成）。"
         )
     
     def get_parameters(self) -> Dict:
@@ -3274,12 +3260,12 @@ class SearchSkillsTool(Tool):
                 if item.get('is_markdown'):
                     lines.append(f"    💡 提示: 设置 show_content=true 可查看技能内容")
                 else:
-                    lines.append(f"    💡 提示: 用 run_command 执行 \"{item['name']} --help\" 查看完整手册")
+                    lines.append(f"    💡 提示: 用 create_subagent 派生子代理执行 \"{item['name']} --help\" 查看完整手册")
         
         lines.append("")
         lines.append("📖 技能调用方式:")
-        lines.append("  • Markdown 技能: 读取 content 字段获取完整技能指令")
-        lines.append("  • 可执行技能: 用 run_command 执行 '技能名 --help' 查看手册")
+        lines.append("  • Markdown 技能: 设置 show_content=true 读取完整技能说明")
+        lines.append("  • 可执行技能: 用 create_subagent 派生子代理执行（先 '技能名 --help' 查手册，再按手册调用）")
         return "\n".join(lines)
     
     def execute_streaming(self, output_queue: queue.Queue, **kwargs):
@@ -3528,7 +3514,7 @@ class InstallSkillTool(Tool):
 ─────────────────────────────────────────────────────
 步骤 1：确认文件存在且格式正确
 ─────────────────────────────────────────────────────
-运行以下命令，确认文件存在：
+调用 create_subagent 派生子代理执行以下命令，确认文件存在：
 
   ls -l {src}
 
@@ -3542,7 +3528,7 @@ class InstallSkillTool(Tool):
 ─────────────────────────────────────────────────────
 技能目录：{skills_dir}
 
-复制命令（目标文件名统一补 .md 扩展名）：
+调用 create_subagent 派生子代理执行复制命令（目标文件名统一补 .md 扩展名）：
 
   cp {src} {dst}
 
@@ -3574,7 +3560,7 @@ class CreateSkillTool(Tool):
     工具本身不调用 LLM，只输出一段结构化的指令提示词。
     智能体读到提示词后，会自行：
       1. 编写满足格式要求的 Markdown 技能文件
-      2. 用 write_file 写入 ~/.aibox/skills/<skill_name>.md
+      2. 经 create_subagent 派生子代理写入 ~/.aibox/skills/<skill_name>.md
       3. 调用 reload_skills 热重载
     """
 
@@ -3648,8 +3634,9 @@ class CreateSkillTool(Tool):
 ─────────────────────────────────────────────────
 步骤 2：写入技能目录
 ─────────────────────────────────────────────────
-使用 write_file 工具，将完整内容写入（文件名必须带 .md 扩展名）：
+调用 create_subagent 派生子代理，将你编写的完整内容写入（文件名必须带 .md 扩展名）：
   {skill_path}
+（在 task 中附上完整文件内容，并要求子代理写入后用 head -5 验证首行格式）
 
 ─────────────────────────────────────────────────
 步骤 3：热重载
@@ -5706,6 +5693,9 @@ class GetProxyTool(Tool):
 TOOL_PROFILE_ORCHESTRATOR = "orchestrator"
 TOOL_PROFILE_WORKER = "worker"
 
+# 仅 worker 子代理注册的执行面工具；编排者误调时拦截并纠正
+WORKER_ONLY_TOOLS = {"run_command", "read_file", "write_file", "list_files", "web", "calculator"}
+
 
 class DeepSeekChat:
     """单AI聊天类"""
@@ -6042,36 +6032,45 @@ class DeepSeekChat:
                 output_callback("line", f"🔧 调用工具: {tool_name}\n")
             
             result_raw = None
-            try:
-                # 启动后台线程持续排空 output_queue，将流式输出实时转发给 output_callback，
-                # 避免 SubAgent 等长时间工具执行期间前端收不到数据导致 WS 空闲断线
-                def _drain_queue(q=output_queue, cb=output_callback, stop_event=self._cancel_event):
-                    while not stop_event.is_set():
+            if self.tool_profile == TOOL_PROFILE_ORCHESTRATOR and tool_name in WORKER_ONLY_TOOLS:
+                # 编排者不持有执行面工具：拦截并纠正，引导改用 create_subagent
+                result_raw = (
+                    f"⛔ '{tool_name}' 调用被拦截：你是编排者，没有执行面工具（命令/文件/网页由 worker 子代理持有）。\n"
+                    "请改用 create_subagent 派生子代理执行该任务：在 role 中写明执行者身份，"
+                    "在 task 中写清目标、具体步骤与验收标准（任务描述须自包含，子代理无法向你提问）。"
+                )
+                self.logger.warning(f"编排者误调执行面工具 {tool_name}，已拦截并引导改用 create_subagent")
+            else:
+                try:
+                    # 启动后台线程持续排空 output_queue，将流式输出实时转发给 output_callback，
+                    # 避免 SubAgent 等长时间工具执行期间前端收不到数据导致 WS 空闲断线
+                    def _drain_queue(q=output_queue, cb=output_callback, stop_event=self._cancel_event):
+                        while not stop_event.is_set():
+                            try:
+                                msg_type, content = q.get(timeout=0.1)
+                                if cb and msg_type == "line":
+                                    cb("line", str(content) if content is not None else "")
+                            except queue.Empty:
+                                continue
+
+                    import threading as _th
+                    drain_thread = _th.Thread(target=_drain_queue, daemon=True)
+                    drain_thread.start()
+
+                    result_raw = self.tool_registry.execute_tool(tool_name, **args)
+
+                    # 工具执行完毕，排空队列中剩余内容并等待 drain 线程退出
+                    while not output_queue.empty():
                         try:
-                            msg_type, content = q.get(timeout=0.1)
-                            if cb and msg_type == "line":
-                                cb("line", str(content) if content is not None else "")
+                            msg_type, content = output_queue.get_nowait()
+                            if output_callback and msg_type == "line":
+                                output_callback("line", str(content) if content is not None else "")
                         except queue.Empty:
-                            continue
-
-                import threading as _th
-                drain_thread = _th.Thread(target=_drain_queue, daemon=True)
-                drain_thread.start()
-
-                result_raw = self.tool_registry.execute_tool(tool_name, **args)
-
-                # 工具执行完毕，排空队列中剩余内容并等待 drain 线程退出
-                while not output_queue.empty():
-                    try:
-                        msg_type, content = output_queue.get_nowait()
-                        if output_callback and msg_type == "line":
-                            output_callback("line", str(content) if content is not None else "")
-                    except queue.Empty:
-                        break
-                # drain 线程会在下一次 get 超时后自动退出（队列已空）
-            except Exception as e:
-                result_raw = f"❌ 工具 {tool_name} 执行异常: {str(e)}"
-                self.logger.error(f"工具 {tool_name} 执行异常: {e}")
+                            break
+                    # drain 线程会在下一次 get 超时后自动退出（队列已空）
+                except Exception as e:
+                    result_raw = f"❌ 工具 {tool_name} 执行异常: {str(e)}"
+                    self.logger.error(f"工具 {tool_name} 执行异常: {e}")
 
             # 安全转换并清理结果
             result = self._sanitize_tool_result(result_raw)
