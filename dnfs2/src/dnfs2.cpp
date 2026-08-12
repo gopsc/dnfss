@@ -13,6 +13,7 @@
  *   P1-8  update_note 改 pid≠0 时校验父节点存在
  *   P1-9  RpcClient 启用 retry_on_refused
  *   P1-11 note_id 显式 as_int64() + 类型校验
+ *   L-1   update_note 成环检测（祖先走查，拒绝移入自身/自身子树）
  *
  * 依赖: libhttp (HttpServer), libmsg (RpcClient/AsyncQueue), boost::json,
  *       OpenSSL, libcurl
@@ -42,6 +43,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace json = boost::json;
@@ -661,6 +663,49 @@ private:
         return std::string();
     }
 
+    // L-1 修复：判定 candidate 是否位于 id 的子树内（即 id 是 candidate 的祖先）。
+    // db2 execute 不支持递归查询，从 candidate 沿 pid 链逐级向上走查，途中命中 id 即成立；
+    // 走到根（pid=0）即无环。深度上限 + visited 集防御存量脏数据（已含环）导致的死循环，
+    // 走查在写库之前，命中即拒绝，不会新增脏数据。
+    // db 业务错误抛 500（fail-closed，不误放行）；candidate 不存在视为不在子树内
+    // （调用方已单独校验新父节点存在性）。
+    bool _is_descendant(int64_t id, int64_t candidate) {
+        constexpr int kMaxAncestorDepth = 64;
+        std::unordered_set<int64_t> visited;
+        int64_t cur = candidate;
+        for (int depth = 0; depth < kMaxAncestorDepth; ++depth) {
+            if (cur == id) return true;
+            if (cur == 0) return false;
+            if (!visited.insert(cur).second) return false;  // 存量环，走不到根，按无环处理
+
+            json::object payload;
+            payload["action"]  = "select";
+            payload["table"]   = "Notes";
+            payload["columns"] = json::array{"pid"};
+            payload["where"]   = json::object{{"id", cur}};
+            payload["limit"]   = 1;
+
+            DbResult r = _call_db(payload);
+            if (!r.success) {
+                _log("ERROR", "dnfs2", "成环检测查询失败 cur=" + std::to_string(cur)
+                     + " err=" + r.error);
+                throw DnfsExp("查询节点失败", 500);
+            }
+            if (!r.data.is_array() || r.data.as_array().empty()) return false;
+
+            const auto& row = r.data.as_array()[0];
+            if (!row.is_object() || !row.as_object().contains("pid")
+                || !row.as_object().at("pid").is_int64()) {
+                return false;
+            }
+            cur = row.as_object().at("pid").as_int64();
+        }
+        // 深度超限：保守拒绝，避免把潜在环写入
+        _log("WARNING", "dnfs2", "成环检测深度超限 id=" + std::to_string(id)
+             + " candidate=" + std::to_string(candidate));
+        throw DnfsExp("节点层级过深，无法完成校验", 400);
+    }
+
     // 观看人数自增（get_notes 打开节点 pid 时调用）。
     // db2 的 update 仅支持字面量绑定（SET col = ?），无法表达 views = views + 1，
     // 故采用「读当前值 → 写 +1」。读改写非原子，高并发下可能少计，作为浏览计数可接受。
@@ -1235,6 +1280,14 @@ private:
             // P1-8 修复：pid≠0 时校验父节点存在
             if (pid != 0 && !_note_exists(pid)) {
                 throw DnfsExp("父节点不存在", 400);
+            }
+
+            // L-1 修复：新父节点为自身或位于自身子树内会成环（子树不可达），拒绝。
+            // pid=0（挂到根）天然无环；pid==id 时走查首轮即命中
+            if (pid != 0 && _is_descendant(id, pid)) {
+                _log("WARNING", "dnfs2", "update_note 拒绝成环 id=" + std::to_string(id)
+                     + " pid=" + std::to_string(pid));
+                throw DnfsExp("不能将节点移动到自身或其子节点内", 400);
             }
 
             // 特殊节点校验：上方所有权校验已保证是节点拥有者或管理员，此处仅校验信封格式

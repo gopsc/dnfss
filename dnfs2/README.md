@@ -71,10 +71,10 @@ dnfs2 :8006 ──pymsg──► db2 :8005 (execute 路由) ──► SQLite
 | P1-8 | update_note 改 pid 未校验父节点 | pid≠0 时校验父节点存在 |
 | P1-9 | db RPC 未启用启动等待 | `RpcClient(retry_on_refused=true)` |
 | P1-11 | note_id 无强制类型转换 | 显式 `as_int64()` + 类型校验 |
+| L-1 | update_note 允许创建循环 | `_is_descendant` 祖先走查：拒绝新父节点为自身或位于自身子树内（深度上限 64，防存量环死循环） |
 
 ## 已知限制（P2，设计决策不修复）
 
-- L-1: update_note 允许创建循环（需图遍历检测后代关系）
 - L-2: delete_note TOCTOU 残余（需 db2 事务支持）
 - L-4: 无速率限制（gateway/WAF 职责）
 - L-5: title/content 无最大长度校验
