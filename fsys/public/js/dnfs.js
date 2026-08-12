@@ -718,8 +718,11 @@ function inheritThemeStyle() {
 		for (var i = stack.length - 1; i >= 0; i--) {
 			if (hasTheme && hasStyle) break;
 			if (gen !== _inherit_gen) return;
+			// stack[i] 的父节点：首层父为 0，其余为 stack[i-1]
+			var pid = (i === 0) ? 0 : stack[i - 1];
 			try {
-				var children = await getNode(stack[i]);
+				var children = await getNode(pid);
+				if (gen !== _inherit_gen) return;
 				if (!Array.isArray(children)) continue;
 				for (var j = 0; j < children.length; j++) {
 					var sp = parseSp(children[j].content);
