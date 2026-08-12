@@ -5457,14 +5457,21 @@ def run_full_subagent(role, task, config, logger=None, model=None,
 
         # 运行对话：think_and_respond 内部递归处理工具调用，
         # 直到 AI 返回纯文本无工具调用，或达到轮次限制
-        # 将子代理的思考过程（reasoning）通过 output_callback 转发给父代理
+        # 子代理输出转发开关：config.subagent_stream_output（默认开启）。
+        # 关闭后子代理在后台静默执行，主对话侧栏不再显示其思考/工具调用/回答。
+        _stream_subagent_output = True
+        if config is not None:
+            _stream_subagent_output = config.get("subagent_stream_output", True)
+        _effective_output_callback = output_callback if _stream_subagent_output else None
+
+        # 将子代理的思考过程（reasoning）及工具执行/回答（line/chunk）通过 output_callback 转发给父代理
         def sub_think_callback(msg_type, content):
             # 转发子代理的实时输出：思考过程（reasoning）、工具执行过程（line）、回答文本（chunk）
-            if output_callback is not None and msg_type in (
+            if _effective_output_callback is not None and msg_type in (
                 "reasoning_start", "reasoning", "reasoning_end",
                 "line", "chunk",
             ):
-                output_callback(msg_type, content)
+                _effective_output_callback(msg_type, content)
 
         sub_chat.think_and_respond(task, output_callback=sub_think_callback)
 

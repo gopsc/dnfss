@@ -141,7 +141,10 @@ class ConfigManager:
                 "weight_decay_factor": 0.01,    # ？
                 "max_input_chars": 6000,        # 最大输入字符
                 "llm_max_tokens": 1000          # 大模型最大输出词元
-            }
+            },
+
+            # 子代理输出
+            "subagent_stream_output": True,    # 是否将子代理的实时输出（思考/工具调用/回答）转发到主对话侧栏
         }
     
     def _load_config(self):
