@@ -614,6 +614,25 @@ function themeVarsToText(vars) {
 	return lines.join('\n');
 }
 
+/* 将 theme/style 信封注入为 <style> 元素到 <head>（供卡片渲染和祖先继承复用）。
+ * 返回创建的 styleEl，cssText 为空时返回 null。 */
+function injectSpCss(sp, noteId) {
+	var is_theme = (sp._sp === 'theme');
+	var cssText = is_theme ? themeVarsToCss(sp.vars || {}) : String(sp.css || '');
+	if (!cssText) return null;
+	/* 同一 noteId 的旧注入先移除 */
+	if (noteId) {
+		document.querySelectorAll('.sp-injected-style[data-note-id="' + noteId + '"]')
+			.forEach(function(s) { s.remove(); });
+	}
+	var styleEl = document.createElement('style');
+	styleEl.className = 'sp-injected-style';
+	if (noteId) styleEl.setAttribute('data-note-id', noteId);
+	styleEl.textContent = cssText;
+	document.head.appendChild(styleEl);
+	return styleEl;
+}
+
 function renderSpCss(container, sp, appendNote, item) {
 	var is_theme = (sp._sp === 'theme');
 	var kindLabel = is_theme ? '主题' : '样式';
@@ -646,16 +665,8 @@ function renderSpCss(container, sp, appendNote, item) {
 	});
 	function applyCss() {
 		if (styleEl) return;
-		/* 同一节点的旧注入先移除（编辑更新 / 重新渲染不产生重复 <style>） */
-		if (noteId) {
-			document.querySelectorAll('.sp-injected-style[data-note-id="' + noteId + '"]')
-				.forEach(function(s) { s.remove(); });
-		}
-		styleEl = document.createElement('style');
-		styleEl.className = 'sp-injected-style';
-		if (noteId) styleEl.setAttribute('data-note-id', noteId);
-		styleEl.textContent = cssText;
-		document.head.appendChild(styleEl);
+		styleEl = injectSpCss(sp, noteId);
+		if (!styleEl) return;
 		toggle_btn.textContent = '停用' + kindLabel;
 		out.style.display = 'block';
 		out.textContent = kindLabel + '已生效（本层）';
@@ -684,6 +695,49 @@ function formatBytes(n) {
 	var i = 0;
 	while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
 	return n.toFixed(1) + units[i];
+}
+
+/* ===== 祖先主题/样式继承 =====
+ * 当前节点不存在 theme/style 子节点时，沿 stack 向根搜索最近祖先的对应节点，
+ * 自动注入其 CSS。已存在的不重复搜索（hasTheme/hasStyle 分别控制）。
+ * 异步 getNode 可能跨导航——用 _inherit_gen 做取消，新导航的 clearAllEffects
+ * 会移除旧注入。 */
+var _inherit_gen = 0;
+function inheritThemeStyle() {
+	var hasTheme = false, hasStyle = false;
+	for (var i = 0; i < current_children.length; i++) {
+		var sp = parseSp(current_children[i].content);
+		if (!sp) continue;
+		if (sp._sp === 'theme') hasTheme = true;
+		if (sp._sp === 'style') hasStyle = true;
+	}
+	if (hasTheme && hasStyle) return;
+
+	var gen = ++_inherit_gen;
+	(async function() {
+		for (var i = stack.length - 1; i >= 0; i--) {
+			if (hasTheme && hasStyle) break;
+			if (gen !== _inherit_gen) return;
+			try {
+				var children = await getNode(stack[i]);
+				if (!Array.isArray(children)) continue;
+				for (var j = 0; j < children.length; j++) {
+					var sp = parseSp(children[j].content);
+					if (!sp) continue;
+					if (!hasTheme && sp._sp === 'theme') {
+						injectSpCss(sp, 'inh-' + children[j].id);
+						hasTheme = true;
+					}
+					if (!hasStyle && sp._sp === 'style') {
+						injectSpCss(sp, 'inh-' + children[j].id);
+						hasStyle = true;
+					}
+				}
+			} catch (e) {
+				console.error('继承主题/样式失败:', e);
+			}
+		}
+	})();
 }
 
 /* by qing — 互动统计图标：inline SVG，stroke=currentColor 自动跟随主题色 */
@@ -969,6 +1023,7 @@ function load_notes(main_node) {
 	if (searchtext) searchtext.value = "";
 	clearAllEffects();
 	renderCards(current_children);
+	inheritThemeStyle();
 };
 
 /* 把卡片列表渲染到 recommend_list（从 load_notes/搜索过滤复用） */
