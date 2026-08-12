@@ -127,31 +127,39 @@ aibox/
 
 ## 🔧 可用工具
 
-AI 智能体可以调用以下工具来完成任务（由 `Tool` 基类派生，在 `DeepSeekChat` 中注册）：
+工具由 `Tool` 基类（`tools/base.py`）派生，在 `DeepSeekChat._register_tools()` 中按 **工具集 profile** 分组注册（v2.9 编排者-执行者分层）：主对话（orchestrator）只负责管理与调度，不直接接触命令行；执行类任务经 `create_subagent` 派生拥有执行面工具的子代理（worker）完成。
+
+### 主对话（orchestrator）工具集
 
 | 工具名称 | 功能描述 |
 |---------|---------|
-| `read_file` | 读取文件内容（返回 markdown 指引，改用 `head`/`tail`/`sed`/`wc` 等命令行读取） |
-| `write_file` | 写入或追加文件（返回 markdown 指引，改用 `mkdir -p` + `cat` 重定向写入） |
-| `list_files` | 列出目录内容（返回 markdown 指引，改用 `ls`/`du`/`find` 命令行列出） |
-| `web` | 访问网页、获取标题/文本/链接（返回 markdown 指引，改用 `curl` 命令行访问） |
 | `memory` | 保存、搜索（支持分页）、删除记忆 |
 | `memo` | 创建、查看、完成、搜索任务 |
-| `run_command` | 执行系统命令（实时输出，支持超时控制） |
-| `search_skills` | 搜索扩展技能（支持 Markdown 和可执行技能） |
+| `express_emotion` | 表达情绪并记录当前情绪状态（anger/joy/sadness/surprise），可指定 `persona` 从 `~/.aibox/skills/` 加载人格技能（如 angry/coquettish/tsundere）派生携带该人格的情绪子代理，保证人格独立、不污染主对话上下文 |
+| `create_subagent` | 派生子代理：独立上下文/角色设定，仅拥有执行面工具（无记忆/人格/派生/提问能力），可选独立模型，用于长任务分解、上下文隔离、独立角色专注处理 |
+| `search_skills` | 搜索扩展技能（支持 Markdown 和可执行技能），查到后派生子代理执行 |
 | `reload_skills` | 热重载扩展技能 |
-| `create_skill` | 创建新技能（AI 自主编写 Python 脚本） |
+| `create_skill` | 创建新技能（AI 自主编写 Python 脚本，实际写入经子代理完成） |
 | `install_skill` | 技能安装指引 |
 | `ask_user` | 向用户提问（AI 主动交互） |
 | `update_identity` | 更新用户身份信息（`00_IDENTITY.md`） |
 | `update_soul` | 更新 AI 自我定义（`99_SOUL.md`，智能体进化） |
 | `save_memory_and_end_conversation` | 保存记忆并结束对话 |
 | `get_current_time` | 获取当前时间 |
-| `calculator` | 数学计算 |
 | `set_proxy` | 设置 SOCKS5 代理（host/port/可选账号密码，可持久化，即时生效） |
 | `get_proxy` | 查看当前 SOCKS5 代理配置 |
-| `express_emotion` | 表达情绪并记录当前情绪状态（anger/joy/sadness/surprise），可指定 `persona` 从 `~/.aibox/skills/` 加载人格技能（如 angry/coquettish/tsundere）派生携带该人格的情绪子代理，保证人格独立、不污染主对话上下文 |
-| `create_subagent` | 派生子代理：独立上下文/角色设定，轻量无工具、可选独立模型，用于长任务分解、上下文隔离、独立角色专注处理 |
+
+### 子代理（worker）工具集
+
+| 工具名称 | 功能描述 |
+|---------|---------|
+| `run_command` | 执行系统命令（实时输出，支持超时控制） |
+| `read_file` | 读取文件内容（返回 markdown 指引，改用 `head`/`tail`/`sed`/`wc` 等命令行读取） |
+| `write_file` | 写入或追加文件（返回 markdown 指引，改用 `mkdir -p` + `cat` 重定向写入） |
+| `list_files` | 列出目录内容（返回 markdown 指引，改用 `ls`/`du`/`find` 命令行列出） |
+| `web` | 访问网页、获取标题/文本/链接（返回 markdown 指引，改用 `curl` 命令行访问） |
+| `calculator` | 数学计算 |
+| `get_current_time` | 获取当前时间 |
 
 ## 💬 WebSocket API
 
@@ -725,6 +733,14 @@ elif command == "/mycommand":
 3. 确认工具返回值为字符串且不含二进制/控制字符
 
 ## 📄 更新日志
+
+### v2.9
+- ✅ **编排者-执行者工具分层（工具集 profile）**：
+  - `DeepSeekChat` 新增 `tool_profile` 参数（`orchestrator` / `worker`），`_register_tools()` 按 profile 分组装配工具集
+  - **主对话（orchestrator）**：仅管理面工具（记忆/备忘录/情绪/子代理派生/技能查询与创建/人格更新/代理设置），不再直接持有 `run_command` 与文件/网页等执行面工具，执行类任务一律经 `create_subagent` 派生子代理完成
+  - **子代理（worker）**：仅执行面 7 工具（`run_command` / `read_file` / `write_file` / `list_files` / `web` / `calculator` / `get_current_time`），无记忆/人格更新/派生/提问能力——修复子代理可调用 `update_soul` 改写主人格、可递归派生子代理的隐患
+  - 子代理角色提示词追加行为约束：不得提问（疑问写入最终回答）、产物文件一律落盘 `~/.aibox/workspace/` 并给出绝对路径
+  - 配套提示词调整：`99_SOUL.md` 角色定位改为编排者，`7_extension_skills.md` 技能执行路径改为 `search_skills` → 派生子代理执行（运行期 `~/.aibox/prompts/` 更新）
 
 ### v2.8
 - ✅ **新增 `express_emotion` 工具**：表达情绪并记录当前情绪状态（anger/joy/sadness/surprise），可指定 `persona` 从 `~/.aibox/skills/` 加载人格技能文件（如 angry/coquettish/tsundere），自动派生携带该人格的情绪子代理生成回应，保证人格独立、不污染主对话上下文

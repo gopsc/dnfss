@@ -5410,10 +5410,18 @@ def run_full_subagent(role, task, config, logger=None, model=None,
 
         # 创建子代理：完整 DeepSeekChat 实例，role 作为 system_prompt
         # 不传 memory_db/memo_db/history_manager/exit_callback：子代理不需要持久化记忆
-        # 末尾追加结束指令：任务完成后直接给出最终回答，不再调用工具，避免无谓的额外轮次
-        sub_role = role.rstrip() + "\n\n【重要】你是子代理，任务完成后直接给出最终回答，不要再调用任何工具。"
+        # tool_profile=worker：子代理仅注册执行面工具（命令行/文件/网页），
+        # 无记忆/人格更新/派生/提问能力，杜绝越权与递归派生
+        # 末尾追加结束指令与行为约束：任务完成后直接给出最终回答，疑问写入回答而非提问
+        sub_role = role.rstrip() + (
+            "\n\n【重要】你是子代理，任务完成后直接给出最终回答，不要再调用任何工具。"
+            "\n【约束】你没有记忆/提问/派生能力。遇到不确定的信息，用工具自行查证；"
+            "确实无法完成时，在最终回答中明确说明原因与已完成的部分。"
+            "\n产物文件一律写入 ~/.aibox/workspace/ 并在回答中给出绝对路径。"
+        )
         sub_chat = DeepSeekChat(
             system_prompt=sub_role,
+            tool_profile=TOOL_PROFILE_WORKER,
             command_executor=SubprocessCommandExecutor(),
             memory_db=None,
             memo_db=None,
@@ -5661,6 +5669,13 @@ class GetProxyTool(Tool):
 
 # ==================== AI聊天类（修改版：添加重置对话记忆和重新加载系统提示词功能，压缩静默执行） ====================
 
+# 工具集 profile：orchestrator=主对话管理面（记忆/情绪/子代理派生），
+# worker=子代理执行面（命令行/文件/网页）。主代理不直接接触命令行，
+# 执行类任务一律经 create_subagent 派生 worker 完成。
+TOOL_PROFILE_ORCHESTRATOR = "orchestrator"
+TOOL_PROFILE_WORKER = "worker"
+
+
 class DeepSeekChat:
     """单AI聊天类"""
     
@@ -5668,10 +5683,13 @@ class DeepSeekChat:
                  system_prompt: str = None, debug_level: int = None, exit_callback: Callable = None,
                  history_manager: ConversationHistory = None, memory_db: MemoryDatabase = None,
                  memo_db: MemoDatabase = None, command_executor: CommandExecutor = None,
-                 prompt_manager: PromptManager = None, skill_manager: SkillManager = None):
+                 prompt_manager: PromptManager = None, skill_manager: SkillManager = None,
+                 tool_profile: str = TOOL_PROFILE_ORCHESTRATOR):
         self.config = ConfigManager()
         self.logger = Logger("DeepSeek", debug_level if debug_level is not None else Logger("").level)
         self.debug_level = self.logger.level
+        # 工具集 profile：决定本实例注册哪套工具（orchestrator 管理面 / worker 执行面）
+        self.tool_profile = tool_profile
         # 大模型客户端（抽象层，支持多厂商切换）
         self.client = create_llm_client(self.config, api_key=api_key, logger=self.logger)
         self.api_key = self.client.api_key
@@ -5764,15 +5782,24 @@ class DeepSeekChat:
         self.messages.append(msg)
 
     def _register_tools(self, exit_callback: Callable = None, command_executor: CommandExecutor = None):
-        # 内置工具列表
+        # worker（子代理）：仅执行面工具，无记忆/人格/派生/提问能力
+        if self.tool_profile == TOOL_PROFILE_WORKER:
+            worker_tools = [
+                CommandLineTool(command_executor or SubprocessCommandExecutor(self.logger), self.logger),
+                ReadFileTool(self.logger),
+                WriteFileTool(self.logger),
+                ListFilesTool(self.logger),
+                SimpleWebCrawlerTool(self.logger),
+                CalculatorTool(self.logger),
+                GetCurrentTimeTool(self.logger),
+            ]
+            self.tool_registry.register_many(worker_tools, is_builtin=True)
+            self.logger.info(f"worker 子代理已注册 {len(worker_tools)} 个执行面工具")
+            return
+
+        # orchestrator（主对话）：管理面工具，执行类任务经 create_subagent 派生 worker
         builtin_tools = [
             GetCurrentTimeTool(self.logger),
-            CalculatorTool(self.logger),
-            CommandLineTool(command_executor or SubprocessCommandExecutor(self.logger), self.logger),
-            ReadFileTool(self.logger),
-            WriteFileTool(self.logger),
-            ListFilesTool(self.logger),
-            SimpleWebCrawlerTool(self.logger),
         ]
         
         if self.memory_db:
