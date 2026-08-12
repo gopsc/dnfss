@@ -1047,6 +1047,7 @@ function renderCards(list) {
 	recommend_list.replaceChildren();
 	for (let i in list) {
 		let item = list[i]
+		if (item.title && typeof item.title === 'string' && item.title.indexOf('__') === 0) continue;
 		console.log(item)
 		let card = document.createElement('div');
 		card.className = "card";
@@ -1230,8 +1231,9 @@ function loadMap(children_json) {
     }
     for (let i in children_json) {
         let item = children_json[i];
-        let tag = document.createElement("div");
         let title = item.title;
+        if (title && typeof title === 'string' && title.indexOf('__') === 0) continue;
+        let tag = document.createElement("div");
         tag.className = "tag";
         tag.textContent = title;
         tag.addEventListener("click", () => {
