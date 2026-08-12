@@ -712,12 +712,16 @@ function inheritThemeStyle() {
 	}
 	if (hasTheme && hasStyle) return;
 
+	console.log('[继承] stack=', JSON.stringify(stack),
+		'current_children.length=', current_children.length,
+		'hasTheme=', hasTheme, 'hasStyle=', hasStyle);
 	var gen = ++_inherit_gen;
 	(async function() {
 		for (var i = stack.length - 1; i >= 0; i--) {
 			if (hasTheme && hasStyle) break;
 			if (gen !== _inherit_gen) return;
 			var pid = (i === 0) ? 0 : stack[i - 1];
+			console.log('[继承] 查询 pid=', pid, '(stack[' + i + '] 的父节点)');
 			try {
 				var res = await fetch('/get_notes', {
 					method: 'POST',
@@ -725,25 +729,30 @@ function inheritThemeStyle() {
 					body: JSON.stringify({ pid: pid, noread: true })
 				});
 				if (gen !== _inherit_gen) return;
-				if (!res.ok) continue;
+				if (!res.ok) { console.log('[继承] pid=', pid, 'HTTP', res.status); continue; }
 				var data = await res.json();
-				if (!Array.isArray(data)) continue;
+				if (gen !== _inherit_gen) return;
+				if (!Array.isArray(data)) { console.log('[继承] pid=', pid, '非数组'); continue; }
+				console.log('[继承] pid=', pid, '返回', data.length, '个子节点');
 				for (var j = 0; j < data.length; j++) {
 					var sp = parseSp(data[j].content);
 					if (!sp) continue;
 					if (!hasTheme && sp._sp === 'theme') {
+						console.log('[继承] 找到主题:', data[j].title, 'id=', data[j].id);
 						injectSpCss(sp, 'inh-' + data[j].id);
 						hasTheme = true;
 					}
 					if (!hasStyle && sp._sp === 'style') {
+						console.log('[继承] 找到样式:', data[j].title, 'id=', data[j].id);
 						injectSpCss(sp, 'inh-' + data[j].id);
 						hasStyle = true;
 					}
 				}
 			} catch (e) {
-				console.error('继承主题/样式失败:', e);
+				console.error('[继承] 异常 pid=', pid, e);
 			}
 		}
+		console.log('[继承] 完成 hasTheme=', hasTheme, 'hasStyle=', hasStyle);
 	})();
 }
 
