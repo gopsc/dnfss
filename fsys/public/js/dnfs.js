@@ -1299,11 +1299,12 @@ function renderUserPanel() {
 	if (current_user == null) return;
 	userpanel.replaceChildren();
 	let fold = document.createElement("div");
-	fold.className = "tag fold-btn";
 	if (userpanel_expand) {
+		fold.className = "tag fold-btn";
 		fold.textContent = "v 折叠";
 	} else {
-		fold.textContent = "> 展开";
+		fold.className = "user-avatar-fold";
+		fold.textContent = current_user.login ? (current_user.user || "?").trim().charAt(0).toUpperCase() : "?";
 	}
 	fold.addEventListener("click", () => {
 		userpanel_expand = !userpanel_expand;

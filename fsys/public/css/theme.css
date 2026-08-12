@@ -575,8 +575,30 @@ input[type="button"]:disabled {
     background: var(--accent-soft);
     border-color: var(--accent);
 }
+/* 折叠态用户面板：圆形头像按钮，与 owner-avatar 同风格 */
+.userpanel .user-avatar-fold {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: var(--accent-soft);
+    color: var(--accent-dark);
+    border: 2px solid var(--accent);
+    font-size: 0.95rem;
+    font-weight: 700;
+    cursor: pointer;
+    user-select: none;
+    transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
+}
+.userpanel .user-avatar-fold:hover {
+    border-color: var(--accent-dark);
+    transform: scale(1.08);
+    box-shadow: 0 0 0 4px var(--accent-glow);
+}
 
-/* ===== Special Nodes (dnfs，管理员发布的特殊节点) ===== */
+/* ===== Special Nodes (dnfs) ===== */
 .sp-link { display: flex; align-items: center; gap: 0.5rem; }
 .sp-favicon { width: 20px; height: 20px; flex: none; border-radius: 4px; }
 .sp-anchor { color: var(--accent); word-break: break-all; }
