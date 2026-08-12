@@ -62,7 +62,7 @@ venv/bin/python -m pytest tests/ -v
 ```
 @Camera
  name  width  height  framerate  capacity;
- cam0    640      480        30         4;
+ cam0    1920     1080       30         4;
 @
 ```
 

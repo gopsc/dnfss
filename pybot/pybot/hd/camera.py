@@ -27,7 +27,7 @@ class Camera:
     grabber: 可注入的抓帧回调（测试用），None = 用 picamera2 抓帧。
     """
 
-    def __init__(self, width=640, height=480, framerate=30.0, capacity=4,
+    def __init__(self, width=1920, height=1080, framerate=30.0, capacity=4,
                  grabber=None, dry_run=False):
         self.width = width
         self.height = height
