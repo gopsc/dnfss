@@ -67,6 +67,9 @@ aibox/
 ├── entry.html         # 前端入口页
 ├── entry1.html        # 前端入口页（变体）
 ├── frontend.html      # 前端主页面
+├── llm_client.py      # 大模型客户端抽象层（多厂商切换）
+├── common/            # 基础设施包（i18n / 配置 / 常量 / 日志）
+├── tools/             # 工具系统基础包（Tool 基类 + ToolRegistry 注册器）
 ├── skills/            # 内置扩展技能（*.py 可执行脚本 / *.md Markdown 技能）
 │   ├── hello-world.py
 │   ├── aes-crypto.py
@@ -621,7 +624,7 @@ Server -> Client: {type: "dialogue_reset", content: "✅ 对话状态已完全�
 
 ### 添加新工具
 
-1. 继承 `Tool` 基类（位于 `aibox.py`）
+1. 继承 `Tool` 基类（位于 `tools/base.py`）
 2. 实现 `get_name()`、`get_description()`、`get_parameters()`、`execute()`
 3. 可选实现 `execute_streaming()` 支持流式输出（通过 `output_queue` 发送 `("line", content)` 和 `("complete", final_result)`）
 4. 在 `DeepSeekChat._register_tools()` 中注册
