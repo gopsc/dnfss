@@ -697,9 +697,11 @@ function formatBytes(n) {
 	return n.toFixed(1) + units[i];
 }
 
-/* ===== 父节点主题/样式继承 =====
- * 当前节点不存在 theme/style 子节点时，查找父节点的对应子节点并自动注入 CSS。
- * 已存在的不重复搜索（hasTheme/hasStyle 分别控制）。 */
+/* ===== 祖先主题/样式继承 =====
+ * 当前节点不存在 theme/style 子节点时，沿 stack 向根搜索最近祖先的对应节点，
+ * 自动注入其 CSS。已存在的不重复搜索（hasTheme/hasStyle 分别控制）。
+ * 异步 getNode 可能跨导航——用 _inherit_gen 做取消，新导航的 clearAllEffects
+ * 会移除旧注入。 */
 var _inherit_gen = 0;
 function inheritThemeStyle() {
 	var hasTheme = false, hasStyle = false;
@@ -711,28 +713,29 @@ function inheritThemeStyle() {
 	}
 	if (hasTheme && hasStyle) return;
 
-	// 仅查询直接父节点
-	var parentPid = (stack.length === 0) ? 0 : (stack.length === 1 ? 0 : stack[stack.length - 2]);
 	var gen = ++_inherit_gen;
 	(async function() {
-		if (gen !== _inherit_gen) return;
-		try {
-			var children = await getNode(parentPid);
-			if (!Array.isArray(children)) return;
-			for (var j = 0; j < children.length; j++) {
-				var sp = parseSp(children[j].content);
-				if (!sp) continue;
-				if (!hasTheme && sp._sp === 'theme') {
-					injectSpCss(sp, 'inh-' + children[j].id);
-					hasTheme = true;
+		for (var i = stack.length - 1; i >= 0; i--) {
+			if (hasTheme && hasStyle) break;
+			if (gen !== _inherit_gen) return;
+			try {
+				var children = await getNode(stack[i]);
+				if (!Array.isArray(children)) continue;
+				for (var j = 0; j < children.length; j++) {
+					var sp = parseSp(children[j].content);
+					if (!sp) continue;
+					if (!hasTheme && sp._sp === 'theme') {
+						injectSpCss(sp, 'inh-' + children[j].id);
+						hasTheme = true;
+					}
+					if (!hasStyle && sp._sp === 'style') {
+						injectSpCss(sp, 'inh-' + children[j].id);
+						hasStyle = true;
+					}
 				}
-				if (!hasStyle && sp._sp === 'style') {
-					injectSpCss(sp, 'inh-' + children[j].id);
-					hasStyle = true;
-				}
+			} catch (e) {
+				console.error('继承主题/样式失败:', e);
 			}
-		} catch (e) {
-			console.error('继承主题/样式失败:', e);
 		}
 	})();
 }
