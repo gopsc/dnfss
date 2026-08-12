@@ -31,7 +31,8 @@ class ActionPredictorInference:
         self.frame_len = self._data_cfg.frame_len
 
         self._transform = transforms.Compose([
-            transforms.Resize((self._data_cfg.image_size, self._data_cfg.image_size)),
+            transforms.Resize((self._data_cfg.image_height,
+                               self._data_cfg.image_width)),
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         ])

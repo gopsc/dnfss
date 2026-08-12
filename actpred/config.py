@@ -5,7 +5,8 @@ from typing import Optional
 
 @dataclass
 class DataConfig:
-    image_size: int = 224
+    image_width: int = 1920
+    image_height: int = 1080
     action_dim: int = 18
     history_len: int = 5
     frame_len: int = 3
@@ -59,7 +60,8 @@ class Config:
 
 def build_argparser(description: str = "") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description)
-    parser.add_argument("--image-size", type=int, default=None)
+    parser.add_argument("--image-width", type=int, default=None)
+    parser.add_argument("--image-height", type=int, default=None)
     parser.add_argument("--action-dim", type=int, default=None)
     parser.add_argument("--history-len", type=int, default=None)
     parser.add_argument("--frame-len", type=int, default=None)
@@ -99,7 +101,8 @@ def validate_config_values(data_cfg: DataConfig, model_cfg: ModelConfig,
     也防止训练 CLI 越界参数（如 --history-len 0 / --lr -1）静默进入训练。
     """
     checks = [
-        ("image_size", data_cfg.image_size, 1, 1024, int),
+        ("image_width", data_cfg.image_width, 1, 4096, int),
+        ("image_height", data_cfg.image_height, 1, 4096, int),
         ("history_len", data_cfg.history_len, 1, 1024, int),
         ("frame_len", data_cfg.frame_len, 1, 1024, int),
         ("action_dim", data_cfg.action_dim, 1, 1024, int),
@@ -173,7 +176,8 @@ def parse_checkpoint_config(cfg_dict: dict) -> Config:
 
 def apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:
     mapping = {
-        "image_size": ("data", "image_size"),
+        "image_width": ("data", "image_width"),
+        "image_height": ("data", "image_height"),
         "action_dim": ("data", "action_dim"),
         "history_len": ("data", "history_len"),
         "frame_len": ("data", "frame_len"),

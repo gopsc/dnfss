@@ -21,7 +21,7 @@ def main():
     model.eval()
 
     dummy_images = torch.randn(
-        1, data_cfg.frame_len, 3, data_cfg.image_size, data_cfg.image_size)
+        1, data_cfg.frame_len, 3, data_cfg.image_height, data_cfg.image_width)
     dummy_history = torch.randn(1, data_cfg.history_len, data_cfg.action_dim)
 
     batch = Dim("batch")

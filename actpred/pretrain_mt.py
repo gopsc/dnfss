@@ -76,7 +76,8 @@ class MTActionDataset(Dataset):
         }
 
 
-def pretrain_one_epoch(model, loader, optimizer, device, image_size, frame_len,
+def pretrain_one_epoch(model, loader, optimizer, device, image_width,
+                       image_height, frame_len,
                        max_grad_norm=None, noise_std=0.0):
     model.train()
     total_loss = 0.0
@@ -90,7 +91,7 @@ def pretrain_one_epoch(model, loader, optimizer, device, image_size, frame_len,
             target = target + torch.randn_like(target) * noise_std
         if zero_images is None or zero_images.size(0) != history.size(0):
             zero_images = torch.zeros(
-                history.size(0), frame_len, 3, image_size, image_size,
+                history.size(0), frame_len, 3, image_height, image_width,
                 device=device,
             )
         optimizer.zero_grad()
@@ -106,7 +107,7 @@ def pretrain_one_epoch(model, loader, optimizer, device, image_size, frame_len,
 
 
 @torch.no_grad()
-def validate(model, loader, device, image_size, frame_len):
+def validate(model, loader, device, image_width, image_height, frame_len):
     model.eval()
     total_loss = 0.0
     count = 0
@@ -116,7 +117,7 @@ def validate(model, loader, device, image_size, frame_len):
         target = batch["target"].to(device)
         if zero_images is None or zero_images.size(0) != history.size(0):
             zero_images = torch.zeros(
-                history.size(0), frame_len, 3, image_size, image_size,
+                history.size(0), frame_len, 3, image_height, image_width,
                 device=device,
             )
         pred = model(zero_images, history)
@@ -239,11 +240,12 @@ def main():
               f"lr={optimizer.param_groups[0]['lr']:.6f}")
         train_loss = pretrain_one_epoch(
             model, train_loader, optimizer, device,
-            cfg.data.image_size, cfg.data.frame_len,
+            cfg.data.image_width, cfg.data.image_height, cfg.data.frame_len,
             cfg.train.max_grad_norm, args.noise_std,
         )
         val_loss = validate(model, val_loader, device,
-                            cfg.data.image_size, cfg.data.frame_len)
+                            cfg.data.image_width, cfg.data.image_height,
+                            cfg.data.frame_len)
         scheduler.step()
         print(f"  train_loss={train_loss:.6f}  val_loss={val_loss:.6f}")
 

@@ -16,16 +16,18 @@ def _natural_key(p):
 
 class ActionDataset(Dataset):
     def __init__(self, data_dir: str, history_len: int, action_dim: int,
-                 image_size: int = 224, normalize_actions: bool = False,
+                 image_width: int = 1920, image_height: int = 1080,
+                 normalize_actions: bool = False,
                  action_stats_path: str = None, episode_indices: list = None,
                  frame_len: int = 3):
         self.history_len = history_len
         self.action_dim = action_dim
-        self.image_size = image_size
+        self.image_width = image_width
+        self.image_height = image_height
         self.frame_len = frame_len
 
         self.transform = transforms.Compose([
-            transforms.Resize((image_size, image_size)),
+            transforms.Resize((image_height, image_width)),
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         ])

@@ -82,7 +82,7 @@ def main():
 
     train_ds = ActionDataset(
         cfg.data.data_dir, cfg.data.history_len, cfg.data.action_dim,
-        cfg.data.image_size, cfg.data.normalize_actions,
+        cfg.data.image_width, cfg.data.image_height, cfg.data.normalize_actions,
         cfg.data.action_stats_path, train_indices, cfg.data.frame_len)
     if cfg.data.normalize_actions and not cfg.data.action_stats_path:
         # 归一化统计量必须只用训练集计算，再供验证集复用，否则 val loss 不可信
@@ -92,7 +92,7 @@ def main():
         cfg.data.action_stats_path = stats_path
     val_ds = ActionDataset(
         cfg.data.data_dir, cfg.data.history_len, cfg.data.action_dim,
-        cfg.data.image_size, cfg.data.normalize_actions,
+        cfg.data.image_width, cfg.data.image_height, cfg.data.normalize_actions,
         cfg.data.action_stats_path, val_indices, cfg.data.frame_len)
 
     print(f"Samples: {len(train_ds)} train, {len(val_ds)} val")

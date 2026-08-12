@@ -5,8 +5,8 @@
 HEF 由 actpred ONNX 经 Hailo DFC 编译生成（量化校准后）。本封装不硬编码
 vstream 名称/形状/量化参数，全部从 HEF 的 input/output vstream info 动态推导：
 
-    图像输入:  (1, F, 3, S, S) → NHWC uint8 (1, F, S, S, 3)
-               或 (1, S, S, F*3) → 帧沿通道拼接
+    图像输入:  (1, F, 3, H, W) → NHWC uint8 (1, F, H, W, 3)
+               或 (1, H, W, F*3) → 帧沿通道拼接
     动作输入:  (1, H, D) float32，uint8 边缘时按 quant_info 量化
     动作输出:  (1, D)，uint8 边缘时按 quant_info 反量化
 
@@ -111,15 +111,15 @@ class HailoPredictor:
     def _derive_dims(self):
         shape = tuple(self._image_info.shape)
         if len(shape) == 5:
-            _, self.frame_len, c, self.image_size, _ = shape
+            _, self.frame_len, c, self.image_height, self.image_width = shape
             if c != 3:
                 raise ValueError(f"图像输入通道维应为 3，实际形状 {shape}")
             self._image_layout = "ncfhw"
-        else:  # (1, S, S, F*3) NHWC 帧拼通道
-            _, self.image_size, s2, c = shape
-            if s2 != self.image_size or c % 3 != 0 or c == 3:
+        else:  # (1, H, W, F*3) NHWC 帧拼通道
+            _, self.image_height, self.image_width, c = shape
+            if c % 3 != 0 or c == 3:
                 raise ValueError(
-                    f"无法从 4 维图像输入推导帧数（期望 (1,S,S,F*3)），"
+                    f"无法从 4 维图像输入推导帧数（期望 (1,H,W,F*3)），"
                     f"实际形状 {shape}")
             self.frame_len = c // 3
             self._image_layout = "nhwc_fused"
@@ -206,15 +206,15 @@ class HailoPredictor:
     def _preprocess(self, image) -> np.ndarray:
         img = Image.fromarray(image) if isinstance(image, np.ndarray) else image
         img = img.convert("RGB").resize(
-            (self.image_size, self.image_size), Image.BILINEAR)
+            (self.image_width, self.image_height), Image.BILINEAR)
         return np.asarray(img, dtype=np.uint8)      # HWC uint8
 
     def _image_buffer(self, frames: np.ndarray) -> np.ndarray:
-        """(F, S, S, 3) → HEF 图像输入缓冲区（按编译后布局）"""
+        """(F, H, W, 3) → HEF 图像输入缓冲区（按编译后布局）"""
         if self._image_layout == "ncfhw":
-            return frames.transpose(0, 3, 1, 2)[np.newaxis]  # (1,F,3,S,S)
-        # nhwc_fused: 帧沿通道拼接 (1, S, S, F*3)
-        return frames.reshape(1, self.image_size, self.image_size,
+            return frames.transpose(0, 3, 1, 2)[np.newaxis]  # (1,F,3,H,W)
+        # nhwc_fused: 帧沿通道拼接 (1, H, W, F*3)
+        return frames.reshape(1, self.image_height, self.image_width,
                               self.frame_len * 3)
 
 

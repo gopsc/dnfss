@@ -2,7 +2,7 @@
 
 接口对齐 predict.ActionPredictorInference：predict(images, action_history)。
 
-模型维度从 ONNX session 输入元数据动态推导（images: [1,F,3,S,S]，
+模型维度从 ONNX session 输入元数据动态推导（images: [1,F,3,H,W]，
 action_history: [1,H,D]），无需 checkpoint。
 图像预处理复现训练时的 dataset.py 流水线：Resize → /255 → ImageNet 归一化。
 
@@ -55,7 +55,7 @@ class OnnxPredictor:
         inputs = {i.name: [d if isinstance(d, int) else -1
                            for d in i.shape] for i in self._session.get_inputs()}
         img_shape, hist_shape = self._locate_inputs(inputs)
-        _, self.frame_len, _, self.image_size, _ = img_shape
+        _, self.frame_len, _, self.image_height, self.image_width = img_shape
         _, self.history_len, self.action_dim = hist_shape
         self._image_name = next(n for n, s in inputs.items() if len(s) == 5)
         self._history_name = next(n for n, s in inputs.items() if len(s) == 3)
@@ -82,9 +82,9 @@ class OnnxPredictor:
             raise ValueError(
                 "ONNX 输入应为 1 个 5 维图像 + 1 个 3 维动作历史，"
                 f"实际: {inputs}")
-        if img[0][2] != 3 or img[0][3] != img[0][4]:
+        if img[0][2] != 3:
             raise ValueError(
-                f"图像输入形状应为 [1,F,3,S,S]，实际为 {img[0]}")
+                f"图像输入形状应为 [1,F,3,H,W]，实际为 {img[0]}")
         return img[0], hist[0]
 
     # ---------------- 生命周期 ----------------
@@ -134,10 +134,10 @@ class OnnxPredictor:
         return result
 
     def _preprocess(self, image) -> np.ndarray:
-        """Resize → /255 → ImageNet 归一化 → (3, S, S) float32"""
+        """Resize → /255 → ImageNet 归一化 → (3, H, W) float32"""
         img = Image.fromarray(image) if isinstance(image, np.ndarray) else image
         img = img.convert("RGB").resize(
-            (self.image_size, self.image_size), Image.BILINEAR)
+            (self.image_width, self.image_height), Image.BILINEAR)
         x = np.asarray(img, dtype=np.float32) / 255.0     # HWC
         x = x.transpose(2, 0, 1)                          # CHW
         return (x - IMAGENET_MEAN[:, None, None]) / IMAGENET_STD[:, None, None]

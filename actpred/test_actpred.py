@@ -84,7 +84,7 @@ class TestActionPredictor(unittest.TestCase):
     """测试多帧注意力模型前向传播"""
 
     def test_forward_multi_frame(self):
-        data_cfg = DataConfig(image_size=64, action_dim=18, history_len=5, frame_len=3)
+        data_cfg = DataConfig(image_width=64, image_height=64, action_dim=18, history_len=5, frame_len=3)
         model_cfg = ModelConfig(cnn_backbone="simple")
         model = ActionPredictor(model_cfg, data_cfg)
         model.eval()
@@ -97,7 +97,7 @@ class TestActionPredictor(unittest.TestCase):
 
     def test_forward_single_frame_degenerate(self):
         """frame_len=1 退化为单帧输入也应正常前向"""
-        data_cfg = DataConfig(image_size=32, action_dim=4, history_len=3, frame_len=1)
+        data_cfg = DataConfig(image_width=32, image_height=32, action_dim=4, history_len=3, frame_len=1)
         model_cfg = ModelConfig(cnn_backbone="simple")
         model = ActionPredictor(model_cfg, data_cfg)
         model.eval()
@@ -109,7 +109,7 @@ class TestActionPredictor(unittest.TestCase):
         self.assertEqual(out.shape, (2, 4))
 
     def test_forward_dynamic_batch(self):
-        data_cfg = DataConfig(image_size=32, action_dim=4, history_len=3, frame_len=2)
+        data_cfg = DataConfig(image_width=32, image_height=32, action_dim=4, history_len=3, frame_len=2)
         model_cfg = ModelConfig(cnn_backbone="simple")
         model = ActionPredictor(model_cfg, data_cfg)
         model.eval()
@@ -123,7 +123,7 @@ class TestActionPredictor(unittest.TestCase):
 
     def test_custom_attn_config(self):
         """自定义 attn_dim/heads/layers 应可构建并前向"""
-        data_cfg = DataConfig(image_size=32, action_dim=4, history_len=3, frame_len=2)
+        data_cfg = DataConfig(image_width=32, image_height=32, action_dim=4, history_len=3, frame_len=2)
         model_cfg = ModelConfig(attn_dim=64, attn_heads=2, attn_layers=1)
         model = ActionPredictor(model_cfg, data_cfg)
         model.eval()
@@ -183,7 +183,8 @@ class TestActionDataset(unittest.TestCase):
     def test_dataset_loading(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             self._create_dummy_episode(Path(tmpdir), n_frames=10, action_dim=4)
-            ds = ActionDataset(tmpdir, history_len=3, action_dim=4, image_size=32,
+            ds = ActionDataset(tmpdir, history_len=3, action_dim=4,
+                               image_width=32, image_height=32,
                                frame_len=3)
             # 采样起点 max(history_len, frame_len-1) = 3 → 10 - 3 = 7 samples
             self.assertEqual(len(ds), 7)
@@ -200,7 +201,8 @@ class TestActionDataset(unittest.TestCase):
         """frame_len-1 > history_len 时采样起点由帧窗口决定"""
         with tempfile.TemporaryDirectory() as tmpdir:
             self._create_dummy_episode(Path(tmpdir), n_frames=10, action_dim=4)
-            ds = ActionDataset(tmpdir, history_len=3, action_dim=4, image_size=32,
+            ds = ActionDataset(tmpdir, history_len=3, action_dim=4,
+                               image_width=32, image_height=32,
                                frame_len=6)
             # 起点 max(3, 5) = 5 → 10 - 5 = 5 samples
             self.assertEqual(len(ds), 5)
@@ -265,7 +267,8 @@ class TestConfig(unittest.TestCase):
 
     def test_default_config(self):
         cfg = Config()
-        self.assertEqual(cfg.data.image_size, 224)
+        self.assertEqual(cfg.data.image_width, 1920)
+        self.assertEqual(cfg.data.image_height, 1080)
         self.assertEqual(cfg.data.action_dim, 18)
         self.assertEqual(cfg.data.history_len, 5)
         self.assertEqual(cfg.data.frame_len, 3)
@@ -480,7 +483,8 @@ class TestValidateConfigValues(unittest.TestCase):
         validate_config_values(cfg.data, cfg.model)  # 不应抛异常
 
     def test_out_of_range_or_non_int_raises(self):
-        for field, value in [("image_size", 99999), ("image_size", 0),
+        for field, value in [("image_width", 99999), ("image_width", 0),
+                             ("image_height", 0),
                              ("history_len", -1), ("frame_len", 0),
                              ("frame_len", 99999), ("action_dim", "18")]:
             cfg = Config()
@@ -601,10 +605,11 @@ class TestActionPredictorInference(unittest.TestCase):
     """测试推理封装端到端：checkpoint 保存 → 加载 → 推理"""
 
     @staticmethod
-    def _make_checkpoint(tmpdir, normalize_actions=False, image_size=32,
-                         frame_len=3):
+    def _make_checkpoint(tmpdir, normalize_actions=False, image_width=32,
+                         image_height=32, frame_len=3):
         cfg = Config()
-        cfg.data.image_size = image_size
+        cfg.data.image_width = image_width
+        cfg.data.image_height = image_height
         cfg.data.action_dim = 4
         cfg.data.history_len = 3
         cfg.data.frame_len = frame_len
@@ -707,11 +712,11 @@ class TestActionPredictorInference(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path, model, cfg = self._make_checkpoint(tmpdir)
             cfg_dict = cfg.to_dict()
-            cfg_dict["data"]["image_size"] = 99999
+            cfg_dict["data"]["image_width"] = 99999
             bad_path = os.path.join(tmpdir, "bad.pt")
             torch.save({"model_state_dict": model.state_dict(),
                         "config": cfg_dict}, bad_path)
-            with self.assertRaisesRegex(ValueError, "image_size"):
+            with self.assertRaisesRegex(ValueError, "image_width"):
                 ActionPredictorInference(bad_path, device="cpu")
 
     def test_unknown_config_key_in_checkpoint_raises(self):
@@ -820,7 +825,8 @@ class TestOnnxPredictor(unittest.TestCase):
     @staticmethod
     def _export_small_onnx(tmpdir):
         cfg = Config()
-        cfg.data.image_size = 32
+        cfg.data.image_width = 32
+        cfg.data.image_height = 32
         cfg.data.action_dim = 4
         cfg.data.history_len = 3
         cfg.data.frame_len = 3
@@ -847,7 +853,7 @@ class TestOnnxPredictor(unittest.TestCase):
             with OnnxPredictor(path) as p:
                 self.assertEqual((p.frame_len, p.history_len, p.action_dim),
                                  (3, 3, 4))
-                self.assertEqual(p.image_size, 32)
+                self.assertEqual((p.image_width, p.image_height), (32, 32))
 
     def test_matches_torch_forward(self):
         from onnx_infer import OnnxPredictor
@@ -1043,7 +1049,7 @@ class TestHailoPredictor(unittest.TestCase):
         history = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32)
         with HailoPredictor("fake.hef") as p:
             self.assertEqual((p.frame_len, p.history_len, p.action_dim), (2, 2, 3))
-            self.assertEqual(p.image_size, 4)
+            self.assertEqual((p.image_width, p.image_height), (4, 4))
             result = p.predict(self._frames(2), history)
         np.testing.assert_allclose(result, [1, 2, 3])
         self.assertEqual(seen_shapes["image"], (1, 2, 3, 4, 4))

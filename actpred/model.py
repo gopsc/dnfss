@@ -127,14 +127,15 @@ class ActionPredictor(nn.Module):
         self._frame_len = data_cfg.frame_len
         self._history_len = data_cfg.history_len
         self._action_dim = data_cfg.action_dim
-        self._image_size = data_cfg.image_size
+        self._image_width = data_cfg.image_width
+        self._image_height = data_cfg.image_height
         self._cnn_feature_dim = model_cfg.cnn_feature_dim
 
     def forward(self, images: torch.Tensor, action_history: torch.Tensor) -> torch.Tensor:
-        # images: (B, F, 3, S, S)  action_history: (B, H, D)
+        # images: (B, F, 3, H, W)  action_history: (B, H_len, D)
         b = images.size(0)
         frames = images.reshape(
-            b * self._frame_len, 3, self._image_size, self._image_size)
+            b * self._frame_len, 3, self._image_height, self._image_width)
         img_feat = self.image_encoder(frames).reshape(
             b, self._frame_len, self._cnn_feature_dim)
         img_tokens = self.img_proj(img_feat)
