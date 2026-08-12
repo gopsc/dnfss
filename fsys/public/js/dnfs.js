@@ -166,6 +166,7 @@ async function deleteNode(id) {
 		}
 
 		stack.pop();
+		stack_operate.pop();
 		getNode(stack[stack.length - 1]).then(function(r) { load_notes(r); loadMap(r); })
 
 		console.log(`删除节点成功`);
@@ -782,6 +783,9 @@ function makeStatItem(iconSvg, count) {
 
 /* ---- by qing ---- */
 const stack = [];	/* 用于存储当前节点的路径，也就是经过的每一个节点的id， 否则就回不去上一层*/
+/* 与 stack 平行的权限栈：进入每个节点时记录其 can_operate（后端按 owner/is_admin 判定，
+ * 与 delete_note 鉴权口径一致），用于"删除当前节点"按钮显隐；入栈/出栈必须与 stack 同步 */
+const stack_operate = [];
 var article_title = document.getElementById('article-title');
 var article_content = document.getElementById('article-content');
 var input_note_title = document.getElementById('input-note-title');
@@ -1016,6 +1020,18 @@ function confirmLeaveIfDirty() {
 	return true;
 }
 
+/* by qing — "删除当前节点"按钮显隐：仅当前节点的 can_operate 为真（本人或管理员，
+ * 后端 get_notes 判定，与 delete_note 鉴权口径一致）时显示；
+ * 根节点（无主人）/未登录/非本人节点一律隐藏。
+ * 所有改变 stack 的导航（进入/返回/删除当前节点）最终都会走到 load_notes，在此统一刷新 */
+function updateDeleteBtnVisibility() {
+	if (stack.length == 0) {
+		delete_note.style.display = 'none';
+		return;
+	}
+	delete_note.style.display = (stack_operate[stack_operate.length - 1] === true) ? '' : 'none';
+}
+
 function load_notes(main_node) {
 
 	/* 这个不能设置为空的 */
@@ -1044,6 +1060,7 @@ function load_notes(main_node) {
 	clearAllEffects();
 	renderCards(current_children);
 	inheritThemeStyle();
+	updateDeleteBtnVisibility();
 };
 
 /* 对 __ 隐藏节点应用特效（注入 CSS / 运行 js），卡片不渲染 */
@@ -1086,6 +1103,7 @@ function renderCards(list) {
 			if (!confirmLeaveIfDirty()) return;	/* 未放弃输入则不跳转，stack 保持原样 */
 			var id = Number(item.id)
 			stack.push(id)
+			stack_operate.push(item.can_operate === true)
 			getNode(id).then(function(r) { load_notes(r); loadMap(r); })
 		});
 		ttl.appendChild(ttl1);
@@ -1248,6 +1266,7 @@ function loadMap(children_json) {
         back.addEventListener("click", () => {
             if (!confirmLeaveIfDirty()) return;	/* 未放弃输入则不返回，stack 保持原样 */
             stack.pop();
+            stack_operate.pop();
             /* 栈空（回到根）时取 0：原判断 stack.length >= 0 恒真，空栈取 stack[-1] 得 undefined */
             var id = (stack.length > 0) ? stack[stack.length - 1] : 0;
             getNode(id).then(function(r) { load_notes(r); loadMap(r); });
