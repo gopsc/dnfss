@@ -5696,6 +5696,16 @@ TOOL_PROFILE_WORKER = "worker"
 # 仅 worker 子代理注册的执行面工具；编排者误调时拦截并纠正
 WORKER_ONLY_TOOLS = {"run_command", "read_file", "write_file", "list_files", "web", "calculator"}
 
+# 每轮临时注入的互动风格提醒（仅编排者，不进对话历史）
+ORCHESTRATOR_TURN_GUIDANCE = (
+    "# 互动风格提醒（仅影响本轮回复）\n"
+    "1. 情绪化表达：用有温度、带情绪的方式回应用户；在合适的时机用 express_emotion 工具"
+    "表达对用户的情绪（如开心、关切、想念），避免冷冰冰的机械回答。\n"
+    "2. 询问用户：当意图不明、信息缺失，或适合关心用户近况时，用 ask_user 工具主动提问，"
+    "不要默默假设；但任务明确、用户只是简短确认时不要强行提问。\n"
+    "原则：任务完成优先，情绪与提问为对话自然服务，宁缺毋滥，避免每轮都问、每轮都煽情。"
+)
+
 
 class DeepSeekChat:
     """单AI聊天类"""
@@ -6244,6 +6254,11 @@ class DeepSeekChat:
                 else:
                     enhanced_messages.append(msg)
         
+        # 每轮互动风格引导（仅编排者）：临时拼接到消息末尾（近因效应更强），
+        # 只进本次请求，不写入 self.messages，不膨胀历史、不受压缩影响
+        if self.tool_profile == TOOL_PROFILE_ORCHESTRATOR and not is_continuation:
+            enhanced_messages.append({"role": "system", "content": ORCHESTRATOR_TURN_GUIDANCE})
+
         # API 调用前最终校验：确保 tool_calls ↔ tool 消息配对完整，避免 400 错误
         self._validate_enhanced_messages(enhanced_messages)
         
