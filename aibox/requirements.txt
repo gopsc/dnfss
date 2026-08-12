@@ -1,6 +1,7 @@
 # backend
 websockets
 requests
+PySocks
 
 # frontend
 websockets>=11.0
