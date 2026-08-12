@@ -934,9 +934,14 @@ private:
                 return make_json_obj(http::status::internal_server_error, err, req);
             }
 
-            // 打开节点 pid 时观看人数 +1（pid=0 为虚拟根节点，无对应行，跳过）。
+            // 打开节点 pid 时观看人数 +1（pid=0 为虚拟根节点或无 noread 标记时，
+            // 前端样式继承等静默查询传 {"noread":true} 来跳过）。
             // best-effort：失败仅记日志，不影响返回结果。
-            if (pid != 0) {
+            bool noread = false;
+            if (auto it2 = body.find("noread"); it2 != body.end() && it2->value().is_bool()) {
+                noread = it2->value().as_bool();
+            }
+            if (pid != 0 && !noread) {
                 _bump_views(pid);
             }
 

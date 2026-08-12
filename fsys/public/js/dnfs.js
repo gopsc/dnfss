@@ -722,7 +722,7 @@ function inheritThemeStyle() {
 				var res = await fetch('/get_notes', {
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ pid: pid })
+					body: JSON.stringify({ pid: pid, noread: true })
 				});
 				if (gen !== _inherit_gen) return;
 				if (!res.ok) continue;
