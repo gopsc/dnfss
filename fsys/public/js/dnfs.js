@@ -476,6 +476,10 @@ function renderContent(container, item) {
 var sp_effects_disabled = (function() {
 	try { return localStorage.getItem('sp_effects_disabled') === '1'; } catch (e) { return false; }
 })();
+/* __ 隐藏节点可见：true 时 __ 前缀节点正常显示（用户面板开关控制，localStorage 持久化） */
+var __show_hidden = (function() {
+	try { return localStorage.getItem('dnfs_show_hidden') === '1'; } catch (e) { return false; }
+})();
 /* 清除当前页面已运行的全部特效沙箱与注入样式（进入新节点 / 关闭特效时调用） */
 function clearAllEffects() {
 	document.querySelectorAll('.sp-effect-frame').forEach(function(f) { f.remove(); });
@@ -1067,8 +1071,7 @@ function renderCards(list) {
 	for (let i in list) {
 		let item = list[i]
 		if (item.title && typeof item.title === 'string' && item.title.indexOf('__') === 0) {
-			applyHiddenNodeEffects(item);
-			continue;
+			if (!__show_hidden) { applyHiddenNodeEffects(item); continue; }
 		}
 		console.log(item)
 		let card = document.createElement('div');
@@ -1254,7 +1257,7 @@ function loadMap(children_json) {
     for (let i in children_json) {
         let item = children_json[i];
         let title = item.title;
-        if (title && typeof title === 'string' && title.indexOf('__') === 0) continue;
+        if (title && typeof title === 'string' && title.indexOf('__') === 0 && !__show_hidden) continue;
         let tag = document.createElement("div");
         tag.className = "tag";
         tag.textContent = title;
@@ -1340,6 +1343,22 @@ function renderUserPanel() {
 		renderCards(current_children);
 	});
 	userpanel.appendChild(effect_btn);
+
+	/* __ 系统节点显隐开关（所有用户） */
+	let hidden_btn = document.createElement("div");
+	hidden_btn.className = "tag";
+	hidden_btn.textContent = __show_hidden ? "隐藏系统节点" : "显示系统节点";
+	hidden_btn.addEventListener("click", () => {
+		__show_hidden = !__show_hidden;
+		try { localStorage.setItem('dnfs_show_hidden', __show_hidden ? '1' : '0'); } catch (e) {}
+		/* 切换时重新渲染当前层卡片和 minimap */
+		clearAllEffects();
+		renderCards(current_children);
+		var cur = (stack.length == 0) ? 0 : stack[stack.length - 1];
+		getNode(cur).then(function(r) { loadMap(r); });
+		renderUserPanel();
+	});
+	userpanel.appendChild(hidden_btn);
 
 	/* 管理员专属入口：运维机器人 / 进程管理器 */
 	if (current_user.is_admin) {
