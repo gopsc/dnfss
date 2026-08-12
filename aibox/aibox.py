@@ -5768,6 +5768,24 @@ class DeepSeekChat:
                 self._add_message("system", default_prompt)
                 self.logger.info("使用默认系统提示词")
 
+        # 【新增】对话开始引导：仅主对话（编排者）注入。
+        # 在每次对话开始（连接初始化 / /new / /reload_prompts）时，引导智能体主动
+        # 查阅记忆、询问用户、以情绪化方式互动。worker 子代理不注入——它无 ask_user /
+        # express_emotion 工具，且应保持执行专注、不被人格/情绪干扰。
+        if self.tool_profile == TOOL_PROFILE_ORCHESTRATOR:
+            conversation_start_guidance = (
+                "# 对话开始引导\n"
+                "每次对话开始时，请主动建立「有记忆、会互动、有温度」的对话氛围，做到以下三点：\n"
+                "1. 查阅记忆：用 memory 工具检索与当前话题或用户相关的历史记忆，了解过往上下文并保持连贯；"
+                "若记忆里有值得延续的内容，自然地承接，而不是从零开始。\n"
+                "2. 询问用户：主动关心用户近况、确认需求或澄清意图，必要时用 ask_user 工具向用户提问，"
+                "不要默默假设用户想要什么。\n"
+                "3. 情绪化表达：以更有温度、带情绪的方式开场，适时用 express_emotion 工具表达对用户的"
+                "情绪（如开心、关切、想念），让回应更有「人味」，而不是冷冰冰的机器回答。\n"
+            )
+            self._add_message("system", conversation_start_guidance)
+            self.logger.info("已注入对话开始引导提示词（查阅记忆 / 询问用户 / 情绪化）")
+
     # 在 DeepSeekChat 类的 __init__ 方法后添加
     def _add_assistant_message_with_reasoning(self, content: str, reasoning_content: str = None, tool_calls: List = None):
         """添加助手消息，包含 reasoning_content"""
