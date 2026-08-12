@@ -1042,12 +1042,34 @@ function load_notes(main_node) {
 	inheritThemeStyle();
 };
 
+/* 对 __ 隐藏节点应用特效（注入 CSS / 运行 js），卡片不渲染 */
+function applyHiddenNodeEffects(item) {
+	var sp = parseSp(item.content);
+	if (!sp) return;
+	var noteId = (item.id != null) ? 'hid-' + String(item.id) : null;
+	if (sp._sp === 'style' || sp._sp === 'theme') {
+		injectSpCss(sp, noteId);
+	} else if (sp._sp === 'js' && !sp_effects_disabled) {
+		/* 仅全屏模式（非 in-node）：无卡片容器，in-node 无法合理放置，忽略 */
+		if (/<!--\s*in-node\s*-->/.test(sp.code || '')) return;
+		var frame = document.createElement('iframe');
+		frame.className = 'sp-effect-frame';
+		frame.setAttribute('sandbox', 'allow-scripts');
+		frame.srcdoc = sp.code;
+		frame.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;border:0;pointer-events:none;z-index:9999;';
+		document.body.appendChild(frame);
+	}
+}
+
 /* 把卡片列表渲染到 recommend_list（从 load_notes/搜索过滤复用） */
 function renderCards(list) {
 	recommend_list.replaceChildren();
 	for (let i in list) {
 		let item = list[i]
-		if (item.title && typeof item.title === 'string' && item.title.indexOf('__') === 0) continue;
+		if (item.title && typeof item.title === 'string' && item.title.indexOf('__') === 0) {
+			applyHiddenNodeEffects(item);
+			continue;
+		}
 		console.log(item)
 		let card = document.createElement('div');
 		card.className = "card";
