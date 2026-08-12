@@ -10,7 +10,9 @@ import contextlib
 import importlib.util
 import io
 import os
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -806,6 +808,227 @@ class TestResumeCheckpoint(unittest.TestCase):
                                 msg=f"权重不一致: {k}")
 
 
+
+
+# ---------------- HailoPredictor 测试用 fake hailo_platform ----------------
+
+class _FakeFormatType:
+    UINT8 = "UINT8"
+    FLOAT32 = "FLOAT32"
+
+
+class _FakeFormat:
+    def __init__(self, fmt_type):
+        self.type = fmt_type
+
+
+class _FakeQuantInfo:
+    def __init__(self, qp_zp=0.0, qp_scale=1.0):
+        self.qp_zp = qp_zp
+        self.qp_scale = qp_scale
+
+
+class _FakeVStreamInfo:
+    def __init__(self, name, shape, fmt_type, quant=None):
+        self.name = name
+        self.shape = tuple(shape)
+        self.format = _FakeFormat(fmt_type)
+        self.quant_info = quant or _FakeQuantInfo()
+
+
+class _FakeStream:
+    def __init__(self):
+        self._buffer = None
+
+    def set_buffer(self, buf):
+        self._buffer = buf
+
+    def get_buffer(self):
+        return self._buffer
+
+
+class _FakeBindings:
+    def __init__(self):
+        self._streams = {}
+
+    def input(self, name=""):
+        return self._streams.setdefault(("in", name), _FakeStream())
+
+    def output(self, name=""):
+        return self._streams.setdefault(("out", name), _FakeStream())
+
+
+class _FakeConfigured:
+    def __init__(self, transform):
+        self._transform = transform
+
+    def create_bindings(self):
+        return _FakeBindings()
+
+    def run(self, bindings_list, timeout=0):
+        for b in bindings_list:
+            self._transform(b)
+
+
+class _FakeInferModel:
+    def __init__(self, transform):
+        self._configured = _FakeConfigured(transform)
+
+    @contextlib.contextmanager
+    def configure(self):
+        yield self._configured
+
+
+class _FakeVDevice:
+    def __init__(self, transform):
+        self._transform = transform
+
+    def create_infer_model(self, path):
+        return _FakeInferModel(self._transform)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _install_fake_hailo(test, infos_in, infos_out, transform):
+    """向 sys.modules 注入 fake hailo_platform，无需硬件即可测试"""
+    fake = types.ModuleType("hailo_platform")
+    fake.FormatType = _FakeFormatType
+    fake.HEF = lambda path: types.SimpleNamespace(
+        get_input_vstream_infos=lambda: list(infos_in),
+        get_output_vstream_infos=lambda: list(infos_out))
+    fake.VDevice = lambda: _FakeVDevice(transform)
+    patcher = mock.patch.dict(sys.modules, {"hailo_platform": fake})
+    test.addCleanup(patcher.stop)
+    patcher.start()
+
+
+def _first_row_transform(hist_name, out_name, quant_in=None, quant_out=None):
+    """transform：输出 = 历史动作首行（量化边缘时先反量化再量化）"""
+    def transform(b):
+        hist = np.asarray(b.input(hist_name).get_buffer(), dtype=np.float32)
+        if quant_in is not None:
+            hist = (hist - quant_in.qp_zp) * quant_in.qp_scale
+        first = hist.reshape(-1, hist.shape[-1])[0]
+        if quant_out is not None:
+            first = np.clip(np.round(first / quant_out.qp_scale + quant_out.qp_zp),
+                            0, 255).astype(np.uint8)
+        b.output(out_name).get_buffer()[...] = first
+    return transform
+
+
+class TestHailoPredictor(unittest.TestCase):
+    """HEF 推理封装测试（fake hailo_platform 注入，无需 Hailo 硬件）"""
+
+    def _frames(self, n, size=8):
+        return [np.random.randint(0, 255, (size, size, 3), dtype=np.uint8)
+                for _ in range(n)]
+
+    def test_float_ncfhw_layout(self):
+        from hailo_infer import HailoPredictor
+        infos_in = [
+            _FakeVStreamInfo("net/images", (1, 2, 3, 4, 4), _FakeFormatType.FLOAT32),
+            _FakeVStreamInfo("net/history", (1, 2, 3), _FakeFormatType.FLOAT32),
+        ]
+        infos_out = [_FakeVStreamInfo("net/action", (1, 3), _FakeFormatType.FLOAT32)]
+        seen_shapes = {}
+
+        def transform(b):
+            seen_shapes["image"] = np.asarray(
+                b.input("net/images").get_buffer()).shape
+            _first_row_transform("net/history", "net/action")(b)
+
+        _install_fake_hailo(self, infos_in, infos_out, transform)
+        history = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32)
+        with HailoPredictor("fake.hef") as p:
+            self.assertEqual((p.frame_len, p.history_len, p.action_dim), (2, 2, 3))
+            self.assertEqual(p.image_size, 4)
+            result = p.predict(self._frames(2), history)
+        np.testing.assert_allclose(result, [1, 2, 3])
+        self.assertEqual(seen_shapes["image"], (1, 2, 3, 4, 4))
+
+    def test_uint8_quantized_roundtrip(self):
+        from hailo_infer import HailoPredictor
+        q_in = _FakeQuantInfo(qp_zp=128.0, qp_scale=0.01)
+        q_out = _FakeQuantInfo(qp_zp=10.0, qp_scale=0.5)
+        infos_in = [
+            _FakeVStreamInfo("net/images", (1, 2, 3, 4, 4), _FakeFormatType.UINT8),
+            _FakeVStreamInfo("net/history", (1, 2, 3), _FakeFormatType.UINT8, q_in),
+        ]
+        infos_out = [_FakeVStreamInfo("net/action", (1, 3), _FakeFormatType.UINT8, q_out)]
+        _install_fake_hailo(
+            self, infos_in, infos_out,
+            _first_row_transform("net/history", "net/action", q_in, q_out))
+        history = np.array([[0.5, -0.25, 0.0], [1, 1, 1]], dtype=np.float32)
+        with HailoPredictor("fake.hef") as p:
+            result = p.predict(self._frames(2), history)
+        np.testing.assert_allclose(result, [0.5, -0.25, 0.0], atol=0.51)
+
+    def test_nhwc_fused_layout(self):
+        from hailo_infer import HailoPredictor
+        infos_in = [
+            _FakeVStreamInfo("net/images", (1, 4, 4, 6), _FakeFormatType.UINT8),
+            _FakeVStreamInfo("net/history", (1, 2, 3), _FakeFormatType.FLOAT32),
+        ]
+        infos_out = [_FakeVStreamInfo("net/action", (1, 3), _FakeFormatType.FLOAT32)]
+        seen_shapes = {}
+
+        def transform(b):
+            seen_shapes["image"] = np.asarray(
+                b.input("net/images").get_buffer()).shape
+            _first_row_transform("net/history", "net/action")(b)
+
+        _install_fake_hailo(self, infos_in, infos_out, transform)
+        history = np.zeros((2, 3), dtype=np.float32)
+        with HailoPredictor("fake.hef") as p:
+            self.assertEqual(p.frame_len, 2)      # 6 通道 = 2 帧 × 3
+            result = p.predict(self._frames(2), history)
+        np.testing.assert_allclose(result, [0, 0, 0])
+        self.assertEqual(seen_shapes["image"], (1, 4, 4, 6))
+
+    def test_frame_count_mismatch_raises(self):
+        from hailo_infer import HailoPredictor
+        infos_in = [
+            _FakeVStreamInfo("net/images", (1, 2, 3, 4, 4), _FakeFormatType.FLOAT32),
+            _FakeVStreamInfo("net/history", (1, 2, 3), _FakeFormatType.FLOAT32),
+        ]
+        infos_out = [_FakeVStreamInfo("net/action", (1, 3), _FakeFormatType.FLOAT32)]
+        _install_fake_hailo(self, infos_in, infos_out,
+                            _first_row_transform("net/history", "net/action"))
+        with HailoPredictor("fake.hef") as p:
+            with self.assertRaises(ValueError):
+                p.predict(self._frames(1), np.zeros((2, 3), dtype=np.float32))
+
+    def test_output_dim_mismatch_raises(self):
+        from hailo_infer import HailoPredictor
+        infos_in = [
+            _FakeVStreamInfo("net/images", (1, 2, 3, 4, 4), _FakeFormatType.FLOAT32),
+            _FakeVStreamInfo("net/history", (1, 2, 3), _FakeFormatType.FLOAT32),
+        ]
+        infos_out = [_FakeVStreamInfo("net/action", (1, 4), _FakeFormatType.FLOAT32)]
+        _install_fake_hailo(self, infos_in, infos_out, lambda b: None)
+        with self.assertRaises(ValueError):
+            HailoPredictor("fake.hef")
+
+    def test_stats_normalization_roundtrip(self):
+        from hailo_infer import HailoPredictor
+        infos_in = [
+            _FakeVStreamInfo("net/images", (1, 2, 3, 4, 4), _FakeFormatType.FLOAT32),
+            _FakeVStreamInfo("net/history", (1, 2, 3), _FakeFormatType.FLOAT32),
+        ]
+        infos_out = [_FakeVStreamInfo("net/action", (1, 3), _FakeFormatType.FLOAT32)]
+        _install_fake_hailo(self, infos_in, infos_out,
+                            _first_row_transform("net/history", "net/action"))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stats_path = os.path.join(tmpdir, "action_stats.npy")
+            np.save(stats_path, np.stack([np.full(3, 1.0), np.full(3, 2.0)]))
+            history = np.array([[3, 3, 3], [1, 1, 1]], dtype=np.float32)
+            with HailoPredictor("fake.hef", stats_path=stats_path) as p:
+                result = p.predict(self._frames(2), history)
+        np.testing.assert_allclose(result, [3, 3, 3], atol=1e-6)
 
 
 if __name__ == "__main__":

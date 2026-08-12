@@ -152,3 +152,33 @@ print(predictor.action_dim, predictor.history_len, predictor.frame_len)  # 公�
 action = predictor.predict(images, action_history)  # np.ndarray (action_dim,)
 # action_history 形状须为 (history_len, action_dim)
 ```
+
+## Hailo 部署（AI HAT 2 / Hailo-10H）
+
+树莓派 AI HAT 2 上通过 `hailo_infer.py` 的 `HailoPredictor` 走 NPU 推理，
+接口与 `ActionPredictorInference` 对齐。模型需先经 Hailo DFC 编译为 HEF：
+
+```bash
+# 1. 导出 ONNX
+bash _run.sh export --model checkpoints/best_inference.pt --output model.onnx
+# 2. 在 x86 主机（或 Hailo 云端 DFC）上编译 + 量化校准 → model.hef，拷回树莓派
+# 3. 推理（零 torch 依赖，仅需 hailo_platform + numpy + PIL）
+```
+
+```python
+from hailo_infer import HailoPredictor
+
+with HailoPredictor("model.hef") as predictor:      # stats_path= 仅归一化模型需要
+    action = predictor.predict(images, action_history)
+```
+
+```bash
+python3 hailo_infer.py --hef model.hef --images f1.jpg f2.jpg f3.jpg \
+    --action-history "45,0,...:45,0,..." [--stats action_stats.npy]
+```
+
+HEF 的 vstream 名称/形状/量化参数全部从 `HEF.get_input/output_vstream_infos()`
+动态推导，不硬编码；图像输入按 Hailo 惯例为 uint8 原始像素
+（ImageNet 归一化由 DFC 编译时折叠进网络）。
+环境调研与 API 踩坑记录见
+[docs/reports/actpred_hailo_hat2_inference_research_20260813.md](../docs/reports/actpred_hailo_hat2_inference_research_20260813.md)。
