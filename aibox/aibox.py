@@ -5459,8 +5459,11 @@ def run_full_subagent(role, task, config, logger=None, model=None,
         # 直到 AI 返回纯文本无工具调用，或达到轮次限制
         # 将子代理的思考过程（reasoning）通过 output_callback 转发给父代理
         def sub_think_callback(msg_type, content):
-            if output_callback is not None and \
-                    msg_type in ("reasoning_start", "reasoning", "reasoning_end"):
+            # 转发子代理的实时输出：思考过程（reasoning）、工具执行过程（line）、回答文本（chunk）
+            if output_callback is not None and msg_type in (
+                "reasoning_start", "reasoning", "reasoning_end",
+                "line", "chunk",
+            ):
                 output_callback(msg_type, content)
 
         sub_chat.think_and_respond(task, output_callback=sub_think_callback)
@@ -5585,23 +5588,44 @@ class SubAgentTool(Tool):
         }
 
     def _subagent_output(self, msg_type: str, content: str):
-        """子代理思考过程转发：把子代理的实时推理文字输出到主对话侧栏"""
+        """子代理实时输出转发：把子代理的思考、工具执行过程与回答文本流式输出到主对话侧栏。"""
+        # 回答文本（chunk）先累积，避免在侧栏里逐字断行；遇非 chunk 消息或结束时统一冲刷
+        if msg_type == "chunk":
+            buf = getattr(self, "_subagent_chunk_buf", "")
+            buf += content
+            self._subagent_chunk_buf = buf
+            return
+        # 非 chunk 消息：先冲刷已累积的回答文本，再输出当前消息
+        self._flush_subagent_answer()
         if msg_type == "reasoning_start":
             self.send_line("\n💭 [子代理思考] ")
         elif msg_type == "reasoning":
             self.send_line(content)
         elif msg_type == "reasoning_end":
             self.send_line("\n")
+        elif msg_type == "line":
+            # 工具调用、命令输出等过程行
+            self.send_line(f"🔹 [子代理] {content}")
+
+    def _flush_subagent_answer(self):
+        """冲刷子代理回答缓冲（最后一段 chunk 在结束时统一发出，避免逐字断行）。"""
+        buf = getattr(self, "_subagent_chunk_buf", "")
+        if buf:
+            self.send_line(f"🤖 [子代理回答] {buf}")
+            self._subagent_chunk_buf = ""
 
     def execute(self, role: str = None, task: str = None, model: str = None,
                 temperature: float = None, max_tokens: int = 2048,
                 max_turns: int = 10, **kwargs) -> str:
         if error := self.validate_params(["role", "task"], role=role, task=task):
             return error
-        return run_full_subagent(role, task, self.config, logger=self.logger,
-                                 model=model, temperature=temperature,
-                                 max_tokens=max_tokens, max_turns=max_turns,
-                                 output_callback=self._subagent_output)
+        result = run_full_subagent(role, task, self.config, logger=self.logger,
+                                   model=model, temperature=temperature,
+                                   max_tokens=max_tokens, max_turns=max_turns,
+                                   output_callback=self._subagent_output)
+        # 冲刷子代理回答缓冲（最后一段 chunk 可能尚未发出）
+        self._flush_subagent_answer()
+        return result
 
 
 class SetProxyTool(Tool):
