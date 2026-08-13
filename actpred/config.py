@@ -28,7 +28,9 @@ class ModelConfig:
 
 @dataclass
 class TrainConfig:
-    batch_size: int = 32
+    # 默认输入分辨率 1920×1080，batch=32 在 CPU/Pi 上内存不可行；
+    # 高分辨率训练取小 batch，小分辨率可用 --batch-size 调大
+    batch_size: int = 4
     epochs: int = 100
     lr: float = 1e-3
     weight_decay: float = 1e-4
