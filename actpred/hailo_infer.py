@@ -174,10 +174,13 @@ class HailoPredictor:
             self.frame_len = len(self._frame_infos)
             self._image_layout = "nhwc_frames"
         self._frame_quant = self._frame_infos[0].quant_info
-        # 帧量化零偏为负 ⇒ 校准数据是 ImageNet 归一化后的浮点，
-        # 推理端需先归一化再量化；零偏为 0 则为原始像素直通
+        # 帧输入是否需 ImageNet 归一化，由量化网格判定：DFC 的 zp 恒非负
+        # （zp = round(-min/scale)），码 0 反量化值 dequant(0) = -zp*scale。
+        # 原始像素输入（min=0, zp=0）下为 0；归一化输入（min≈-2.1）下
+        # ≈ -2.1（实测 HEF zp=114, scale=0.0187）。旧启发式 zp*scale<0
+        # 把归一化输入误判为原始像素直通，图像路径被饱和破坏。
         self._normalize_frames = \
-            self._frame_quant.qp_zp * self._frame_quant.qp_scale < 0
+            (0 - self._frame_quant.qp_zp) * self._frame_quant.qp_scale < -0.5
 
         h_shape = tuple(self._history_info.shape)
         self.history_len, self.action_dim = h_shape[1], h_shape[2]

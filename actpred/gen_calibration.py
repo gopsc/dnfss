@@ -23,6 +23,7 @@
 
 import argparse
 import os
+import tempfile
 
 import numpy as np
 
@@ -54,11 +55,33 @@ def build_action_history_samples(mt_dir, n_samples, history_len, action_dim, rng
     return np.stack([windows[i] for i in idx]).astype(np.float32)
 
 
-def build_image_samples(n_samples, frame_len, height, width, rng):
-    # 存 uint8 原始像素值（0~255），加载时再做 ToTensor+Normalize，节省磁盘
-    return rng.integers(0, 256,
-                        size=(n_samples, frame_len, 3, height, width),
-                        dtype=np.uint8)
+def build_image_samples(n_samples, frame_len, height, width, rng,
+                        chunk_samples: int = 4):
+    """生成 (n_samples, frame_len, 3, H, W) uint8 校准图像
+
+    存 uint8 原始像素值（0~255），加载时再做 ToTensor+Normalize，节省磁盘。
+    经 memmap 分块填充后返回：1080p 默认分辨率下整块数组约 600MB，
+    一次性分配容易挤爆内存，分块写盘把峰值压到 chunk_samples 帧量级。
+    """
+    if chunk_samples < 1:
+        raise ValueError(f"chunk_samples 应 >= 1，实际为 {chunk_samples}")
+    chunk_samples = min(chunk_samples, n_samples)
+    fd, tmp_path = tempfile.mkstemp(suffix=".npy")
+    os.close(fd)
+    images = np.lib.format.open_memmap(
+        tmp_path, mode="w+", dtype=np.uint8,
+        shape=(n_samples, frame_len, 3, height, width))
+    try:
+        for start in range(0, n_samples, chunk_samples):
+            stop = min(start + chunk_samples, n_samples)
+            images[start:stop] = rng.integers(
+                0, 256, size=(stop - start, frame_len, 3, height, width),
+                dtype=np.uint8)
+    except Exception:
+        images._mmap.close()
+        os.unlink(images.filename)
+        raise
+    return images
 
 
 def build_deploy_set(args):
@@ -155,6 +178,9 @@ def main():
         args.samples, cfg.frame_len, cfg.image_height, cfg.image_width, rng)
 
     np.savez_compressed(args.output, images=images, action_history=history)
+    # 释放 memmap 并删除临时文件（数据已写入 npz）
+    images._mmap.close()
+    os.unlink(images.filename)
     print(f"校准集已保存: {args.output}")
     print(f"  images: {images.shape} dtype={images.dtype}")
     print(f"  action_history: {history.shape} dtype={history.dtype}")

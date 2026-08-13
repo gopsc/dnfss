@@ -6,7 +6,8 @@ import torch
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
-from config import Config, build_argparser, apply_overrides, validate_config_values
+from config import (Config, build_argparser, apply_overrides,
+                    validate_config_values, warn_init_from_mismatch)
 from model import ActionPredictor
 from dataset import ActionDataset
 
@@ -119,6 +120,7 @@ def main():
 
     if args.init_from:
         init_ckpt = torch.load(args.init_from, map_location="cpu", weights_only=True)
+        warn_init_from_mismatch(init_ckpt.get("config", {}), cfg)
         missing, unexpected = model.load_state_dict(
             init_ckpt["model_state_dict"], strict=False)
         if missing:

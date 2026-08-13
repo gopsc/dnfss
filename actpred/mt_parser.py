@@ -34,11 +34,15 @@ def parse_mt_action(path) -> np.ndarray:
     # 先去除整行注释（# 开头），避免注释中的 @Action 干扰正则匹配
     text = re.sub(r"(?m)^[ \t]*#.*$", "", text)
 
-    match = re.search(r"@Action\s+(.*?)\s*@", text, re.DOTALL)
-    if not match:
+    start_m = re.search(r"@Action\s+", text)
+    if not start_m:
         raise ValueError(f"未找到 @Action 块: {path}")
-
-    block = match.group(1)
+    # 块结束于下一个 @ 段标记；@Action 为文件最后一个块时取到文末
+    # （旧正则 @Action\s+(.*?)\s*@ 要求后续必有 @，末位块会解析失败）
+    block = text[start_m.end():]
+    end_m = re.search(r"\s*@", block)
+    if end_m:
+        block = block[:end_m.start()]
 
     rows = []
     for line in block.split("\n"):

@@ -21,8 +21,9 @@ import numpy as np
 from PIL import Image
 import torch
 
-from config import (Config, DataConfig, ModelConfig, build_argparser,
-                    apply_overrides, validate_config_values, parse_checkpoint_config)
+from config import (Config, DataConfig, ModelConfig, TrainConfig,
+                    build_argparser, apply_overrides, validate_config_values,
+                    parse_checkpoint_config)
 from dataset import _natural_key, ActionDataset, DataRecorder
 from model import ActionPredictor
 from mt_parser import parse_mt_action, parse_mt_directory
@@ -230,6 +231,19 @@ class TestActionDataset(unittest.TestCase):
                               normalize_actions=True,
                               action_stats_path="/nonexistent/path.npy")
 
+    def test_bad_stats_shape_raises(self):
+        """stats 文件形状不是 (2, action_dim) 时应报错而非广播出诡异结果"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            self._create_dummy_episode(base, n_frames=10, action_dim=4)
+            stats_path = base / "bad_stats.npy"
+            np.save(stats_path, np.zeros((2, 3), dtype=np.float32))
+            with self.assertRaisesRegex(ValueError, "形状"):
+                ActionDataset(tmpdir, history_len=3, action_dim=4,
+                              image_width=32, image_height=32,
+                              frame_len=3, normalize_actions=True,
+                              action_stats_path=str(stats_path))
+
     def test_action_dim_mismatch_raises(self):
         """actions.npy 列数与 action_dim 不一致应在加载时抛 ValueError"""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -370,6 +384,28 @@ class TestMtParser(unittest.TestCase):
             matrix = parse_mt_action(path)
         np.testing.assert_array_equal(matrix[0], [0, 0, 0])
         np.testing.assert_array_equal(matrix[1], [45, 0, 10])
+
+    def test_action_as_last_block_parses(self):
+        """@Action 为文件最后一个块（无后续 @ 段）时也应解析成功。
+
+        回归：旧正则 @Action\\s+(.*?)\\s*@ 要求后续必有 @，
+        末位块会报"未找到 @Action 块"，parse_mt_directory 进而
+        静默跳过该文件，造成预训练数据丢失。"""
+        content = (
+            "@Servo\n"
+            " name   max  min;\n"
+            "  s1    90     -;\n"
+            "@\n"
+            "\n"
+            "@Action\n"
+            "s1.A  s2.A  spk.F;\n"
+            "  10    20    100;\n"
+            "   -    22      -;\n"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _write_mt(tmpdir, "lastblock.mt", content)
+            matrix = parse_mt_action(path)
+        np.testing.assert_array_equal(matrix, [[10, 20, 100], [10, 22, 100]])
 
     def test_std_mt_first_row_matches_pybot(self):
         """跨模块回归锚点：std.mt 首行解析结果与 pybot 运行时执行值一致
@@ -602,6 +638,53 @@ class TestParseCheckpointConfig(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_checkpoint_config("not a dict")
 
+    def test_train_section_unknown_key_raises(self):
+        """train 段含未知键也应报 ValueError（与 data/model 段一致）"""
+        cfg = Config()
+        d = cfg.to_dict()
+        d["train"]["unknown_field"] = 1
+        with self.assertRaisesRegex(ValueError, "train.*unknown_field"):
+            parse_checkpoint_config(d)
+
+    def test_train_section_non_dict_raises(self):
+        """train 段为非 dict 应报 ValueError，而非裸 TypeError"""
+        cfg = Config()
+        d = cfg.to_dict()
+        d["train"] = "not a dict"
+        with self.assertRaisesRegex(ValueError, "train"):
+            parse_checkpoint_config(d)
+
+    def test_missing_train_section_still_ok(self):
+        """旧 checkpoint 无 train 段（推理 checkpoint 可能被裁剪）应可用默认值"""
+        cfg = Config()
+        d = cfg.to_dict()
+        del d["train"]
+        parsed = parse_checkpoint_config(d)
+        self.assertEqual(parsed.train.batch_size, TrainConfig().batch_size)
+
+    def test_warn_init_from_mismatch(self):
+        """--init-from 兼容性警告：normalize 或 action_dim 不一致时提示"""
+        from config import warn_init_from_mismatch
+        cfg = Config()
+        init_cfg = {
+            "data": {"normalize_actions": True, "action_dim": 12},
+        }
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            warn_init_from_mismatch(init_cfg, cfg)
+        out = buf.getvalue()
+        self.assertIn("normalize_actions=True", out)
+        self.assertIn("action_dim=12", out)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            warn_init_from_mismatch(
+                {"data": {"normalize_actions": False,
+                          "action_dim": cfg.data.action_dim}}, cfg)
+        self.assertEqual(buf.getvalue(), "")
+        with contextlib.redirect_stdout(buf):
+            warn_init_from_mismatch(None, cfg)
+        self.assertEqual(buf.getvalue(), "")
+
 
 class TestDataRecorderValidation(unittest.TestCase):
     """测试 DataRecorder 的输入校验与目录原子分配"""
@@ -772,6 +855,70 @@ class TestExportOnnx(unittest.TestCase):
                 export_onnx_main()
             self.assertTrue(os.path.exists(out_path))
             self.assertGreater(os.path.getsize(out_path), 0)
+
+
+class TestDeployWrapper(unittest.TestCase):
+    """部署版导出（export_deploy.DeployWrapper）的图等价性"""
+
+    def test_pool_kernel_matches_conv_output(self):
+        """固定 kernel AvgPool 必须覆盖卷积真实输出尺寸。
+
+        回归：旧实现用 H//16 取 kernel，1080 高度下卷积输出 68 行、
+        kernel 取 67 会静默丢弃末行（训练/部署图数值不等价）。"""
+        from export_deploy import DeployWrapper
+        cfg = Config()
+        cfg.data.image_height, cfg.data.image_width = 1080, 1920
+        model = ActionPredictor(cfg.model, cfg.data, pretrained=False).eval()
+        w = DeployWrapper(model)
+        self.assertEqual(w.pool.kernel_size, (68, 120))
+        cfg.data.image_height, cfg.data.image_width = 224, 224
+        model = ActionPredictor(cfg.model, cfg.data, pretrained=False).eval()
+        w = DeployWrapper(model)
+        self.assertEqual(w.pool.kernel_size, (14, 14))
+
+    def test_mobilenet_backbone_rejected(self):
+        """MobileNet 的 DFC 改造未实现，应给出明确错误而非 AttributeError"""
+        from export_deploy import DeployWrapper
+        cfg = Config()
+        cfg.model.cnn_backbone = "mobilenet"
+        model = ActionPredictor(cfg.model, cfg.data, pretrained=False).eval()
+        with self.assertRaises(ValueError):
+            DeployWrapper(model)
+
+
+class TestCompileAndCalibrationHelpers(unittest.TestCase):
+    """dfc_compile / gen_calibration 的辅助函数（P3 修复回归）"""
+
+    def test_start_nodes_follows_frame_count(self):
+        """start_nodes 按 frame_count 生成输入名（旧实现硬编码 3 帧）"""
+        from dfc_compile import start_nodes
+        self.assertEqual(start_nodes(3), [
+            "frame0", "frame1", "frame2", "action_history", "pred_token"])
+        self.assertEqual(start_nodes(1),
+                         ["frame0", "action_history", "pred_token"])
+
+    def test_build_image_samples_memmap_chunked(self):
+        """分块 memmap 生成的校准图像形状/dtype/值域正确，且可清理"""
+        from gen_calibration import build_image_samples
+        rng = np.random.default_rng(0)
+        images = build_image_samples(
+            n_samples=6, frame_len=2, height=16, width=16, rng=rng,
+            chunk_samples=2)
+        try:
+            self.assertIsInstance(images, np.memmap)
+            self.assertEqual(images.shape, (6, 2, 3, 16, 16))
+            self.assertEqual(images.dtype, np.uint8)
+            self.assertTrue((images <= 255).all())
+            self.assertTrue(os.path.exists(images.filename))
+        finally:
+            images._mmap.close()
+            os.unlink(images.filename)
+
+    def test_build_image_samples_invalid_chunk(self):
+        from gen_calibration import build_image_samples
+        with self.assertRaises(ValueError):
+            build_image_samples(4, 2, 16, 16, np.random.default_rng(0),
+                                chunk_samples=0)
 
 
 class TestResumeCheckpoint(unittest.TestCase):
@@ -1198,6 +1345,66 @@ class TestHailoPredictor(unittest.TestCase):
             seen["net/input_layer2"], np.full((8, 8, 3), 20, np.float32))
         np.testing.assert_array_equal(
             seen["net/input_layer3"], np.full((8, 8, 3), 30, np.float32))
+
+    def _fake_five_input_hef(self, q_frame):
+        infos_in = [
+            _FakeVStreamInfo("net/input_layer1", (8, 8, 3),
+                             _FakeFormatType.UINT8, q_frame),
+            _FakeVStreamInfo("net/input_layer2", (8, 8, 3),
+                             _FakeFormatType.UINT8, q_frame),
+            _FakeVStreamInfo("net/input_layer3", (8, 8, 3),
+                             _FakeFormatType.UINT8, q_frame),
+            _FakeVStreamInfo("net/input_layer4", (1, 5, 18),
+                             _FakeFormatType.UINT8,
+                             _FakeQuantInfo(qp_zp=0.0, qp_scale=1.960784)),
+            _FakeVStreamInfo("net/input_layer5", (1, 1, 128),
+                             _FakeFormatType.UINT8,
+                             _FakeQuantInfo(qp_zp=123.0, qp_scale=0.016)),
+        ]
+        infos_out = [_FakeVStreamInfo(
+            "net/conv49", (1, 1, 18), _FakeFormatType.UINT8,
+            _FakeQuantInfo(qp_zp=2.0, qp_scale=0.837115))]
+        seen = {}
+
+        def transform(b):
+            seen["f0"] = np.asarray(
+                b.input("net/input_layer1").get_buffer()).copy()
+            b.output("net/conv49").get_buffer()[...] = 2
+
+        _install_fake_hailo(self, infos_in, infos_out, transform)
+        return seen
+
+    def test_frame_normalized_when_quant_grid_covers_negatives(self):
+        """帧输入归一化判定来自量化网格：dequant(0)≈-2.1（实测 HEF
+        zp=114, scale=0.0187）⇒ 须先 ImageNet 归一化再量化。
+        回归：旧启发式 zp*scale<0 将其误判为原始像素直通，图像路径
+        被饱和破坏（实机 max_diff 2.55 → 修复后 0.37）。"""
+        from hailo_infer import HailoPredictor
+        seen = self._fake_five_input_hef(
+            _FakeQuantInfo(qp_zp=114.0, qp_scale=0.018723))
+        frame = np.full((8, 8, 3), 128, dtype=np.uint8)
+        with HailoPredictor("fake.hef") as p:
+            self.assertTrue(p._normalize_frames)
+            p.predict([frame] * 3, np.zeros((5, 18), np.float32))
+        # 中灰 128 → 归一化 (128/255-mean)/std → 量化码 ≈ [118, 125, 137]
+        np.testing.assert_array_equal(
+            seen["f0"][:, :, 0], np.full((8, 8), 118, np.uint8))
+        np.testing.assert_array_equal(
+            seen["f0"][:, :, 1], np.full((8, 8), 125, np.uint8))
+        np.testing.assert_array_equal(
+            seen["f0"][:, :, 2], np.full((8, 8), 137, np.uint8))
+
+    def test_frame_raw_when_quant_grid_is_pixel_range(self):
+        """原始像素校准（zp=0, scale=1）⇒ 帧直通不归一化"""
+        from hailo_infer import HailoPredictor
+        seen = self._fake_five_input_hef(
+            _FakeQuantInfo(qp_zp=0.0, qp_scale=1.0))
+        frame = np.full((8, 8, 3), 128, dtype=np.uint8)
+        with HailoPredictor("fake.hef") as p:
+            self.assertFalse(p._normalize_frames)
+            p.predict([frame] * 3, np.zeros((5, 18), np.float32))
+        np.testing.assert_array_equal(
+            seen["f0"], np.full((8, 8, 3), 128, np.uint8))
 
     def test_frame_count_mismatch_raises(self):
         from hailo_infer import HailoPredictor

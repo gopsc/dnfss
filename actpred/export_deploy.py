@@ -86,6 +86,9 @@ class DeployWrapper(nn.Module):
         super().__init__()
         import copy
         m = model
+        if not hasattr(m.image_encoder, "net"):
+            raise ValueError(
+                "部署版导出仅支持 backbone=simple（MobileNet 的 DFC 改造未实现）")
         ref_cnn = nn.Sequential(*list(m.image_encoder.net.children())[:-1])
         self.cnns = nn.ModuleList(
             [copy.deepcopy(ref_cnn) for _ in range(m._frame_len)])
@@ -99,7 +102,14 @@ class DeployWrapper(nn.Module):
                 m.img_proj.out_features, m.img_proj.in_features, 1, 1))
             self.proj_convs.append(c)
         self.proj_bias = nn.Parameter(m.img_proj.bias.data.clone())
-        self.pool = nn.AvgPool2d((m._image_height // 16, m._image_width // 16))
+        # 固定 kernel AvgPool 须与训练态 AdaptiveAvgPool2d(1) 逐值等价：
+        # kernel 取 ref_cnn 的真实输出尺寸。H//16 只在分辨率能被 16 整除
+        # 时成立（1080 高度下卷积输出 68 行，按 67 取 kernel 会静默丢弃
+        # 末行，破坏与训练图的数值一致）
+        with torch.no_grad():
+            probe = ref_cnn(torch.zeros(
+                1, 3, m._image_height, m._image_width))
+        self.pool = nn.AvgPool2d((probe.shape[2], probe.shape[3]))
         # act_proj 权重注册为常量，用显式 MatMul+Add 代替 Linear，
         # 避免 DFC 对 3D Linear 的错误卷积融合
         self.act_w = nn.Parameter(m.act_proj.weight.data.t().clone())  # (D, d)

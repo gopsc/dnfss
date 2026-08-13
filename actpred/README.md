@@ -218,25 +218,27 @@ python3 dfc_compile.py            # 产物 checkpoints/actpred_pretrain.hef
 量化、编译全部通过；hailo10h 目标。
 编译要点与踩坑记录见 `dfc_compile.py` 文档字符串。
 
-> **警告（2026-08-13 树莓派实测）**：首版 HEF 在 NPU 上**输出对全部
-> 5 个输入均不敏感**（全 0 / 全 255 / 真实数据输出完全一致，对照
-> resnet HEF 同 API 验证输入通道有效）。驱动升级 5.3.0 后复测依旧，
-> 判定为 DFC 编译侧问题（输入在编译图中被断开/常量化），并非推理封装
-> 问题。**该 HEF 不可用于推理**。已做如下修复，待 x86 重编译后复验：
-> - `_onnx_validate.py`：编译前数值验证 `actpred_deploy.onnx` 输入
->   敏感性与 PyTorch 一致性（本次已 PASS，差异 1.5e-5）
-> - `dfc_compile.py`：parser/optimize 后自动检查输入层连通性，断开即报错
-> - `gen_calibration.py`：pred_token 常量校准退化（scale=18571.7，任何
->   输入都被量化成 0）已改抖动校准，推理端喂学习值（`--pred-token`）
-> - `hailo_infer.py`：帧输入按 input_layerN 排序绑定（vstream 报告顺序
->   实测为 1,5,4,3,2，按报告顺序绑定会 frame1/frame2 错位）
+> **验证记录（2026-08-13 树莓派实测）**：归一化轮次（`--normalize-actions`
+> + `--random-images` 预训练，224×224）重编译的 HEF 已通过 `_npu_test.py`
+> 实机复验：img 敏感性 22.3、hist 敏感性 38.9（阈值 0.1），HEF vs torch
+> max_diff 0.37（原始动作空间），约 12ms/次（含预处理）。此前两轮失败的
+> 根因与修复均已闭环：
+> - BN 统计退化 → `--random-images` 预训练 + `export_deploy.py`
+>   `check_token_ranges` 导出前拦截
+> - pred_token 常量校准退化（scale=18571.7）→ 抖动校准，推理端喂学习值
+> - 输入层断连 → `dfc_compile.py` parser/optimize 后连通性检查
+> - vstream 报告顺序乱序 → `hailo_infer.py` 按 `input_layerN` 排序绑定
+> - 帧归一化判定错误（把归一化帧当原始像素喂，图像路径饱和破坏）→
+>   按量化网格 dequant(0) 判定，见 hailo_infer.py 注释
 >
-> 重编译后用 `_npu_test.py` 做 4 角输入敏感性复验（6.3ms/次的封装
-> 性能基线已在新驱动 5.3.0 下测通）。
+> 验证链：`export_deploy.py`（token 量级）→ `_onnx_validate.py`（ONNX
+> 数值）→ `dfc_compile.py`（输入连通性）→ `_npu_test.py`（4 角敏感性）。
+> 遗留：全零历史角（z≈-3.5）超出校准输入范围（-2.7）会被截断，
+> 该角仅作连通性验证，非真实部署场景。
 
 `hailo_infer.py` 的 `HailoPredictor` 适配 5 输入 HEF，输入布局与量化
-参数（含负零偏→ImageNet 归一化识别）从 vstream info 自动推导，单元测试
-含 fake hailo_platform 的 5 输入与乱序报告顺序用例。CLI 支持
+参数（帧归一化由量化网格 dequant(0) 自动判定）从 vstream info 自动推导，
+单元测试含 fake hailo_platform 的 5 输入与乱序报告顺序用例。CLI 支持
 `--pred-token` 喂入学习值、`--stats` 喂入归一化统计。
 环境调研与 API 踩坑记录见
 [docs/reports/actpred_hailo_hat2_inference_research_20260813.md](../docs/reports/actpred_hailo_hat2_inference_research_20260813.md)。

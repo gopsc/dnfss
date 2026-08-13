@@ -34,8 +34,12 @@ import tempfile
 
 
 NET_NAME = "actpred_deploy"
-START_NODES = ["frame0", "frame1", "frame2", "action_history", "pred_token"]
-INPUT_FORMATS = ["NHWC", "NHWC", "NHWC", "NHWC", "NHWC"]
+
+
+def start_nodes(frame_count: int) -> list:
+    """export_deploy.py 的输入命名约定：frame{i} × frame_count + action_history + pred_token"""
+    return ([f"frame{i}" for i in range(frame_count)]
+            + ["action_history", "pred_token"])
 
 
 def hailo(*args, venv_bin: str):
@@ -111,6 +115,9 @@ def main():
     parser.add_argument("--hw-arch", default="hailo10h",
                         choices=["hailo15h", "hailo15m", "hailo15l",
                                  "hailo10h", "hailo10p"])
+    parser.add_argument("--frame-count", type=int, default=3,
+                        help="帧输入个数（与导出 ONNX 的 frame_len 一致，"
+                             "默认 3）")
     parser.add_argument("--venv-bin", default="venv_dfc/bin",
                         help="安装了 hailo-sdk 的 venv bin 目录")
     args = parser.parse_args()
@@ -118,6 +125,9 @@ def main():
     venv_bin = os.path.abspath(args.venv_bin)
     if not os.path.exists(os.path.join(venv_bin, "hailo")):
         sys.exit(f"错误: {venv_bin}/hailo 不存在，请先安装 hailo-sdk")
+
+    nodes = start_nodes(args.frame_count)
+    input_formats = ["NHWC"] * len(nodes)
 
     workdir = tempfile.mkdtemp(prefix="dfc_")
     har_raw = os.path.join(workdir, "parsed.har")
@@ -129,16 +139,16 @@ def main():
         print("[1/3] parser: ONNX → HAR")
         hailo("parser", "onnx", args.onnx, "--hw-arch", args.hw_arch, "-y",
               "--har-path", har_raw,
-              "--start-node-names", *START_NODES,
+              "--start-node-names", *nodes,
               "--end-node-names", "predicted_action",
               "--input-format",
-              *[f"{n}={f}" for n, f in zip(START_NODES, INPUT_FORMATS)],
+              *[f"{n}={f}" for n, f in zip(nodes, input_formats)],
               "--disable-onnx-simplifier", venv_bin=venv_bin)
 
         # 校验未被推荐机制截断：输出层应来自预测头（conv 而非 ew_add）
         names = har_input_layer_names(har_raw)
-        if len(names) != len(START_NODES):
-            sys.exit(f"错误: HAR 输入层数 {len(names)} != {len(START_NODES)}，解析可能被截断")
+        if len(names) != len(nodes):
+            sys.exit(f"错误: HAR 输入层数 {len(names)} != {len(nodes)}，解析可能被截断")
         check_input_connectivity(har_raw, names)
 
         print("[2/3] optimize: 量化校准")

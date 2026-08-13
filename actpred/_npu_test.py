@@ -116,9 +116,16 @@ with HailoPredictor(HEF_PATH, stats_path=stats_path) as p:
 
     ref = torch_pred(imgs_real, hist_real, True)
     ref_zero_pred = torch_pred(imgs_real, hist_real, False)
+    # torch 参考是模型原始 z 空间输出；HailoPredictor 带 stats 时已反归一化
+    # 到原始动作空间，比较前须同空间对齐，否则归一化模型下 max_diff 无意义
+    if stats_path is not None:
+        s = np.load(stats_path)
+        ref = ref * s[1] + s[0]
+        ref_zero_pred = ref_zero_pred * s[1] + s[0]
     print(f"torch learned_pred  : {np.round(ref[:6], 3)}...")
     print(f"torch zero_pred     : {np.round(ref_zero_pred[:6], 3)}...")
-    print(f"HEF vs torch(learned) max_diff={np.abs(a - ref).max():.4f}")
+    print(f"HEF vs torch(learned) max_diff={np.abs(a - ref).max():.4f}"
+          f"（原始动作空间）")
 
     ok = img_sens > 0.1 and hist_sens > 0.1
     print("\nPASS: HEF 输入连通，可继续与 torch 对比量化误差"

@@ -150,24 +150,53 @@ def validate_config_values(data_cfg: DataConfig, model_cfg: ModelConfig,
                     f"配置 {name}={val} 超出合理范围 [{lo}, {hi}]")
 
 
+def warn_init_from_mismatch(init_cfg: dict, current: Config):
+    """--init-from 加载预训练权重前的兼容性警告（train.py / pretrain_mt.py 共用）
+
+    normalize_actions 不一致时输入分布与权重不匹配，预训练收益大打折扣；
+    action_dim 不一致时 act_proj 无法加载对应权重（strict=False 静默跳过，
+    该层随机初始化）。
+    """
+    if not isinstance(init_cfg, dict):
+        return
+    init_data = init_cfg.get("data") or {}
+    init_norm = init_data.get("normalize_actions", False)
+    if init_norm != current.data.normalize_actions:
+        print(f"WARNING: init-from checkpoint 的 normalize_actions="
+              f"{init_norm} 与当前运行 {current.data.normalize_actions} "
+              f"不一致，输入分布不匹配会损失预训练收益（见 README 预训练说明）")
+    init_dim = init_data.get("action_dim")
+    if init_dim is not None and init_dim != current.data.action_dim:
+        print(f"WARNING: init-from checkpoint 的 action_dim={init_dim} "
+              f"与当前运行 {current.data.action_dim} 不一致，"
+              f"act_proj 权重将随机初始化")
+
+
 def parse_checkpoint_config(cfg_dict: dict) -> Config:
     """从 checkpoint 恢复 Config，校验键集合与值域
 
     - 顶层缺 data/model 键 → ValueError（带明确信息）
-    - data/model 段含未知键 → ValueError（列出未知键，避免裸 TypeError）
+    - data/model/train 段含未知键 → ValueError（列出未知键，避免裸 TypeError）
     - 值域非法 → ValueError（复用 validate_config_values）
     """
     if not isinstance(cfg_dict, dict):
         raise ValueError(f"checkpoint config 应为 dict，实际为 {type(cfg_dict).__name__}")
-    for section in ("data", "model"):
+    section_dataclasses = {
+        "data": DataConfig,
+        "model": ModelConfig,
+        "train": TrainConfig,
+    }
+    for section, dataclass in section_dataclasses.items():
         if section not in cfg_dict:
-            raise ValueError(f"checkpoint config 缺少 '{section}' 段")
+            if section in ("data", "model"):
+                raise ValueError(f"checkpoint config 缺少 '{section}' 段")
+            continue
         section_dict = cfg_dict[section]
         if not isinstance(section_dict, dict):
-            raise ValueError(f"checkpoint config['{section}'] 应为 dict，实际为 {type(section_dict).__name__}")
-        known = set(DataConfig.__dataclass_fields__) if section == "data" \
-            else set(ModelConfig.__dataclass_fields__)
-        unknown = set(section_dict) - known
+            raise ValueError(
+                f"checkpoint config['{section}'] 应为 dict，"
+                f"实际为 {type(section_dict).__name__}")
+        unknown = set(section_dict) - set(dataclass.__dataclass_fields__)
         if unknown:
             raise ValueError(
                 f"checkpoint config['{section}'] 含未知键: {sorted(unknown)}")

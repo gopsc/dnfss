@@ -29,7 +29,8 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
-from config import Config, build_argparser, apply_overrides, validate_config_values
+from config import (Config, build_argparser, apply_overrides,
+                    validate_config_values, warn_init_from_mismatch)
 from model import ActionPredictor
 from mt_parser import parse_mt_directory
 
@@ -283,13 +284,7 @@ def main():
     if args.init_from:
         init_ckpt = torch.load(args.init_from, map_location="cpu",
                                weights_only=True)
-        init_cfg = init_ckpt.get("config", {})
-        init_norm = init_cfg.get("data", {}).get("normalize_actions", False)
-        if init_norm != cfg.data.normalize_actions:
-            print(f"WARNING: init-from checkpoint 的 normalize_actions="
-                  f"{init_norm} 与当前运行 "
-                  f"{cfg.data.normalize_actions} 不一致，输入分布不匹配"
-                  f"会损失预训练收益（见 README 预训练说明）")
+        warn_init_from_mismatch(init_ckpt.get("config", {}), cfg)
         missing, unexpected = model.load_state_dict(
             init_ckpt["model_state_dict"], strict=False)
         if missing:

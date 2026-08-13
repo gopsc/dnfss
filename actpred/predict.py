@@ -111,14 +111,12 @@ def main():
     parser.add_argument("--action-history", required=True,
                         help="冒号分隔各步，每步 action_dim 个值，共 history_len 步。"
                              "e.g. '0,0,0,0:1,0,0,0' (action_dim=4, history_len=2)")
-    parser.add_argument("--action-dim", type=int, default=None,
-                        help="override action dim (auto-detected from checkpoint if omitted)")
     parser.add_argument("--output-format", choices=["json", "raw"], default="json")
     parser.add_argument("--device", type=str, default=None)
     args = parser.parse_args()
 
     predictor = ActionPredictorInference(args.model, args.device)
-    action_dim = args.action_dim or predictor.action_dim
+    action_dim = predictor.action_dim
 
     if len(args.images) != predictor.frame_len:
         raise SystemExit(

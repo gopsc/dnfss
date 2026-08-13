@@ -69,6 +69,10 @@ class ActionDataset(Dataset):
                     raise FileNotFoundError(
                         f"指定的 action_stats_path 不存在: {action_stats_path}")
                 stats = np.load(action_stats_path)
+                if stats.shape != (2, self.action_dim):
+                    raise ValueError(
+                        f"action stats 形状应为 (2, {self.action_dim})，"
+                        f"实际为 {stats.shape}: {action_stats_path}")
                 self._action_mean = stats[0]
                 self._action_std = stats[1]
             else:
