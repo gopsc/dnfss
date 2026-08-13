@@ -16,7 +16,7 @@ def _natural_key(p):
 
 class ActionDataset(Dataset):
     def __init__(self, data_dir: str, history_len: int, action_dim: int,
-                 image_width: int = 1920, image_height: int = 1080,
+                 image_width: int = 640, image_height: int = 480,
                  normalize_actions: bool = False,
                  action_stats_path: str = None, episode_indices: list = None,
                  frame_len: int = 3):

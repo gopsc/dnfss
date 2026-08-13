@@ -305,8 +305,8 @@ class TestConfig(unittest.TestCase):
 
     def test_default_config(self):
         cfg = Config()
-        self.assertEqual(cfg.data.image_width, 1920)
-        self.assertEqual(cfg.data.image_height, 1080)
+        self.assertEqual(cfg.data.image_width, 640)
+        self.assertEqual(cfg.data.image_height, 480)
         self.assertEqual(cfg.data.action_dim, 18)
         self.assertEqual(cfg.data.history_len, 5)
         self.assertEqual(cfg.data.frame_len, 3)

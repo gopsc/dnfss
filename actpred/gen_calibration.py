@@ -60,7 +60,7 @@ def build_image_samples(n_samples, frame_len, height, width, rng,
     """生成 (n_samples, frame_len, 3, H, W) uint8 校准图像
 
     存 uint8 原始像素值（0~255），加载时再做 ToTensor+Normalize，节省磁盘。
-    经 memmap 分块填充后返回：1080p 默认分辨率下整块数组约 600MB，
+    经 memmap 分块填充后返回：高分辨率（如 1080p）下整块数组可达 ~600MB，
     一次性分配容易挤爆内存，分块写盘把峰值压到 chunk_samples 帧量级。
     """
     if chunk_samples < 1:

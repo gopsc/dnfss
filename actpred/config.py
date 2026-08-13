@@ -5,8 +5,8 @@ from typing import Optional
 
 @dataclass
 class DataConfig:
-    image_width: int = 1920
-    image_height: int = 1080
+    image_width: int = 640
+    image_height: int = 480
     action_dim: int = 18
     history_len: int = 5
     frame_len: int = 3
@@ -28,8 +28,8 @@ class ModelConfig:
 
 @dataclass
 class TrainConfig:
-    # 默认输入分辨率 1920×1080，batch=32 在 CPU/Pi 上内存不可行；
-    # 高分辨率训练取小 batch，小分辨率可用 --batch-size 调大
+    # 默认输入分辨率 640×480（1080p 采集的预处理缩放在实机测速中主导
+    # 端到端延迟，见测速报告 §6.1）；更高分辨率训练时需调小 batch
     batch_size: int = 4
     epochs: int = 100
     lr: float = 1e-3

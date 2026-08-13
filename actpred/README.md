@@ -120,8 +120,8 @@ recorder.flush()
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--image-width` | 1920 | 图像缩放宽度 |
-| `--image-height` | 1080 | 图像缩放高度 |
+| `--image-width` | 640 | 图像缩放宽度 |
+| `--image-height` | 480 | 图像缩放高度 |
 | `--action-dim` | 18 | 动作向量维度（对齐 bot4cj 18 列：10 舵机 + 2 云台 + 扬声器频率 + 延时 + 4 预留）|
 | `--history-len` | 5 | 历史动作窗口长度 |
 | `--frame-len` | 3 | 输入图像帧数（含当前帧，旧帧在前）|
@@ -131,7 +131,7 @@ recorder.flush()
 | `--attn-layers` | 2 | TransformerEncoder 层数 |
 | `--epochs` | 100 | 训练轮数 |
 | `--lr` | 0.001 | 学习率 |
-| `--batch-size` | 4 | 批次大小（默认分辨率 1920×1080 下 CPU/Pi 内存受限；小分辨率可调大） |
+| `--batch-size` | 4 | 批次大小（默认分辨率 640×480；更高分辨率需调小，小分辨率可调大） |
 | `--normalize-actions` | False | 动作归一化（`--no-normalize-actions` 关闭） |
 | `--dropout` | 0.1 | Dropout 率 |
 | `--weight-decay` | 0.0001 | 权重衰减 |
