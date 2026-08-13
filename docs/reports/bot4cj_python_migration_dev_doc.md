@@ -320,18 +320,25 @@ class I2CBus:
 
 ---
 
-## 9. 与 actpred 的集成展望（非本期范围）
+## 9. 与 actpred 的集成（已实现：进程内闭环）
 
-迁移完成后，"大脑-身体"闭环的最短路径：
+原规划的"大脑-身体"闭环已在 `run_loop()` 中落地，采用进程内调用替代 FIFO 序列化：
 
 ```
-actpred predict.py（图像+历史 → 动作向量 action_dim=18）
-    → 向量转 @Action 单行（pybot 提供 action_row_from_vector() 工具函数）
-    → pybot RobotStruct 增量执行（对应仓颉版 TODO：@Action 位置指示器）
-    → MPU6050 姿态反馈回流 actpred（DRL 奖励信号）
+camera 帧 → actpred.predict(F帧, H历史) → 动作向量(18) → pybot 下发执行
+    ↑                                                        ↓
+history deque ←────────── 回写实际动作 ←────────────────────┘
 ```
 
-同语言后，上述管线可在单进程内完成，无需序列化协议——这正是本次迁移最大的战略收益。
+**用法**：`python3 -m pybot --loop CKPT --hz 10 scripts/std.mt`
+
+- checkpoint 后缀 `.hef` → Hailo NPU 后端，否则 → PyTorch 后端
+- `@Action` 表头列数 ≤ `action_dim`（默认 18），列索引即动作向量索引
+- 闭环中剔除 `spk.delay` 阻塞（发声但不延时），节拍由 `hz` 主循环掌控
+- 冷启动：F 帧重复同帧 + H 步零动作历史
+- `--loop-steps N` 限步数调试；`-i/-o` FIFO 保留用于未来跨进程隔离
+
+**与录制的衔接**：`--record DIR` 产出 actpred 格式 episode → actpred 训练 → 推理 checkpoint → `--loop` 闭环执行，形成完整数据飞轮。
 
 ---
 
