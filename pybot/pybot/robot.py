@@ -11,6 +11,8 @@
 
 import atexit
 import logging
+import time
+from collections import deque
 
 from . import plugin
 from .hardvars import (AliasVar, CameraVar, I2CVar, MPU6050Var, ServoVar,
@@ -195,6 +197,137 @@ class RobotStruct:
         if recorder is not None:
             path = recorder.flush()
             log.info("episode saved: %s", path)
+
+    # ---------------- 实时预测闭环 ----------------
+
+    def run_loop(self, predictor, hz=10.0, max_steps=None, recorder=None):
+        """实时预测闭环：无限循环 采样→推理→执行→回写历史
+
+        predictor: actpred 推理器（鸭子类型），需具备
+            frame_len / history_len / action_dim 属性与
+            predict(images, action_history) -> (action_dim,) 方法。
+            pybot 不 import 具体推理类，保持零依赖承诺。
+        hz: 控制频率（周期 = 1/hz 秒，须 ≥ 推理 + 执行耗时）
+        max_steps: 步数上限，None 表示无限循环（Ctrl-C 退出）
+        recorder: 可选 EpisodeRecorder，闭环中同步录制 (frame, action)
+
+        与 run() 的差异：run() 是脚本驱动一次性执行（行内 delay 分解为
+        10ms 微步插值）；run_loop() 由 predictor 逐步产出动作，节奏由
+        hz 主循环掌控，每步直接下发不做行分解（delay 仅作回放兼容，
+        闭环中跳过其发声阻塞）。
+
+        帧源：闭环从 camera 守护线程的有界队列取最近 F 帧（低延迟，
+        让 framerate/capacity 配置生效），而非 capture() 同步曝光
+        （会阻塞 ~1/framerate 秒，把 hz 锁死在相机帧率之下）。dry_run
+        或队列空时回退 _grab_frame 合成帧。
+        """
+        import numpy as np
+        camera_var = self._find_camera()
+        if camera_var is None and not self.dry_run:
+            raise ValueError("闭环需要 @Camera 块（或使用 --dry-run 生成合成帧）")
+
+        action = self.find_mt("Action")
+        if action is None:
+            raise ValueError("no @Action matrix in script")
+        columns = self._validate_action(action)
+
+        F, H = predictor.frame_len, predictor.history_len
+        action_dim = predictor.action_dim
+        if len(columns) > action_dim:
+            raise ValueError(
+                f"@Action 列数 {len(columns)} 超过 predictor.action_dim "
+                f"{action_dim}，无法按索引对齐")
+        exec_cols = self._loop_exec_columns(columns)
+
+        frames = deque(maxlen=F)
+        history = deque(maxlen=H)
+        self._loop_cold_start(frames, history, camera_var, action_dim)
+
+        dt = 1.0 / hz
+        step = 0
+        overrun = 0
+        log.info("closed loop start: hz=%.1f F=%d H=%d action_dim=%d",
+                 hz, F, H, action_dim)
+        while max_steps is None or step < max_steps:
+            t0 = time.monotonic()
+            frames.extend(self._loop_recent_frames(camera_var, F))   # 1 采样
+            act = predictor.predict(list(frames), np.array(history))  # 2 推理
+            act = np.asarray(act, dtype=np.float32).reshape(-1)
+            self._execute_action_vec(act, exec_cols)               # 3 执行
+            history.append(act.copy())                             # 4 回写
+            if recorder is not None:
+                recorder.record(frames[-1],
+                                self._build_action_vec(act, recorder.action_dim))
+            step += 1
+            remain = dt - (time.monotonic() - t0)                  # 节拍
+            if remain > 0:
+                time.sleep(remain)
+            else:
+                overrun += 1
+                log.warning("loop overrun: step %d took %.1fms > %.1fms "
+                            "（推理+执行超过周期，实际频率已低于 %.1fHz）",
+                            step, (dt - remain) * 1000, dt * 1000, hz)
+        if overrun:
+            log.warning("closed loop overrun %d/%d steps (%.0f%%)，"
+                        "建议降低 --hz 或检查推理后端延迟",
+                        overrun, step, 100.0 * overrun / max(step, 1))
+        log.info("closed loop stop after %d steps", step)
+
+    def _loop_recent_frames(self, camera_var, F):
+        """从 camera 守护线程队列取最近 F 帧（旧→新），无阻塞
+
+        队列未填满 F 帧时重复最旧帧兜底；队列完全空（dry_run / 守护线程
+        刚启动）时回退 _grab_frame 合成帧。相比 capture() 同步曝光，
+        从队列消费让 framerate/capacity 配置生效，闭环周期不被曝光阻塞。
+        """
+        if camera_var is None:
+            return [self._grab_frame(camera_var)] * F
+        snap = camera_var.camera.snapshot()      # [(ts, frame), ...] 旧→新
+        if not snap:
+            return [self._grab_frame(camera_var)] * F
+        recent = [f for _, f in snap[-F:]]
+        if len(recent) < F:                       # 队列未满：重复最旧帧
+            recent = [recent[0]] * (F - len(recent)) + recent
+        return recent
+
+    def _loop_exec_columns(self, columns):
+        """闭环执行列：剔除 Speaker.delay（发声阻塞会卡死实时节拍）
+
+        返回 [(action_idx, dev, param)]，action_idx 是动作向量索引（按
+        @Action 表头顺序，与 actpred 的 action_dim 对齐）。
+        """
+        out = []
+        for j, (dev, param) in enumerate(columns):
+            rp = self._resolve_param(param)
+            if isinstance(self.M.get(dev), SpeakerVar) and rp == "delay":
+                continue
+            out.append((j, dev, rp))
+        return out
+
+    def _loop_cold_start(self, frames, history, camera_var, action_dim):
+        """冷启动：F 帧滑窗从队列取最近帧（空则合成帧重复），H 步零动作
+
+        帧源与主循环一致（_loop_recent_frames），避免冷启动与运行期帧源
+        不一致。history 用零向量填满是保守初值，避免随机姿态跳变损坏舵机。
+        """
+        import numpy as np
+        frames.extend(self._loop_recent_frames(camera_var, frames.maxlen))
+        for _ in range(history.maxlen):
+            history.append(np.zeros(action_dim, dtype=np.float32))
+
+    def _execute_action_vec(self, act, exec_cols):
+        """把动作向量按 exec_cols 索引映射到设备并直接下发（不分解微步）
+
+        SpeakerVar.play 强制要求 delay 键；闭环已剔除 delay 列（避免发声
+        阻塞卡死节拍），此处为其补 delay=0 —— 发声但不阻塞，节拍由 hz 掌控。
+        """
+        row_sets = {}
+        for j, dev, rp in exec_cols:
+            row_sets.setdefault(dev, {})[rp] = float(act[j])
+        for dev, params in row_sets.items():
+            if isinstance(self.M[dev], SpeakerVar) and "delay" not in params:
+                params["delay"] = 0
+            self.M[dev].play(params)
 
     def _resolve_row(self, action, row, n_cols):
         """解析一行的全部值（占位符继承）"""

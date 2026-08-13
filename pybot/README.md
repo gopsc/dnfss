@@ -28,9 +28,27 @@ cat scripts/std.mt | ./_run.sh              # 与 bot4cj 相同的管道用法
 ./_run.sh --dry-run scripts/std.mt          # Mock 总线，动作序列到 stdout
 ./_run.sh --test roundtrip in.mt out.mt     # 解析↔序列化往返自检
 ./_run.sh --verbose scripts/std.mt          # DEBUG 日志（stderr）
+./_run.sh --record data/ep scripts/std.mt   # 录制 actpred 格式 episode
 ```
 
-`-i` / `-o` 参数位保留（reserved），未来对接 [actpred](../actpred/) 动作预测。
+`-i` / `-o` 参数位保留（reserved），未来对接跨进程 FIFO。
+
+### 实时预测闭环（`--loop`）
+
+`--loop CKPT` 进入进程内闭环：采样 → actpred 推理 → 执行 → 回写历史。
+脚本提供硬件配置与 `@Action` 表头（动作向量索引映射），不执行脚本动作行。
+
+```bash
+./_run.sh --loop ../actpred/checkpoints/best_inference.pt --hz 10 scripts/std.mt
+./_run.sh --loop actpred_pretrain.hef --hz 20 --loop-steps 100 scripts/std.mt  # NPU 后端
+```
+
+- checkpoint 后缀 `.hef` → Hailo NPU 后端，否则 → PyTorch 后端
+- `hz` 须 ≥ 推理 + 执行耗时（ONNX ~11ms / Hailo ~12ms，hz ≤ 50 安全）
+- `@Action` 表头列数须 ≤ `action_dim`（默认 18），闭环中跳过 `spk.delay` 阻塞
+- **帧源**：闭环从 camera 守护线程队列取最近 F 帧（无阻塞），`@Camera` 的
+  `framerate` 建议 ≥ 2×`hz` 以保证帧新鲜度；`capacity` 应 ≥ F（帧窗长度）。
+  部署时若日志出现 `loop overrun` 告警，说明 `hz` 超过推理+执行能力，应降低 `hz`
 
 ## 目录
 

@@ -43,6 +43,14 @@ def _build_argparser():
                         "--dry-run 下用合成帧）")
     p.add_argument("--action-dim", type=int, default=18,
                    help="动作向量维度（默认 18，与 actpred 一致）")
+    p.add_argument("--loop", metavar="CKPT", default=None,
+                   help="实时预测闭环：加载 actpred checkpoint，"
+                        "采样→推理→执行→回写（不执行脚本 @Action 行，"
+                        "仅用其表头做动作向量索引映射）")
+    p.add_argument("--hz", type=float, default=10.0,
+                   help="闭环控制频率 Hz（默认 10，须 ≥ 推理+执行耗时）")
+    p.add_argument("--loop-steps", type=int, default=None, metavar="N",
+                   help="闭环步数上限（默认无限，调试用）")
     return p
 
 
@@ -91,6 +99,12 @@ def main(argv=None):
     if args.dry_run:
         mocks = (i2c.use_mock(), spi.use_mock())
 
+    predictor = None
+    if args.loop:
+        predictor = _load_predictor(args.loop)
+        if predictor is None:
+            return 2
+
     source = open(args.script, encoding="utf-8") if args.script else sys.stdin
     try:
         robot = RobotStruct(source, dry_run=args.dry_run)
@@ -100,7 +114,11 @@ def main(argv=None):
             recorder = EpisodeRecorder(args.record,
                                        action_dim=args.action_dim)
         with robot:
-            robot.run(recorder=recorder)
+            if predictor is not None:
+                robot.run_loop(predictor, hz=args.hz,
+                               max_steps=args.loop_steps, recorder=recorder)
+            else:
+                robot.run(recorder=recorder)
     finally:
         if args.script:
             source.close()
@@ -108,6 +126,29 @@ def main(argv=None):
     if args.dry_run:
         _dump_journal(*mocks)
     return 0
+
+
+def _load_predictor(checkpoint):
+    """进程内构建 actpred 推理器；失败返回 None
+
+    pybot 不硬依赖 actpred：仅 --loop 时才尝试 import，actpred 不在
+    sys.path 时给出可操作提示。checkpoint 目录名决定后端（.hef → Hailo
+    NPU，否则 → PyTorch），推理类由 actpred 提供。
+    """
+    try:
+        if checkpoint.endswith(".hef"):
+            from actpred.hailo_infer import HailoPredictor as _P
+        else:
+            from actpred.predict import ActionPredictorInference as _P
+    except ImportError:
+        logging.error("--loop 需要 actpred 模块（把 blackbird 根目录加入 "
+                      "PYTHONPATH，或在 actpred/ 同级运行）")
+        return None
+    try:
+        return _P(checkpoint)
+    except Exception:
+        logging.exception("加载 actpred checkpoint 失败: %s", checkpoint)
+        return None
 
 
 if __name__ == "__main__":
