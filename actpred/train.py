@@ -84,7 +84,8 @@ def main():
     train_ds = ActionDataset(
         cfg.data.data_dir, cfg.data.history_len, cfg.data.action_dim,
         cfg.data.image_width, cfg.data.image_height, cfg.data.normalize_actions,
-        cfg.data.action_stats_path, train_indices, cfg.data.frame_len)
+        cfg.data.action_stats_path, train_indices, cfg.data.frame_len,
+        augment=cfg.train.augment)
     if cfg.data.normalize_actions and not cfg.data.action_stats_path:
         # 归一化统计量必须只用训练集计算，再供验证集复用，否则 val loss 不可信
         stats_path = os.path.join(cfg.train.checkpoint_dir, "action_stats.npy")

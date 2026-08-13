@@ -40,6 +40,7 @@ class TrainConfig:
     num_workers: int = 2
     seed: int = 42
     max_grad_norm: float = 1.0
+    augment: bool = False
 
 
 @dataclass
@@ -87,6 +88,8 @@ def build_argparser(description: str = "") -> argparse.ArgumentParser:
     parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--max-grad-norm", type=float, default=None)
+    parser.add_argument("--augment", action=argparse.BooleanOptionalAction, default=None,
+                        help="训练时启用安全图像增强（ColorJitter：亮度/对比度/饱和度/色调）")
     parser.add_argument("--init-from", type=str, default=None,
                         help="预训练 checkpoint 路径，作为微调起点（strict=False 加载兼容权重）")
     parser.add_argument("--resume", type=str, default=None,
@@ -232,6 +235,7 @@ def apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         "num_workers": ("train", "num_workers"),
         "seed": ("train", "seed"),
         "max_grad_norm": ("train", "max_grad_norm"),
+        "augment": ("train", "augment"),
     }
     args_dict = vars(args)
     for arg_name, (section, field) in mapping.items():

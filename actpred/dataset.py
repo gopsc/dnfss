@@ -1,4 +1,5 @@
 import os
+import random
 import re
 import numpy as np
 from pathlib import Path
@@ -7,6 +8,7 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
+from torchvision.transforms import functional as TF
 
 
 def _natural_key(p):
@@ -19,12 +21,13 @@ class ActionDataset(Dataset):
                  image_width: int = 640, image_height: int = 480,
                  normalize_actions: bool = False,
                  action_stats_path: str = None, episode_indices: list = None,
-                 frame_len: int = 3):
+                 frame_len: int = 3, augment: bool = False):
         self.history_len = history_len
         self.action_dim = action_dim
         self.image_width = image_width
         self.image_height = image_height
         self.frame_len = frame_len
+        self.augment = augment
 
         self.transform = transforms.Compose([
             transforms.Resize((image_height, image_width)),
@@ -92,8 +95,18 @@ class ActionDataset(Dataset):
     def __getitem__(self, idx):
         image_paths, action_history, target = self.samples[idx]
         frames = []
+        if self.augment:
+            bf = random.uniform(0.8, 1.2)
+            cf = random.uniform(0.8, 1.2)
+            sf = random.uniform(0.8, 1.2)
+            hf = random.uniform(-0.05, 0.05)
         for p in image_paths:
             image = Image.open(p).convert("RGB")
+            if self.augment:
+                image = TF.adjust_brightness(image, bf)
+                image = TF.adjust_contrast(image, cf)
+                image = TF.adjust_saturation(image, sf)
+                image = TF.adjust_hue(image, hf)
             frames.append(self.transform(image))
         images = torch.stack(frames)  # (F, 3, S, S)
         action_history = torch.tensor(action_history, dtype=torch.float32)
