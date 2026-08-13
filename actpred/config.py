@@ -41,6 +41,14 @@ class TrainConfig:
     seed: int = 42
     max_grad_norm: float = 1.0
     augment: bool = False
+    # R1-C 残差预测：True 时 target 改为 Δ=actions[t]-actions[t-1]，
+    # 推理端 â_t = a_{t-1} + Δ̂（惯性先验，平滑动作）。默认 False 兼容旧 checkpoint。
+    predict_delta: bool = False
+    # R1-B 多步展开训练：rollout_len>1 时 dataset 返回 K 步连续序列，
+    # 训练用 scheduled sampling（前 ss_prob 比例步用真历史，其余用自预测回传），
+    # 治 exposure bias。rollout_len=1 时退化为现状单步。
+    rollout_len: int = 1
+    ss_prob: float = 1.0
 
 
 @dataclass
@@ -90,6 +98,13 @@ def build_argparser(description: str = "") -> argparse.ArgumentParser:
     parser.add_argument("--max-grad-norm", type=float, default=None)
     parser.add_argument("--augment", action=argparse.BooleanOptionalAction, default=None,
                         help="训练时启用安全图像增强（ColorJitter：亮度/对比度/饱和度/色调）")
+    parser.add_argument("--predict-delta", action=argparse.BooleanOptionalAction, default=None,
+                        help="R1-C 残差预测：target 改为 Δ=actions[t]-actions[t-1]，"
+                             "推理端 â_t=a_{t-1}+Δ̂（惯性先验平滑动作，默认关兼容旧 checkpoint）")
+    parser.add_argument("--rollout-len", type=int, default=None,
+                        help="R1-B 多步展开训练步数 K（默认 1=单步；K>1 时 scheduled sampling）")
+    parser.add_argument("--ss-prob", type=float, default=None,
+                        help="scheduled sampling 真实历史概率（仅 rollout-len>1 生效，默认 1.0=全真）")
     parser.add_argument("--init-from", type=str, default=None,
                         help="预训练 checkpoint 路径，作为微调起点（strict=False 加载兼容权重）")
     parser.add_argument("--resume", type=str, default=None,
@@ -142,6 +157,8 @@ def validate_config_values(data_cfg: DataConfig, model_cfg: ModelConfig,
             ("patience", train_cfg.patience, 0, 100000, int),
             ("num_workers", train_cfg.num_workers, 0, 256, int),
             ("max_grad_norm", train_cfg.max_grad_norm, 0.0, 1e6, float),
+            ("rollout_len", train_cfg.rollout_len, 1, 1024, int),
+            ("ss_prob", train_cfg.ss_prob, 0.0, 1.0, float),
         ]
         for name, val, lo, hi, typ in t_checks:
             if typ is int:
@@ -236,6 +253,9 @@ def apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         "seed": ("train", "seed"),
         "max_grad_norm": ("train", "max_grad_norm"),
         "augment": ("train", "augment"),
+        "predict_delta": ("train", "predict_delta"),
+        "rollout_len": ("train", "rollout_len"),
+        "ss_prob": ("train", "ss_prob"),
     }
     args_dict = vars(args)
     for arg_name, (section, field) in mapping.items():

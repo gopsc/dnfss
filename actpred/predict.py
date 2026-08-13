@@ -29,6 +29,10 @@ class ActionPredictorInference:
         self.action_dim = self._data_cfg.action_dim
         self.history_len = self._data_cfg.history_len
         self.frame_len = self._data_cfg.frame_len
+        # R1-C 残差预测：checkpoint 记录 predict_delta=True 时，模型输出 Δ̂，
+        # 需在归一化空间加回 a_{t-1}（history 末步）得到绝对动作。
+        # 旧 checkpoint 无该字段，getattr 默认 False，行为与旧版一致。
+        self._predict_delta = getattr(cfg.train, "predict_delta", False)
 
         self._transform = transforms.Compose([
             transforms.Resize((self._data_cfg.image_height,
@@ -84,7 +88,10 @@ class ActionPredictorInference:
         if self._action_mean is not None:
             history = (history - self._action_mean) / self._action_std
         history = history.unsqueeze(0).to(self._device)
-        pred = self._model(img_tensor, history).squeeze(0)
+        pred = self._model(img_tensor, history).squeeze(0)  # 归一化空间
+        if self._predict_delta:
+            # 残差：Δ̂ 加回 a_{t-1}（history 末步，同为归一化空间）→ 绝对动作
+            pred = history[0, -1] + pred
         if self._action_mean is not None:
             pred = pred * self._action_std + self._action_mean
         return pred.cpu().numpy()

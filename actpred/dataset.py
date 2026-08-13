@@ -21,13 +21,18 @@ class ActionDataset(Dataset):
                  image_width: int = 640, image_height: int = 480,
                  normalize_actions: bool = False,
                  action_stats_path: str = None, episode_indices: list = None,
-                 frame_len: int = 3, augment: bool = False):
+                 frame_len: int = 3, augment: bool = False,
+                 predict_delta: bool = False, rollout_len: int = 1):
         self.history_len = history_len
         self.action_dim = action_dim
         self.image_width = image_width
         self.image_height = image_height
         self.frame_len = frame_len
         self.augment = augment
+        # R1-C 残差预测：target 改为 Δ=actions[t]-actions[t-1]（归一化空间内求差）
+        self.predict_delta = predict_delta
+        # R1-B 多步展开：rollout_len>1 时每个样本返回 K 步连续 (images,history,target)
+        self.rollout_len = max(1, rollout_len)
 
         self.transform = transforms.Compose([
             transforms.Resize((image_height, image_width)),
@@ -39,6 +44,8 @@ class ActionDataset(Dataset):
         if episode_indices is not None:
             episodes = [episodes[i] for i in episode_indices]
 
+        # 样本存 (image_files, actions, t_start)：t_start 是 rollout 第一步的目标时刻，
+        # __getitem__ 按 rollout_len 展开 K 步。存原始数组引用避免重复加载/拷贝。
         self.samples = []
         for ep_dir in episodes:
             actions_path = ep_dir / "actions.npy"
@@ -58,11 +65,12 @@ class ActionDataset(Dataset):
                 print(f"WARNING: {ep_dir} 动作帧数 {n_frames} 与图像数 {n_images} 不一致，"
                       f"按较少者（{min(n_frames, n_images)}）使用，请检查录制完整性")
             n = min(n_frames, n_images)
-            # 每个样本：帧 [t-frame_len+1, t]（旧→新）+ 动作历史 [t-history_len, t) → 动作 t
+            # 第 k 步（k=0..K-1）目标时刻 t=t_start+k：帧 [t-frame_len+1, t]、
+            # 历史 [t-history_len, t)、目标 actions[t]。t_start 下界保证第 0 步窗口完整，
+            # 上界保证第 K-1 步目标不越界。
             start = max(history_len, frame_len - 1)
-            for t in range(start, n):
-                self.samples.append((image_files[t - frame_len + 1: t + 1],
-                                     actions[t - history_len:t], actions[t]))
+            for t_start in range(start, n - (self.rollout_len - 1)):
+                self.samples.append((image_files, actions, t_start))
 
         self._action_mean = None
         self._action_std = None
@@ -83,24 +91,34 @@ class ActionDataset(Dataset):
                     raise ValueError(
                         f"数据集为空（0 样本），无法计算归一化统计量。"
                         f"请检查 data_dir={data_dir} 中的 episode 数据。")
-                all_actions = np.stack(
-                    [np.concatenate([s[1], s[2][None]]) for s in self.samples]
-                ).reshape(-1, self.action_dim)
+                # 归一化统计基于绝对动作（与 Δ 无关）：覆盖所有样本 rollout 范围内
+                # 出现的 history 与 target 动作，保持与旧版一致的统计口径。
+                all_actions = np.stack([
+                    s[1][s[2] - self.history_len: s[2] + self.rollout_len]
+                    for s in self.samples
+                ]).reshape(-1, self.action_dim)
                 self._action_mean = all_actions.mean(axis=0)
                 self._action_std = all_actions.std(axis=0) + 1e-8
 
     def __len__(self):
         return len(self.samples)
 
-    def __getitem__(self, idx):
-        image_paths, action_history, target = self.samples[idx]
-        frames = []
+    def _norm(self, a):
+        """z-score 归一化（numpy → torch 前在 numpy 空间做，保持 float32）"""
+        if self._action_mean is None:
+            return a
+        return (a - self._action_mean) / self._action_std
+
+    def _load_frames(self, image_files, t):
+        """加载时刻 t 的 F 帧窗口 [t-frame_len+1, t]（旧→新），augment 对整个窗口一致"""
+        paths = image_files[t - self.frame_len + 1: t + 1]
         if self.augment:
             bf = random.uniform(0.8, 1.2)
             cf = random.uniform(0.8, 1.2)
             sf = random.uniform(0.8, 1.2)
             hf = random.uniform(-0.05, 0.05)
-        for p in image_paths:
+        frames = []
+        for p in paths:
             image = Image.open(p).convert("RGB")
             if self.augment:
                 image = TF.adjust_brightness(image, bf)
@@ -108,13 +126,39 @@ class ActionDataset(Dataset):
                 image = TF.adjust_saturation(image, sf)
                 image = TF.adjust_hue(image, hf)
             frames.append(self.transform(image))
-        images = torch.stack(frames)  # (F, 3, S, S)
-        action_history = torch.tensor(action_history, dtype=torch.float32)
-        target = torch.tensor(target, dtype=torch.float32)
-        if self._action_mean is not None:
-            action_history = (action_history - self._action_mean) / self._action_std
-            target = (target - self._action_mean) / self._action_std
-        return {"images": images, "action_history": action_history, "target": target}
+        return torch.stack(frames)  # (F, 3, H, W)
+
+    def _step_target(self, actions, t):
+        """时刻 t 的监督目标（归一化空间）；predict_delta 时为 Δ=actions[t]-actions[t-1]"""
+        if self.predict_delta:
+            return self._norm(actions[t]) - self._norm(actions[t - 1])
+        return self._norm(actions[t])
+
+    def __getitem__(self, idx):
+        image_files, actions, t_start = self.samples[idx]
+        if self.rollout_len == 1:
+            # 单步：与旧版输出结构完全一致
+            images = self._load_frames(image_files, t_start)
+            history = torch.tensor(self._norm(
+                actions[t_start - self.history_len: t_start]), dtype=torch.float32)
+            target = torch.tensor(self._step_target(actions, t_start),
+                                  dtype=torch.float32)
+            return {"images": images, "action_history": history, "target": target}
+
+        # 多步：返回 K 步序列，scheduled sampling 在 train 循环内按步取用
+        steps = []
+        for k in range(self.rollout_len):
+            t = t_start + k
+            steps.append({
+                "images": self._load_frames(image_files, t),
+                # 真实历史（scheduled sampling 的真值来源；首步必用）
+                "action_history": torch.tensor(
+                    self._norm(actions[t - self.history_len: t]), dtype=torch.float32),
+                "target": torch.tensor(self._step_target(actions, t), dtype=torch.float32),
+                # 上一步真实动作（Δ 残差的基准 a_{t-1}，归一化空间）
+                "prev_action": torch.tensor(self._norm(actions[t - 1]), dtype=torch.float32),
+            })
+        return {"steps": steps}
 
     def get_action_stats(self):
         if self._action_mean is not None:

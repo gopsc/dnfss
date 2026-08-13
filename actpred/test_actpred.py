@@ -1509,5 +1509,293 @@ class TestDfcCompile(unittest.TestCase):
         self.assertIn("n/input_layer2", str(ctx.exception))
 
 
+class TestR1PredictDelta(unittest.TestCase):
+    """R1-C 残差预测：dataset Δ target 构造与 predict 逆变换"""
+
+    @staticmethod
+    def _create_episode(base_dir, actions, image_size=16):
+        ep_dir = base_dir / "episode_0001"
+        images_dir = ep_dir / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        n = len(actions)
+        for i in range(n):
+            Image.fromarray(np.random.randint(0, 255, (image_size, image_size, 3),
+                                              dtype=np.uint8)).save(
+                images_dir / f"{i:04d}.jpg")
+        np.save(ep_dir / "actions.npy", np.array(actions, dtype=np.float32))
+
+    def test_delta_target_unnormalized(self):
+        """不归一化时 target 应为 Δ=actions[t]-actions[t-1]"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # 线性递增动作，Δ 恒为 [1,1]
+            actions = [[float(i), float(i)] for i in range(8)]
+            self._create_episode(Path(tmpdir), actions)
+            ds = ActionDataset(tmpdir, history_len=2, action_dim=2,
+                               image_width=16, image_height=16, frame_len=2,
+                               predict_delta=True)
+            sample = ds[0]
+            # 第 0 样本 t_start=2，target = a[2]-a[1] = [1,1]
+            np.testing.assert_allclose(sample["target"].numpy(), [1.0, 1.0],
+                                       atol=1e-6)
+
+    def test_absolute_target_when_disabled(self):
+        """predict_delta=False 时 target 应为绝对动作 actions[t]"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            actions = [[float(i), float(i)] for i in range(8)]
+            self._create_episode(Path(tmpdir), actions)
+            ds = ActionDataset(tmpdir, history_len=2, action_dim=2,
+                               image_width=16, image_height=16, frame_len=2,
+                               predict_delta=False)
+            # t_start=2，target = a[2] = [2,2]
+            np.testing.assert_allclose(ds[0]["target"].numpy(), [2.0, 2.0],
+                                       atol=1e-6)
+
+    def test_delta_target_normalized_space(self):
+        """归一化开启时 Δ 应在归一化空间求差（先 z-score 再相减）"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rng = np.random.RandomState(0)
+            actions = rng.randn(12, 3).astype(np.float32)
+            self._create_episode(Path(tmpdir), actions)
+            ds = ActionDataset(tmpdir, history_len=2, action_dim=3,
+                               image_width=16, image_height=16, frame_len=2,
+                               normalize_actions=True, predict_delta=True)
+            mean, std = ds._action_mean, ds._action_std
+            sample = ds[0]
+            t = 2  # 第 0 样本 t_start
+            expected = (actions[t] - mean) / std - (actions[t - 1] - mean) / std
+            np.testing.assert_allclose(sample["target"].numpy(), expected, atol=1e-5)
+
+
+class TestR1Rollout(unittest.TestCase):
+    """R1-B 多步展开：dataset K 步序列结构与窗口对齐"""
+
+    @staticmethod
+    def _create_episode(base_dir, n, action_dim, image_size=16):
+        ep_dir = base_dir / "episode_0001"
+        images_dir = ep_dir / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(n):
+            Image.fromarray(np.random.randint(0, 255, (image_size, image_size, 3),
+                                              dtype=np.uint8)).save(
+                images_dir / f"{i:04d}.jpg")
+        actions = np.arange(n * action_dim, dtype=np.float32).reshape(n, action_dim)
+        np.save(ep_dir / "actions.npy", actions)
+        return actions
+
+    def test_rollout_sample_count(self):
+        """rollout_len=K 时样本数 = n - start - (K-1)"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._create_episode(Path(tmpdir), n=10, action_dim=2)
+            ds = ActionDataset(tmpdir, history_len=2, action_dim=2,
+                               image_width=16, image_height=16, frame_len=2,
+                               rollout_len=3)
+            # start=max(2,1)=2，n-(K-1)=8，样本数=8-2=6
+            self.assertEqual(len(ds), 6)
+
+    def test_rollout_structure_and_alignment(self):
+        """多步样本返回 K 步，每步 history/target/prev_action 与时刻对齐"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            actions = self._create_episode(Path(tmpdir), n=10, action_dim=2)
+            ds = ActionDataset(tmpdir, history_len=2, action_dim=2,
+                               image_width=16, image_height=16, frame_len=2,
+                               rollout_len=3)
+            sample = ds[0]
+            self.assertIn("steps", sample)
+            steps = sample["steps"]
+            self.assertEqual(len(steps), 3)
+            for k, step in enumerate(steps):
+                t = 2 + k  # t_start=2
+                self.assertEqual(step["images"].shape, (2, 3, 16, 16))
+                self.assertEqual(step["action_history"].shape, (2, 2))
+                self.assertEqual(step["target"].shape, (2,))
+                self.assertEqual(step["prev_action"].shape, (2,))
+                # 未归一化：history=actions[t-2:t]、target=actions[t]、prev=actions[t-1]
+                np.testing.assert_allclose(step["action_history"].numpy(),
+                                           actions[t - 2:t], atol=1e-6)
+                np.testing.assert_allclose(step["target"].numpy(),
+                                           actions[t], atol=1e-6)
+                np.testing.assert_allclose(step["prev_action"].numpy(),
+                                           actions[t - 1], atol=1e-6)
+
+    def test_rollout_delta_prev_action_is_base(self):
+        """残差+多步：prev_action 应为 prev+target 的基准（target=Δ 时 prev+Δ=abs）"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            actions = self._create_episode(Path(tmpdir), n=10, action_dim=2)
+            ds = ActionDataset(tmpdir, history_len=2, action_dim=2,
+                               image_width=16, image_height=16, frame_len=2,
+                               predict_delta=True, rollout_len=3)
+            step = ds[0]["steps"][1]  # t=3
+            # prev + Δ 应还原绝对动作 actions[t]
+            recon = step["prev_action"].numpy() + step["target"].numpy()
+            np.testing.assert_allclose(recon, actions[3], atol=1e-6)
+
+    def test_single_step_has_no_steps_key(self):
+        """rollout_len=1 时保持旧版扁平结构（无 steps 键）"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._create_episode(Path(tmpdir), n=8, action_dim=2)
+            ds = ActionDataset(tmpdir, history_len=2, action_dim=2,
+                               image_width=16, image_height=16, frame_len=2,
+                               rollout_len=1)
+            sample = ds[0]
+            self.assertNotIn("steps", sample)
+            self.assertIn("target", sample)
+
+
+class TestR1TrainHelpers(unittest.TestCase):
+    """R1 训练辅助：_shift_history 与 _collate"""
+
+    def test_shift_history_appends_and_drops(self):
+        from train import _shift_history
+        history = torch.tensor([[[1.0], [2.0], [3.0]]])  # (1,3,1)
+        new_action = torch.tensor([[4.0]])  # (1,1)
+        out = _shift_history(history, new_action)
+        self.assertEqual(out.shape, (1, 3, 1))
+        np.testing.assert_allclose(out[0, :, 0].numpy(), [2.0, 3.0, 4.0])
+
+    def test_collate_single_step_passthrough(self):
+        from train import _collate
+        b = [{"images": torch.zeros(2, 3, 4, 4),
+              "action_history": torch.zeros(2, 2),
+              "target": torch.zeros(2)} for _ in range(3)]
+        out = _collate(b)
+        self.assertNotIn("steps", out)
+        self.assertEqual(out["images"].shape, (3, 2, 3, 4, 4))
+
+    def test_collate_multi_step_stacks_per_k(self):
+        from train import _collate
+        def mk(k):
+            return {"images": torch.full((2, 3, 4, 4), float(k)),
+                    "action_history": torch.zeros(2, 2),
+                    "target": torch.zeros(2),
+                    "prev_action": torch.zeros(2)}
+        # 2 个样本，每个 K=3 步
+        b = [{"steps": [mk(k) for k in range(3)]} for _ in range(2)]
+        out = _collate(b)
+        self.assertEqual(len(out["steps"]), 3)
+        # 第 k 步 batch 的 images 值应全为 k
+        for k in range(3):
+            self.assertEqual(out["steps"][k]["images"].shape, (2, 2, 3, 4, 4))
+            self.assertTrue(
+                torch.allclose(out["steps"][k]["images"],
+                               torch.full((2, 2, 3, 4, 4), float(k))))
+
+
+class TestR4Evaluate(unittest.TestCase):
+    """R4 离线评估：滚动口径、平滑度、误差增长、越界、汇总"""
+
+    @staticmethod
+    def _create_episode(base_dir, name, actions, image_size=16):
+        ep_dir = base_dir / name
+        images_dir = ep_dir / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(len(actions)):
+            Image.fromarray(np.random.randint(0, 255, (image_size, image_size, 3),
+                                              dtype=np.uint8)).save(
+                images_dir / f"{i:04d}.jpg")
+        np.save(ep_dir / "actions.npy", np.array(actions, dtype=np.float32))
+
+    class _ConstPredictor:
+        """恒定输出 c 的假推理器（鸭子类型），用于可控验证滚动逻辑"""
+        frame_len = 2
+        history_len = 2
+        action_dim = 2
+
+        def __init__(self, c):
+            self._c = np.asarray(c, dtype=np.float32)
+            self.calls = 0
+
+        def predict(self, images, history):
+            self.calls += 1
+            return self._c.copy()
+
+    def test_rollout_uses_self_prediction_feedback(self):
+        """滚动应把自预测回写进历史（复刻 run_loop），步数 = n - t0"""
+        import evaluate
+        with tempfile.TemporaryDirectory() as tmpdir:
+            actions = np.arange(20, dtype=np.float32).reshape(10, 2)
+            self._create_episode(Path(tmpdir), "episode_0001", actions)
+            image_files, acts = evaluate._load_episode(tmpdir, "episode_0001")
+            pred = self._ConstPredictor([100.0, 100.0])
+            steps = evaluate.rollout_episode(pred, image_files, acts)
+            # t0 = max(H=2, F-1=1) = 2，horizon = 10-2 = 8
+            self.assertEqual(len(steps), 8)
+            self.assertEqual(pred.calls, 8)
+            # 恒预测 100，真值 a[t]，逐步 mse = mean((100-a[t])^2)
+            self.assertAlmostEqual(steps[0]["mse"],
+                                   float(np.mean((100 - acts[2]) ** 2)))
+
+    def test_rollout_respects_horizon(self):
+        import evaluate
+        with tempfile.TemporaryDirectory() as tmpdir:
+            actions = np.zeros((10, 2), dtype=np.float32)
+            self._create_episode(Path(tmpdir), "episode_0001", actions)
+            image_files, acts = evaluate._load_episode(tmpdir, "episode_0001")
+            pred = self._ConstPredictor([0.0, 0.0])
+            steps = evaluate.rollout_episode(pred, image_files, acts, horizon=3)
+            self.assertEqual(len(steps), 3)
+
+    def test_rollout_short_episode_returns_none(self):
+        import evaluate
+        with tempfile.TemporaryDirectory() as tmpdir:
+            actions = np.zeros((2, 2), dtype=np.float32)  # n=2 <= t0=2
+            self._create_episode(Path(tmpdir), "episode_0001", actions)
+            image_files, acts = evaluate._load_episode(tmpdir, "episode_0001")
+            pred = self._ConstPredictor([0.0, 0.0])
+            self.assertIsNone(evaluate.rollout_episode(pred, image_files, acts))
+
+    def test_smoothness_constant_vs_noisy(self):
+        import evaluate
+        const = np.tile([1.0, 2.0], (10, 1))
+        rng = np.random.RandomState(0)
+        noisy = const + rng.randn(10, 2).astype(np.float32)
+        self.assertEqual(evaluate._smoothness(const), 0.0)
+        self.assertGreater(evaluate._smoothness(noisy), 0.0)
+        self.assertEqual(evaluate._smoothness(np.zeros((1, 2))), 0.0)
+
+    def test_oob_detection(self):
+        """越界：预测超出经验范围应标记 oob=True"""
+        import evaluate
+        with tempfile.TemporaryDirectory() as tmpdir:
+            actions = np.zeros((10, 2), dtype=np.float32)  # 真值全 0
+            self._create_episode(Path(tmpdir), "episode_0001", actions)
+            image_files, acts = evaluate._load_episode(tmpdir, "episode_0001")
+            pred = self._ConstPredictor([5.0, 5.0])  # 远超 [0,0] 范围
+            lo = np.zeros(2, dtype=np.float32)
+            hi = np.zeros(2, dtype=np.float32)
+            steps = evaluate.rollout_episode(pred, image_files, acts,
+                                             lo=lo, hi=hi)
+            self.assertTrue(all(s["oob"] for s in steps))
+
+    def test_summarize_keys_and_growth(self):
+        import evaluate
+        # 构造误差随步数线性增长的滚动记录
+        steps = [{"t": k, "mse": float(k + 1),
+                  "pred": np.zeros(2), "true": np.zeros(2), "oob": False}
+                 for k in range(40)]
+        lo = np.zeros(2); hi = np.zeros(2)
+        rep = evaluate.summarize([steps], lo, hi)
+        for key in ("n_episodes", "n_steps", "overall_mse", "error_growth",
+                    "error_curve", "pred_smoothness", "true_smoothness",
+                    "smoothness_ratio", "oob_rate"):
+            self.assertIn(key, rep)
+        self.assertEqual(rep["n_episodes"], 1)
+        self.assertEqual(rep["n_steps"], 40)
+        # 误差递增 → error_growth > 1
+        self.assertGreater(rep["error_growth"], 1.0)
+        self.assertEqual(len(rep["error_curve"]), 40)
+
+    def test_action_bounds_margin(self):
+        import evaluate
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._create_episode(Path(tmpdir), "episode_0001",
+                                 np.zeros((5, 2), dtype=np.float32))
+            self._create_episode(Path(tmpdir), "episode_0002",
+                                 np.full((5, 2), 10.0, dtype=np.float32))
+            lo, hi = evaluate._action_bounds(tmpdir, 2, margin_ratio=0.1)
+            # min=0,max=10,span=10,margin=1 → lo=-1, hi=11
+            np.testing.assert_allclose(lo, [-1.0, -1.0], atol=1e-6)
+            np.testing.assert_allclose(hi, [11.0, 11.0], atol=1e-6)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

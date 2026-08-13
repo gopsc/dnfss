@@ -33,6 +33,13 @@ bash _run.sh train --data-dir ./data --epochs 100 --action-dim 18
 # 断点续训练（从 last.pt 恢复 model/optimizer/scheduler/epoch）
 bash _run.sh train --data-dir ./data --epochs 100 --resume checkpoints/last.pt
 
+# R1 改进：残差预测 + 多步展开训练（可叠加）
+# --predict-delta  预测 Δ=actions[t]-actions[t-1]（惯性先验，平滑动作；推理端自动加回 a_{t-1}）
+# --rollout-len K  多步展开训练（K>1 时 scheduled sampling，治 exposure bias）
+# --ss-prob P      scheduled sampling 真实历史概率（默认 1.0=全真；0.5 表示半数步用自预测回传）
+bash _run.sh train --data-dir ./data --epochs 100 --action-dim 18 \
+    --predict-delta --rollout-len 4 --ss-prob 0.7
+
 # 推理（--images 按时间顺序旧→新传入 frame_len 个图像路径，冷启动时可重复传同一帧；
 #      --action-history 格式：冒号分隔各步，每步 action_dim 个值，共 history_len 步）
 bash _run.sh --model checkpoints/best_inference.pt \
@@ -41,6 +48,12 @@ bash _run.sh --model checkpoints/best_inference.pt \
 
 # 导出 ONNX（如安装了 onnxruntime，导出后自动验证一致性）
 bash _run.sh export --model checkpoints/best_inference.pt --output model.onnx
+
+# R4 离线评估：开环滚动预测，量化闭环代理指标（误差发散/平滑度/越界率）
+python evaluate.py --model checkpoints/best_inference.pt --data-dir ./data
+# A/B 对比两个 checkpoint（负值 = 主模型更优）
+python evaluate.py --model checkpoints/r1.pt --compare checkpoints/baseline.pt \
+    --data-dir ./data --episodes 3 --horizon 50 --output report.json
 
 # 运行单元测试
 python test_actpred.py
@@ -144,6 +157,26 @@ recorder.flush()
 | `--init-from` | 无 | 预训练 checkpoint 路径，作为微调起点（strict=False） |
 | `--resume` | 无 | 从 last.pt 断点续训练（恢复 model/optimizer/scheduler/epoch） |
 | `--save-config` | 无 | 保存配置到 JSON 文件 |
+| `--predict-delta` | False | R1-C 残差预测（target 改 Δ，推理端自动加回 a_{t-1}） |
+| `--rollout-len` | 1 | R1-B 多步展开步数 K（>1 时 scheduled sampling） |
+| `--ss-prob` | 1.0 | scheduled sampling 真实历史概率（仅 rollout-len>1 生效） |
+
+## 离线评估（R4）
+
+`evaluate.py` 在留出 episode 上**开环滚动预测**（复现 pybot 闭环口径：图像用真值滚动、
+动作用自预测回写），输出闭环代理指标。单步 MSE（teacher forcing）看不见闭环误差累积，
+本评估补上这一盲区：
+
+| 指标 | 含义 | 判读 |
+|------|------|------|
+| `overall_mse` | 全部滚动步的平均 MSE | 越低越好 |
+| `error_growth` | 末段(后25%)误差 / 首段(前25%)误差 | >1 表示误差随步数发散（闭环不稳） |
+| `error_curve` | 误差随步数的增长曲线 | 看发散拐点 |
+| `smoothness_ratio` | 预测平滑度 / 真值平滑度 | <1 表示比真值更平滑（残差模式的预期收益） |
+| `oob_rate` | 预测落在训练数据经验范围外的比例 | 越高越危险（舵机越界风险） |
+
+物理可行性用数据分布的经验界（min/max + 10% margin）而非硬编码范围——18 列混含
+舵机角度/频率/延时/预留，无统一硬限位。`--compare` 用于 A/B 对比（如 R1 开/关）。
 
 ## 部署注意
 
