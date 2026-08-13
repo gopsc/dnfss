@@ -141,11 +141,14 @@ class MemoryDatabase:
         return results
 
     def get_recent_memories(self, limit: int = 10) -> List[Dict]:
-        """获取最近的记忆"""
+        """获取最近的记忆。limit=None 时不限制返回条数（供分页使用）。"""
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute('SELECT * FROM memories ORDER BY end_time DESC LIMIT ?', (limit,))
+            if limit is None:
+                cursor.execute('SELECT * FROM memories ORDER BY end_time DESC')
+            else:
+                cursor.execute('SELECT * FROM memories ORDER BY end_time DESC LIMIT ?', (limit,))
 
             results = []
             for row in cursor.fetchall():
