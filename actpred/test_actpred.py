@@ -1217,5 +1217,66 @@ class TestHailoPredictor(unittest.TestCase):
         np.testing.assert_allclose(result, [3, 3, 3], atol=1e-6)
 
 
+class TestDfcCompile(unittest.TestCase):
+    """dfc_compile.py 的 HAR 输入层连通性检查（编译前拦截输入断连）"""
+
+    @staticmethod
+    def _make_har(layers):
+        import json
+        import tarfile
+        data = json.dumps(
+            {"name": "t", "net_params": {}, "layers": layers}).encode()
+        path = tempfile.mktemp(suffix=".har")
+        with tarfile.open(path, "w") as tf:
+            ti = tarfile.TarInfo("net.hn")
+            ti.size = len(data)
+            tf.addfile(ti, io.BytesIO(data))
+        return path
+
+    @staticmethod
+    def _layers(connect_input2=True):
+        return {
+            "n/input_layer1": {"type": "input_layer", "input": [],
+                               "output": ["n/conv1"]},
+            "n/input_layer2": {"type": "input_layer", "input": [],
+                               "output": ["n/conv2"]},
+            "n/conv1": {"type": "conv", "input": ["n/input_layer1"],
+                        "output": ["n/out"]},
+            "n/conv2": {"type": "conv", "input": ["n/input_layer2"],
+                        "output": ["n/out" if connect_input2 else "n/dead"]},
+            "n/dead": {"type": "conv", "input": ["n/conv2"], "output": []},
+            "n/out": {"type": "output_layer",
+                      "input": ["n/conv1"] + (["n/conv2"] if connect_input2 else []),
+                      "output": []},
+        }
+
+    def test_input_layer_names_sorted_by_suffix(self):
+        from dfc_compile import har_input_layer_names
+        har = self._make_har(self._layers())
+        try:
+            names = har_input_layer_names(har)
+        finally:
+            os.unlink(har)
+        self.assertEqual(names, ["n/input_layer1", "n/input_layer2"])
+
+    def test_connectivity_pass(self):
+        from dfc_compile import check_input_connectivity
+        har = self._make_har(self._layers())
+        try:
+            check_input_connectivity(har, ["n/input_layer1", "n/input_layer2"])
+        finally:
+            os.unlink(har)
+
+    def test_disconnected_input_blocked(self):
+        from dfc_compile import check_input_connectivity
+        har = self._make_har(self._layers(connect_input2=False))
+        try:
+            with self.assertRaises(SystemExit) as ctx:
+                check_input_connectivity(har, ["n/input_layer1", "n/input_layer2"])
+        finally:
+            os.unlink(har)
+        self.assertIn("n/input_layer2", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

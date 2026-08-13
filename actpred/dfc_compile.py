@@ -25,6 +25,7 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -43,56 +44,63 @@ def hailo(*args, venv_bin: str):
     return subprocess.run(cmd, env=env, check=True)
 
 
-def har_input_layer_names(har_path: str) -> list:
-    """从 HAR（tar 包）中读 hn 文件，按 input_layerN 排序返回层名"""
+def _har_hn_layers(har_path: str) -> dict:
+    """解包 HAR 并读取主 hn 文件的 layers（优化产物含 fp/native 变体，取主图）"""
     with tempfile.TemporaryDirectory() as tmp:
         with tarfile.open(har_path) as tf:
             tf.extractall(tmp)
         hn_files = [f for f in os.listdir(tmp) if f.endswith(".hn")]
-        with open(os.path.join(tmp, hn_files[0])) as f:
-            hn = json.load(f)
-    layers = [(name, l) for name, l in hn["layers"].items()
-              if l["type"] == "input_layer"]
-    layers.sort(key=lambda x: x[0])
-    return [name for name, _ in layers]
+        if not hn_files:
+            raise ValueError(f"{har_path} 中无 .hn 文件")
+        main = [f for f in hn_files
+                if not f.endswith(".fp.hn") and not f.endswith(".native.hn")]
+        hn_file = main[0] if main else hn_files[0]
+        with open(os.path.join(tmp, hn_file)) as f:
+            return json.load(f)["layers"]
+
+
+def _input_layer_index(name: str) -> int:
+    m = re.search(r"input_layer(\d+)$", name)
+    return int(m.group(1)) if m else 0
+
+
+def har_input_layer_names(har_path: str) -> list:
+    """从 HAR 主 hn 图读输入层名，按 input_layerN 数字后缀排序"""
+    layers = _har_hn_layers(har_path)
+    names = [n for n, l in layers.items() if l["type"] == "input_layer"]
+    names.sort(key=_input_layer_index)
+    return names
 
 
 def check_input_connectivity(har_path: str, input_layers: list):
-    """检查 HAR 中输入层是否都有下游边
+    """检查 HAR 图中每个输入层是否可达任一输出层
 
     输入层被优化断开时编译照常成功，但 HEF 输出恒定值且无任何报错
-    （2026-08-13 实测踩坑），必须在编译前拦截。.edges 文件缺失或格式
-    无法识别时仅告警不阻断。
+    （2026-08-13 实测踩坑），必须在编译前拦截。DFC 5.3 的 HAR 不含
+    .edges 文件，连通性改从主 hn 图的 layer output 边 BFS 判定。
     """
-    with tempfile.TemporaryDirectory() as tmp:
-        with tarfile.open(har_path) as tf:
-            tf.extractall(tmp)
-        edge_files = [f for f in os.listdir(tmp) if f.endswith(".edges")]
-        if not edge_files:
-            print(f"WARNING: {har_path} 无 .edges 文件，跳过输入连通性检查")
-            return
-        with open(os.path.join(tmp, edge_files[0])) as f:
-            edges = json.load(f)
-
-    if not isinstance(edges, list):
-        print(f"WARNING: .edges 不是列表（{type(edges).__name__}），"
-              f"跳过连通性检查")
+    layers = _har_hn_layers(har_path)
+    adj = {n: l.get("output", []) for n, l in layers.items()}
+    targets = {n for n, l in layers.items() if l["type"] == "output_layer"}
+    if not targets:
+        print(f"WARNING: {har_path} 图中无输出层，跳过连通性检查")
         return
-    adjacency = set()
-    for e in edges:
-        if isinstance(e, dict) and "from" in e:
-            adjacency.add(e["from"])
-        elif isinstance(e, (list, tuple)) and len(e) == 2:
-            adjacency.add(e[0])
-        else:
-            print(f"WARNING: 无法识别 .edges 条目格式: {e!r}，跳过连通性检查")
-            return
-    disconnected = [n for n in input_layers if n not in adjacency]
+    disconnected = []
+    for name in input_layers:
+        seen, stack = set(), [name]
+        while stack:
+            cur = stack.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            stack.extend(adj.get(cur, []))
+        if not (seen & targets):
+            disconnected.append(name)
     if disconnected:
         sys.exit(
-            f"错误: {har_path} 中输入层无下游边（输入被优化断开，"
+            f"错误: {har_path} 中输入层不可达输出层（输入被优化断开，"
             f"编译出的 HEF 将输出恒定值）: {disconnected}")
-    print(f"输入连通性检查通过: {len(input_layers)} 个输入层均有下游边")
+    print(f"输入连通性检查通过: {len(input_layers)} 个输入层均可达输出层")
 
 
 def main():
