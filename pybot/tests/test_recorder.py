@@ -1,4 +1,4 @@
-"""EpisodeRecorder 测试：actpred 格式数据集录制
+"""EpisodeRecorder 测试：actpred 格式数据集录制 + 微动作分解
 
 全部在 dry_run / mock I2C 下运行，不碰真实硬件。
 """
@@ -15,7 +15,7 @@ from pybot.robot import RobotStruct
 
 # ---- 测试用 .mt 脚本 ----
 
-# 仅 @Camera + @Action(cam0.frame) —— 不需要 I2C
+# 仅 @Camera + @Action(cam0.frame) —— 不需要 I2C，无 Speaker 无微动作
 CAMERA_MT = """
 @Camera
  name  width  height  framerate  capacity;
@@ -28,11 +28,14 @@ cam0.frame;
 @
 """
 
-# @Camera + @Servo + 多行 @Action（含占位符）—— 需要 mock I2C
+# @Camera + @Servo + @Speaker + 多行 @Action（含占位符 + delay）—— 需要 mock I2C
+# 10 行 @Action，首行不分解，后续行 delay=20 → N=2 微步
+# 总步数：1 + 9×2 = 19
 SERVO_CAMERA_MT = """
 @Alias
 name      alias;
    A      angle;
+   F  frequency;
 @
 
 @I2C
@@ -51,23 +54,99 @@ pca9685-0  i2c-1   0x40;
   s2   180     -       -           -        1;
 @
 
+@Speaker
+name  channels  sample_rate  volumn  max_f  min_f;
+ spk         2        48000     0.6   5000      -;
+@
+
 @Camera
  name  width  height  framerate  capacity;
  cam0    320      240        15         2;
 @
 
 @Action
-s1.A  s2.A;
-  45     0;
-   -    10;
-   -    20;
-   -    30;
-   -     0;
-   -    10;
-   -    20;
-   -    30;
-   -     0;
-   -    10;
+s1.A  s2.A  spk.F  spk.delay;
+  45     0     10       20;
+   -    10      -       20;
+   -    20      -       20;
+   -    30      -       20;
+   -     0      -       20;
+   -    10      -       20;
+   -    20      -       20;
+   -    30      -       20;
+   -     0      -       20;
+   -    10      -       20;
+@
+"""
+
+# 简单插值测试：2 行 @Action，delay=30 → N=3
+# s1: row1=0（首行不分解），row2 从 0→30 分 3 步 → 10, 20, 30
+MICRO_ACTION_MT = """
+@Alias
+name      alias;
+   A      angle;
+   F  frequency;
+@
+
+@I2C
+ name        path;
+i2c-1  /dev/i2c-1;
+@
+
+@PCA9685
+     name    I2C   address;
+pca9685-0  i2c-1   0x40;
+@
+
+@Servo
+ name   max  min  offset  controller  channel;
+  s1    90     -       -   pca9685-0        0;
+@
+
+@Speaker
+name  channels  sample_rate  volumn  max_f  min_f;
+ spk         2        48000     0.6   5000      -;
+@
+
+@Action
+s1.A  spk.F  spk.delay;
+   0     10       30;
+  30      -       30;
+@
+"""
+
+# delay 非 10 倍数 → 应报错
+BAD_DELAY_MT = """
+@Alias
+name      alias;
+   A      angle;
+   F  frequency;
+@
+
+@I2C
+ name        path;
+i2c-1  /dev/i2c-1;
+@
+
+@PCA9685
+     name    I2C   address;
+pca9685-0  i2c-1   0x40;
+@
+
+@Servo
+ name   max  min  offset  controller  channel;
+  s1    90     -       -   pca9685-0        0;
+@
+
+@Speaker
+name  channels  sample_rate  volumn  max_f  min_f;
+ spk         2        48000     0.6   5000      -;
+@
+
+@Action
+s1.A  spk.F  spk.delay;
+   0     10       15;
+  30      -       15;
 @
 """
 
@@ -110,11 +189,11 @@ def test_episode_format(tmp_path):
     assert (ep_dir / "images").is_dir()
     assert (ep_dir / "actions.npy").exists()
     jpgs = list((ep_dir / "images").glob("*.jpg"))
-    assert len(jpgs) == 1              # CAMERA_MT 有 1 行 @Action
+    assert len(jpgs) == 1              # CAMERA_MT 有 1 行 @Action，无 Speaker 不分解
 
 
 def test_action_vector_padding(tmp_path, mock_i2c):
-    """2 列 .mt → 18 维向量，末尾 16 维为零"""
+    """4 列 .mt → 18 维向量，末尾 14 维为零；微步展开后 19 步"""
     robot = RobotStruct(SERVO_CAMERA_MT, dry_run=True)
     robot.active()
     rec = EpisodeRecorder(str(tmp_path), action_dim=18)
@@ -122,12 +201,12 @@ def test_action_vector_padding(tmp_path, mock_i2c):
     robot.deactive()
 
     actions = np.load(tmp_path / "episode_0000" / "actions.npy")
-    assert actions.shape == (10, 18)    # 10 行 @Action × 18 维
-    assert np.all(actions[:, 2:] == 0)  # 列 2-17 全为零
+    assert actions.shape == (19, 18)   # 1（首行）+ 9×2（微步）= 19
+    assert np.all(actions[:, 4:] == 0)  # 列 4-17 全为零
 
 
 def test_placeholder_resolution(tmp_path, mock_i2c):
-    """`-` 占位符正确递归解析"""
+    """`-` 占位符递归解析 + 微步插值"""
     robot = RobotStruct(SERVO_CAMERA_MT, dry_run=True)
     robot.active()
     rec = EpisodeRecorder(str(tmp_path), action_dim=18)
@@ -135,10 +214,10 @@ def test_placeholder_resolution(tmp_path, mock_i2c):
     robot.deactive()
 
     actions = np.load(tmp_path / "episode_0000" / "actions.npy")
-    # s1.A: row0=45, row1..9 全是 '-' → 递归取上一行 → 全 45
+    # s1.A: 全 45（首行 45，后续行 '-' 继承 45，插值 45→45 仍为 45）
     assert np.all(actions[:, 0] == 45)
-    # s2.A: 0,10,20,30,0,10,20,30,0,10
-    expected_s2 = [0, 10, 20, 30, 0, 10, 20, 30, 0, 10]
+    # s2.A: 首行 0，后续行插值
+    expected_s2 = [0, 5, 10, 15, 20, 25, 30, 15, 0, 5, 10, 15, 20, 25, 30, 15, 0, 5, 10]
     assert list(actions[:, 1]) == expected_s2
 
 
@@ -182,6 +261,30 @@ def test_episode_auto_increment(tmp_path):
     assert (tmp_path / "episode_0001").is_dir()
 
 
+def test_micro_action_interpolation(tmp_path, mock_i2c):
+    """微动作插值：s1 从 0→30 分 3 步 → 10, 20, 30"""
+    robot = RobotStruct(MICRO_ACTION_MT, dry_run=True)
+    robot.active()
+    rec = EpisodeRecorder(str(tmp_path), action_dim=18)
+    robot.run(recorder=rec)
+    robot.deactive()
+
+    actions = np.load(tmp_path / "episode_0000" / "actions.npy")
+    # 首行 s1=0（不分解），row2 s1 从 0→30 分 3 步
+    expected_s1 = [0, 10, 20, 30]
+    assert list(actions[:, 0]) == expected_s1
+
+
+def test_delay_not_multiple_of_10(tmp_path, mock_i2c):
+    """delay 非 10 倍数时报错"""
+    robot = RobotStruct(BAD_DELAY_MT, dry_run=True)
+    robot.active()
+    rec = EpisodeRecorder(str(tmp_path), action_dim=18)
+    with pytest.raises(ValueError, match="不是 10 的倍数"):
+        robot.run(recorder=rec)
+    robot.deactive()
+
+
 def test_actpred_compatibility(tmp_path, mock_i2c):
     """用 actpred 的 ActionDataset 加载录制的 episode"""
     pytest.importorskip("torch")
@@ -199,8 +302,8 @@ def test_actpred_compatibility(tmp_path, mock_i2c):
         from dataset import ActionDataset
         ds = ActionDataset(str(tmp_path), history_len=5,
                            action_dim=18, frame_len=3)
-        # 10 行，start=max(5,2)=5，samples: t=5..9 → 5 个样本
-        assert len(ds) == 5
+        # 19 帧，start=max(5,2)=5，samples: t=5..18 → 14 个样本
+        assert len(ds) == 14
         sample = ds[0]
         # ActionDataset 默认 resize 到 640×480，与相机原始尺寸无关
         assert sample["images"].shape == (3, 3, 480, 640)  # (F, C, H, W)

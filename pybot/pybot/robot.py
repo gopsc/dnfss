@@ -136,14 +136,22 @@ class RobotStruct:
         return None
 
     def run(self, recorder=None):
-        """逐行执行 @Action 矩阵
+        """逐行执行 @Action 矩阵，带时延的行分解为 10ms 微步
 
-        recorder: 可选 EpisodeRecorder，启用后每行执行前录制 (frame, action)
+        微步规则：
+        - 首行（无前序状态）：不分解，按原逻辑执行
+        - 后续行 + delay > 0：分解为 N=delay//10 个微步，舵机角度线性插值
+        - delay 必须是 10 的倍数
+        - 每步调 speaker.play(freq, 10) 提供声音 + 10ms 时序
+        - dry_run 下补 sleep(0.01) 维持节拍
+
+        recorder: 可选 EpisodeRecorder，每步录制 (frame, action)
         """
         action = self.find_mt("Action")
         if action is None:
             raise ValueError("no @Action matrix in script")
         columns = self._validate_action(action)     # Q05: 执行前整表校验
+        delay_idx = self._find_delay_idx(columns)
 
         camera_var = None
         if recorder is not None:
@@ -152,29 +160,83 @@ class RobotStruct:
                 raise ValueError(
                     "--record 需要 @Camera 块（或使用 --dry-run 生成合成帧）")
 
-        for i in range(1, action.size):
-            # 录制：在执行动作前抓帧（observation → action 语义）
-            if recorder is not None:
-                action_vec = self._build_action_vec(
-                    action, i, columns, recorder.action_dim)
-                frame = self._grab_frame(camera_var)
-                recorder.record(frame, action_vec)
+        prev_vals = None
 
-            row_sets = {}       # {设备名: {参数名: float}}
-            for j, (dev, param) in enumerate(columns):
-                # 可能的参数别名转换（A → angle）
-                alias = self.M.get(param)
-                if isinstance(alias, AliasVar):
-                    param = alias.play({})
-                val = parse_mt(action, i, j)
-                row_sets.setdefault(dev, {})[param] = val
-            # 执行一行：逐设备调用 play
-            for dev, params in row_sets.items():
-                self.M[dev].play(params)
+        for i in range(1, action.size):
+            vals = self._resolve_row(action, i, len(columns))
+            delay = int(vals[delay_idx]) if delay_idx is not None else 0
+
+            if delay > 0 and prev_vals is not None:
+                if delay % 10 != 0:
+                    raise ValueError(
+                        f"@Action row {i}: delay {delay} 不是 10 的倍数")
+                n = delay // 10
+                for k in range(n):
+                    step_vals = self._build_step_vals(
+                        prev_vals, vals, columns, k, n)
+                    if recorder is not None:
+                        recorder.record(
+                            self._grab_frame(camera_var),
+                            self._build_action_vec(
+                                step_vals, recorder.action_dim))
+                    self._execute_step(step_vals, columns)
+                    if self.dry_run:
+                        import time
+                        time.sleep(0.01)
+            else:
+                if recorder is not None:
+                    recorder.record(
+                        self._grab_frame(camera_var),
+                        self._build_action_vec(vals, recorder.action_dim))
+                self._execute_step(vals, columns)
+
+            prev_vals = vals
 
         if recorder is not None:
             path = recorder.flush()
             log.info("episode saved: %s", path)
+
+    def _resolve_row(self, action, row, n_cols):
+        """解析一行的全部值（占位符继承）"""
+        return [parse_mt(action, row, j) for j in range(n_cols)]
+
+    def _resolve_param(self, param):
+        """解析别名 → 真实参数名"""
+        alias = self.M.get(param)
+        if isinstance(alias, AliasVar):
+            return alias.play({})
+        return param
+
+    def _find_delay_idx(self, columns):
+        """找到 spk.delay 列索引；无 Speaker 返回 None"""
+        for j, (dev, param) in enumerate(columns):
+            if isinstance(self.M.get(dev), SpeakerVar) and \
+               self._resolve_param(param) == "delay":
+                return j
+        return None
+
+    def _build_step_vals(self, prev_vals, target_vals, columns, k, n):
+        """为微步 k 构建插值后的值列表"""
+        vals = []
+        for j, (dev, param) in enumerate(columns):
+            rp = self._resolve_param(param)
+            if isinstance(self.M.get(dev), ServoVar):
+                vals.append(prev_vals[j] +
+                            (target_vals[j] - prev_vals[j]) * (k + 1) / n)
+            elif isinstance(self.M.get(dev), SpeakerVar) and rp == "delay":
+                vals.append(10.0)
+            else:
+                vals.append(target_vals[j])
+        return vals
+
+    def _execute_step(self, vals, columns):
+        """从值列表构建 row_sets 并逐设备 play()"""
+        row_sets = {}
+        for j, (dev, param) in enumerate(columns):
+            rp = self._resolve_param(param)
+            row_sets.setdefault(dev, {})[rp] = vals[j]
+        for dev, params in row_sets.items():
+            self.M[dev].play(params)
 
     def _find_camera(self):
         """在已创建的硬件变量中查找第一个 CameraVar"""
@@ -183,16 +245,12 @@ class RobotStruct:
                 return var
         return None
 
-    def _build_action_vec(self, action, row, columns, action_dim):
-        """按 @Action 列顺序构建动作向量，pad/truncate 到 action_dim
-
-        与 actpred/pretrain_mt.py 的 MTActionDataset 语义一致：
-        列值按顺序填入向量，不足补零，超出截断。
-        """
+    def _build_action_vec(self, vals, action_dim):
+        """从值列表构建动作向量，pad/truncate 到 action_dim"""
         import numpy as np
         vec = np.zeros(action_dim, dtype=np.float32)
-        for j in range(min(len(columns), action_dim)):
-            vec[j] = parse_mt(action, row, j)
+        n = min(len(vals), action_dim)
+        vec[:n] = vals[:n]
         return vec
 
     def _grab_frame(self, camera_var):
