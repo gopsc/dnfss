@@ -82,6 +82,20 @@ def test_dry_run_no_hardware():
     assert cam.latest() is None
 
 
+def test_capture_on_demand():
+    """capture() 同步按需抓帧，每个微步一帧"""
+    cam = Camera(grabber=FakeGrabber())
+    assert cam.capture() == 1
+    assert cam.capture() == 2       # 每次调用递增，不复用队列
+    assert cam.capture() == 3
+
+
+def test_capture_no_grabber():
+    """dry_run 或未 setup 时 capture() 返回 None"""
+    cam = Camera(dry_run=True)
+    assert cam.capture() is None
+
+
 def test_camera_var_from_matrix():
     robot = RobotStruct(CAMERA_MT, dry_run=True)
     cam = robot.M["cam0"].camera

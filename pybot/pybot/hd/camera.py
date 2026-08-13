@@ -69,6 +69,12 @@ class Camera:
         with self._lock:
             return self._queue[-1] if self._queue else None
 
+    def capture(self):
+        """同步抓一帧（按需，不从队列读）；dry_run 或无 grabber 返回 None"""
+        if self._grabber is None:
+            return None
+        return self._grabber()
+
     def snapshot(self):
         """队列快照 list（旧→新），供消费方批量取帧"""
         with self._lock:

@@ -254,13 +254,13 @@ class RobotStruct:
         return vec
 
     def _grab_frame(self, camera_var):
-        """从摄像头取最新帧；dry_run 或无帧时返回随机噪声帧"""
+        """从摄像头同步抓一帧；dry_run 或无帧时返回随机噪声帧"""
         import numpy as np
         if camera_var is not None:
-            result = camera_var.play({})
-            if result is not None:
-                return result[1]       # (timestamp, frame)
-        # dry_run 或队列空：随机噪声帧（用 camera 配置尺寸）
+            frame = camera_var.camera.capture()
+            if frame is not None:
+                return frame
+        # dry_run 或无 grabber：随机噪声帧（用 camera 配置尺寸）
         h, w = 480, 640
         if camera_var is not None:
             cam = camera_var.camera
