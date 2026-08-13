@@ -138,29 +138,41 @@ def test_calculator_unknown_operation():
 
 
 # ==================== ReadFileTool ====================
+#
+# 说明：使用 pytest 的 tmp_path fixture 创建临时文件作为 read_file 入参，
+# 不依赖任何相对路径或 cwd——早期版本用 filepath="aibox.py" 假设从
+# aibox/ 目录运行 pytest，从仓库根运行会因路径漂移失败（2026-08-14 修复）。
 
-def test_read_file_head_returns_command_prompt():
+def test_read_file_head_returns_command_prompt(tmp_path):
     """head 模式应返回含 head 命令 + run_command 指引的 markdown。"""
-    r = ReadFileTool().execute(filepath="aibox.py", head=True, max_lines=10)
+    f = tmp_path / "sample.txt"
+    f.write_text("line1\nline2\n")
+    r = ReadFileTool().execute(filepath=str(f), head=True, max_lines=10)
     assert "head -n 10" in r
     assert "run_command" in r
 
 
-def test_read_file_tail_returns_command_prompt():
-    r = ReadFileTool().execute(filepath="aibox.py", tail=True, max_lines=20)
+def test_read_file_tail_returns_command_prompt(tmp_path):
+    f = tmp_path / "sample.txt"
+    f.write_text("line1\nline2\n")
+    r = ReadFileTool().execute(filepath=str(f), tail=True, max_lines=20)
     assert "tail -n 20" in r
     assert "run_command" in r
 
 
-def test_read_file_range_returns_sed_command():
-    r = ReadFileTool().execute(filepath="aibox.py", start_line=5, end_line=15)
+def test_read_file_range_returns_sed_command(tmp_path):
+    f = tmp_path / "sample.txt"
+    f.write_text("line1\nline2\n")
+    r = ReadFileTool().execute(filepath=str(f), start_line=5, end_line=15)
     assert "sed -n '5,15p'" in r
     assert "run_command" in r
 
 
-def test_read_file_max_lines_cap_at_500():
+def test_read_file_max_lines_cap_at_500(tmp_path):
     """max_lines 应被钳制到 500 防止超大范围。"""
-    r = ReadFileTool().execute(filepath="aibox.py", max_lines=99999)
+    f = tmp_path / "sample.txt"
+    f.write_text("line1\n")
+    r = ReadFileTool().execute(filepath=str(f), max_lines=99999)
     assert "sed -n '1,500p'" in r
 
 

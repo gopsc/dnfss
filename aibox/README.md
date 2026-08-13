@@ -55,21 +55,47 @@ python aibox.py
 
 启动后，WebSocket 服务器将运行在 `ws://localhost:8765`（地址与端口可在 `config.json` 的 `system.websocket_host` / `system.websocket_port` 中修改）。
 
-> 注意：本模块入口文件为 `aibox.py`（单文件约 8450 行，集成 WebSocket 服务器、AI 引擎、工具/技能系统、任务调度器于一体）。`client.py` 为示例 WebSocket 客户端，`voice_client.py` 为语音客户端，`_run.sh` 为被 `core` 拉起的启动脚本。
+> 注意：本模块入口文件为 `aibox.py`（当前约 3706 行，集成 WebSocket 服务器、AI 引擎、工具/技能系统、任务调度器于一体；自 v3.0 起工具类与子系统已抽离至 `tools/`、`subsystems/`、`common/`、`tests/` 包，aibox.py 仅保留核心类与编排逻辑）。`client.py` 为示例 WebSocket 客户端，`voice_client.py` 为语音客户端，`llm_client.py` 为多厂商大模型客户端抽象层，`_run.sh` 为被 `core` 拉起的启动脚本。
 
 ## 📁 目录结构
 
 ```
 aibox/
-├── aibox.py           # 服务主程序（WebSocket 服务器 + AI 引擎 + 工具/技能系统 + 任务调度器）
+├── aibox.py           # 服务主程序（WebSocket 服务器 + AI 引擎 + 任务调度器 + 核心类 DeepSeekChat/WebSocketHandler/EnhancedAIManager）
 ├── client.py          # 示例 WebSocket 客户端
 ├── voice_client.py    # 语音客户端
+├── llm_client.py      # 大模型客户端抽象层（多厂商切换，DeepSeekClient 兼容 OpenAI 协议）
 ├── entry.html         # 前端入口页
 ├── entry1.html        # 前端入口页（变体）
 ├── frontend.html      # 前端主页面
-├── llm_client.py      # 大模型客户端抽象层（多厂商切换）
 ├── common/            # 基础设施包（i18n / 配置 / 常量 / 日志）
-├── tools/             # 工具系统基础包（Tool 基类 + ToolRegistry 注册器）
+│   ├── config.py      # ConfigManager 配置管理
+│   ├── constants.py   # 常量定义
+│   ├── i18n.py       # 多语言
+│   └── logger.py     # 日志器
+├── subsystems/        # 子系统包（Wave 1：从 aibox.py 抽离的基础设施）
+│   ├── executors.py        # CommandExecutor + SubprocessCommandExecutor
+│   ├── prompt_manager.py   # PromptManager（单例，提示词按数字前缀排序加载）
+│   ├── db.py               # MemoryDatabase + MemoDatabase（SQLite）
+│   └── skill_manager.py    # SkillManager（技能发现/加载/热重载）
+├── tools/             # 工具系统包（A 批 + B 批共 17 个工具类）
+│   ├── base.py             # Tool 抽象基类
+│   ├── registry.py         # ToolRegistry 工具注册器
+│   ├── basic_tools.py      # A 批：ReadFile/WriteFile/ListFiles/SimpleWebCrawler/GetCurrentTime/Calculator
+│   ├── command_tool.py     # B 批：CommandLineTool（run_command）
+│   ├── skill_tools.py      # B 批：SearchSkills/ReloadSkills/InstallSkill/CreateSkill
+│   ├── db_tools.py         # B 批：MemoryTool/MemoTool
+│   ├── prompt_tools.py     # B 批：UpdateIdentity/UpdateSoul/SaveMemoryAndEndConversation
+│   ├── proxy_tools.py      # B 批：SetProxy/GetProxy
+│   └── misc_tools.py       # B 批：AskUserTool
+├── tests/             # 单元测试套件（171 项全过）
+│   ├── conftest.py              # sys.path 配置 + websockets 桩
+│   ├── test_basic_tools.py      # A 批工具 43 项
+│   ├── test_b_tools.py          # B 批工具 58 项
+│   ├── test_executors.py        # 命令执行器
+│   ├── test_prompt_manager.py   # 提示词管理器
+│   ├── test_db.py               # 记忆/备忘录数据库
+│   └── test_skill_manager.py    # 技能管理器
 ├── skills/            # 内置扩展技能（*.py 可执行脚本 / *.md Markdown 技能）
 │   ├── hello-world.py
 │   ├── aes-crypto.py
@@ -79,12 +105,32 @@ aibox/
 │   ├── ssh-exec.py
 │   ├── sftp-transfer.py
 │   └── ...
+├── prompts/           # 系统提示词源文件（运行期复制到 ~/.aibox/prompts/）
 ├── SKILLS_FORMAT.md   # 技能文件格式说明
 ├── _run.sh            # 启动脚本（被 core 守护时调用）
 ├── _runcli.sh         # 命令行启动脚本
 ├── _set.sh            # 安装脚本
 ├── _setenv.sh         # 环境设置脚本
 └── README.md
+```
+
+**包依赖方向**（单向，禁止反向引用）：
+
+```
+common  ←  subsystems  ←  tools  ←  aibox.py
+```
+
+- `common`：仅依赖标准库，不引用任何其他包
+- `subsystems`：依赖 `common`，不引用 `tools` 或 `aibox`
+- `tools`：依赖 `common` + `subsystems`，不引用 `aibox`
+- `aibox.py`：聚合层，导入上述三个包
+
+**运行测试**：
+
+```bash
+# 从仓库根目录运行
+py -m pytest aibox/tests -q
+# 当前：171 项全过，约 11s
 ```
 
 运行期数据存放于 `~/.aibox/`：
@@ -632,10 +678,19 @@ Server -> Client: {type: "dialogue_reset", content: "✅ 对话状态已完全�
 
 ### 添加新工具
 
-1. 继承 `Tool` 基类（位于 `tools/base.py`）
+1. 继承 `Tool` 基类（位于 [tools/base.py](tools/base.py)）
 2. 实现 `get_name()`、`get_description()`、`get_parameters()`、`execute()`
 3. 可选实现 `execute_streaming()` 支持流式输出（通过 `output_queue` 发送 `("line", content)` 和 `("complete", final_result)`）
-4. 在 `DeepSeekChat._register_tools()` 中注册
+4. 按工具类别放入对应文件：
+   - 基础工具（文件/网页/计算/时间）→ `tools/basic_tools.py`
+   - 命令执行 → `tools/command_tool.py`
+   - 技能管理 → `tools/skill_tools.py`
+   - 数据库工具 → `tools/db_tools.py`
+   - 提示词/身份更新 → `tools/prompt_tools.py`
+   - 代理配置 → `tools/proxy_tools.py`
+   - 其他 → `tools/misc_tools.py`
+5. 在 [tools/__init__.py](tools/__init__.py) 的 `__all__` 中导出新类
+6. 在 `DeepSeekChat._register_tools()` 中按 `tool_profile`（orchestrator/worker）注册
 
 ```python
 class MyTool(Tool):
@@ -655,6 +710,8 @@ class MyTool(Tool):
     def execute(self, param: str, **kwargs) -> str:
         return f"执行结果: {param}"
 ```
+
+> **依赖约束**：`tools/` 包只能依赖 `common` + `subsystems` + 标准库，不得反向引用 `aibox.py` 任何符号；如需访问 aibox 内部状态，应通过构造函数注入（参考 `MemoryTool(memory_db=...)` 模式）。
 
 > **注意**：`execute()` 必须返回字符串。工具结果会经过多层安全防护：
 > 1. **工具层源头限制**：文件/网页工具返回 markdown 指引，实际 I/O 由 `run_command` 完成（`run_command` 输出≤1MB，超出立即终止进程；`read_file` 指引命令限制 500 行、单行≤10KB）
@@ -733,6 +790,16 @@ elif command == "/mycommand":
 3. 确认工具返回值为字符串且不含二进制/控制字符
 
 ## 📄 更新日志
+
+### v3.0
+- ✅ **模块化重构（aibox.py 8450 行 → 3706 行，缩减 56%）**：
+  - **A 批基础工具抽离**（[tools/basic_tools.py](tools/basic_tools.py)）：`FileToolBase` / `ReadFileTool` / `WriteFileTool` / `ListFilesTool` / `SimpleWebCrawlerTool` / `GetCurrentTimeTool` / `CalculatorTool` 共 7 类，无外部子系统依赖；配套 43 项单元测试
+  - **B 批管理面工具抽离**（[tools/](tools/) 目录）：`CommandLineTool` / `SearchSkillsTool` / `ReloadSkillsTool` / `InstallSkillTool` / `CreateSkillTool` / `MemoryTool` / `MemoTool` / `UpdateIdentityTool` / `UpdateSoulTool` / `SaveMemoryAndEndConversationTool` / `SetProxyTool` / `GetProxyTool` / `AskUserTool` 共 13 类，按职责分 7 个文件；配套 58 项单元测试
+  - **Wave 1 子系统抽离**（[subsystems/](subsystems/) 目录）：`CommandExecutor` + `SubprocessCommandExecutor`（executors.py）、`PromptManager`（prompt_manager.py）、`MemoryDatabase` + `MemoDatabase`（db.py）、`SkillManager`（skill_manager.py）共 4 子系统；配套 70 项单元测试
+  - **测试套件**：[tests/](tests/) 目录 171 项全过，覆盖 A/B 批工具与 Wave 1 子系统
+  - **修复**：`subsystems/db.py` 的 `get_recent_memories(limit=None)` SQL datatype mismatch bug（`LIMIT ?` 传 None 时移除 LIMIT 子句）
+  - **架构约束**：建立 `common ← subsystems ← tools ← aibox` 单向依赖，禁止反向引用；`tools/__init__.py` 与 `subsystems/__init__.py` 采用"重导出"策略，调用点无需关心子模块位置
+  - **未抽离**：Wave 2（`TaskScheduler` / `ConversationHistory`）、Wave 3（`ConversationCompressor`）、C 批工具（`ExpressEmotionTool` / `SubAgentTool`）、核心类（`DeepSeekChat` / `WebSocketHandler` / `EnhancedAIManager`）仍保留在 `aibox.py` 内
 
 ### v2.9
 - ✅ **编排者-执行者工具分层（工具集 profile）**：
