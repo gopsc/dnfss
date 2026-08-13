@@ -122,7 +122,7 @@
 - 支持文件浏览、视频/音频在线播放（HTTP Range 分段请求，返回 206/416）、一键下载。
 - 路径遍历防护（realpath 前缀校验），仅允许访问 `--root` 之内。
 - **dnfs2 代理**：`/get_notes`、`/add_note`、`/delete_note`、`/update_note` 透传 Authorization 转发到 `dnfs2:8006`（解决浏览器跨域）。
-- **账号旁路**：`/api/check_user`、`/api/reset_password` 等接口直接读写 `gateway/sqlite3.db` 的 Users 表；`/yhdet_callback`、`/api/yhdet_*` 对接 yhdet.top OAuth 登录。
+- **账号旁路已收口**：原 static 时代的 `/api/check_user`、`/api/reset_password`、yhdet OAuth 等旁路接口已移除/迁至 ca（忘记密码走 ca `/reset/send_code` + `/reset_password`），fsys 不再直接读写用户表。
 - 统一品牌"树状菜单"，支持深色模式（`css/theme.css`）与样式节点注入的自定义主题/样式（见 [docs/dnfs_custom_themes.md](docs/dnfs_custom_themes.md)）。
 - 配置全部经 CLI 传递（CLI > 环境变量 > 默认值，原 `confs/configs/static.ini` 迁入 `core/services.yaml` 的 fsys 条目 args），不依赖 confs。
 

@@ -20,7 +20,7 @@ fsys :9200 (libhttp 异步多线程 + CORS)
     │
     ├── public/          静态文件根目录
     ├── dnfs2 :8006      笔记代理（反向代理）
-    ├── db2 :8005        用户查询 + 日志写入
+    ├── db2 :8005        日志写入
     └── (配置纯 CLI 传递，不依赖 confs)
 ```
 
@@ -40,8 +40,6 @@ fsys :9200 (libhttp 异步多线程 + CORS)
 
 | 路径 | 说明 |
 |------|------|
-| `POST /api/hash` | SHA-256 密码哈希（限速 20/min/IP） |
-| `POST /api/check_user` | 检查用户是否已注册（限速 10/min/IP） |
 | `GET /api/favicon?url=` | favicon SSRF 防护代理（512KB 上限，仅浏览器侧 Cache-Control 缓存 1 天，无服务端缓存） |
 
 ### dnfs2 代理路由

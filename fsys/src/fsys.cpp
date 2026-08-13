@@ -5,8 +5,6 @@
  *   GET  /<path>                静态文件 / 目录浏览
  *   GET  /api/filelist?path=    文件列表 JSON
  *   GET  /video/...             视频/音频流媒体（HTTP Range 206）
- *   POST /api/hash              SHA-256 密码哈希（限速 20/min/IP）
- *   POST /api/check_user        用户存在性检查（限速 10/min/IP）
  *   GET  /api/favicon?url=      favicon SSRF 防护代理
  *   POST /get_notes 等 4 个     dnfs2 反向代理
  *   GET  /health                健康检查
@@ -32,7 +30,6 @@
 #include <boost/json.hpp>
 #include <boost/program_options.hpp>
 #include <curl/curl.h>
-#include <openssl/evp.h>
 
 #include <algorithm>
 #include <atomic>
@@ -94,12 +91,6 @@ static constexpr size_t kHttpMaxResponse = 10 * 1024 * 1024;
 // 单次文件响应大小上限（string_body 全量读入内存，防大文件 DoS；审计 F-4）
 static constexpr uintmax_t kMaxServeFileSize = 50 * 1024 * 1024;
 
-// 限速
-static constexpr int kHashRateLimit       = 20;
-static constexpr int kCheckUserRateLimit  = 10;
-static constexpr int kRateWindowSeconds   = 60;
-static constexpr size_t kRateMaxKeys      = 65536;  // 限速键数上限，防伪造 XFF 旋转导致内存增长
-
 // 视图文件名
 static const std::string kViewFile = "__view.html";
 
@@ -132,30 +123,6 @@ static int safe_stoi(const std::string& s, const char* field_name) {
         throw std::runtime_error(std::string("invalid ") + field_name
                                  + ": '" + s + "' (" + e.what() + ")");
     }
-}
-
-static std::string sha256_hex(const std::string& input) {
-    EVP_MD* md = EVP_MD_fetch(nullptr, "SHA2-256", nullptr);
-    const bool fetched = (md != nullptr);
-    if (!md) {
-        // OpenSSL < 3.0 回退
-        md = const_cast<EVP_MD*>(EVP_sha256());
-    }
-    unsigned char hash[EVP_MAX_MD_SIZE];
-    unsigned int hash_len = 0;
-    EVP_Digest(input.data(), input.size(), hash, &hash_len, md, nullptr);
-    // EVP_MD_fetch 返回的无论 digest 成败都需释放，EVP_sha256 返回的不需要
-    if (fetched) {
-        EVP_MD_free(md);
-    }
-    static const char hex_chars[] = "0123456789abcdef";
-    std::string result;
-    result.reserve(hash_len * 2);
-    for (unsigned int i = 0; i < hash_len; ++i) {
-        result += hex_chars[hash[i] >> 4];
-        result += hex_chars[hash[i] & 0x0f];
-    }
-    return result;
 }
 
 static std::string format_file_size(uintmax_t size) {
@@ -340,19 +307,6 @@ static Config load_config(int argc, char* argv[]) {
 
     return cfg;
 }
-
-// ============================================================================
-// 异常类
-// ============================================================================
-
-class FsysExp : public std::runtime_error {
-public:
-    FsysExp(const std::string& msg, int code)
-        : std::runtime_error(msg), status_(code) {}
-    int status() const noexcept { return status_; }
-private:
-    int status_;
-};
 
 // ============================================================================
 // MIME 类型映射
@@ -582,8 +536,6 @@ class FsysServer {
 public:
     explicit FsysServer(Config cfg)
         : _cfg(std::move(cfg)),
-          _rpc(_cfg.db_host, _cfg.db_port, "fsys", 5.0,
-               /*retry_on_refused=*/true),
           _log_rpc(_cfg.db_host, _cfg.db_port, "fsys-log", kLogRpcTimeout,
                    /*retry_on_refused=*/false)
     {
@@ -618,7 +570,6 @@ public:
 
 private:
     Config _cfg;
-    RpcClient _rpc;        // db RPC（retry_on_refused=true）
     RpcClient _log_rpc;    // 日志写入
 
     std::unique_ptr<AsyncQueue<LogEntry>> _log_queue;
@@ -626,10 +577,6 @@ private:
 
     HttpServer* _server = nullptr;
     static std::atomic<bool> _should_stop;
-
-    // 限速存储
-    std::mutex _rate_mutex;
-    std::unordered_map<std::string, std::vector<std::chrono::steady_clock::time_point>> _rate_store;
 
     static void _signal_handler(int) { _should_stop.store(true); }
 
@@ -669,68 +616,6 @@ private:
                 std::fprintf(stderr, "[fsys] 日志写入失败: %s\n", ex.what());
             }
         }
-    }
-
-    // ---- db 调用 -----------------------------------------------------------
-
-    struct DbResult {
-        bool success = false;
-        json::value data;
-        std::string error;
-    };
-
-    DbResult _call_db(const json::object& payload) {
-        try {
-            json::value data = _rpc.call("execute", payload);
-            return {true, data, ""};
-        } catch (const RpcError& e) {
-            return {false, nullptr, e.what()};
-        } catch (const std::exception& e) {
-            _log("ERROR", "fsys", std::string("db 调用失败: ") + e.what());
-            throw FsysExp("数据库服务暂时不可用", 502);
-        }
-    }
-
-    // ---- 客户端 IP ---------------------------------------------------------
-
-    static std::string client_ip(const http::request<http::string_body>& req) {
-        auto xff = req.find("X-Forwarded-For");
-        if (xff != req.end()) {
-            std::string val(xff->value());
-            auto comma = val.find(',');
-            std::string ip = (comma == std::string::npos) ? val : val.substr(0, comma);
-            auto b = ip.find_first_not_of(" ");
-            auto e = ip.find_last_not_of(" ");
-            if (b != std::string::npos) return ip.substr(b, e - b + 1);
-        }
-        return "unknown";
-    }
-
-    // ---- 限速 --------------------------------------------------------------
-
-    bool _check_rate_limit(const std::string& key, int max_requests) {
-        auto now = std::chrono::steady_clock::now();
-        auto cutoff = now - std::chrono::seconds(kRateWindowSeconds);
-        std::lock_guard<std::mutex> lock(_rate_mutex);
-        // 键数超限：全局驱逐过期窗口（防伪造 XFF 旋转导致无限增长）
-        if (_rate_store.size() > kRateMaxKeys) {
-            for (auto it = _rate_store.begin(); it != _rate_store.end();) {
-                auto& ts = it->second;
-                ts.erase(std::remove_if(ts.begin(), ts.end(),
-                                        [&](const auto& t) { return t < cutoff; }),
-                         ts.end());
-                if (ts.empty()) it = _rate_store.erase(it);
-                else ++it;
-            }
-        }
-        auto& timestamps = _rate_store[key];
-        timestamps.erase(
-            std::remove_if(timestamps.begin(), timestamps.end(),
-                           [&](const auto& t) { return t < cutoff; }),
-            timestamps.end());
-        if (static_cast<int>(timestamps.size()) >= max_requests) return false;
-        timestamps.push_back(now);
-        return true;
     }
 
     // ---- CORS --------------------------------------------------------------
@@ -778,10 +663,6 @@ private:
         const http::request<http::string_body>& req);
     http::response<http::string_body> _handle_video(
         const http::request<http::string_body>& req);
-    http::response<http::string_body> _handle_hash(
-        const http::request<http::string_body>& req);
-    http::response<http::string_body> _handle_check_user(
-        const http::request<http::string_body>& req);
     http::response<http::string_body> _handle_favicon(
         const http::request<http::string_body>& req);
     http::response<http::string_body> _handle_dnfs_proxy(
@@ -821,9 +702,6 @@ void FsysServer::run() {
     server.get("/api/filelist", [this](const auto& req, const auto&) { return _handle_filelist(req); });
     server.get("/api/favicon",  [this](const auto& req, const auto&) { return _handle_favicon(req); });
     server.get("/health",       [this](const auto& req, const auto&) { return _handle_health(req); });
-
-    server.post("/api/hash",       [this](const auto& req, const auto&) { return _handle_hash(req); });
-    server.post("/api/check_user", [this](const auto& req, const auto&) { return _handle_check_user(req); });
 
     // dnfs2 代理路由
     auto dnfs_handler = [this](const std::string& route) {
@@ -1072,8 +950,6 @@ http::response<http::string_body> FsysServer::_handle_filelist(
         result["items"]       = items;
         return make_json_obj(http::status::ok, result, req);
 
-    } catch (const FsysExp& e) {
-        return make_error(static_cast<http::status>(e.status()), e.what(), req);
     } catch (const std::exception& e) {
         _log("ERROR", "fsys", std::string("\u6587\u4ef6\u5217\u8868\u9519\u8bef: ") + e.what());
         return make_error(http::status::internal_server_error, "\u5185\u90e8\u9519\u8bef", req);
@@ -1174,113 +1050,6 @@ http::response<http::string_body> FsysServer::_handle_video(
     } catch (const std::exception& e) {
         _log("ERROR", "fsys", std::string("视频流传输错误: ") + e.what());
         return make_error(http::status::internal_server_error, "内部错误", req);
-    }
-}
-
-// ============================================================================
-// POST /api/hash — SHA-256 密码哈希
-// ============================================================================
-
-http::response<http::string_body> FsysServer::_handle_hash(
-    const http::request<http::string_body>& req)
-{
-    try {
-        std::string ip = client_ip(req);
-        if (!_check_rate_limit("hash:" + ip, kHashRateLimit))
-            return make_error(http::status::too_many_requests, "rate limit exceeded", req);
-
-        json::value val;
-        try { val = json::parse(req.body()); }
-        catch (...) { return make_error(http::status::bad_request, "invalid input", req); }
-
-        if (!val.is_object())
-            return make_error(http::status::bad_request, "invalid input", req);
-
-        const auto& obj = val.as_object();
-        auto it = obj.find("password");
-        if (it == obj.end() || !it->value().is_string())
-            return make_error(http::status::bad_request, "invalid input", req);
-
-        std::string password(it->value().as_string());
-        std::string hash = sha256_hex(password);
-
-        json::object result;
-        result["hash"] = hash;
-        return make_json_obj(http::status::ok, result, req);
-
-    } catch (const std::exception& e) {
-        _log("ERROR", "fsys", std::string("hash 错误: ") + e.what());
-        return make_error(http::status::internal_server_error, "内部错误", req);
-    }
-}
-
-// ============================================================================
-// POST /api/check_user — 检查用户是否存在
-// ============================================================================
-
-http::response<http::string_body> FsysServer::_handle_check_user(
-    const http::request<http::string_body>& req)
-{
-    try {
-        std::string ip = client_ip(req);
-        if (!_check_rate_limit("check_user:" + ip, kCheckUserRateLimit))
-            return make_error(http::status::too_many_requests, "rate limit exceeded", req);
-
-        json::value val;
-        try { val = json::parse(req.body()); }
-        catch (...) {
-            json::object r; r["success"] = false; r["error"] = "missing email";
-            return make_json_obj(http::status::bad_request, r, req);
-        }
-
-        if (!val.is_object()) {
-            json::object r; r["success"] = false; r["error"] = "missing email";
-            return make_json_obj(http::status::bad_request, r, req);
-        }
-
-        const auto& obj = val.as_object();
-        auto it = obj.find("email");
-        if (it == obj.end() || !it->value().is_string()) {
-            json::object r; r["success"] = false; r["error"] = "missing email";
-            return make_json_obj(http::status::bad_request, r, req);
-        }
-
-        std::string email(it->value().as_string());
-        // trim
-        auto b = email.find_first_not_of(" \t");
-        auto e = email.find_last_not_of(" \t");
-        if (b == std::string::npos) {
-            json::object r; r["success"] = false; r["error"] = "missing email";
-            return make_json_obj(http::status::bad_request, r, req);
-        }
-        email = email.substr(b, e - b + 1);
-
-        json::object payload;
-        payload["action"]  = "select";
-        payload["table"]   = "Users";
-        payload["where"]   = json::object{{"email", email}};
-        payload["columns"] = json::array{"email"};
-
-        DbResult r = _call_db(payload);
-        if (!r.success) {
-            _log("WARNING", "fsys", "check_user 查询失败: " + r.error);
-            json::object result; result["success"] = false; result["error"] = "query failed";
-            return make_json_obj(http::status::internal_server_error, result, req);
-        }
-
-        bool found = r.data.is_array() && !r.data.as_array().empty();
-        json::object result;
-        result["success"] = true;
-        result["found"]   = found;
-        return make_json_obj(http::status::ok, result, req);
-
-    } catch (const FsysExp& exp) {
-        json::object r; r["success"] = false; r["error"] = exp.what();
-        return make_json_obj(static_cast<http::status>(exp.status()), r, req);
-    } catch (const std::exception& e) {
-        _log("ERROR", "fsys", std::string("check_user 错误: ") + e.what());
-        json::object r; r["success"] = false; r["error"] = "internal error";
-        return make_json_obj(http::status::internal_server_error, r, req);
     }
 }
 
