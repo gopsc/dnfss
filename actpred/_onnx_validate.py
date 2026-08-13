@@ -24,6 +24,20 @@ model = ActionPredictor(cfg.model, cfg.data, pretrained=False)
 model.load_state_dict(ck["model_state_dict"])
 model.eval()
 
+action_stats = None
+if cfg.data.normalize_actions:
+    import os
+    stats_path = cfg.data.action_stats_path or os.path.join(
+        os.path.dirname(os.path.abspath(CKPT)), "action_stats.npy")
+    if not os.path.isabs(stats_path):
+        stats_path = os.path.join(os.path.dirname(os.path.abspath(CKPT)),
+                                  stats_path)
+    action_stats = np.load(stats_path)
+    if action_stats.shape != (2, cfg.data.action_dim):
+        raise ValueError(f"action stats 形状应为 (2, {cfg.data.action_dim})，"
+                         f"实际为 {action_stats.shape}: {stats_path}")
+    print(f"history 将 z-score 归一化（{stats_path}）")
+
 sess = ort.InferenceSession(ONNX)
 in_names = [i.name for i in sess.get_inputs()]
 print("ONNX inputs:", in_names)
@@ -47,6 +61,10 @@ hist_real = np.array([
     [45, 0, 45, 0, 45, 0, 45, 0, 90, 90, 0, 0, 0, 0, 0, 0, 0, 0],
 ], dtype=np.float32)
 hist_zero = np.zeros((5, 18), dtype=np.float32)
+
+if action_stats is not None:
+    hist_real = (hist_real - action_stats[0]) / action_stats[1]
+    hist_zero = (hist_zero - action_stats[0]) / action_stats[1]
 
 pred_learned = model.pred_token.data.unsqueeze(1).numpy()   # (1,1,1,128)
 pred_none = np.zeros((1, 1, 1, 128), dtype=np.float32)

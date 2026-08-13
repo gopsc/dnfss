@@ -12,12 +12,20 @@ Reshape 序列。此脚本逐项改造（权重数值完全不变）：
 """
 
 import argparse
+import os
 
+import numpy as np
 import torch
 import torch.nn as nn
 
 from config import parse_checkpoint_config
 from model import ActionPredictor
+
+IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+MAX_TOKEN_ABS = 100.0
+MERGE_RATIO_WARN = 32.0
 
 
 class ManualAttnBlock(nn.Module):
@@ -124,6 +132,57 @@ class DeployWrapper(nn.Module):
         return self.head(tokens[:, :, -1:, :]).squeeze(1)  # (1, 1, action_dim)
 
 
+def check_token_ranges(wrapper: "DeployWrapper", frame_len: int, height: int,
+                       width: int, history_len: int, action_dim: int,
+                       pred_token: torch.Tensor, max_abs: float = MAX_TOKEN_ABS,
+                       action_stats_path: str = None):
+    """导出前检查 token 量级：幅度过大时 uint8 量化会把小信号压成 0
+
+    预训练用全零图像占位 → BN running_var 停在初始小值 → 推理时每级
+    BN 放大 ~50 倍，图像 token 可达 ±2e5。DFC 在 token merge 点按最大
+    幅度分配共享量化 scale（实测 scale=1965.92，pred_token/act_tokens
+    全部量化成 0），HEF 输出对任何输入恒定。必须在编译前拦截。
+
+    归一化模型（normalize_actions）的 HEF 输入是 z-score 后的历史，
+    检查输入须与推理端一致。
+    """
+    rng = np.random.default_rng(42)
+    raw = rng.integers(0, 256, size=(height, width, 3), dtype=np.uint8)
+    norm = (raw.astype(np.float32) / 255.0 - IMAGENET_MEAN) / IMAGENET_STD
+    frames = [torch.tensor(norm[None]) for _ in range(frame_len)]
+    history = rng.uniform(0.0, 500.0, size=(1, 1, history_len, action_dim))
+    if action_stats_path is not None:
+        stats = np.load(action_stats_path)
+        if stats.shape != (2, action_dim):
+            raise ValueError(
+                f"action stats 形状应为 (2, {action_dim})，"
+                f"实际为 {stats.shape}: {action_stats_path}")
+        # 归一化模型直接在 z 空间采样：raw 均匀采样会在零方差列上
+        # 产生天文数字 z 值（实际推理中这些列恒为 0，z 恒为 0）
+        history = rng.normal(0.0, 1.5, size=(1, 1, history_len, action_dim))
+    history = torch.tensor(history, dtype=torch.float32)
+    with torch.no_grad():
+        feats = [wrapper._frame_feat(f, i).permute(0, 2, 3, 1)
+                 for i, f in enumerate(frames)]
+        img_tokens = torch.cat(feats, dim=2) + wrapper.proj_bias
+        act_tokens = torch.matmul(history, wrapper.act_w) + wrapper.act_b
+    img_max = img_tokens.abs().max().item()
+    act_max = act_tokens.abs().max().item()
+    pred_max = pred_token.abs().max().item()
+    print(f"token 量级检查: |img|={img_max:.4g} |act|={act_max:.4g} "
+          f"|pred|={pred_max:.4g}（图像上限 {max_abs}）")
+    if img_max > max_abs:
+        raise SystemExit(
+            f"错误: 图像 token 幅度 {img_max:.3g} 超过可量化上限 {max_abs}。"
+            f"checkpoint 的 BN 统计退化（预训练用全零图像占位，running_var "
+            f"停在初始小值），uint8 量化会把小信号全部压成 0、HEF 输出恒定。"
+            f"请先用真实/随机图像数据微调后再导出。")
+    if act_max > MERGE_RATIO_WARN * max(img_max, 1.0):
+        print(f"WARNING: act_tokens 幅度 {act_max:.3g} 远大于 img_tokens "
+              f"{img_max:.3g}，merge 点共享 scale 会粗量化图像路径；"
+              f"建议用 --normalize-actions 训练（动作归一化）压小 act_tokens")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Export Hailo-friendly ONNX")
     parser.add_argument("--model", required=True, help="checkpoint path")
@@ -143,6 +202,23 @@ def main():
 
     h, w = cfg.data.image_height, cfg.data.image_width
     f = cfg.data.frame_len
+    stats_path = None
+    if cfg.data.normalize_actions:
+        # 与 predict.py 语义一致：相对路径按 checkpoint 目录解析
+        stats_path = cfg.data.action_stats_path
+        if not stats_path:
+            stats_path = os.path.join(
+                os.path.dirname(os.path.abspath(args.model)),
+                "action_stats.npy")
+        elif not os.path.isabs(stats_path):
+            stats_path = os.path.join(
+                os.path.dirname(os.path.abspath(args.model)), stats_path)
+        if not os.path.exists(stats_path):
+            raise FileNotFoundError(
+                f"模型训练时启用了动作归一化，但未找到统计文件: {stats_path}")
+    check_token_ranges(wrapper, f, h, w, cfg.data.history_len,
+                       cfg.data.action_dim, model.pred_token.data.unsqueeze(1),
+                       action_stats_path=stats_path)
     dummy_frames = [torch.randn(1, h, w, 3) for _ in range(f)]
     dummy_history = torch.randn(1, 1, cfg.data.history_len, cfg.data.action_dim)
     dummy_pred = model.pred_token.data.unsqueeze(1).clone()  # (1, 1, 1, d)

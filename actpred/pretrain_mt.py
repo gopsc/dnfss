@@ -12,6 +12,12 @@
 数据增强:
     --noise-std 控制高斯噪声标准差。因 .mt 脚本数据量有限，
     适度噪声（如 0.5~2.0）可有效防止过拟合。
+
+图像占位:
+    --random-images 用 ImageNet 归一化的均匀噪声替代全零占位。
+    全零图像会让 BN running_var 停在初始小值（推理时每级放大 ~50 倍，
+    特征达 ±1e6），导致 HEF uint8 量化不可行；微调阶段必须用噪声或
+    真实图像恢复 BN 统计。
 """
 
 import json
@@ -27,6 +33,9 @@ from config import Config, build_argparser, apply_overrides, validate_config_val
 from model import ActionPredictor
 from mt_parser import parse_mt_directory
 
+_IMAGENET_MEAN = [0.485, 0.456, 0.406]
+_IMAGENET_STD = [0.229, 0.224, 0.225]
+
 
 class MTActionDataset(Dataset):
     """从 .mt @Action 矩阵构建的滑动窗口数据集（无图像）
@@ -35,9 +44,12 @@ class MTActionDataset(Dataset):
     """
 
     def __init__(self, mt_dir: str, history_len: int, action_dim: int,
-                 file_indices: list = None, files: list = None):
+                 file_indices: list = None, files: list = None,
+                 action_mean=None, action_std=None):
         self.history_len = history_len
         self.action_dim = action_dim
+        self._action_mean = action_mean
+        self._action_std = action_std
         self.samples = []
 
         # 复用调用方已解析的结果（避免 train/val 各自重复解析同一目录）
@@ -70,32 +82,50 @@ class MTActionDataset(Dataset):
 
     def __getitem__(self, idx):
         history, target = self.samples[idx]
+        history = torch.from_numpy(history.copy())
+        target = torch.from_numpy(target.copy())
+        if self._action_mean is not None:
+            history = (history - self._action_mean) / self._action_std
+            target = (target - self._action_mean) / self._action_std
         return {
-            "action_history": torch.from_numpy(history.copy()),
-            "target": torch.from_numpy(target.copy()),
+            "action_history": history,
+            "target": target,
         }
+
+
+def _placeholder_images(batch, frame_len, image_height, image_width,
+                        device, random_images: bool):
+    """构建 (B,F,3,H,W) 图像占位：全零或 ImageNet 归一化均匀噪声"""
+    if not random_images:
+        return torch.zeros(batch, frame_len, 3, image_height, image_width,
+                           device=device)
+    x = torch.rand(batch, frame_len, 3, image_height, image_width,
+                   device=device)
+    mean = torch.tensor(_IMAGENET_MEAN, device=device).view(1, 1, 3, 1, 1)
+    std = torch.tensor(_IMAGENET_STD, device=device).view(1, 1, 3, 1, 1)
+    return (x - mean) / std
 
 
 def pretrain_one_epoch(model, loader, optimizer, device, image_width,
                        image_height, frame_len,
-                       max_grad_norm=None, noise_std=0.0):
+                       max_grad_norm=None, noise_std=0.0,
+                       random_images: bool = False):
     model.train()
     total_loss = 0.0
     count = 0
-    zero_images = None
+    images = None
     for batch in tqdm(loader, desc="  pretrain", leave=False):
         history = batch["action_history"].to(device)
         target = batch["target"].to(device)
         if noise_std > 0:
             history = history + torch.randn_like(history) * noise_std
             target = target + torch.randn_like(target) * noise_std
-        if zero_images is None or zero_images.size(0) != history.size(0):
-            zero_images = torch.zeros(
-                history.size(0), frame_len, 3, image_height, image_width,
-                device=device,
-            )
+        if images is None or images.size(0) != history.size(0):
+            images = _placeholder_images(
+                history.size(0), frame_len, image_height, image_width,
+                device, random_images)
         optimizer.zero_grad()
-        pred = model(zero_images, history)
+        pred = model(images, history)
         loss = torch.nn.functional.mse_loss(pred, target)
         loss.backward()
         if max_grad_norm:
@@ -107,20 +137,20 @@ def pretrain_one_epoch(model, loader, optimizer, device, image_width,
 
 
 @torch.no_grad()
-def validate(model, loader, device, image_width, image_height, frame_len):
+def validate(model, loader, device, image_width, image_height, frame_len,
+             random_images: bool = False):
     model.eval()
     total_loss = 0.0
     count = 0
-    zero_images = None
+    images = None
     for batch in tqdm(loader, desc="  val  ", leave=False):
         history = batch["action_history"].to(device)
         target = batch["target"].to(device)
-        if zero_images is None or zero_images.size(0) != history.size(0):
-            zero_images = torch.zeros(
-                history.size(0), frame_len, 3, image_height, image_width,
-                device=device,
-            )
-        pred = model(zero_images, history)
+        if images is None or images.size(0) != history.size(0):
+            images = _placeholder_images(
+                history.size(0), frame_len, image_height, image_width,
+                device, random_images)
+        pred = model(images, history)
         loss = torch.nn.functional.mse_loss(pred, target)
         total_loss += loss.item() * history.size(0)
         count += history.size(0)
@@ -135,6 +165,9 @@ def main():
                         help=".mt 脚本目录（如 ../bot4cj/scripts）")
     parser.add_argument("--noise-std", type=float, default=0.0,
                         help="高斯噪声标准差（数据增强，建议 0.5~2.0）")
+    parser.add_argument("--random-images", action="store_true",
+                        help="用 ImageNet 归一化均匀噪声替代全零图像占位"
+                             "（微调时恢复 BN 统计，避免 HEF 量化退化）")
     args = parser.parse_args()
 
     cfg = apply_overrides(Config(), args)
@@ -172,9 +205,38 @@ def main():
         args.mt_dir, cfg.data.history_len, cfg.data.action_dim,
         file_indices=train_file_indices, files=all_files,
     )
+
+    # 动作归一化（与 train.py 语义一致）：无 stats 文件时按训练集
+    # targets 计算并保存到 checkpoint_dir，验证集复用同一 stats
+    action_mean = action_std = None
+    if cfg.data.normalize_actions:
+        if cfg.data.action_stats_path:
+            if not os.path.exists(cfg.data.action_stats_path):
+                raise FileNotFoundError(
+                    f"指定的 action_stats_path 不存在: "
+                    f"{cfg.data.action_stats_path}")
+            stats = np.load(cfg.data.action_stats_path)
+        else:
+            all_actions = np.stack([s[1] for s in train_ds.samples])
+            stats = np.stack([all_actions.mean(axis=0),
+                              all_actions.std(axis=0) + 1e-8])
+            stats_path = os.path.join(cfg.train.checkpoint_dir,
+                                      "action_stats.npy")
+            np.save(stats_path, stats)
+            cfg.data.action_stats_path = stats_path
+            print(f"action_stats 已保存: {stats_path}（训练集 targets 统计）")
+        if stats.shape != (2, cfg.data.action_dim):
+            raise ValueError(
+                f"action stats 形状应为 (2, {cfg.data.action_dim})，"
+                f"实际为 {stats.shape}")
+        action_mean, action_std = stats[0], stats[1]
+        train_ds._action_mean = action_mean
+        train_ds._action_std = action_std
+
     val_ds = MTActionDataset(
         args.mt_dir, cfg.data.history_len, cfg.data.action_dim,
         file_indices=val_file_indices, files=all_files,
+        action_mean=action_mean, action_std=action_std,
     )
 
     print(f"Files: {len(train_file_indices)} train, {len(val_file_indices)} val")
@@ -205,7 +267,26 @@ def main():
           f"backbone={cfg.model.cnn_backbone}, "
           f"attn={cfg.model.attn_layers}x{cfg.model.attn_heads}h"
           f"@{cfg.model.attn_dim}")
-    print(f"Pre-training: noise_std={args.noise_std}")
+    print(f"Pre-training: noise_std={args.noise_std}, "
+          f"random_images={args.random_images}")
+
+    if args.init_from:
+        init_ckpt = torch.load(args.init_from, map_location="cpu",
+                               weights_only=True)
+        init_cfg = init_ckpt.get("config", {})
+        init_norm = init_cfg.get("data", {}).get("normalize_actions", False)
+        if init_norm != cfg.data.normalize_actions:
+            print(f"WARNING: init-from checkpoint 的 normalize_actions="
+                  f"{init_norm} 与当前运行 "
+                  f"{cfg.data.normalize_actions} 不一致，输入分布不匹配"
+                  f"会损失预训练收益（见 README 预训练说明）")
+        missing, unexpected = model.load_state_dict(
+            init_ckpt["model_state_dict"], strict=False)
+        if missing:
+            print(f"  init-from missing keys: {missing}")
+        if unexpected:
+            print(f"  init-from unexpected keys: {unexpected}")
+        print(f"Loaded pretrained weights from: {args.init_from}")
 
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=cfg.train.lr,
@@ -241,11 +322,11 @@ def main():
         train_loss = pretrain_one_epoch(
             model, train_loader, optimizer, device,
             cfg.data.image_width, cfg.data.image_height, cfg.data.frame_len,
-            cfg.train.max_grad_norm, args.noise_std,
+            cfg.train.max_grad_norm, args.noise_std, args.random_images,
         )
         val_loss = validate(model, val_loader, device,
                             cfg.data.image_width, cfg.data.image_height,
-                            cfg.data.frame_len)
+                            cfg.data.frame_len, args.random_images)
         scheduler.step()
         print(f"  train_loss={train_loss:.6f}  val_loss={val_loss:.6f}")
 

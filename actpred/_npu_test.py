@@ -56,6 +56,20 @@ model.load_state_dict(ck["model_state_dict"])
 model.eval()
 pred_learned = model.pred_token.data.unsqueeze(1).numpy()   # (1,1,1,d)
 
+# 归一化模型：torch 参考在喂入前 z-score；HailoPredictor 传 stats_path
+# 由封装内部归一化（hist_real/hist_zero 保持原始值，避免双重归一化）
+import os
+stats_path = None
+if cfg.data.normalize_actions:
+    stats_path = cfg.data.action_stats_path or os.path.join(
+        os.path.dirname(os.path.abspath(CKPT)), "action_stats.npy")
+    if not os.path.isabs(stats_path):
+        stats_path = os.path.join(os.path.dirname(os.path.abspath(CKPT)),
+                                  stats_path)
+    if not os.path.exists(stats_path):
+        raise FileNotFoundError(f"统计文件不存在: {stats_path}")
+    print(f"HailoPredictor stats: {stats_path}")
+
 from torchvision import transforms
 tf = transforms.Compose([
     transforms.Resize((cfg.data.image_height, cfg.data.image_width)),
@@ -67,6 +81,9 @@ tf = transforms.Compose([
 def torch_pred(imgs, hist, use_learned_pred=True):
     x = torch.stack([tf(Image.fromarray(im)) for im in imgs]).unsqueeze(0)
     h = torch.tensor(hist).unsqueeze(0)
+    if stats_path is not None:
+        stats = np.load(stats_path)
+        h = (h - torch.tensor(stats[0])) / torch.tensor(stats[1])
     if use_learned_pred:
         with torch.no_grad():
             return model(x, h).squeeze(0).numpy()
@@ -78,7 +95,7 @@ def torch_pred(imgs, hist, use_learned_pred=True):
     return out
 
 
-with HailoPredictor(HEF_PATH) as p:
+with HailoPredictor(HEF_PATH, stats_path=stats_path) as p:
     print(f"\ndims: frame_len={p.frame_len} img={p.image_width}x{p.image_height} "
           f"history={p.history_len} action_dim={p.action_dim}")
     t0 = time.perf_counter()

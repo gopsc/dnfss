@@ -146,6 +146,11 @@ resnet HEF 同 API 验证输入通道有效，排除封装问题）。
 3. 若仍不敏感：检查 `_optimized.har` 输入层下游连通性，定位
    optimize 断连的具体算子。
 
+> **更新（同日）**：上述重编译复验已完成，输出仍不敏感；根因已定位
+> 为预训练 checkpoint 的 BN 统计退化导致图像特征 ±1e6、uint8 量化
+> 压死全部信号（非编译侧断连）。详见
+> [根因分析报告](actpred_hef_insensitivity_rootcause_20260813.md)。
+
 ## 6. 结论与产出
 
 1. AI HAT 2 软件栈完整可用，新 API 推理链路实测打通（resnet50 307 FPS）。

@@ -62,9 +62,7 @@ bash _run.sh pretrain --mt-dir ../bot4cj/scripts --epochs 200 --noise-std 1.0
 bash _run.sh pretrain --mt-dir ../bot4cj/scripts --epochs 200 --noise-std 1.0 \
     --resume checkpoints/pretrain_last.pt
 
-# 用预训练权重作为微调起点
-# 注意：预训练在非归一化动作空间进行，微调时请勿开启 --normalize-actions，
-# 否则输入分布与预训练权重不匹配，预训练收益会大打折扣
+# 用预训练权重作为微调起点（pretrain 也支持 --init-from，行为同 train）
 bash _run.sh train --data-dir ./data --epochs 50 \
     --init-from checkpoints/pretrain_best_inference.pt
 ```
@@ -72,9 +70,21 @@ bash _run.sh train --data-dir ./data --epochs 50 \
 | 参数 | 说明 |
 |------|------|
 | `--mt-dir` | .mt 脚本目录（如 `../bot4cj/scripts`） |
-| `--noise-std` | 高斯噪声标准差（数据增强，建议 0.5~2.0） |
+| `--noise-std` | 高斯噪声标准差（数据增强，建议 0.5~2.0；与 `--normalize-actions` 联用时按 z-score 单位，建议 0.05~0.2） |
+| `--random-images` | 用 ImageNet 归一化均匀噪声替代全零图像占位，**恢复 BN 统计**（详见下方警告） |
+| `--init-from` | 预训练 checkpoint 路径，作为微调起点（strict=False；与当前运行动作空间不一致时打印 WARNING） |
 
 > **注意**：.mt 脚本列数（12）与 `action_dim`（18）不一致时自动补零。预训练保存到 `checkpoints/pretrain_best_inference.pt`。
+> 预训练与微调必须使用**同一动作空间**（`--normalize-actions` 同时开或同时关），
+> 否则输入分布与权重不匹配，预训练收益会大打折扣。
+
+> **警告（2026-08-13 实测）**：全零图像占位会让 BN `running_var` 停在初始小值，
+> 推理时特征放大到 ±1e6，**HEF uint8 量化不可行**（输出对输入不敏感）。
+> 面向 NPU 部署的预训练/微调请务必使用 `--random-images`（或真实数据微调），
+> 导出时 `export_deploy.py` 的 `check_token_ranges` 会拦截退化的 checkpoint。
+> 详见 [根因分析报告](../docs/reports/actpred_hef_insensitivity_rootcause_20260813.md)。
+> 建议同时开启 `--normalize-actions`：z-score 后 act_tokens 与 img_tokens 同量级，
+> 避免 HEF merge 点共享量化 scale 粗量化图像路径。
 
 ## 数据格式
 

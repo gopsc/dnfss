@@ -22,6 +22,7 @@
 """
 
 import argparse
+import os
 
 import numpy as np
 
@@ -77,6 +78,27 @@ def build_deploy_set(args):
     history = build_action_history_samples(
         args.mt_dir, args.samples, cfg.history_len, cfg.action_dim, rng)
     history = history[:, None, :, :]  # (N, 1, H_len, D)
+    if cfg.normalize_actions:
+        # 归一化模型的 HEF 输入是 z-score 历史（hailo_infer --stats 同语义），
+        # 校准数据必须走同一变换，否则量化范围与推理分布不匹配
+        stats_path = cfg.action_stats_path
+        if not stats_path:
+            stats_path = os.path.join(
+                os.path.dirname(os.path.abspath(args.model)),
+                "action_stats.npy")
+        elif not os.path.isabs(stats_path):
+            stats_path = os.path.join(
+                os.path.dirname(os.path.abspath(args.model)), stats_path)
+        if not os.path.exists(stats_path):
+            raise FileNotFoundError(
+                f"模型训练时启用了动作归一化，但未找到统计文件: {stats_path}")
+        stats = np.load(stats_path)
+        if stats.shape != (2, cfg.action_dim):
+            raise ValueError(
+                f"action stats 形状应为 (2, {cfg.action_dim})，"
+                f"实际为 {stats.shape}: {stats_path}")
+        history = (history - stats[0]) / stats[1]
+        print(f"  action_history: 已 z-score 归一化（{stats_path}）")
 
     model = ActionPredictor(parse_checkpoint_config(ckpt["config"]).model,
                             cfg, pretrained=False)
