@@ -1093,6 +1093,88 @@ class TestHailoPredictor(unittest.TestCase):
         np.testing.assert_allclose(result, [0, 0, 0])
         self.assertEqual(seen_shapes["image"], (1, 4, 4, 6))
 
+    def test_multiframe_inputs_layout(self):
+        """新版 5 输入 HEF：frame×3 (H,W,3) + history + pred_token 常量"""
+        from hailo_infer import HailoPredictor
+        q_frame = _FakeQuantInfo(qp_zp=114.0, qp_scale=0.018723)
+        q_pred = _FakeQuantInfo(qp_zp=123.0, qp_scale=18571.0)
+        infos_in = [
+            _FakeVStreamInfo("net/input_layer1", (64, 64, 3),
+                             _FakeFormatType.UINT8, q_frame),
+            _FakeVStreamInfo("net/input_layer2", (64, 64, 3),
+                             _FakeFormatType.UINT8, q_frame),
+            _FakeVStreamInfo("net/input_layer3", (64, 64, 3),
+                             _FakeFormatType.UINT8, q_frame),
+            _FakeVStreamInfo("net/input_layer4", (1, 5, 18),
+                             _FakeFormatType.UINT8,
+                             _FakeQuantInfo(qp_zp=0.0, qp_scale=1.960784)),
+            _FakeVStreamInfo("net/input_layer5", (1, 1, 128),
+                             _FakeFormatType.UINT8, q_pred),
+        ]
+        infos_out = [_FakeVStreamInfo(
+            "net/conv49", (1, 1, 18), _FakeFormatType.UINT8,
+            _FakeQuantInfo(qp_zp=2.0, qp_scale=0.837115))]
+        seen = {}
+
+        def transform(b):
+            for name in ("net/input_layer1", "net/input_layer2", "net/input_layer3"):
+                seen[name] = np.asarray(b.input(name).get_buffer())
+            seen["history"] = np.asarray(b.input("net/input_layer4").get_buffer())
+            seen["pred"] = np.asarray(b.input("net/input_layer5").get_buffer())
+            b.output("net/conv49").get_buffer()[...] = 2   # 反量化后为 0
+
+        _install_fake_hailo(self, infos_in, infos_out, transform)
+        with HailoPredictor("fake.hef") as p:
+            self.assertEqual((p.frame_len, p.history_len, p.action_dim), (3, 5, 18))
+            self.assertEqual((p.image_width, p.image_height), (64, 64))
+            result = p.predict(self._frames(3, size=64), np.zeros((5, 18), np.float32))
+        self.assertEqual(seen["net/input_layer1"].dtype, np.uint8)
+        self.assertEqual(seen["net/input_layer1"].shape, (64, 64, 3))
+        self.assertEqual(seen["history"].shape, (1, 5, 18))
+        np.testing.assert_array_equal(seen["history"], 0)
+        np.testing.assert_array_equal(seen["pred"], 123)   # 退化量化：喂 0 → q=123
+        np.testing.assert_allclose(result, 0)
+
+    def test_multiframe_scrambled_report_order(self):
+        """HEF vstream 报告顺序可能被打乱（实测 1,5,4,3,2），
+        帧输入必须按 input_layerN 排序绑定，否则 frame1/frame2 错位"""
+        from hailo_infer import HailoPredictor
+        infos_in = [
+            _FakeVStreamInfo("net/input_layer1", (8, 8, 3),
+                             _FakeFormatType.FLOAT32),
+            _FakeVStreamInfo("net/input_layer3", (8, 8, 3),
+                             _FakeFormatType.FLOAT32),
+            _FakeVStreamInfo("net/input_layer2", (8, 8, 3),
+                             _FakeFormatType.FLOAT32),
+            _FakeVStreamInfo("net/input_layer4", (1, 2, 3),
+                             _FakeFormatType.FLOAT32),
+            _FakeVStreamInfo("net/input_layer5", (1, 1, 4),
+                             _FakeFormatType.FLOAT32),
+        ]
+        infos_out = [_FakeVStreamInfo("net/conv49", (1, 1, 3),
+                                      _FakeFormatType.FLOAT32)]
+        seen = {}
+
+        def transform(b):
+            for name in ("net/input_layer1", "net/input_layer2",
+                         "net/input_layer3"):
+                seen[name] = np.asarray(b.input(name).get_buffer()).copy()
+            _first_row_transform("net/input_layer4", "net/conv49")(b)
+
+        _install_fake_hailo(self, infos_in, infos_out, transform)
+        frames = self._frames(3)
+        frames[0][:] = 10
+        frames[1][:] = 20
+        frames[2][:] = 30
+        with HailoPredictor("fake.hef") as p:
+            p.predict(frames, np.zeros((2, 3), dtype=np.float32))
+        np.testing.assert_array_equal(
+            seen["net/input_layer1"], np.full((8, 8, 3), 10, np.float32))
+        np.testing.assert_array_equal(
+            seen["net/input_layer2"], np.full((8, 8, 3), 20, np.float32))
+        np.testing.assert_array_equal(
+            seen["net/input_layer3"], np.full((8, 8, 3), 30, np.float32))
+
     def test_frame_count_mismatch_raises(self):
         from hailo_infer import HailoPredictor
         infos_in = [

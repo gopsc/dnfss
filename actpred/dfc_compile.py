@@ -57,6 +57,44 @@ def har_input_layer_names(har_path: str) -> list:
     return [name for name, _ in layers]
 
 
+def check_input_connectivity(har_path: str, input_layers: list):
+    """检查 HAR 中输入层是否都有下游边
+
+    输入层被优化断开时编译照常成功，但 HEF 输出恒定值且无任何报错
+    （2026-08-13 实测踩坑），必须在编译前拦截。.edges 文件缺失或格式
+    无法识别时仅告警不阻断。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        with tarfile.open(har_path) as tf:
+            tf.extractall(tmp)
+        edge_files = [f for f in os.listdir(tmp) if f.endswith(".edges")]
+        if not edge_files:
+            print(f"WARNING: {har_path} 无 .edges 文件，跳过输入连通性检查")
+            return
+        with open(os.path.join(tmp, edge_files[0])) as f:
+            edges = json.load(f)
+
+    if not isinstance(edges, list):
+        print(f"WARNING: .edges 不是列表（{type(edges).__name__}），"
+              f"跳过连通性检查")
+        return
+    adjacency = set()
+    for e in edges:
+        if isinstance(e, dict) and "from" in e:
+            adjacency.add(e["from"])
+        elif isinstance(e, (list, tuple)) and len(e) == 2:
+            adjacency.add(e[0])
+        else:
+            print(f"WARNING: 无法识别 .edges 条目格式: {e!r}，跳过连通性检查")
+            return
+    disconnected = [n for n in input_layers if n not in adjacency]
+    if disconnected:
+        sys.exit(
+            f"错误: {har_path} 中输入层无下游边（输入被优化断开，"
+            f"编译出的 HEF 将输出恒定值）: {disconnected}")
+    print(f"输入连通性检查通过: {len(input_layers)} 个输入层均有下游边")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Compile actpred deploy ONNX to HEF")
     parser.add_argument("--onnx", default="checkpoints/actpred_deploy.onnx")
@@ -93,11 +131,13 @@ def main():
         names = har_input_layer_names(har_raw)
         if len(names) != len(START_NODES):
             sys.exit(f"错误: HAR 输入层数 {len(names)} != {len(START_NODES)}，解析可能被截断")
+        check_input_connectivity(har_raw, names)
 
         print("[2/3] optimize: 量化校准")
         hailo("optimize", har_raw, "--hw-arch", args.hw_arch,
               "--calib-set-path", os.path.abspath(args.calib_npz),
               "--output-har-path", har_opt, venv_bin=venv_bin)
+        check_input_connectivity(har_opt, har_input_layer_names(har_opt))
 
         print("[3/3] compiler: HAR → HEF")
         hailo("compiler", har_opt, "--hw-arch", args.hw_arch,

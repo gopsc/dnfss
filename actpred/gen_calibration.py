@@ -6,7 +6,8 @@
   --deploy 模式（data/calibration_deploy.npz）：为 export_deploy.py 导出
   的部署版 ONNX 生成校准集，键名匹配 HN 层名 actpred_deploy/input_layerN，
   形状匹配 HEF 输入：frame0~2 (N,H,W,3) 已归一化 float32、
-  action_history (N,1,H_len,D)、pred_token (N,1,1,d) 常量。
+  action_history (N,1,H_len,D)、pred_token (N,1,1,d) 学习值 ± 抖动
+  （常量校准会使量化范围退化，见 --pred-jitter）。
   图像分辨率与 --model checkpoint 的配置一致。
 
 数据源：
@@ -81,9 +82,15 @@ def build_deploy_set(args):
                             cfg, pretrained=False)
     model.load_state_dict(ckpt["model_state_dict"])
     d = model.pred_token.shape[-1]
-    pred = np.broadcast_to(
-        model.pred_token.data.unsqueeze(1).numpy(),
-        (args.samples, 1, 1, d)).astype(np.float32).copy()
+    v = model.pred_token.data.unsqueeze(1).numpy()  # (1, 1, d) 学习到的常量
+    # 常量校准会使量化范围退化（上次实测 scale=18571.7，任何输入都被
+    # 量化成 0）；按学习值 ±相对抖动生成校准样本，运行时喂学习值即可
+    # 无损还原（量化误差 ~1e-4）
+    jitter = v * rng.uniform(-args.pred_jitter, args.pred_jitter,
+                             size=(args.samples, 1, 1, d)).astype(np.float32)
+    jitter = jitter + rng.normal(0.0, args.pred_jitter_abs,
+                                 size=jitter.shape).astype(np.float32)
+    pred = np.broadcast_to(v, (args.samples, 1, 1, d)).astype(np.float32) + jitter
 
     np.savez_compressed(
         args.output,
@@ -91,7 +98,8 @@ def build_deploy_set(args):
            for i, arr in enumerate([*frames, history, pred])})
     print(f"部署校准集已保存: {args.output}")
     print(f"  frame0~2: {frames[0].shape}（分辨率 {w}x{h}，与 checkpoint 一致）")
-    print(f"  action_history: {history.shape}  pred_token: {pred.shape}")
+    print(f"  action_history: {history.shape}  pred_token: {pred.shape}"
+          f"（学习值 ±{args.pred_jitter:.0%} 抖动）")
 
 
 def main():
@@ -104,6 +112,10 @@ def main():
     parser.add_argument("--output", default=None)
     parser.add_argument("--samples", type=int, default=32)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--pred-jitter", type=float, default=0.3,
+                        help="pred_token 校准相对抖动幅度（默认 ±30%）")
+    parser.add_argument("--pred-jitter-abs", type=float, default=0.005,
+                        help="pred_token 校准绝对抖动标准差（近零元素保底）")
     args = parser.parse_args()
 
     if args.deploy:

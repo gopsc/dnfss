@@ -1,0 +1,108 @@
+"""actpred HEF NPU 输入敏感性复验脚本（重编译后的验收门槛）
+
+用法: venv/bin/python _npu_test.py
+
+4 角测试（真实/全零帧 × 真实/全零历史）+ 与 PyTorch 参考对比。
+HEF 尺寸/布局从 vstream info 自动推导，checkpoint 用
+checkpoints/pretrain_best_inference.pt。
+"""
+import sys
+import time
+sys.path.insert(0, "/opt/blackbird/actpred")
+
+import numpy as np
+import torch
+import torch.nn as nn
+from PIL import Image
+from hailo_platform import HEF
+
+from config import parse_checkpoint_config
+from model import ActionPredictor
+from hailo_infer import HailoPredictor
+
+HEF_PATH = "checkpoints/actpred_pretrain.hef"
+CKPT = "checkpoints/pretrain_best_inference.pt"
+IMG_DIR = "data/episode_0000/images"
+
+hef = HEF(HEF_PATH)
+print("=== HEF vstream infos ===")
+for i in hef.get_input_vstream_infos():
+    q = i.quant_info
+    print(f"IN  {i.name:16s} {tuple(i.shape)} {i.format.type} "
+          f"zp={q.qp_zp} scale={q.qp_scale:.6g}")
+for o in hef.get_output_vstream_infos():
+    q = o.quant_info
+    print(f"OUT {o.name:16s} {tuple(o.shape)} {o.format.type} "
+          f"zp={q.qp_zp} scale={q.qp_scale:.6g}")
+
+imgs_real = [np.array(Image.open(f"{IMG_DIR}/000{i}.jpg").convert("RGB"))
+             for i in range(3)]
+imgs_zero = [np.zeros_like(imgs_real[0]) for _ in range(3)]
+
+hist_real = np.array([
+    [45, 0, 45, 0, 45, 0, 45, 0, 90, 90, 10, 200, 0, 0, 0, 0, 0, 0],
+    [45, 0, 45, 0, 45, 0, 45, 0, 90, 90, 0, 20, 0, 0, 0, 0, 0, 0],
+    [45, 0, 45, 0, 45, 0, 45, 0, 90, 90, 0, 0, 0, 0, 0, 0, 0, 0],
+    [45, 0, 45, 0, 45, 0, 45, 0, 90, 90, 0, 0, 0, 0, 0, 0, 0, 0],
+    [45, 0, 45, 0, 45, 0, 45, 0, 90, 90, 0, 0, 0, 0, 0, 0, 0, 0],
+], dtype=np.float32)
+hist_zero = np.zeros((5, 18), dtype=np.float32)
+
+# PyTorch 参考（checkpoint 自带 config）
+ck = torch.load(CKPT, map_location="cpu", weights_only=True)
+cfg = parse_checkpoint_config(ck["config"])
+model = ActionPredictor(cfg.model, cfg.data, pretrained=False)
+model.load_state_dict(ck["model_state_dict"])
+model.eval()
+pred_learned = model.pred_token.data.unsqueeze(1).numpy()   # (1,1,1,d)
+
+from torchvision import transforms
+tf = transforms.Compose([
+    transforms.Resize((cfg.data.image_height, cfg.data.image_width)),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+])
+
+
+def torch_pred(imgs, hist, use_learned_pred=True):
+    x = torch.stack([tf(Image.fromarray(im)) for im in imgs]).unsqueeze(0)
+    h = torch.tensor(hist).unsqueeze(0)
+    if use_learned_pred:
+        with torch.no_grad():
+            return model(x, h).squeeze(0).numpy()
+    saved = model.pred_token.data.clone()
+    model.pred_token.data.zero_()
+    with torch.no_grad():
+        out = model(x, h).squeeze(0).numpy()
+    model.pred_token.data.copy_(saved)
+    return out
+
+
+with HailoPredictor(HEF_PATH) as p:
+    print(f"\ndims: frame_len={p.frame_len} img={p.image_width}x{p.image_height} "
+          f"history={p.history_len} action_dim={p.action_dim}")
+    t0 = time.perf_counter()
+    a = p.predict(imgs_real, hist_real, pred_token=pred_learned)
+    b = p.predict(imgs_zero, hist_real, pred_token=pred_learned)
+    c = p.predict(imgs_real, hist_zero, pred_token=pred_learned)
+    d = p.predict(imgs_zero, hist_zero, pred_token=pred_learned)
+    t1 = time.perf_counter()
+    print(f"4x predict: {(t1 - t0) / 4 * 1000:.1f} ms/次")
+    for name, r in [("real_img+real_hist", a), ("zero_img+real_hist", b),
+                    ("real_img+zero_hist", c), ("zero_img+zero_hist", d)]:
+        print(f"{name:20s} max_abs={np.abs(r).max():.4f}  out={np.round(r[:6], 3)}...")
+
+    img_sens = np.abs(a - b).max()
+    hist_sens = np.abs(a - c).max()
+    print(f"\nimg sensitivity  = {img_sens:.4f}（>0.1 视为输入连通）")
+    print(f"hist sensitivity = {hist_sens:.4f}（>0.1 视为输入连通）")
+
+    ref = torch_pred(imgs_real, hist_real, True)
+    ref_zero_pred = torch_pred(imgs_real, hist_real, False)
+    print(f"torch learned_pred  : {np.round(ref[:6], 3)}...")
+    print(f"torch zero_pred     : {np.round(ref_zero_pred[:6], 3)}...")
+    print(f"HEF vs torch(learned) max_diff={np.abs(a - ref).max():.4f}")
+
+    ok = img_sens > 0.1 and hist_sens > 0.1
+    print("\nPASS: HEF 输入连通，可继续与 torch 对比量化误差"
+          if ok else "\nFAIL: HEF 输出对输入不敏感，编译仍有问题")

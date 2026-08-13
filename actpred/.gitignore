@@ -20,6 +20,7 @@ checkpoints/
 # DFC logs
 acceleras.log
 hailo_sdk.*.log
+hailort.log
 
 # Dataset (too large for git)
 data/

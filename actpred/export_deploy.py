@@ -128,6 +128,9 @@ def main():
     parser = argparse.ArgumentParser(description="Export Hailo-friendly ONNX")
     parser.add_argument("--model", required=True, help="checkpoint path")
     parser.add_argument("--output", default="checkpoints/actpred_deploy.onnx")
+    parser.add_argument("--pred-token-out", default=None,
+                        help="保存学习到的 pred_token 到 .npy（HEF 推理端喂入用，"
+                             "配合抖动校准避免常量量化退化）")
     args = parser.parse_args()
 
     checkpoint = torch.load(args.model, map_location="cpu", weights_only=True)
@@ -155,6 +158,11 @@ def main():
         opset_version=18,
     )
     print(f"部署版 ONNX 已导出: {args.output}（{f} 个帧输入 (1,{h},{w},3) NHWC + action_history + pred_token）")
+
+    if args.pred_token_out:
+        import numpy as np
+        np.save(args.pred_token_out, model.pred_token.data.unsqueeze(1).numpy())
+        print(f"pred_token 已保存: {args.pred_token_out} (1,1,1,{model.pred_token.shape[-1]})")
 
     stacked = torch.stack([fr.permute(0, 3, 1, 2) for fr in dummy_frames], dim=1)
     with torch.no_grad():

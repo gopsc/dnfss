@@ -22,3 +22,6 @@ waf/certs/
 # 本地 IDE / 工具
 .qoder/
 .vscode/
+
+# 运行时日志（HailoRT 等）
+hailort.log
