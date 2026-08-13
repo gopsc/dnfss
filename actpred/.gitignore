@@ -1,5 +1,6 @@
 # Virtual environment
 venv/
+venv_dfc/
 .env/
 
 # Python bytecode
@@ -12,6 +13,13 @@ checkpoints/
 *.pt
 *.pth
 *.onnx
+*.onnx.data
+*.hef
+*.har
+
+# DFC logs
+acceleras.log
+hailo_sdk.*.log
 
 # Dataset (too large for git)
 data/

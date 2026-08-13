@@ -121,7 +121,7 @@ recorder.flush()
 | `--attn-layers` | 2 | TransformerEncoder 层数 |
 | `--epochs` | 100 | 训练轮数 |
 | `--lr` | 0.001 | 学习率 |
-| `--batch-size` | 32 | 批次大小 |
+| `--batch-size` | 4 | 批次大小（默认分辨率 1920×1080 下 CPU/Pi 内存受限；小分辨率可调大） |
 | `--normalize-actions` | False | 动作归一化（`--no-normalize-actions` 关闭） |
 | `--dropout` | 0.1 | Dropout 率 |
 | `--weight-decay` | 0.0001 | 权重衰减 |
@@ -180,30 +180,29 @@ python3 onnx_infer.py --model model.onnx --images f1.jpg f2.jpg f3.jpg \
 
 ## Hailo 部署（AI HAT 2 / Hailo-10H）
 
-树莓派 AI HAT 2 上通过 `hailo_infer.py` 的 `HailoPredictor` 走 NPU 推理，
-接口与 `ActionPredictorInference` 对齐。模型需先经 Hailo DFC 编译为 HEF：
+模型需先经 Hailo DFC（仅 x86 Linux，`venv_dfc`）编译为 HEF。
+训练态 ONNX（5D 输入、AdaptiveAvgPool、MultiheadAttention 的 head
+reshape）**无法被 DFC 解析**，必须用 `export_deploy.py` 的部署版导出
+（按帧展开 CNN、固定 kernel AvgPool、注意力按头展开为独立 Linear、
+全程 (1,1,S,d) 无 transpose 布局，权重数值不变）：
 
 ```bash
-# 1. 导出 ONNX
-bash _run.sh export --model checkpoints/best_inference.pt --output model.onnx
-# 2. 在 x86 主机（或 Hailo 云端 DFC）上编译 + 量化校准 → model.hef，拷回树莓派
-# 3. 推理（零 torch 依赖，仅需 hailo_platform + numpy + PIL）
+# x86 主机（venv_dfc 内已装 hailo-sdk 5.3）：
+# 1. 导出部署版 ONNX（输入 frame0~2 + action_history + pred_token）
+python3 export_deploy.py --model checkpoints/pretrain_best_inference.pt
+# 2. 生成校准集（合成数据；真实 episode 到位后应替换）
+python3 gen_calibration.py --deploy
+# 3. 一键编译（parser → optimize → compiler）
+python3 dfc_compile.py            # 产物 checkpoints/actpred_pretrain.hef
+# 4. 将 HEF 拷回树莓派
 ```
 
-```python
-from hailo_infer import HailoPredictor
+已验证：完整 110 层网络（含 matmul/softmax/layernorm 注意力）解析、
+量化、编译全部通过；HEF 1.8MB，4 contexts，hailo10h 目标。
+编译要点与踩坑记录见 `dfc_compile.py` 文档字符串。
 
-with HailoPredictor("model.hef") as predictor:      # stats_path= 仅归一化模型需要
-    action = predictor.predict(images, action_history)
-```
-
-```bash
-python3 hailo_infer.py --hef model.hef --images f1.jpg f2.jpg f3.jpg \
-    --action-history "45,0,...:45,0,..." [--stats action_stats.npy]
-```
-
-HEF 的 vstream 名称/形状/量化参数全部从 `HEF.get_input/output_vstream_infos()`
-动态推导，不硬编码；图像输入按 Hailo 惯例为 uint8 原始像素
-（ImageNet 归一化由 DFC 编译时折叠进网络）。
+树莓派端 `hailo_infer.py` 的 `HailoPredictor` 尚需适配新的 5 输入
+HEF（frame0~2 各 (1,64,64,3) NHWC、action_history (1,1,5,18)、
+pred_token (1,1,1,128) 常量），输出 predicted_action (1,1,18)。
 环境调研与 API 踩坑记录见
 [docs/reports/actpred_hailo_hat2_inference_research_20260813.md](../docs/reports/actpred_hailo_hat2_inference_research_20260813.md)。
