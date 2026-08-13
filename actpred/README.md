@@ -158,9 +158,10 @@ action = predictor.predict(images, action_history)  # np.ndarray (action_dim,)
 
 `onnx_infer.py` 的 `OnnxPredictor` 走 ONNX Runtime CPU 推理，接口与
 `ActionPredictorInference` 对齐，维度从 ONNX 输入元数据自动推导（无需
-checkpoint）。Pi 5 实测 12ms/次含预处理（纯推理 5.9ms），比 PyTorch 快 ~5 倍，
-与 torch 前向输出差异 <1e-5。数据见
-[测速报告](../docs/reports/actpred_inference_speed_benchmark_20260813.md)。
+checkpoint）。Pi 5 实测（224×224，2026-08-13 复测）11.4ms/次含预处理
+（纯推理 10.7ms），PyTorch 21ms，约 2 倍加速，与 torch 前向输出差异
+<1e-5。数据见
+[测速报告](../docs/reports/actpred_inference_speed_benchmark_20260813.md) §6。
 
 ```bash
 bash _run.sh export --model checkpoints/best_inference.pt --output model.onnx
@@ -184,25 +185,48 @@ python3 onnx_infer.py --model model.onnx --images f1.jpg f2.jpg f3.jpg \
 训练态 ONNX（5D 输入、AdaptiveAvgPool、MultiheadAttention 的 head
 reshape）**无法被 DFC 解析**，必须用 `export_deploy.py` 的部署版导出
 （按帧展开 CNN、固定 kernel AvgPool、注意力按头展开为独立 Linear、
-全程 (1,1,S,d) 无 transpose 布局，权重数值不变）：
+全程 (1,1,S,d) 无 transpose 布局，权重数值不变）。
+
+当前 NPU 目标分辨率为 **224×224**（pretrain checkpoint 配置），HEF 输入
+为 frame0~2 各 (1,224,224,3) NHWC + action_history (1,1,5,18) +
+pred_token (1,1,1,128)，形状与量化参数由 `hailo_infer.py` 从 vstream
+info 自动推导，不硬编码。
 
 ```bash
 # x86 主机（venv_dfc 内已装 hailo-sdk 5.3）：
-# 1. 导出部署版 ONNX（输入 frame0~2 + action_history + pred_token）
-python3 export_deploy.py --model checkpoints/pretrain_best_inference.pt
-# 2. 生成校准集（合成数据；真实 episode 到位后应替换）
-python3 gen_calibration.py --deploy
-# 3. 一键编译（parser → optimize → compiler）
+# 1. 导出部署版 ONNX + 学习到的 pred_token（推理端喂入用）
+python3 export_deploy.py --model checkpoints/pretrain_best_inference.pt \
+    --pred-token-out checkpoints/actpred_deploy_pred_token.npy
+# 2. 生成校准集（pred_token 按学习值 ±30% 抖动，避免常量量化退化）
+python3 gen_calibration.py --deploy --model checkpoints/pretrain_best_inference.pt
+# 3. 一键编译（parser → optimize → compiler，各步自动做输入连通性检查）
 python3 dfc_compile.py            # 产物 checkpoints/actpred_pretrain.hef
-# 4. 将 HEF 拷回树莓派
+# 4. 将 HEF + actpred_deploy_pred_token.npy 拷回树莓派
 ```
 
 已验证：完整 110 层网络（含 matmul/softmax/layernorm 注意力）解析、
-量化、编译全部通过；HEF 1.8MB，4 contexts，hailo10h 目标。
+量化、编译全部通过；hailo10h 目标。
 编译要点与踩坑记录见 `dfc_compile.py` 文档字符串。
 
-树莓派端 `hailo_infer.py` 的 `HailoPredictor` 尚需适配新的 5 输入
-HEF（frame0~2 各 (1,64,64,3) NHWC、action_history (1,1,5,18)、
-pred_token (1,1,1,128) 常量），输出 predicted_action (1,1,18)。
+> **警告（2026-08-13 树莓派实测）**：首版 HEF 在 NPU 上**输出对全部
+> 5 个输入均不敏感**（全 0 / 全 255 / 真实数据输出完全一致，对照
+> resnet HEF 同 API 验证输入通道有效）。驱动升级 5.3.0 后复测依旧，
+> 判定为 DFC 编译侧问题（输入在编译图中被断开/常量化），并非推理封装
+> 问题。**该 HEF 不可用于推理**。已做如下修复，待 x86 重编译后复验：
+> - `_onnx_validate.py`：编译前数值验证 `actpred_deploy.onnx` 输入
+>   敏感性与 PyTorch 一致性（本次已 PASS，差异 1.5e-5）
+> - `dfc_compile.py`：parser/optimize 后自动检查输入层连通性，断开即报错
+> - `gen_calibration.py`：pred_token 常量校准退化（scale=18571.7，任何
+>   输入都被量化成 0）已改抖动校准，推理端喂学习值（`--pred-token`）
+> - `hailo_infer.py`：帧输入按 input_layerN 排序绑定（vstream 报告顺序
+>   实测为 1,5,4,3,2，按报告顺序绑定会 frame1/frame2 错位）
+>
+> 重编译后用 `_npu_test.py` 做 4 角输入敏感性复验（6.3ms/次的封装
+> 性能基线已在新驱动 5.3.0 下测通）。
+
+`hailo_infer.py` 的 `HailoPredictor` 适配 5 输入 HEF，输入布局与量化
+参数（含负零偏→ImageNet 归一化识别）从 vstream info 自动推导，单元测试
+含 fake hailo_platform 的 5 输入与乱序报告顺序用例。CLI 支持
+`--pred-token` 喂入学习值、`--stats` 喂入归一化统计。
 环境调研与 API 踩坑记录见
 [docs/reports/actpred_hailo_hat2_inference_research_20260813.md](../docs/reports/actpred_hailo_hat2_inference_research_20260813.md)。

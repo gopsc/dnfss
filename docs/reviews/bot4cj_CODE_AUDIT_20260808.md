@@ -3,7 +3,7 @@
 > 审查日期：2026-08-08 (Asia/Shanghai)
 > 审查人：Automated Review
 > 审查范围：`bot4cj/` 全模块（仓颉 Cangjie 机器人硬件脚本解析器）
-> 参考文档：[深度分析报告](../reports/bot4cj_analysis_20260525_00.md)（D1-D29）、[actpred 与 bot4cj 研究报告](../reports/actpred_bot4cj_research_20260809.md)
+> 参考文档：[深度分析报告](../reports/bot4cj_analysis_20260525_00.md)（D1-D29）
 
 ---
 
@@ -384,7 +384,6 @@ action_dim=8 的连续向量           10 舵机 + 2 云台角度
 ### 参考文档
 
 - [bot4cj 深度分析报告](../reports/bot4cj_analysis_20260525_00.md)（28 章，1407 行，D1-D29）
-- [actpred 与 bot4cj 研究报告](../reports/actpred_bot4cj_research_20260809.md)
 - [仓颉编程语言](https://cangjie-lang.org/)
 
 ### 审查人

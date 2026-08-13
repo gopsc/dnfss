@@ -391,7 +391,6 @@ Python 不适用的边界（bot4cj 均不涉及）：主机 GPIO bit-bang 生成
 
 - [bot4cj 代码审计报告](../reviews/bot4cj_CODE_AUDIT_20260808.md)（15 项发现）
 - [bot4cj 深度分析报告](bot4cj_analysis_20260525_00.md)（D1-D29）
-- [actpred 与 bot4cj 研究报告](actpred_bot4cj_research_20260809.md)
 - [bot4cj README.robot.md](../../bot4cj/README.robot.md)
 - [actpred mt_parser.py](../../actpred/mt_parser.py)（Python 解析器先例）
 

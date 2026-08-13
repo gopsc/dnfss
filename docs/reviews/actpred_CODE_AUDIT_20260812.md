@@ -7,8 +7,8 @@
 > 第 3 轮 — `91b3004 refactor(actpred): 模型输入尺寸 image_size → image_width/image_height`
 >
 > **与上轮审计的关系**：上一份报告 `actpred_CODE_AUDIT_20260808.md` 针对的是
-> 旧架构（MLP/GRU 历史编码 + 融合头，~140K 参数）。此后模块经历了注意力架构重写
-> （`docs/reports/actpred_attention_rewrite_test_20260809.md`），并新增了
+> 旧架构（MLP/GRU 历史编码 + 融合头，~140K 参数）。此后模块经历了注意力架构重写，
+> 并新增了
 > .mt 预训练（`pretrain_mt.py`）、Hailo NPU 后端（`hailo_infer.py`）、
 > ONNX Runtime 后端（`onnx_infer.py`）。本报告为架构重写后的**首轮全量审计**，
 > 含三轮审查：第 1 轮整体审计 + 第 2 轮深度复审（边界行为/资源管理/跨文件一致性）

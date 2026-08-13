@@ -318,7 +318,7 @@ systemctl start Nidus      # 或 bash core/_run.sh
 
 ### 8.3 关键 dev docs 索引（`docs/reports/`）
 
-core_service_registry_dev_doc（注册中心）、auth_service_plan（CA 模块）、aibox_open_dev_plan / aibox_file_network_cli_refactor（aibox 安全沙箱与 CLI 化）、libcrypt_CBC_deprecation_dev_doc（AES-GCM 迁移）、libhttp_remote_addr_dev_doc（X-Remote-Addr 透传）、captcha_cpp_rewrite / smtp_cpp_rewrite / confs2_cpp_rewrite（C++ 重写方案）、actpred_pretrain_test（预训练与推理测试）。
+core_service_registry_dev_doc（注册中心）、auth_service_plan（CA 模块）、aibox_open_dev_plan / aibox_file_network_cli_refactor（aibox 安全沙箱与 CLI 化）、libcrypt_CBC_deprecation_dev_doc（AES-GCM 迁移）、libhttp_remote_addr_dev_doc（X-Remote-Addr 透传）、captcha_cpp_rewrite / smtp_cpp_rewrite / confs2_cpp_rewrite（C++ 重写方案）。
 
 ### 8.4 安全评级演进
 

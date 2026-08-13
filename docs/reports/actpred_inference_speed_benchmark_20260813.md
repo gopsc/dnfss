@@ -80,6 +80,25 @@
 3. 建议在 Pi 5 + HAT 2 环境补测 1920×1080（ONNX CPU / HEF NPU），
    并据此确定量产部署分辨率。
 
+## 6. 224×224 复测（2026-08-13，Pi 5，当前 NPU 部署分辨率）
+
+NPU 部署轮次以 224×224 的 `pretrain_best_inference.pt` 为准（HEF 编译
+目标分辨率），据此补测 Pi 5 CPU 基线（3 帧 + 全零历史；episode 原始
+图像即 224×224，无重采样开销）：
+
+| 方案 | 输入分辨率 | 延迟 | 备注 |
+|---|---|---|---|
+| PyTorch CPU | 224×224 | 21.0 ms | 含预处理，预热 3 次取 20 次均值 |
+| ONNX Runtime CPU | 224×224 | 11.4 ms | 含预处理，预热 3 次取 50 次均值 |
+| ONNX Runtime CPU | 224×224 | 10.7 ms | 纯 `session.run`（预缩放输入） |
+| Hailo-10 NPU（actpred HEF，首版） | 64×64 | 6.3 ms | 含预处理 + 量化/反量化，驱动 5.3.0 |
+
+注：本组 ONNX 纯推理（10.7ms）与 §2 的 5.9ms（同为 224 模型）存在
+差异，未追根（torch≥2.12 dynamo 导出路径、系统负载、ORT 线程调度均
+可能影响），以本组实测为准；ONNX 仍比 PyTorch 快约 2 倍。NPU 首版
+HEF 因编译侧输入断开输出恒定，仅作封装性能基线，数值有效性待重编译
+后复验（见 hailo 调研报告）。
+
 ## 参考
 
 - [张高兴的 Raspberry Pi AI 开发指南：将自定义模型编译为 Hailo NPU 的 .hef 模型](https://www.cnblogs.com/zhanggaoxing/articles/18597244.html)

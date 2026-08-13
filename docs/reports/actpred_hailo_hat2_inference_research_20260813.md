@@ -1,6 +1,6 @@
 # actpred × 树莓派 AI HAT 2（Hailo-10H）推理调研报告
 
-日期：2026-08-13
+日期：2026-08-13（同日更新：驱动升级 5.3.0 与 DFC 编译闭环踩坑，见 §5）
 设备：Raspberry Pi 5 + Raspberry Pi AI HAT 2（Hailo-10H，8GB RAM，40 TOPS）
 
 ## 1. 目标
@@ -10,18 +10,14 @@
 
 ## 2. 环境实测结果
 
-### 2.1 已安装的软件栈（apt 包）
+### 2.1 软件栈（2026-08-13 已升级 hailort 5.3.0）
 
-| 包 | 版本 | 说明 |
+| 组件 | 版本 | 说明 |
 |---|---|---|
-| h10-hailort | 5.1.1 | Hailo 运行时库 |
-| h10-hailort-pcie-driver | 5.1.1 | PCIe 驱动与固件 |
-| hailo-h10-all | 5.1.1 | Hailo-10 元包 |
-| hailo-tappas-core | 5.1.0 | TAPPAS 核心 |
-| python3-h10-hailort | 5.1.1 | HailoRT Python API（`hailo_platform` 模块） |
-| python3-hailo-tappas | 5.1.0 | TAPPAS Python 绑定 |
-| rpicam-apps-hailo-postprocess | 1.12.0 | rpicam-apps 的 AI HAT 后处理插件 |
-| hailo-models | 1.0.0 | 预装 HEF 模型集 |
+| hailort（运行时 + PCIe 驱动） | 5.3.0 | apt 包 h10-hailort* 5.1.1 → 升级 5.3.0（含固件） |
+| 固件 | 5.3.0 | `hailortcli fw-control identify` 确认 |
+| Python API | 5.3.0 | actpred venv 内 pip 安装 `hailort-5.3.0-cp313`（模块名 `hailo_platform`） |
+| DFC（Dataflow Compiler） | 5.3 | 仅 x86 Linux，运行于 `venv_dfc` |
 
 > 注意：Python 模块名是 `hailo_platform`，**不是** `hailort`
 > （`import hailort` 会 ModuleNotFoundError）。
@@ -31,7 +27,7 @@
 ```bash
 hailortcli scan                    # Device: 0001:01:00.0（正常识别）
 hailortcli benchmark /usr/share/hailo-models/resnet_v1_50_h10.hef
-# → resnet_v1_50: FPS: 307.59（温度均值 47.65°C）
+# → resnet_v1_50: FPS: 307.70（驱动 5.3.0 复测，温度均值 46.7°C）
 ```
 
 ### 2.3 预装 HEF 模型
@@ -82,9 +78,12 @@ with VDevice() as vdev:
    需手动用 `quant_info.qp_zp/qp_scale` 反量化。
 3. `VStreamInfo` 无 `format_type` 属性，shape 与量化参数从
    `get_input/output_vstream_infos()` 获取。
-4. 摄像头实时推理走 `rpicam-hello/rpicam-vid --post-process-file ...`
+4. **vstream 报告顺序不可信**：实测 5 输入 HEF 的报告顺序为
+   `input_layer1,5,4,3,2`，按报告顺序绑定会 frame1/frame2 错位；
+   必须按 `input_layerN` 数字后缀排序（`hailo_infer.py` 已修复）。
+5. 摄像头实时推理走 `rpicam-hello/rpicam-vid --post-process-file ...`
    （rpicam-apps-hailo-postprocess 提供）。
-5. `hailo_platform.genai` 提供 LLM / VLM / Speech2Text 接口——
+6. `hailo_platform.genai` 提供 LLM / VLM / Speech2Text 接口——
    AI HAT 2（Hailo-10H + 8GB RAM）支持本地大模型，是与
    AI HAT+（Hailo-8L）相比的最大增量。
 
@@ -93,12 +92,14 @@ with VDevice() as vdev:
 Hailo 板**不能直接运行 ONNX/PyTorch**，必须编译为 HEF（含量化）：
 
 ```
-actpred checkpoint (best_inference.pt)
-  → export_onnx.py → model.onnx
-  → Hailo DFC（Dataflow Compiler，需 x86 Linux 主机或云端 DFC）
-      量化校准（用 data/ 中的帧做 calibration set）
+actpred checkpoint (pretrain_best_inference.pt, 224×224)
+  → export_deploy.py（DFC 友好改造：按帧展开 CNN、手工注意力、
+    (1,1,S,d) 布局）→ actpred_deploy.onnx + actpred_deploy_pred_token.npy
+  → gen_calibration.py --deploy（合成帧 + .mt 动作历史 + pred_token
+    抖动校准）→ calibration_deploy.npz
+  → dfc_compile.py（parser → optimize → compiler，含输入连通性检查）
   → model.hef（拷回树莓派）
-  → hailo_platform 推理（封装见 actpred/hailo_infer.py）
+  → hailo_infer.py（HailoPredictor，--pred-token 喂学习值）
 ```
 
 风险与注意点：
@@ -113,13 +114,50 @@ actpred checkpoint (best_inference.pt)
 - HEF 的输入/输出名与量化参数由 DFC 编译决定，推理封装按
   `get_input/output_vstream_infos()` 动态适配，不硬编码名称。
 
-## 5. 结论与产出
+## 5. DFC 编译与实机验证踩坑（2026-08-13）
+
+### 5.1 首版 HEF：输出对输入完全不敏感
+
+首版 HEF（64×64 checkpoint 产物）在 NPU 上首跑即发现**输出对全部
+5 个输入均不敏感**（全 0 / 全 255 / 真实数据输出完全一致，对照
+resnet HEF 同 API 验证输入通道有效，排除封装问题）。
+
+### 5.2 驱动升级复测：依旧不敏感
+
+将 hailort 5.1.1 升级到 5.3.0（与编译用 SDK 5.3 对齐）后复测：
+设备识别、resnet 基准（307.7 FPS）、actpred HEF 执行（6.3ms/次）
+全部正常，但 4 角输入敏感性测试（真实/全零帧 × 真实/全零历史）
+输出仍完全一致 → **判定为 DFC 编译侧问题（输入在编译图中被断开/
+常量化），驱动版本不是根因**。
+
+### 5.3 排查发现与修复（待重编译验证）
+
+| 发现 | 证据 | 修复 |
+|---|---|---|
+| pred_token 常量校准量化退化 | HEF 边缘 `zp=123, scale=18571.7`，任何输入量化成 0 | `gen_calibration.py` 改为学习值 ±30% 抖动校准；推理端喂学习值（`export_deploy.py --pred-token-out` + `hailo_infer.py --pred-token`） |
+| vstream 报告顺序乱序 | 5 输入 HEF 报告顺序 1,5,4,3,2 | `hailo_infer.py` 按 `input_layerN` 排序绑定 + 乱序单测 |
+| 输入断开无任何报错 | 编译全流程通过但 HEF 恒定输出 | `dfc_compile.py` parser/optimize 后自动检查输入层下游连通性，断开即报错 |
+| 编译前无数值门槛 | deploy ONNX 数值正确性未独立验证 | `_onnx_validate.py`：输入敏感性 + PyTorch 一致性（本次 PASS，差异 1.5e-5） |
+
+### 5.4 待办
+
+1. x86 主机重编译（`dfc_compile.py`，产物含 `_optimized.har`）；
+2. 拷回 HEF + pred_token.npy，跑 `_npu_test.py` 4 角敏感性复验；
+3. 若仍不敏感：检查 `_optimized.har` 输入层下游连通性，定位
+   optimize 断连的具体算子。
+
+## 6. 结论与产出
 
 1. AI HAT 2 软件栈完整可用，新 API 推理链路实测打通（resnet50 307 FPS）。
-2. actpred HEF 推理封装：`actpred/hailo_infer.py`（`HailoPredictor`），
-   接口对齐 `predict.ActionPredictorInference`。
-3. 待办：在 x86 主机上用 DFC 将 actpred ONNX 编译为 HEF 并做量化校准，
-   随后用 `HailoPredictor` 替换 CPU 推理端做端到端验证。
+2. actpred HEF 编译链路已全流程打通（export_deploy → gen_calibration →
+   dfc_compile），但首版 HEF 因 DFC 编译侧输入断开不可用，修复方案
+   已落地，待重编译复验。
+3. actpred HEF 推理封装：`actpred/hailo_infer.py`（`HailoPredictor`），
+   接口对齐 `predict.ActionPredictorInference`，单测含 fake hailo_platform
+   的 5 输入与乱序顺序用例。
+4. CPU 侧性能基线（224×224，Pi 5）：ONNX Runtime 11.4ms / PyTorch
+   21ms，见
+   [测速报告](actpred_inference_speed_benchmark_20260813.md) §6。
 
 ## 参考
 
