@@ -217,13 +217,23 @@ def main():
                     f"{cfg.data.action_stats_path}")
             stats = np.load(cfg.data.action_stats_path)
         else:
-            all_actions = np.stack([s[1] for s in train_ds.samples])
+            # 统计量必须覆盖 history 与 target 并集：只按 targets 算时，
+            # targets 中恒定的列 std 落到 1e-8 地板值，而 history 窗口
+            # 可能含该列的其他取值（如 .mt 脚本前几行），z-score 会爆炸
+            # （实测 (90-45)/1e-8=4.5e9），后续 act_tokens ±1e9 直接
+            # 打爆 DFC 量化（NegativeSlopeExponentNonFixable）
+            all_actions = np.stack(
+                [np.concatenate([s[0], s[1][None]]) for s in train_ds.samples]
+            ).reshape(-1, cfg.data.action_dim)
             stats = np.stack([all_actions.mean(axis=0),
                               all_actions.std(axis=0) + 1e-8])
             stats_path = os.path.join(cfg.train.checkpoint_dir,
                                       "action_stats.npy")
             np.save(stats_path, stats)
-            cfg.data.action_stats_path = stats_path
+            # 只存裸文件名：推理端按 checkpoint 目录解析相对路径
+            # （predict.py/export_deploy.py/gen_calibration.py 同语义），
+            # 存 "./checkpoints/..." 会被二次拼接成 checkpoints/./checkpoints
+            cfg.data.action_stats_path = "action_stats.npy"
             print(f"action_stats 已保存: {stats_path}（训练集 targets 统计）")
         if stats.shape != (2, cfg.data.action_dim):
             raise ValueError(

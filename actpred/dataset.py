@@ -76,7 +76,9 @@ class ActionDataset(Dataset):
                     raise ValueError(
                         f"数据集为空（0 样本），无法计算归一化统计量。"
                         f"请检查 data_dir={data_dir} 中的 episode 数据。")
-                all_actions = np.stack([s[2] for s in self.samples])
+                all_actions = np.stack(
+                    [np.concatenate([s[1], s[2][None]]) for s in self.samples]
+                ).reshape(-1, self.action_dim)
                 self._action_mean = all_actions.mean(axis=0)
                 self._action_std = all_actions.std(axis=0) + 1e-8
 

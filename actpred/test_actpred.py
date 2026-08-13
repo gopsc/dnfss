@@ -261,6 +261,30 @@ class TestActionDataset(unittest.TestCase):
             self.assertIn("WARNING", buf.getvalue())
             self.assertEqual(len(ds), 8 - 3)  # 按较少者（8 帧图像）截断
 
+    def test_stats_cover_history_values(self):
+        """归一化统计量必须覆盖 history 独有取值，否则 z-score 爆炸
+
+        col0 仅在 history（首行）出现 100，targets 全为 0：只按 targets
+        算统计时 std 落到 1e-8 地板值，z=(100-0)/1e-8=1e10。
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            ep_dir = base / "episode_0001"
+            images_dir = ep_dir / "images"
+            images_dir.mkdir(parents=True, exist_ok=True)
+            for i in range(7):
+                Image.fromarray(np.random.randint(0, 255, (16, 16, 3), dtype=np.uint8)
+                                ).save(images_dir / f"{i:04d}.jpg")
+            actions = np.zeros((7, 4), dtype=np.float32)
+            actions[0, 0] = 100.0
+            np.save(ep_dir / "actions.npy", actions)
+            ds = ActionDataset(tmpdir, history_len=5, action_dim=4,
+                               normalize_actions=True)
+            self.assertGreater(ds._action_std[0], 1.0)  # 而非 1e-8 地板值
+            z_max = (np.abs(actions[:, 0] - ds._action_mean[0])
+                     / ds._action_std[0]).max()
+            self.assertLess(z_max, 10.0)
+
 
 class TestConfig(unittest.TestCase):
     """测试配置和 CLI 参数"""

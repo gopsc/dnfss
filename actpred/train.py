@@ -89,7 +89,8 @@ def main():
         stats_path = os.path.join(cfg.train.checkpoint_dir, "action_stats.npy")
         np.save(stats_path, train_ds.get_action_stats())
         print(f"Action stats saved to: {stats_path}")
-        cfg.data.action_stats_path = stats_path
+        # 只存裸文件名：推理端按 checkpoint 目录解析相对路径
+        cfg.data.action_stats_path = "action_stats.npy"
     val_ds = ActionDataset(
         cfg.data.data_dir, cfg.data.history_len, cfg.data.action_dim,
         cfg.data.image_width, cfg.data.image_height, cfg.data.normalize_actions,
