@@ -38,6 +38,11 @@ def _build_argparser():
                    help="(reserved) 传感器数据输出管道，对接 actpred")
     p.add_argument("-o", metavar="FIFO", default=None,
                    help="(reserved) 动作指令输入管道，对接 actpred")
+    p.add_argument("--record", metavar="DIR", default=None,
+                   help="录制 actpred 格式 episode 到 DIR（需要 @Camera 块；"
+                        "--dry-run 下用合成帧）")
+    p.add_argument("--action-dim", type=int, default=18,
+                   help="动作向量维度（默认 18，与 actpred 一致）")
     return p
 
 
@@ -89,8 +94,13 @@ def main(argv=None):
     source = open(args.script, encoding="utf-8") if args.script else sys.stdin
     try:
         robot = RobotStruct(source, dry_run=args.dry_run)
+        recorder = None
+        if args.record:
+            from .recorder import EpisodeRecorder
+            recorder = EpisodeRecorder(args.record,
+                                       action_dim=args.action_dim)
         with robot:
-            robot.run()
+            robot.run(recorder=recorder)
     finally:
         if args.script:
             source.close()

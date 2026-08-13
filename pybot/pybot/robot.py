@@ -135,13 +135,31 @@ class RobotStruct:
                 return item
         return None
 
-    def run(self):
-        """逐行执行 @Action 矩阵"""
+    def run(self, recorder=None):
+        """逐行执行 @Action 矩阵
+
+        recorder: 可选 EpisodeRecorder，启用后每行执行前录制 (frame, action)
+        """
         action = self.find_mt("Action")
         if action is None:
             raise ValueError("no @Action matrix in script")
         columns = self._validate_action(action)     # Q05: 执行前整表校验
+
+        camera_var = None
+        if recorder is not None:
+            camera_var = self._find_camera()
+            if camera_var is None and not self.dry_run:
+                raise ValueError(
+                    "--record 需要 @Camera 块（或使用 --dry-run 生成合成帧）")
+
         for i in range(1, action.size):
+            # 录制：在执行动作前抓帧（observation → action 语义）
+            if recorder is not None:
+                action_vec = self._build_action_vec(
+                    action, i, columns, recorder.action_dim)
+                frame = self._grab_frame(camera_var)
+                recorder.record(frame, action_vec)
+
             row_sets = {}       # {设备名: {参数名: float}}
             for j, (dev, param) in enumerate(columns):
                 # 可能的参数别名转换（A → angle）
@@ -153,6 +171,43 @@ class RobotStruct:
             # 执行一行：逐设备调用 play
             for dev, params in row_sets.items():
                 self.M[dev].play(params)
+
+        if recorder is not None:
+            path = recorder.flush()
+            log.info("episode saved: %s", path)
+
+    def _find_camera(self):
+        """在已创建的硬件变量中查找第一个 CameraVar"""
+        for var in self.M.values():
+            if isinstance(var, CameraVar):
+                return var
+        return None
+
+    def _build_action_vec(self, action, row, columns, action_dim):
+        """按 @Action 列顺序构建动作向量，pad/truncate 到 action_dim
+
+        与 actpred/pretrain_mt.py 的 MTActionDataset 语义一致：
+        列值按顺序填入向量，不足补零，超出截断。
+        """
+        import numpy as np
+        vec = np.zeros(action_dim, dtype=np.float32)
+        for j in range(min(len(columns), action_dim)):
+            vec[j] = parse_mt(action, row, j)
+        return vec
+
+    def _grab_frame(self, camera_var):
+        """从摄像头取最新帧；dry_run 或无帧时返回随机噪声帧"""
+        import numpy as np
+        if camera_var is not None:
+            result = camera_var.play({})
+            if result is not None:
+                return result[1]       # (timestamp, frame)
+        # dry_run 或队列空：随机噪声帧（用 camera 配置尺寸）
+        h, w = 480, 640
+        if camera_var is not None:
+            cam = camera_var.camera
+            h, w = cam.height, cam.width
+        return np.random.randint(0, 256, (h, w, 3), dtype=np.uint8)
 
     def _validate_action(self, action):
         """校验 @Action 全部列名为 '设备.参数' 且设备已定义，返回 [(dev, param)]"""

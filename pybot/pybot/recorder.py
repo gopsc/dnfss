@@ -1,0 +1,87 @@
+"""Episode 录制器 —— 运行 .mt 脚本时同步产出 actpred 格式的自监督数据集
+
+产出格式（与 actpred/dataset.py 的 DataRecorder 兼容）：
+    output_dir/
+      episode_XXXX/
+        images/
+          0000.jpg, 0001.jpg, ...
+        actions.npy    # shape (T, action_dim) float32
+
+numpy / Pillow 为可选依赖（lazy import），仅 --record 时需要，
+不影响 pybot 的零依赖运行时承诺。
+"""
+
+import logging
+from pathlib import Path
+
+log = logging.getLogger("pybot.recorder")
+
+
+class EpisodeRecorder:
+    """录制 actpred 格式的 episode（images/*.jpg + actions.npy）
+
+    用法：
+        rec = EpisodeRecorder("./actpred/data", action_dim=18)
+        for frame, action in stream:
+            rec.record(frame, action)
+        rec.flush()
+    """
+
+    def __init__(self, output_dir, action_dim=18):
+        self.action_dim = action_dim
+        self._frame_idx = 0
+        self._actions = []
+
+        output = Path(output_dir)
+        output.mkdir(parents=True, exist_ok=True)
+
+        ep_idx = 0
+        for d in output.glob("episode_*"):
+            try:
+                ep_idx = max(ep_idx, int(d.name.split("_")[1]) + 1)
+            except (ValueError, IndexError):
+                pass
+
+        while True:
+            self.episode_dir = output / f"episode_{ep_idx:04d}"
+            self.images_dir = self.episode_dir / "images"
+            try:
+                self.images_dir.mkdir(parents=True, exist_ok=False)
+                break
+            except FileExistsError:
+                ep_idx += 1
+
+        log.info("recording to %s (action_dim=%d)",
+                 self.episode_dir, action_dim)
+
+    def record(self, frame, action_vec):
+        """记录一帧 + 动作向量
+
+        frame: np.ndarray (H,W,3) uint8 或 None（跳过图像保存）
+        action_vec: list/np.array，长度任意，内部 pad/truncate 到 action_dim
+        """
+        import numpy as np
+
+        vec = np.zeros(self.action_dim, dtype=np.float32)
+        src = np.asarray(action_vec, dtype=np.float32).ravel()
+        n = min(len(src), self.action_dim)
+        vec[:n] = src[:n]
+        self._actions.append(vec)
+
+        if frame is not None:
+            from PIL import Image
+            img = Image.fromarray(frame)
+            img.save(self.images_dir / f"{self._frame_idx:04d}.jpg",
+                     quality=90)
+
+        self._frame_idx += 1
+
+    def flush(self):
+        """保存 actions.npy，返回 episode 路径"""
+        import numpy as np
+        if self._actions:
+            actions = np.array(self._actions, dtype=np.float32)
+            np.save(self.episode_dir / "actions.npy", actions)
+        log.info("recorded %d frames to %s",
+                 self._frame_idx, self.episode_dir)
+        return str(self.episode_dir)
