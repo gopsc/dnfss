@@ -1,0 +1,30 @@
+"""
+subsystems - aibox 子系统模块（包）
+
+抽离自 aibox.py 的基础设施子系统，按职责分文件。
+当前包含（Wave 1）：
+  - executors.py       : CommandExecutor + SubprocessCommandExecutor
+  - prompt_manager.py  : PromptManager（单例）
+  - db.py              : MemoryDatabase + MemoDatabase
+  - skill_manager.py   : SkillManager
+
+依赖方向：common <- subsystems <- aibox
+不反向依赖 aibox 任何符号。
+
+采用"重导出"策略：外部统一用 `from subsystems import MemoryDatabase`，
+调用点无需关心具体子模块所在文件。
+"""
+
+from .executors import CommandExecutor, SubprocessCommandExecutor
+from .prompt_manager import PromptManager
+from .db import MemoryDatabase, MemoDatabase
+from .skill_manager import SkillManager
+
+__all__ = [
+    "CommandExecutor",
+    "SubprocessCommandExecutor",
+    "PromptManager",
+    "MemoryDatabase",
+    "MemoDatabase",
+    "SkillManager",
+]
