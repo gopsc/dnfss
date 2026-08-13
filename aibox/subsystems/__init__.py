@@ -7,6 +7,8 @@ subsystems - aibox 子系统模块（包）
   - prompt_manager.py  : PromptManager（单例）
   - db.py              : MemoryDatabase + MemoDatabase
   - skill_manager.py   : SkillManager
+Wave 2：
+  - conversation_history.py : ConversationHistory（对话历史管理）
 
 依赖方向：common <- subsystems <- aibox
 不反向依赖 aibox 任何符号。
@@ -19,6 +21,7 @@ from .executors import CommandExecutor, SubprocessCommandExecutor
 from .prompt_manager import PromptManager
 from .db import MemoryDatabase, MemoDatabase
 from .skill_manager import SkillManager
+from .conversation_history import ConversationHistory
 
 __all__ = [
     "CommandExecutor",
@@ -27,4 +30,5 @@ __all__ = [
     "MemoryDatabase",
     "MemoDatabase",
     "SkillManager",
+    "ConversationHistory",
 ]
