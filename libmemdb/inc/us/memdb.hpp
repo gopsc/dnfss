@@ -8,10 +8,6 @@
 
 
 
-namespace shufeng2012 {
-
-
-
 template <typename T, typename U>
 
 class Memdb {
@@ -55,10 +51,10 @@ public:
 
 
 
-    Memdb() = default;
-    Memdb(int max_time) : MAX_TIME(std::max(0, max_time)) {}
-    Memdb& operator=(const Memdb& to_be_cp_memdb) = default;
-    ~Memdb() = default;
+    explicit Memdb() = default;
+    explicit Memdb(int max_time) : MAX_TIME(std::max(0, max_time)) {}
+    explicit Memdb& operator=(const Memdb& to_be_cp_memdb) = default;
+    explicit ~Memdb() = default;
 
 
     size_t size() const {
@@ -150,7 +146,3 @@ public:
         return it -> value;
     }
 };
-
-
-
-}
