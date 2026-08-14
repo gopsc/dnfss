@@ -27,7 +27,9 @@ class EpisodeRecorder:
             rec.record(frame, action, imu_vec=imu_or_None)
         rec.flush()
 
-    imu_vec：可选 MPU6050 姿态向量（roll,pitch,ax,ay,az,gx,gy,gz）。
+    imu_vec：可选 MPU6050 姿态向量（单传感器 roll,pitch,ax,ay,az,gx,gy,gz；
+    多传感器按脚本 @MPU6050_BIND 行顺序拼接为 8×N，最多 4 个）。
+    RobotStruct 会在录制前把 imu_dim 同步为 8×N（N=传感器数）。
     只要同一 record 调用内同时传入帧/动作/姿态，三者即按帧时刻天然对齐。
     全程 None（无 IMU 硬件）则不产出 imu.npy，保持旧格式兼容。
     """
@@ -68,7 +70,8 @@ class EpisodeRecorder:
         frame: np.ndarray (H,W,3) uint8 或 None（跳过图像保存）
         action_vec: list/np.array，长度任意，内部 pad/truncate 到 action_dim
         imu_vec: 可选 list/np.array/dict，长度任意，pad/truncate 到 imu_dim；
-                 dict 时按 (roll,pitch,ax,ay,az,gx,gy,gz) 顺序取值。
+                 dict 时按 (roll,pitch,ax,ay,az,gx,gy,gz) 顺序取值（单传感器；
+                 多传感器请传 RobotStruct._read_imus 拼好的 8×N 向量）。
                  为 None 时该帧记零向量（混合数据集中标记"无姿态"）。
         """
         import numpy as np

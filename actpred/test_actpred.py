@@ -1836,6 +1836,20 @@ class TestR2ImuNorm(unittest.TestCase):
         self.assertEqual(out.shape, (2,))
         np.testing.assert_allclose(out, [1.0, -1.0], atol=1e-6)
 
+    def test_multi_sensor_tiled_scales(self):
+        """多传感器（8×N，N≤4）：归一化除数按 8 槽模式平铺"""
+        from imu_norm import normalize_imu, imu_scales, IMU_SCALES
+        scales = imu_scales(32)
+        self.assertEqual(scales.shape, (32,))
+        for k in range(4):
+            np.testing.assert_array_equal(scales[k * 8:(k + 1) * 8],
+                                          IMU_SCALES)
+        # 单传感器 8 槽模式 [±180, ∓180, 32768×6] 拼接两组 → 归一化重复
+        raw = ([180.0, -180.0] + [32768.0] * 6) * 2
+        out = normalize_imu(raw, 16)
+        np.testing.assert_allclose(
+            out, ([1.0, -1.0] + [1.0] * 6) * 2, atol=1e-6)
+
 
 class TestR2ImuModel(unittest.TestCase):
     """R2 方案一模型：独立 IMU token 注入（序列 F+H+2）"""
@@ -1964,6 +1978,22 @@ class TestR2ImuDataset(unittest.TestCase):
             self.assertEqual(imu.shape, (8,))
             np.testing.assert_allclose(imu[:2], [1.0, -1.0], atol=1e-6)
             np.testing.assert_array_equal(imu[2:], np.zeros(6, np.float32))
+
+    def test_multi_sensor_16wide_normalized(self):
+        """双传感器 imu.npy（16 列）：两组 8 槽分别按物理量程归一化"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            imus = [[180.0, 0, 0, 0, 0, 0, 0, 0,          # sensor0 roll
+                     0, 0, 0, 0, 0, 0, 0, 32768.0]] * 10  # sensor1 gz
+            self._create_episode(Path(tmpdir), "episode_0001", 10, 2,
+                                 imus=imus)
+            ds = ActionDataset(tmpdir, history_len=2, action_dim=2,
+                               image_width=16, image_height=16, frame_len=2,
+                               imu_dim=16)
+            imu = ds[0]["imu"].numpy()
+            self.assertEqual(imu.shape, (16,))
+            np.testing.assert_allclose(imu[0], 1.0, atol=1e-6)
+            np.testing.assert_allclose(imu[15], 1.0, atol=1e-6)
+            np.testing.assert_array_equal(imu[1:15], np.zeros(14, np.float32))
 
     def test_short_imu_aligned_with_zero_pad(self):
         """imu.npy 行数少于帧数 → 尾部补零对齐"""

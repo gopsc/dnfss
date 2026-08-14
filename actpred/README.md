@@ -113,7 +113,7 @@ data/
             0001.jpg
             ...
         actions.npy       # shape: (T, action_dim) float32
-        imu.npy           # 可选，shape: (T, imu_dim) float32（MPU6050 姿态，R2）
+        imu.npy           # 可选，shape: (T, 8×N) float32（N 个 MPU6050 姿态拼接，R2）
     episode_002/
         ...
 ```
@@ -121,12 +121,14 @@ data/
 每个 timestep 的样本：帧 `[t-frame_len+1, t]`（旧→新）+ 前 `history_len` 步动作 → 当前步动作。
 采样起点为 `max(history_len, frame_len-1)`。
 
-`imu.npy` 的键序为 `[roll, pitch, ax, ay, az, gx, gy, gz]`（roll/pitch 角度制，
-其余为 MPU6050 原始 int16），由 pybot `--record` 在脚本含 `@MPU6050_BIND` 块时
-逐帧同步落盘。**旧 episode 没有姿态数据，训练 IMU 模型需用新版 pybot 重新录制**；
-`--imu-dim`>0 时缺失 `imu.npy` 的 episode 按零向量兜底（向后兼容，但无姿态先验收益）。
-姿态归一化按物理量程固定缩放（roll/pitch ÷180，原始 int16 ÷32768），训练与推理
-共用 `imu_norm.py`，无需统计文件。
+`imu.npy` 每传感器占 8 槽 `[roll, pitch, ax, ay, az, gx, gy, gz]`（roll/pitch
+角度制，其余为 MPU6050 原始 int16），多传感器（最多 4 个）按脚本
+`@MPU6050_BIND` 行顺序拼接，由 pybot `--record` 逐帧同步落盘。**旧 episode
+没有姿态数据，训练 IMU 模型需用新版 pybot 重新录制**；`--imu-dim`>0 时缺失
+`imu.npy` 的 episode 按零向量兜底（向后兼容，但无姿态先验收益）。
+姿态归一化按物理量程固定缩放（roll/pitch ÷180，原始 int16 ÷32768，8 槽模式
+按传感器数平铺），训练与推理共用 `imu_norm.py`，无需统计文件。
+录制/训练/闭环脚本的传感器行顺序必须一致，否则槽位错位。
 
 ### 数据采集
 
@@ -150,7 +152,7 @@ recorder.flush()
 | `--action-dim` | 18 | 动作向量维度（对齐 bot4cj 18 列：10 舵机 + 2 云台 + 扬声器频率 + 延时 + 4 预留）|
 | `--history-len` | 5 | 历史动作窗口长度 |
 | `--frame-len` | 3 | 输入图像帧数（含当前帧，旧帧在前）|
-| `--imu-dim` | 0 | R2 姿态输入维度（>0 启用独立 IMU token；8=roll,pitch,ax,ay,az,gx,gy,gz）|
+| `--imu-dim` | 0 | R2 姿态输入维度（>0 启用独立 IMU token；8×N，N=传感器数≤4）|
 | `--backbone` | simple | CNN 类型 (simple/mobilenet) |
 | `--attn-dim` | 128 | 注意力 token 维度 d_model（须能被 attn-heads 整除）|
 | `--attn-heads` | 4 | 注意力头数 |

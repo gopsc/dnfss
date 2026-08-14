@@ -386,3 +386,75 @@ def test_loop_imu_recorded(mock_i2c, tmp_path):
     assert imus.shape == (4, 8)          # 与 actions 帧数对齐
     assert np.allclose(imus[:, 0], 3.0)  # roll
     assert np.allclose(imus[:, 3], 0.5)  # ay
+
+
+# ---------------- 多 MPU6050（最多 4 个，8×N 槽位拼接） ----------------
+
+# 双传感器脚本（槽位顺序对齐 std.mt 前两行：i2c-1 上 0x69 / 0x68）
+LOOP_IMU2_MT = LOOP_MT.replace(
+    "@Camera",
+    """@MPU6050_BIND
+     name    I2C   addr;
+mpu6050-0  i2c-1   0x69;
+mpu6050-1  i2c-1   0x68;
+@
+
+@Camera""")
+
+
+def test_loop_imu_multi_sensor_concat(mock_i2c):
+    """多 MPU6050：按块行顺序拼接 8×N 向量喂 predictor（槽位不串）"""
+    robot = _make_robot(LOOP_IMU2_MT, mock_i2c)
+    robot.active()
+    _freeze_imu(robot, "mpu6050-0", roll=1.0, gz=7.0)
+    _freeze_imu(robot, "mpu6050-1", roll=2.0, pitch=-3.0)
+    pred = ImuPredictor(frame_len=3, history_len=2, action_dim=4, imu_dim=16)
+    robot.run_loop(pred, hz=1000.0, max_steps=2)
+    robot.deactive()
+
+    assert len(pred.imus) == 2
+    for imu in pred.imus:
+        assert imu is not None and imu.shape == (16,)
+        assert imu[0] == 1.0 and imu[7] == 7.0     # sensor0: roll, gz
+        assert imu[8] == 2.0 and imu[9] == -3.0    # sensor1: roll, pitch
+
+
+def test_loop_imu_multi_sensor_pad_truncate(mock_i2c):
+    """传感器数与 predictor.imu_dim 不匹配：pad 零 / 截断，槽位不漂移"""
+    robot = _make_robot(LOOP_IMU2_MT, mock_i2c)
+    robot.active()
+    _freeze_imu(robot, "mpu6050-0", roll=1.0)
+    _freeze_imu(robot, "mpu6050-1", roll=2.0)
+
+    pred24 = ImuPredictor(frame_len=3, history_len=2, action_dim=4,
+                          imu_dim=24)
+    robot.run_loop(pred24, hz=1000.0, max_steps=1)   # 16 → 24 补零
+    imu = pred24.imus[0]
+    assert imu.shape == (24,)
+    assert imu[0] == 1.0 and imu[8] == 2.0
+    assert np.allclose(imu[16:], 0.0)
+
+    pred8 = ImuPredictor(frame_len=3, history_len=2, action_dim=4,
+                         imu_dim=8)
+    robot.run_loop(pred8, hz=1000.0, max_steps=1)    # 16 → 8 截断（仅 sensor0）
+    imu = pred8.imus[0]
+    assert imu.shape == (8,) and imu[0] == 1.0
+    robot.deactive()
+
+
+def test_loop_imu_multi_recorded(mock_i2c, tmp_path):
+    """多传感器闭环录制：imu.npy 宽度 8×N 且槽位按块行顺序"""
+    from pybot.recorder import EpisodeRecorder
+    robot = _make_robot(LOOP_IMU2_MT, mock_i2c)
+    robot.active()
+    _freeze_imu(robot, "mpu6050-0", roll=1.0)
+    _freeze_imu(robot, "mpu6050-1", pitch=4.0)
+    rec = EpisodeRecorder(str(tmp_path), action_dim=18)
+    pred = MockPredictor(frame_len=3, history_len=2, action_dim=4)
+    robot.run_loop(pred, hz=1000.0, max_steps=3, recorder=rec)
+    robot.deactive()
+
+    imus = np.load(tmp_path / "episode_0000" / "imu.npy")
+    assert imus.shape == (3, 16)
+    assert np.allclose(imus[:, 0], 1.0)   # sensor0 roll
+    assert np.allclose(imus[:, 9], 4.0)   # sensor1 pitch

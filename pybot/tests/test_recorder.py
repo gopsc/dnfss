@@ -374,6 +374,53 @@ def test_run_with_imu_block(tmp_path, mock_i2c):
     assert np.allclose(imus[:, 7], 12.0)
 
 
+# 双传感器脚本（槽位顺序对齐 std.mt 前两行：i2c-1 上 0x69 / 0x68）
+IMU2_MT = """
+@I2C
+ name        path;
+i2c-1  /dev/i2c-1;
+@
+
+@MPU6050_BIND
+     name    I2C   addr;
+mpu6050-0  i2c-1   0x69;
+mpu6050-1  i2c-1   0x68;
+@
+
+@Camera
+ name  width  height  framerate  capacity;
+ cam0    320      240        15         2;
+@
+
+@Action
+cam0.frame;
+0;
+0;
+@
+"""
+
+
+def test_run_multi_imu_wide_layout(tmp_path, mock_i2c):
+    """多 MPU6050：run() 录制 imu.npy 宽度 8×N，槽位按块行顺序"""
+    robot = RobotStruct(IMU2_MT, dry_run=True)
+    robot.active()
+    for name, vals in (("mpu6050-0", {"roll": -4.0}),
+                       ("mpu6050-1", {"roll": 6.0, "gz": 12.0})):
+        sensor = robot.M[name].sensor
+        sensor.stop_daemon()
+        sensor.wait_daemon()
+        sensor._latest.update(**vals)
+    rec = EpisodeRecorder(str(tmp_path), action_dim=18)
+    robot.run(recorder=rec)
+    robot.deactive()
+
+    imus = np.load(tmp_path / "episode_0000" / "imu.npy")
+    assert imus.shape == (2, 16)
+    assert np.allclose(imus[:, 0], -4.0)    # sensor0 roll
+    assert np.allclose(imus[:, 8], 6.0)     # sensor1 roll（槽位 8 起）
+    assert np.allclose(imus[:, 15], 12.0)   # sensor1 gz
+
+
 def test_actpred_compatibility(tmp_path, mock_i2c):
     """用 actpred 的 ActionDataset 加载录制的 episode"""
     pytest.importorskip("torch")

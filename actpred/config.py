@@ -15,7 +15,8 @@ class DataConfig:
     action_stats_path: Optional[str] = None
     # R2 方案一：MPU6050 姿态作为独立 IMU token 注入（序列 F+H+2）。
     # 0 = 关闭（默认，序列保持 F+H+1，旧 checkpoint 完全兼容）；
-    # 8 = roll,pitch,ax,ay,az,gx,gy,gz（pybot recorder 的 imu.npy 格式）。
+    # 8×N = N 个传感器的 roll,pitch,ax,ay,az,gx,gy,gz 按 pybot 脚本
+    # @MPU6050_BIND 行顺序拼接（最多 4 个 → 32，pybot recorder 的 imu.npy 格式）。
     imu_dim: int = 0
 
 
@@ -85,7 +86,7 @@ def build_argparser(description: str = "") -> argparse.ArgumentParser:
     parser.add_argument("--action-stats-path", type=str, default=None)
     parser.add_argument("--imu-dim", type=int, default=None,
                         help="R2 方案一：MPU6050 姿态维度（0=关闭，默认；"
-                             "8=roll,pitch,ax,ay,az,gx,gy,gz，序列变 F+H+2）")
+                             "8×N=N 个传感器拼接（≤4 个），序列变 F+H+2）")
     parser.add_argument("--backbone", type=str, default=None, choices=["simple", "mobilenet"])
     parser.add_argument("--cnn-feature-dim", type=int, default=None)
     parser.add_argument("--fused-hidden-dim", type=int, default=None)

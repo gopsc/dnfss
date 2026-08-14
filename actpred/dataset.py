@@ -10,7 +10,7 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 from torchvision.transforms import functional as TF
 
-from imu_norm import IMU_SCALES
+from imu_norm import imu_scales
 
 
 def _natural_key(p):
@@ -164,7 +164,7 @@ class ActionDataset(Dataset):
         if len(imus) < n:                       # 与帧数对齐：不足补零
             imus = np.concatenate([
                 imus, np.zeros((n - len(imus), self.imu_dim), dtype=np.float32)])
-        return imus[:n] / IMU_SCALES[:self.imu_dim]
+        return imus[:n] / imu_scales(self.imu_dim)
 
     def _imu_at(self, imus, t):
         """时刻 t 的归一化姿态向量（与最新帧对齐）；无数据 → 零向量"""
