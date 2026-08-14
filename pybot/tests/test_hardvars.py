@@ -68,8 +68,9 @@ def test_run_stand_action(mock_i2c):
     # s9/s10: 90° → offval = int(1.5*4096/20) = 307
     assert writes[32:36] == servo_writes(8, 307)
     assert writes[36:40] == servo_writes(9, 307)
-    # 10 舵机 × 4 寄存器
-    assert len(writes) == 40
+    # 首行 delay=200 → 分解为 20 个重复微步：10 舵机 × 4 寄存器 × 20 步
+    assert len(writes) == 800
+    assert writes[40:44] == servo_writes(0, 204)   # 第 2 步与第 1 步相同
     robot.deactive()
 
 

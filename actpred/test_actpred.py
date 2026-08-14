@@ -2004,13 +2004,14 @@ class TestFixedRangeNorm(unittest.TestCase):
         from action_norm import default_column_weights
         w18 = default_column_weights(18)
         np.testing.assert_allclose(w18[:10], 1.0)
-        np.testing.assert_allclose(w18[10:12], 0.2)
-        np.testing.assert_allclose(w18[12:], 0.0)
+        self.assertAlmostEqual(float(w18[10]), 0.2, places=6)  # spk.F 保留梯度
+        np.testing.assert_allclose(w18[11:], 0.0)  # spk.delay 步级恒值 + 保留位
         # 小 action_dim：全部落在舵机段 → 全 1.0
         np.testing.assert_allclose(default_column_weights(4), 1.0)
-        # 12 列：舵机 1.0 + spk 0.2
+        # 12 列：舵机 1.0 + spk.F 0.2，delay 0
         w12 = default_column_weights(12)
-        np.testing.assert_allclose(w12[10:], 0.2)
+        self.assertAlmostEqual(float(w12[10]), 0.2, places=6)
+        self.assertEqual(float(w12[11]), 0.0)
         # 20 列：超出 18 列语义布局的扩展列默认 1.0（新执行器须参与训练）
         w20 = default_column_weights(20)
         np.testing.assert_allclose(w20[12:18], 0.0)

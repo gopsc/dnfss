@@ -201,7 +201,7 @@ def test_action_vector_padding(tmp_path, mock_i2c):
     robot.deactive()
 
     actions = np.load(tmp_path / "episode_0000" / "actions.npy")
-    assert actions.shape == (19, 18)   # 1（首行）+ 9×2（微步）= 19
+    assert actions.shape == (20, 18)   # 10 行 × delay=20 → 各 2 微步 = 20
     assert np.all(actions[:, 4:] == 0)  # 列 4-17 全为零
 
 
@@ -216,8 +216,9 @@ def test_placeholder_resolution(tmp_path, mock_i2c):
     actions = np.load(tmp_path / "episode_0000" / "actions.npy")
     # s1.A: 全 45（首行 45，后续行 '-' 继承 45，插值 45→45 仍为 45）
     assert np.all(actions[:, 0] == 45)
-    # s2.A: 首行 0，后续行插值
-    expected_s2 = [0, 5, 10, 15, 20, 25, 30, 15, 0, 5, 10, 15, 20, 25, 30, 15, 0, 5, 10]
+    # s2.A: 首行 0 重复 2 步（不插值），后续行插值
+    expected_s2 = [0, 0, 5, 10, 15, 20, 25, 30, 15, 0, 5, 10,
+                   15, 20, 25, 30, 15, 0, 5, 10]
     assert list(actions[:, 1]) == expected_s2
 
 
@@ -270,8 +271,8 @@ def test_micro_action_interpolation(tmp_path, mock_i2c):
     robot.deactive()
 
     actions = np.load(tmp_path / "episode_0000" / "actions.npy")
-    # 首行 s1=0（不分解），row2 s1 从 0→30 分 3 步
-    expected_s1 = [0, 10, 20, 30]
+    # 首行 s1=0 重复 3 步（不插值），row2 s1 从 0→30 分 3 步插值
+    expected_s1 = [0, 0, 0, 10, 20, 30]
     assert list(actions[:, 0]) == expected_s1
 
 

@@ -148,11 +148,13 @@ class RobotStruct:
         """逐行执行 @Action 矩阵，带时延的行分解为 10ms 微步
 
         微步规则：
-        - 首行（无前序状态）：不分解，按原逻辑执行
-        - 后续行 + delay > 0：分解为 N=delay//10 个微步，舵机角度线性插值
+        - delay > 0：分解为 N=delay//10 个微步；后续行舵机角度线性插值，
+          首行（无前序状态）以行值重复 N 次（不插值）
         - delay 必须是 10 的倍数
         - 每步调 speaker.play(freq, 10) 提供声音 + 10ms 时序
         - dry_run 下补 sleep(0.01) 维持节拍
+        - 全数据 10ms 均匀节拍：录制时每步一行、delay 列恒 10ms
+          （行级时长的信息已隐式编码在步数中）
 
         recorder: 可选 EpisodeRecorder，每步录制 (frame, action)
         """
@@ -182,14 +184,17 @@ class RobotStruct:
             vals = self._resolve_row(action, i, len(columns))
             delay = int(vals[delay_idx]) if delay_idx is not None else 0
 
-            if delay > 0 and prev_vals is not None:
+            if delay > 0:
                 if delay % 10 != 0:
                     raise ValueError(
                         f"@Action row {i}: delay {delay} 不是 10 的倍数")
                 n = delay // 10
                 for k in range(n):
+                    # 首行（无前序状态）不插值：prev=vals 使插值退化恒等，
+                    # 产出 N 个重复步，保持全数据 10ms 均匀节拍
                     step_vals = self._build_step_vals(
-                        prev_vals, vals, columns, k, n)
+                        prev_vals if prev_vals is not None else vals,
+                        vals, columns, k, n)
                     if recorder is not None:
                         recorder.record(
                             self._grab_frame(camera_var),
