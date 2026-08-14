@@ -52,7 +52,7 @@ def search_dirs():
     """插件搜索目录（按优先级）：$PYBOT_MODULES_PATH → 包内置 → cwd"""
     dirs = []
     env = os.environ.get("PYBOT_MODULES_PATH", "")
-    for p in env.split(":"):
+    for p in env.split(os.pathsep):
         if p:
             dirs.append(Path(p))
     dirs.append(Path(__file__).resolve().parent.parent / "modules")  # 包内置

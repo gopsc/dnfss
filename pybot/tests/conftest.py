@@ -12,6 +12,9 @@ from pybot.hd import i2c, spi  # noqa: E402
 
 
 SCRIPTS_DIR = ROOT / "scripts"
+if not SCRIPTS_DIR.is_dir():
+    # Windows：git 符号链接落盘为文本文件（内容 = 目标相对路径），手动解析
+    SCRIPTS_DIR = (ROOT / SCRIPTS_DIR.read_text().strip()).resolve()
 
 
 @pytest.fixture()
