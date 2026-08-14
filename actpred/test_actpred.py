@@ -666,6 +666,8 @@ class TestParseCheckpointConfig(unittest.TestCase):
         """--init-from 兼容性警告：normalize 或 action_dim 不一致时提示"""
         from config import warn_init_from_mismatch
         cfg = Config()
+        # 显式设定当前运行的 normalize 值，不依赖默认值（默认已改为 True）
+        cfg.data.normalize_actions = False
         init_cfg = {
             "data": {"normalize_actions": True, "action_dim": 12},
         }

@@ -157,19 +157,24 @@ def main():
         augment=cfg.train.augment,
         predict_delta=cfg.train.predict_delta, rollout_len=cfg.train.rollout_len,
         imu_dim=cfg.data.imu_dim)
+    auto_stats = False
     if cfg.data.normalize_actions and not cfg.data.action_stats_path:
         # 归一化统计量必须只用训练集计算，再供验证集复用，否则 val loss 不可信
         stats_path = os.path.join(cfg.train.checkpoint_dir, "action_stats.npy")
         np.save(stats_path, train_ds.get_action_stats())
         print(f"Action stats saved to: {stats_path}")
-        # 只存裸文件名：推理端按 checkpoint 目录解析相对路径
-        cfg.data.action_stats_path = "action_stats.npy"
+        # 验证集构建需要完整路径（相对路径按 cwd 解析会找不到文件）
+        cfg.data.action_stats_path = stats_path
+        auto_stats = True
     val_ds = ActionDataset(
         cfg.data.data_dir, cfg.data.history_len, cfg.data.action_dim,
         cfg.data.image_width, cfg.data.image_height, cfg.data.normalize_actions,
         cfg.data.action_stats_path, val_indices, cfg.data.frame_len,
         predict_delta=cfg.train.predict_delta, rollout_len=cfg.train.rollout_len,
         imu_dim=cfg.data.imu_dim)
+    if auto_stats:
+        # checkpoint 配置只存裸文件名：推理端按 checkpoint 目录解析相对路径
+        cfg.data.action_stats_path = "action_stats.npy"
 
     print(f"Samples: {len(train_ds)} train, {len(val_ds)} val")
     if len(train_ds) == 0:
