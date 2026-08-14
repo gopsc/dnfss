@@ -14,8 +14,9 @@ import logging
 import time
 from collections import deque
 
-import numpy as np
-
+# 零第三方依赖约定：numpy 仅在 --record/--loop 路径的函数内 lazy import，
+# 纯 .mt 脚本执行（python3 -m pybot scripts/std.mt）不需要 numpy。
+# 新增 numpy 使用点时必须遵循同一约定，禁止恢复顶层导入。
 from . import plugin
 from .hardvars import (AliasVar, CameraVar, I2CVar, MPU6050Var, ServoVar,
                        SpeakerVar)
@@ -240,6 +241,7 @@ class RobotStruct:
         （会阻塞 ~1/framerate 秒，把 hz 锁死在相机帧率之下）。dry_run
         或队列空时回退 _grab_frame 合成帧。
         """
+        import numpy as np
         camera_var = self._find_camera()
         if camera_var is None and not self.dry_run:
             raise ValueError("闭环需要 @Camera 块（或使用 --dry-run 生成合成帧）")
@@ -358,6 +360,7 @@ class RobotStruct:
         帧源与主循环一致（_loop_recent_frames），避免冷启动与运行期帧源
         不一致。history 用零向量填满是保守初值，避免随机姿态跳变损坏舵机。
         """
+        import numpy as np
         frames.extend(self._loop_recent_frames(camera_var, frames.maxlen))
         for _ in range(history.maxlen):
             history.append(np.zeros(action_dim, dtype=np.float32))
@@ -368,6 +371,7 @@ class RobotStruct:
         SpeakerVar.play 强制要求 delay 键；闭环已剔除 delay 列（避免发声
         阻塞卡死节拍），此处为其补 delay=0 —— 发声但不阻塞，节拍由 hz 掌控。
         """
+        import numpy as np
         if not np.all(np.isfinite(act)):
             log.warning("action vector contains NaN/Inf, skipping step")
             return
@@ -439,6 +443,7 @@ class RobotStruct:
         单个传感器读失败其 8 槽记零并 log。latest() 冷启动返回全零
         dict，语义安全无需特判。
         """
+        import numpy as np
         if not imu_vars:
             return None
         nk = len(IMU_KEYS)
@@ -456,6 +461,7 @@ class RobotStruct:
     @staticmethod
     def _pad_imu(vec, imu_dim):
         """拼接姿态向量 → pad/truncate 到 predictor 的 imu_dim（None → 全零）"""
+        import numpy as np
         out = np.zeros(imu_dim, dtype=np.float32)
         if vec is not None:
             src = np.asarray(vec, dtype=np.float32).ravel()
@@ -465,6 +471,7 @@ class RobotStruct:
 
     def _build_action_vec(self, vals, action_dim):
         """从值列表构建动作向量，pad/truncate 到 action_dim"""
+        import numpy as np
         vec = np.zeros(action_dim, dtype=np.float32)
         n = min(len(vals), action_dim)
         vec[:n] = vals[:n]
@@ -472,6 +479,7 @@ class RobotStruct:
 
     def _grab_frame(self, camera_var):
         """从摄像头同步抓一帧；dry_run 或无帧时返回随机噪声帧"""
+        import numpy as np
         if camera_var is not None:
             frame = camera_var.camera.capture()
             if frame is not None:

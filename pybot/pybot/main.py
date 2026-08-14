@@ -132,16 +132,35 @@ def _load_predictor(checkpoint):
     """进程内构建 actpred 推理器；失败返回 None
 
     pybot 不硬依赖 actpred：仅 --loop 时才尝试 import，actpred 不在
-    sys.path 时给出可操作提示。checkpoint 目录名决定后端（.hef → Hailo
-    NPU，否则 → PyTorch），推理类由 actpred 提供。
+    sys.path 时给出可操作提示。checkpoint 后缀决定后端（.hef → Hailo NPU，
+    .onnx → ONNX Runtime，否则 → PyTorch），推理类由 actpred 提供。
 
     HEF 后端会自动查找同目录下的 pred_token.npy 和 companion checkpoint
     （pretrain_best_inference.pt / best_inference.pt），以恢复 pred_token
     默认值和 predict_delta 训练配置——否则 Hailo 推理输出与训练语义不一致。
+    ONNX 后端的 normalize_mode/predict_delta 由模型元数据自动识别。
     """
     import os
     try:
         lower = checkpoint.lower()
+        if lower.endswith(".onnx"):
+            from actpred.onnx_infer import OnnxPredictor as _P
+            onnx_dir = os.path.dirname(os.path.abspath(checkpoint))
+            # stats_path：zscore 归一化模型的 action_stats.npy
+            stats_path = None
+            sp = os.path.join(onnx_dir, "action_stats.npy")
+            if os.path.exists(sp):
+                stats_path = sp
+            try:
+                pred = _P(checkpoint, stats_path=stats_path)
+            except Exception:
+                logging.exception("加载 ONNX 推理器失败: %s", checkpoint)
+                return None
+            if pred.normalize_mode == "zscore" and stats_path is None:
+                logging.warning("ONNX 元数据为 zscore 归一化但同目录无 "
+                                "action_stats.npy，动作历史将不归一化: %s",
+                                checkpoint)
+            return pred
         if lower.endswith(".hef"):
             from actpred.hailo_infer import HailoPredictor as _P
             hef_dir = os.path.dirname(os.path.abspath(checkpoint))

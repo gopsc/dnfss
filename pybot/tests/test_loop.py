@@ -458,3 +458,34 @@ def test_loop_imu_multi_recorded(mock_i2c, tmp_path):
     assert imus.shape == (3, 16)
     assert np.allclose(imus[:, 0], 1.0)   # sensor0 roll
     assert np.allclose(imus[:, 9], 4.0)   # sensor1 pitch
+
+
+def test_robot_importable_without_numpy():
+    """零依赖承诺（v3-P1-1）：屏蔽 numpy 后 pybot.robot 仍可导入
+
+    纯 .mt 脚本执行路径不得要求 numpy——numpy 仅在 --record/--loop
+    函数内 lazy import。子进程隔离避免污染当前 pytest 会话。
+    """
+    import os
+    import subprocess
+    import sys
+    child = (
+        "import sys, importlib.util\n"
+        "if importlib.util.find_spec('fcntl') is None:\n"      # Windows 开发机
+        "    from types import ModuleType\n"
+        "    _m = ModuleType('fcntl'); _m.ioctl = lambda *a, **k: 0\n"
+        "    sys.modules['fcntl'] = _m\n"
+        "import builtins\n"
+        "_real = builtins.__import__\n"
+        "def _fake(name, *a, **k):\n"
+        "    if name == 'numpy' or name.startswith('numpy.'):\n"
+        "        raise ImportError('numpy blocked by test')\n"
+        "    return _real(name, *a, **k)\n"
+        "builtins.__import__ = _fake\n"
+        "import pybot.robot\n"
+        "print('ok')\n"
+    )
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    r = subprocess.run([sys.executable, "-c", child],
+                       capture_output=True, text=True, cwd=repo)
+    assert r.returncode == 0 and "ok" in r.stdout, r.stderr

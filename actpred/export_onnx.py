@@ -43,6 +43,25 @@ def main():
     print(f"ONNX model exported to: {args.output}"
           f"{'（含 imu 输入）' if imu_dim > 0 else ''}")
 
+    # 写入训练配置元数据：onnx_infer 据此自动识别归一化方式与残差模式，
+    # 避免推理端配置与训练不一致导致静默错误（normalize_actions=False 时
+    # 记为 "none"，推理端不做任何归一化）
+    import onnx
+    m = onnx.load(args.output)
+    meta = {
+        "normalize_mode": (data_cfg.normalize_mode
+                           if data_cfg.normalize_actions else "none"),
+        "predict_delta": ("1" if getattr(cfg.train, "predict_delta", False)
+                          else "0"),
+        "imu_dim": str(imu_dim),
+        "action_dim": str(data_cfg.action_dim),
+    }
+    for k, v in meta.items():
+        p = m.metadata_props.add()
+        p.key, p.value = k, v
+    onnx.save(m, args.output)
+    print(f"ONNX 元数据已写入: {meta}")
+
     # 可选：验证导出的 ONNX 模型一致性
     try:
         import onnxruntime as ort

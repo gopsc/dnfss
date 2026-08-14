@@ -211,7 +211,9 @@ recorder.flush()
   checkpoint 内记录的路径查找，找不到时回退到 checkpoint 同目录的 `action_stats.npy`）。
 - `--normalize-mode fixed_range` 用固定物理范围 min-max→[0,1]（常量表见 `action_norm.py`），
   **免 stats 文件**，消除 stats 路径类 bug 的整类风险；推理端（predict/onnx_infer/hailo_infer）
-  从 checkpoint/ONNX 元数据自动识别归一化方式，无需额外参数。
+  从 checkpoint/ONNX 元数据自动识别归一化方式（含 predict_delta 残差模式），无需额外参数。
+  注：旧版导出的 ONNX 无元数据，onnx_infer 回退 zscore + 非残差，需显式
+  `--normalize-mode/--predict-delta` 或重新导出。
 - `actions.npy` 的列数必须与 `--action-dim` 一致；图像与动作帧数不一致时训练会打印 WARNING 并按较少者使用。
 
 ## 编程 API

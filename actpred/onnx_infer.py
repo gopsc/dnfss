@@ -36,12 +36,18 @@ class OnnxPredictor:
     """
 
     def __init__(self, onnx_path: str, stats_path: str = None,
-                 providers=None, normalize_mode: str = "zscore"):
+                 providers=None, normalize_mode: str = None,
+                 predict_delta: bool = None):
         """ONNX 推理器。
 
         normalize_mode: 与训练时 DataConfig.normalize_mode 一致。
-            "zscore"（默认）需传 stats_path；"fixed_range" 免 stats 文件，
-            按固定物理范围 min-max 归一化（action_norm.py）。
+            "zscore" 需传 stats_path；"fixed_range" 免 stats 文件，
+            按固定物理范围 min-max 归一化（action_norm.py）；
+            "none" 表示训练未归一化，输入输出均不处理。
+            缺省 None 时从 ONNX 元数据自动识别（export_onnx 写入），
+            旧模型无元数据回退 "zscore"。
+        predict_delta: 残差模式（输出 Δ̂ 加回 history 末步得绝对动作）。
+            缺省 None 时同样从 ONNX 元数据识别，无元数据回退 False。
         """
         import onnxruntime as ort
 
@@ -66,10 +72,23 @@ class OnnxPredictor:
         self._imu_name = (next(n for n, s in inputs.items() if len(s) == 2)
                           if imu_shape is not None else None)
 
+        meta = self._read_metadata()
+        if normalize_mode is None:
+            normalize_mode = meta.get("normalize_mode") or "zscore"
+        if normalize_mode not in ("zscore", "fixed_range", "none"):
+            raise ValueError(f"normalize_mode={normalize_mode!r} 非法，"
+                             "应为 zscore/fixed_range/none")
+        self._fixed_range = normalize_mode == "fixed_range"
+        self._no_norm = normalize_mode == "none"
+        self.normalize_mode = normalize_mode   # 解析后的最终模式（供调用方判断）
+        # R1-C 残差预测：元数据 predict_delta=1 时模型输出 Δ̂，
+        # 需在归一化空间加回 a_{t-1}（与 predict.py/hailo_infer 同语义）
+        self._predict_delta = (predict_delta if predict_delta is not None
+                               else meta.get("predict_delta") == "1")
+
         self._action_mean = None
         self._action_std = None
-        self._fixed_range = normalize_mode == "fixed_range"
-        if stats_path is not None and not self._fixed_range:
+        if stats_path is not None and not (self._fixed_range or self._no_norm):
             if not os.path.exists(stats_path):
                 raise FileNotFoundError(f"统计文件不存在: {stats_path}")
             stats = np.load(stats_path)
@@ -79,6 +98,13 @@ class OnnxPredictor:
                     f"实际为 {stats.shape}: {stats_path}")
             self._action_mean = stats[0].astype(np.float32)
             self._action_std = stats[1].astype(np.float32)
+
+    def _read_metadata(self) -> dict:
+        """读 ONNX custom metadata（export_onnx 写入）；旧模型无则空 dict"""
+        try:
+            return dict(self._session.get_modelmeta().custom_metadata_map)
+        except Exception:
+            return {}
 
     @staticmethod
     def _locate_inputs(inputs):
@@ -146,6 +172,9 @@ class OnnxPredictor:
             feeds[self._imu_name] = normalize_imu(
                 imu, self.imu_dim)[np.newaxis]                    # (1,imu_dim)
         result = self._session.run(None, feeds)[0].reshape(-1).astype(np.float32)
+        if self._predict_delta:
+            # 残差：Δ̂ + a_{t-1}（归一化空间，与 predict.py 对齐）
+            result = result + action_history[-1]
         if self._fixed_range:
             result = denormalize_action(result, self.action_dim)
         elif self._action_mean is not None:
@@ -171,9 +200,13 @@ def main():
                         help="冒号分隔各步，每步 action_dim 个值")
     parser.add_argument("--stats", default=None,
                         help="action_stats.npy 路径（zscore 归一化训练才需要）")
-    parser.add_argument("--normalize-mode", choices=["zscore", "fixed_range"],
-                        default="zscore",
-                        help="与训练时 normalize_mode 一致；fixed_range 免 --stats")
+    parser.add_argument("--normalize-mode", choices=["zscore", "fixed_range", "none"],
+                        default=None,
+                        help="与训练时 normalize_mode 一致；缺省从 ONNX 元数据"
+                             "自动识别（旧模型回退 zscore）")
+    parser.add_argument("--predict-delta", action="store_true", default=None,
+                        help="残差模式（输出加回 history 末步）；缺省从 ONNX "
+                             "元数据自动识别（旧模型回退关闭）")
     parser.add_argument("--imu", type=str, default=None,
                         help="可选姿态向量（逗号分隔，原始量纲：roll,pitch 度 / "
                              "ax..gz int16 原始值）；模型含 imu 输入且缺省时按零向量")
@@ -182,7 +215,8 @@ def main():
     args = parser.parse_args()
 
     with OnnxPredictor(args.model, stats_path=args.stats,
-                       normalize_mode=args.normalize_mode) as predictor:
+                       normalize_mode=args.normalize_mode,
+                       predict_delta=args.predict_delta) as predictor:
         if len(args.images) != predictor.frame_len:
             raise SystemExit(
                 f"--images 需传入 {predictor.frame_len} 个路径（旧→新），"

@@ -1087,6 +1087,139 @@ class TestOnnxPredictor(unittest.TestCase):
                 OnnxPredictor(path, stats_path=stats_path)
 
 
+@unittest.skipUnless(
+    importlib.util.find_spec("onnxscript") is not None
+    and importlib.util.find_spec("onnxruntime") is not None,
+    "ONNX 元数据测试需要 onnxscript + onnxruntime")
+class TestOnnxMetadata(unittest.TestCase):
+    """v3-P1-2：export_onnx 写入训练配置元数据，onnx_infer 自动识别
+
+    覆盖 normalize_mode（zscore/fixed_range/none）与 predict_delta 的
+    元数据写入、自动识别、显式参数覆盖与残差加回数值语义。
+    """
+
+    @staticmethod
+    def _write_meta(path, meta):
+        import onnx
+        m = onnx.load(path)
+        for k, v in meta.items():
+            p = m.metadata_props.add()
+            p.key, p.value = k, v
+        onnx.save(m, path)
+
+    @staticmethod
+    def _read_meta(path):
+        import onnx
+        return {p.key: p.value for p in onnx.load(path).metadata_props}
+
+    def _frames(self, n):
+        return [np.random.randint(0, 255, (48, 64, 3), dtype=np.uint8)
+                for _ in range(n)]
+
+    def _export_via_script(self, tmpdir, normalize_actions=False,
+                           normalize_mode="zscore", predict_delta=False):
+        """经 export_onnx.main 导出小模型，返回 ONNX 路径"""
+        import export_onnx
+        cfg = Config()
+        cfg.data.image_width = 32
+        cfg.data.image_height = 32
+        cfg.data.action_dim = 4
+        cfg.data.history_len = 3
+        cfg.data.frame_len = 3
+        cfg.data.normalize_actions = normalize_actions
+        cfg.data.normalize_mode = normalize_mode
+        cfg.train.predict_delta = predict_delta
+        model = ActionPredictor(cfg.model, cfg.data)
+        model.eval()
+        ckpt = os.path.join(tmpdir, "best_inference.pt")
+        torch.save({"model_state_dict": model.state_dict(),
+                    "config": cfg.to_dict()}, ckpt)
+        out = os.path.join(tmpdir, "model.onnx")
+        with mock.patch.object(
+                sys, "argv",
+                ["export_onnx.py", "--model", ckpt, "--output", out]):
+            with contextlib.redirect_stdout(io.StringIO()):
+                export_onnx.main()
+        return out
+
+    def test_export_writes_metadata_unnormalized(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            meta = self._read_meta(self._export_via_script(tmpdir))
+            self.assertEqual(meta["normalize_mode"], "none")   # 未归一化训练
+            self.assertEqual(meta["predict_delta"], "0")
+            self.assertEqual(meta["action_dim"], "4")
+            self.assertEqual(meta["imu_dim"], "0")
+
+    def test_export_writes_metadata_fixed_range_delta(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            meta = self._read_meta(self._export_via_script(
+                tmpdir, normalize_actions=True,
+                normalize_mode="fixed_range", predict_delta=True))
+            self.assertEqual(meta["normalize_mode"], "fixed_range")
+            self.assertEqual(meta["predict_delta"], "1")
+
+    def test_export_metadata_roundtrip_predictor(self):
+        """导出的 ONNX 直接被 OnnxPredictor 自动识别，无需显式参数"""
+        from onnx_infer import OnnxPredictor
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = self._export_via_script(
+                tmpdir, normalize_actions=True,
+                normalize_mode="fixed_range", predict_delta=True)
+            with OnnxPredictor(out) as p:
+                self.assertEqual(p.normalize_mode, "fixed_range")
+                self.assertTrue(p._predict_delta)
+
+    def test_predictor_metadata_fallback_old_model(self):
+        """旧版无元数据 ONNX：回退 zscore + 非残差"""
+        from onnx_infer import OnnxPredictor
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path, _ = TestOnnxPredictor._export_small_onnx(tmpdir)
+            with OnnxPredictor(path) as p:
+                self.assertEqual(p.normalize_mode, "zscore")
+                self.assertFalse(p._predict_delta)
+
+    def test_explicit_param_overrides_metadata(self):
+        from onnx_infer import OnnxPredictor
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path, _ = TestOnnxPredictor._export_small_onnx(tmpdir)
+            self._write_meta(path, {"normalize_mode": "fixed_range",
+                                    "predict_delta": "1"})
+            with OnnxPredictor(path, normalize_mode="zscore",
+                               predict_delta=False) as p:
+                self.assertEqual(p.normalize_mode, "zscore")
+                self.assertFalse(p._predict_delta)
+
+    def test_predict_delta_adds_last_history(self):
+        """残差输出 = 普通输出 + history 末步（none 模式下口径直接可比）"""
+        from onnx_infer import OnnxPredictor
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path, _ = TestOnnxPredictor._export_small_onnx(tmpdir)
+            frames = self._frames(3)
+            history = np.random.randn(3, 4).astype(np.float32)
+            with OnnxPredictor(path, normalize_mode="none") as plain:
+                base = plain.predict(frames, history)
+            with OnnxPredictor(path, normalize_mode="none",
+                               predict_delta=True) as delta:
+                out = delta.predict(frames, history)
+            np.testing.assert_allclose(out, base + history[-1], atol=1e-5)
+
+    def test_none_mode_ignores_stats(self):
+        """none 模式（训练未归一化）：即使传 stats 也不做归一化"""
+        from onnx_infer import OnnxPredictor
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path, _ = TestOnnxPredictor._export_small_onnx(tmpdir)
+            stats_path = os.path.join(tmpdir, "action_stats.npy")
+            np.save(stats_path, np.stack([np.full(4, 0.5), np.full(4, 2.0)]))
+            frames = self._frames(3)
+            history = np.random.randn(3, 4).astype(np.float32)
+            with OnnxPredictor(path, stats_path=stats_path,
+                               normalize_mode="none") as p:
+                out = p.predict(frames, history)
+            with OnnxPredictor(path, normalize_mode="none") as q:
+                ref = q.predict(frames, history)
+            np.testing.assert_allclose(out, ref, atol=1e-6)
+
+
 # ---------------- HailoPredictor 测试用 fake hailo_platform ----------------
 
 class _FakeFormatType:
