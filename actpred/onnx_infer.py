@@ -18,21 +18,13 @@ import numpy as np
 from PIL import Image
 
 from imu_norm import normalize_imu
+from action_norm import normalize_action, denormalize_action
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 
-def parse_action_history(s: str, action_dim: int) -> np.ndarray:
-    steps = s.split(":")
-    history = []
-    for step in steps:
-        values = [float(v) for v in step.split(",")]
-        if len(values) != action_dim:
-            raise ValueError(
-                f"Expected {action_dim} values per step, got {len(values)}")
-        history.append(values)
-    return np.array(history, dtype=np.float32)
+from utils import parse_action_history
 
 
 class OnnxPredictor:
@@ -44,7 +36,13 @@ class OnnxPredictor:
     """
 
     def __init__(self, onnx_path: str, stats_path: str = None,
-                 providers=None):
+                 providers=None, normalize_mode: str = "zscore"):
+        """ONNX 推理器。
+
+        normalize_mode: 与训练时 DataConfig.normalize_mode 一致。
+            "zscore"（默认）需传 stats_path；"fixed_range" 免 stats 文件，
+            按固定物理范围 min-max 归一化（action_norm.py）。
+        """
         import onnxruntime as ort
 
         if providers is None:
@@ -70,7 +68,8 @@ class OnnxPredictor:
 
         self._action_mean = None
         self._action_std = None
-        if stats_path is not None:
+        self._fixed_range = normalize_mode == "fixed_range"
+        if stats_path is not None and not self._fixed_range:
             if not os.path.exists(stats_path):
                 raise FileNotFoundError(f"统计文件不存在: {stats_path}")
             stats = np.load(stats_path)
@@ -133,7 +132,9 @@ class OnnxPredictor:
             raise ValueError(
                 f"action_history 形状应为 {expected}，实际为 {action_history.shape}")
 
-        if self._action_mean is not None:
+        if self._fixed_range:
+            action_history = normalize_action(action_history, self.action_dim)
+        elif self._action_mean is not None:
             action_history = (action_history - self._action_mean) / self._action_std
 
         frames = np.stack([self._preprocess(img) for img in images])
@@ -145,7 +146,9 @@ class OnnxPredictor:
             feeds[self._imu_name] = normalize_imu(
                 imu, self.imu_dim)[np.newaxis]                    # (1,imu_dim)
         result = self._session.run(None, feeds)[0].reshape(-1).astype(np.float32)
-        if self._action_mean is not None:
+        if self._fixed_range:
+            result = denormalize_action(result, self.action_dim)
+        elif self._action_mean is not None:
             result = result * self._action_std + self._action_mean
         return result
 
@@ -167,7 +170,10 @@ def main():
     parser.add_argument("--action-history", required=True,
                         help="冒号分隔各步，每步 action_dim 个值")
     parser.add_argument("--stats", default=None,
-                        help="action_stats.npy 路径（训练时启用归一化才需要）")
+                        help="action_stats.npy 路径（zscore 归一化训练才需要）")
+    parser.add_argument("--normalize-mode", choices=["zscore", "fixed_range"],
+                        default="zscore",
+                        help="与训练时 normalize_mode 一致；fixed_range 免 --stats")
     parser.add_argument("--imu", type=str, default=None,
                         help="可选姿态向量（逗号分隔，原始量纲：roll,pitch 度 / "
                              "ax..gz int16 原始值）；模型含 imu 输入且缺省时按零向量")
@@ -175,7 +181,8 @@ def main():
                         default="json")
     args = parser.parse_args()
 
-    with OnnxPredictor(args.model, stats_path=args.stats) as predictor:
+    with OnnxPredictor(args.model, stats_path=args.stats,
+                       normalize_mode=args.normalize_mode) as predictor:
         if len(args.images) != predictor.frame_len:
             raise SystemExit(
                 f"--images 需传入 {predictor.frame_len} 个路径（旧→新），"

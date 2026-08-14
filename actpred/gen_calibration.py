@@ -101,8 +101,13 @@ def build_deploy_set(args):
     history = build_action_history_samples(
         args.mt_dir, args.samples, cfg.history_len, cfg.action_dim, rng)
     history = history[:, None, :, :]  # (N, 1, H_len, D)
-    if cfg.normalize_actions:
-        # 归一化模型的 HEF 输入是 z-score 历史（hailo_infer --stats 同语义），
+    if cfg.normalize_actions and cfg.normalize_mode == "fixed_range":
+        # 固定物理范围归一化：校准数据与推理端同一变换（免 stats 文件）
+        from action_norm import normalize_action
+        history = normalize_action(history, cfg.action_dim)
+        print("  action_history: 已 fixed_range 归一化（固定物理范围）")
+    elif cfg.normalize_actions:
+        # z-score 归一化模型的 HEF 输入是 z-score 历史（hailo_infer --stats 同语义），
         # 校准数据必须走同一变换，否则量化范围与推理分布不匹配
         stats_path = cfg.action_stats_path
         if not stats_path:

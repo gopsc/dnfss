@@ -11,6 +11,7 @@ from torchvision import transforms
 from torchvision.transforms import functional as TF
 
 from imu_norm import imu_scales
+from action_norm import normalize_action
 
 
 def _natural_key(p):
@@ -25,9 +26,11 @@ class ActionDataset(Dataset):
                  action_stats_path: str = None, episode_indices: list = None,
                  frame_len: int = 3, augment: bool = False,
                  predict_delta: bool = False, rollout_len: int = 1,
-                 imu_dim: int = 0):
+                 imu_dim: int = 0, normalize_mode: str = "zscore"):
         self.history_len = history_len
         self.action_dim = action_dim
+        # 固定物理范围归一化（免 stats 文件）；仅 normalize_actions=True 生效
+        self._fixed_range = normalize_actions and normalize_mode == "fixed_range"
         # R2 方案一：>0 时样本带 "imu" 键（归一化姿态向量，缺失 episode 补零）
         self.imu_dim = imu_dim
         self.image_width = image_width
@@ -80,7 +83,7 @@ class ActionDataset(Dataset):
 
         self._action_mean = None
         self._action_std = None
-        if normalize_actions:
+        if normalize_actions and not self._fixed_range:
             if action_stats_path:
                 if not os.path.exists(action_stats_path):
                     raise FileNotFoundError(
@@ -110,7 +113,13 @@ class ActionDataset(Dataset):
         return len(self.samples)
 
     def _norm(self, a):
-        """z-score 归一化（numpy → torch 前在 numpy 空间做，保持 float32）"""
+        """动作归一化（numpy → torch 前在 numpy 空间做，保持 float32）
+
+        fixed_range：固定物理范围 min-max → [0,1]（clamp 防御，免 stats）；
+        否则 z-score（_action_mean 为 None 时直通原始值）。
+        """
+        if self._fixed_range:
+            return normalize_action(a, self.action_dim)
         if self._action_mean is None:
             return a
         return (a - self._action_mean) / self._action_std

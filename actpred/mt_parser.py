@@ -30,7 +30,7 @@ def parse_mt_action(path) -> np.ndarray:
     Raises:
         ValueError: 文件中无 @Action 块、数据行不足、行列不一致或数值非法
     """
-    text = Path(path).read_text(encoding="utf-8")
+    text = Path(path).read_text(encoding="utf-8-sig")
     # 先去除整行注释（# 开头），避免注释中的 @Action 干扰正则匹配
     text = re.sub(r"(?m)^[ \t]*#.*$", "", text)
 

@@ -141,7 +141,8 @@ def _load_predictor(checkpoint):
     """
     import os
     try:
-        if checkpoint.endswith(".hef"):
+        lower = checkpoint.lower()
+        if lower.endswith(".hef"):
             from actpred.hailo_infer import HailoPredictor as _P
             hef_dir = os.path.dirname(os.path.abspath(checkpoint))
 
@@ -160,6 +161,7 @@ def _load_predictor(checkpoint):
 
             # predict_delta：从同目录 checkpoint 读取训练配置
             predict_delta = False
+            normalize_mode = "zscore"
             for name in ("pretrain_best_inference.pt",
                          "best_inference.pt"):
                 ckpt_path = os.path.join(hef_dir, name)
@@ -171,9 +173,15 @@ def _load_predictor(checkpoint):
                         cfg = ck.get("config", {})
                         predict_delta = cfg.get("train", {}).get(
                             "predict_delta", False)
+                        normalize_mode = cfg.get("data", {}).get(
+                            "normalize_mode", "zscore")
                         if predict_delta:
                             logging.info(
                                 "predict_delta=True from %s", ckpt_path)
+                        if normalize_mode != "zscore":
+                            logging.info(
+                                "normalize_mode=%s from %s",
+                                normalize_mode, ckpt_path)
                     except Exception:
                         pass
                     break
@@ -181,7 +189,8 @@ def _load_predictor(checkpoint):
             try:
                 return _P(checkpoint, stats_path=stats_path,
                           predict_delta=predict_delta,
-                          pred_token=pred_token)
+                          pred_token=pred_token,
+                          normalize_mode=normalize_mode)
             except Exception:
                 logging.exception("加载 HEF 推理器失败: %s", checkpoint)
                 return None

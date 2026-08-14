@@ -158,7 +158,8 @@ class DeployWrapper(nn.Module):
 def check_token_ranges(wrapper: "DeployWrapper", frame_len: int, height: int,
                        width: int, history_len: int, action_dim: int,
                        pred_token: torch.Tensor, max_abs: float = MAX_TOKEN_ABS,
-                       action_stats_path: str = None):
+                       action_stats_path: str = None,
+                       normalize_mode: str = "zscore"):
     """导出前检查 token 量级：幅度过大时 uint8 量化会把小信号压成 0
 
     预训练用全零图像占位 → BN running_var 停在初始小值 → 推理时每级
@@ -166,21 +167,24 @@ def check_token_ranges(wrapper: "DeployWrapper", frame_len: int, height: int,
     幅度分配共享量化 scale（实测 scale=1965.92，pred_token/act_tokens
     全部量化成 0），HEF 输出对任何输入恒定。必须在编译前拦截。
 
-    归一化模型（normalize_actions）的 HEF 输入是 z-score 后的历史，
-    检查输入须与推理端一致。
+    归一化模型（normalize_actions）的 HEF 输入是归一化后的历史，
+    检查输入须与推理端一致（zscore → z 空间采样；fixed_range → [0,1]）。
     """
     rng = np.random.default_rng(42)
     raw = rng.integers(0, 256, size=(height, width, 3), dtype=np.uint8)
     norm = (raw.astype(np.float32) / 255.0 - IMAGENET_MEAN) / IMAGENET_STD
     frames = [torch.tensor(norm[None]) for _ in range(frame_len)]
     history = rng.uniform(0.0, 500.0, size=(1, 1, history_len, action_dim))
-    if action_stats_path is not None:
+    if normalize_mode == "fixed_range":
+        # fixed_range 归一化空间即 [0,1]，直接在归一化空间采样
+        history = rng.uniform(0.0, 1.0, size=(1, 1, history_len, action_dim))
+    elif action_stats_path is not None:
         stats = np.load(action_stats_path)
         if stats.shape != (2, action_dim):
             raise ValueError(
                 f"action stats 形状应为 (2, {action_dim})，"
                 f"实际为 {stats.shape}: {action_stats_path}")
-        # 归一化模型直接在 z 空间采样：raw 均匀采样会在零方差列上
+        # z-score 归一化模型直接在 z 空间采样：raw 均匀采样会在零方差列上
         # 产生天文数字 z 值（实际推理中这些列恒为 0，z 恒为 0）
         history = rng.normal(0.0, 1.5, size=(1, 1, history_len, action_dim))
     history = torch.tensor(history, dtype=torch.float32)
@@ -226,8 +230,9 @@ def main():
     h, w = cfg.data.image_height, cfg.data.image_width
     f = cfg.data.frame_len
     stats_path = None
-    if cfg.data.normalize_actions:
+    if cfg.data.normalize_actions and cfg.data.normalize_mode != "fixed_range":
         # 与 predict.py 语义一致：相对路径按 checkpoint 目录解析
+        # （fixed_range 模式免 stats 文件，跳过）
         stats_path = cfg.data.action_stats_path
         if not stats_path:
             stats_path = os.path.join(
@@ -241,7 +246,8 @@ def main():
                 f"模型训练时启用了动作归一化，但未找到统计文件: {stats_path}")
     check_token_ranges(wrapper, f, h, w, cfg.data.history_len,
                        cfg.data.action_dim, model.pred_token.data.unsqueeze(1),
-                       action_stats_path=stats_path)
+                       action_stats_path=stats_path,
+                       normalize_mode=cfg.data.normalize_mode)
     dummy_frames = [torch.randn(1, h, w, 3) for _ in range(f)]
     dummy_history = torch.randn(1, 1, cfg.data.history_len, cfg.data.action_dim)
     dummy_pred = model.pred_token.data.unsqueeze(1).clone()  # (1, 1, 1, d)

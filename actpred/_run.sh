@@ -11,6 +11,10 @@ elif [ "${1:-}" = "pretrain" ]; then
 elif [ "${1:-}" = "export" ]; then
     shift
     exec python3 export_onnx.py "$@"
-else
+elif [ "${1:-}" = "predict" ]; then
+    shift
     exec python3 predict.py "$@"
+else
+    echo "未知子命令: ${1:-}（可用: train / pretrain / export / predict）" >&2
+    exit 1
 fi

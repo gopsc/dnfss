@@ -1790,17 +1790,281 @@ class TestR4Evaluate(unittest.TestCase):
         self.assertGreater(rep["error_growth"], 1.0)
         self.assertEqual(len(rep["error_curve"]), 40)
 
-    def test_action_bounds_margin(self):
+    def test_action_bounds_physical(self):
+        """越界判据为固定物理界（与 action_norm 常量表共用），不再依赖数据统计"""
         import evaluate
+        lo, hi = evaluate._action_bounds(12)
+        np.testing.assert_allclose(lo, np.zeros(12), atol=1e-6)
+        np.testing.assert_allclose(hi[:10], [180.0] * 10, atol=1e-6)
+        np.testing.assert_allclose(hi[10:], [5000.0, 2000.0], atol=1e-6)
+        # action_dim > 18 的超出列按 [0,1] 补足
+        lo20, hi20 = evaluate._action_bounds(20)
+        self.assertEqual(len(hi20), 20)
+        np.testing.assert_allclose(hi20[18:], [1.0, 1.0], atol=1e-6)
+
+    def test_error_growth_per_episode_median(self):
+        """error_growth 按 episode 归一化取中位数，不被长短混叠主导"""
+        import evaluate
+        # ep1: 40 步线性增长 → g1 = mean(31..40)/mean(1..10) = 35.5/5.5
+        ep1 = [{"t": k, "mse": float(k + 1), "pred": np.zeros(2),
+                "true": np.zeros(2), "oob": False} for k in range(40)]
+        # ep2: 8 步末段尖峰 → g2 = 100/1
+        ep2 = [{"t": k, "mse": (1.0 if k < 6 else 100.0), "pred": np.zeros(2),
+                "true": np.zeros(2), "oob": False} for k in range(8)]
+        rep = evaluate.summarize([ep1, ep2], None, None)
+        g1 = 35.5 / 5.5
+        g2 = 100.0
+        self.assertAlmostEqual(rep["error_growth"], float(np.median([g1, g2])),
+                               places=5)
+
+
+class TestFixedRangeNorm(unittest.TestCase):
+    """固定物理范围归一化 + 逐列加权：action_norm 常量表、dataset/predict 链路、
+    config 校验、加权损失"""
+
+    # ---------------- action_norm.py ----------------
+
+    def test_normalize_known_values(self):
+        from action_norm import normalize_action
+        a = np.zeros(18, dtype=np.float32)
+        a[0] = 90.0     # 舵机中位
+        a[10] = 2500.0  # spk.F 中位
+        a[11] = 1000.0  # spk.delay 中位
+        out = normalize_action(a)
+        self.assertAlmostEqual(float(out[0]), 0.5, places=6)
+        self.assertAlmostEqual(float(out[10]), 0.5, places=6)
+        self.assertAlmostEqual(float(out[11]), 0.5, places=6)
+        # 保留位恒 0 → 归一化后仍 0
+        np.testing.assert_allclose(out[12:], 0.0, atol=1e-7)
+
+    def test_normalize_clamps_out_of_range(self):
+        from action_norm import normalize_action
+        a = np.array([-10.0, 270.0] + [0.0] * 16, dtype=np.float32)
+        out = normalize_action(a)
+        self.assertEqual(float(out[0]), 0.0)
+        self.assertEqual(float(out[1]), 1.0)
+
+    def test_denormalize_roundtrip(self):
+        from action_norm import normalize_action, denormalize_action
+        rng = np.random.RandomState(0)
+        a = np.zeros((7, 18), dtype=np.float32)
+        a[:, :10] = rng.uniform(0, 180, (7, 10))
+        a[:, 10] = rng.uniform(0, 5000, 7)
+        a[:, 11] = rng.uniform(0, 2000, 7)
+        np.testing.assert_allclose(
+            denormalize_action(normalize_action(a)), a, rtol=1e-5, atol=1e-4)
+
+    def test_action_dim_prefix_and_padding(self):
+        from action_norm import normalize_action, action_bounds
+        # action_dim < 18 取前缀
+        lo4, hi4 = action_bounds(4)
+        np.testing.assert_allclose(hi4, [180.0] * 4)
+        out = normalize_action(np.array([90.0, 45.0, 0.0, 180.0],
+                                        dtype=np.float32))
+        np.testing.assert_allclose(out, [0.5, 0.25, 0.0, 1.0], atol=1e-6)
+        # action_dim > 18 按 [0,1] 补足
+        lo20, hi20 = action_bounds(20)
+        self.assertEqual(len(lo20), 20)
+        np.testing.assert_allclose(hi20[18:], [1.0, 1.0])
+
+    def test_default_column_weights(self):
+        from action_norm import default_column_weights
+        w18 = default_column_weights(18)
+        np.testing.assert_allclose(w18[:10], 1.0)
+        np.testing.assert_allclose(w18[10:12], 0.2)
+        np.testing.assert_allclose(w18[12:], 0.0)
+        # 小 action_dim：全部落在舵机段 → 全 1.0
+        np.testing.assert_allclose(default_column_weights(4), 1.0)
+        # 12 列：舵机 1.0 + spk 0.2
+        w12 = default_column_weights(12)
+        np.testing.assert_allclose(w12[10:], 0.2)
+
+    # ---------------- dataset 链路 ----------------
+
+    def test_dataset_fixed_range_no_stats_needed(self):
+        """fixed_range 模式不需要 action_stats.npy，目标值按物理范围归一化"""
         with tempfile.TemporaryDirectory() as tmpdir:
-            self._create_episode(Path(tmpdir), "episode_0001",
-                                 np.zeros((5, 2), dtype=np.float32))
-            self._create_episode(Path(tmpdir), "episode_0002",
-                                 np.full((5, 2), 10.0, dtype=np.float32))
-            lo, hi = evaluate._action_bounds(tmpdir, 2, margin_ratio=0.1)
-            # min=0,max=10,span=10,margin=1 → lo=-1, hi=11
-            np.testing.assert_allclose(lo, [-1.0, -1.0], atol=1e-6)
-            np.testing.assert_allclose(hi, [11.0, 11.0], atol=1e-6)
+            base = Path(tmpdir)
+            ep_dir = base / "episode_0001"
+            images_dir = ep_dir / "images"
+            images_dir.mkdir(parents=True)
+            for i in range(8):
+                Image.fromarray(np.random.randint(
+                    0, 255, (16, 16, 3), dtype=np.uint8)).save(
+                    images_dir / f"{i:04d}.jpg")
+            actions = np.zeros((8, 4), dtype=np.float32)
+            actions[:, 0] = 90.0   # 舵机中位 → 0.5
+            actions[:, 1] = 180.0  # 满行程 → 1.0
+            np.save(ep_dir / "actions.npy", actions)
+            ds = ActionDataset(tmpdir, history_len=3, action_dim=4,
+                               image_width=16, image_height=16, frame_len=3,
+                               normalize_actions=True,
+                               normalize_mode="fixed_range")
+            sample = ds[0]
+            np.testing.assert_allclose(sample["target"].numpy()[:2],
+                                       [0.5, 1.0], atol=1e-6)
+            np.testing.assert_allclose(
+                sample["action_history"].numpy()[:, 0], 0.5, atol=1e-6)
+            # fixed_range 不产生统计量
+            self.assertIsNone(ds.get_action_stats())
+
+    def test_dataset_fixed_range_clamps(self):
+        """越界值 clamp 到 [0,1]（防御口径）"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            ep_dir = base / "episode_0001"
+            images_dir = ep_dir / "images"
+            images_dir.mkdir(parents=True)
+            for i in range(8):
+                Image.fromarray(np.random.randint(
+                    0, 255, (16, 16, 3), dtype=np.uint8)).save(
+                    images_dir / f"{i:04d}.jpg")
+            actions = np.zeros((8, 4), dtype=np.float32)
+            actions[:, 0] = 999.0   # 远超 180 → clamp 1.0
+            np.save(ep_dir / "actions.npy", actions)
+            ds = ActionDataset(tmpdir, history_len=3, action_dim=4,
+                               image_width=16, image_height=16, frame_len=3,
+                               normalize_actions=True,
+                               normalize_mode="fixed_range")
+            self.assertEqual(float(ds[0]["target"][0]), 1.0)
+
+    def test_dataset_zscore_unchanged(self):
+        """zscore 默认模式行为不变（仍计算/加载统计量）"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            TestActionDataset._create_dummy_episode(
+                Path(tmpdir), n_frames=10, action_dim=4)
+            ds = ActionDataset(tmpdir, history_len=3, action_dim=4,
+                               image_width=32, image_height=32, frame_len=3,
+                               normalize_actions=True)
+            self.assertIsNotNone(ds._action_mean)
+            self.assertFalse(ds._fixed_range)
+
+    def test_mt_dataset_fixed_range(self):
+        """MTActionDataset fixed_range：免统计量，按物理范围归一化"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _write_mt(tmpdir, "a.mt", _make_seq_mt(6))
+            with contextlib.redirect_stdout(io.StringIO()):
+                ds = MTActionDataset(tmpdir, history_len=3, action_dim=3,
+                                     normalize_mode="fixed_range")
+            sample = ds[0]
+            # _make_seq_mt 第 i 行 [i, 10i, 100i]，target 为第 4 行 [3,30,300]
+            # 除数 180 → [3/180, 30/180, 300/180(clamp 1.0)]
+            np.testing.assert_allclose(
+                sample["target"].numpy(),
+                [3 / 180, 30 / 180, 1.0], atol=1e-6)
+
+    # ---------------- config 校验与 CLI ----------------
+
+    def test_cli_normalize_mode_and_column_weights(self):
+        parser = build_argparser()
+        args = parser.parse_args(
+            ["--normalize-mode", "fixed_range",
+             "--column-weights", "1,1,1,0.2"])
+        cfg = apply_overrides(Config(), args)
+        cfg.data.action_dim = 4
+        self.assertEqual(cfg.data.normalize_mode, "fixed_range")
+        self.assertEqual(cfg.data.column_weights, [1.0, 1.0, 1.0, 0.2])
+        validate_config_values(cfg.data, cfg.model)  # 不应抛异常
+
+    def test_bad_normalize_mode_raises(self):
+        cfg = Config()
+        cfg.data.normalize_mode = "minmax"  # 非法值
+        with self.assertRaisesRegex(ValueError, "normalize_mode"):
+            validate_config_values(cfg.data, cfg.model)
+
+    def test_column_weights_length_mismatch_raises(self):
+        cfg = Config()
+        cfg.data.column_weights = [1.0, 0.2]  # action_dim=18 不匹配
+        with self.assertRaisesRegex(ValueError, "column_weights"):
+            validate_config_values(cfg.data, cfg.model)
+
+    def test_column_weights_all_zero_raises(self):
+        cfg = Config()
+        cfg.data.column_weights = [0.0] * 18
+        with self.assertRaisesRegex(ValueError, "column_weights"):
+            validate_config_values(cfg.data, cfg.model)
+
+    def test_checkpoint_roundtrip_new_keys(self):
+        """新键随 checkpoint 序列化/解析往返一致；旧 checkpoint 缺省兼容"""
+        cfg = Config()
+        cfg.data.normalize_mode = "fixed_range"
+        cfg.data.column_weights = [1.0] * 10 + [0.2] * 2 + [0.0] * 6
+        parsed = parse_checkpoint_config(cfg.to_dict())
+        self.assertEqual(parsed.data.normalize_mode, "fixed_range")
+        self.assertEqual(parsed.data.column_weights,
+                         [1.0] * 10 + [0.2] * 2 + [0.0] * 6)
+        # 旧 checkpoint 无新键 → 默认 zscore / None，行为不变
+        d = cfg.to_dict()
+        del d["data"]["normalize_mode"]
+        del d["data"]["column_weights"]
+        parsed = parse_checkpoint_config(d)
+        self.assertEqual(parsed.data.normalize_mode, "zscore")
+        self.assertIsNone(parsed.data.column_weights)
+
+    def test_warn_init_from_normalize_mode_mismatch(self):
+        from config import warn_init_from_mismatch
+        cfg = Config()
+        cfg.data.normalize_mode = "fixed_range"
+        init_cfg = {"data": {"normalize_actions": True,
+                             "normalize_mode": "zscore"}}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            warn_init_from_mismatch(init_cfg, cfg)
+        self.assertIn("normalize_mode", buf.getvalue())
+
+    # ---------------- 加权损失 ----------------
+
+    def test_weighted_mse(self):
+        from train import _weighted_mse
+        pred = torch.tensor([[1.0, 2.0, 3.0]])
+        target = torch.zeros(1, 3)
+        # 等权 → 与普通 MSE 一致
+        w1 = torch.ones(3)
+        self.assertAlmostEqual(
+            float(_weighted_mse(pred, target, w1)),
+            float(torch.nn.functional.mse_loss(pred, target)), places=6)
+        # 只留第 0 列权重：loss = (1·1²)/(1) = 1
+        w = torch.tensor([1.0, 0.0, 0.0])
+        self.assertAlmostEqual(float(_weighted_mse(pred, target, w)), 1.0,
+                               places=6)
+        # None 退化为普通 MSE
+        self.assertAlmostEqual(
+            float(_weighted_mse(pred, target, None)),
+            float(torch.nn.functional.mse_loss(pred, target)), places=6)
+
+    # ---------------- predict 链路 ----------------
+
+    def test_predict_fixed_range_no_stats(self):
+        """fixed_range checkpoint 无需 action_stats.npy，归一化口径与
+        action_norm 一致（与 raw 模型 + 手工归一化对照）"""
+        from action_norm import normalize_action, denormalize_action
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_dir = os.path.join(tmpdir, "raw")
+            fixed_dir = os.path.join(tmpdir, "fixed")
+            os.makedirs(raw_dir)
+            os.makedirs(fixed_dir)
+            torch.manual_seed(0)
+            path, model, cfg = \
+                TestActionPredictorInference._make_checkpoint(raw_dir)
+            # 同一份权重另存为 fixed_range 归一化 checkpoint（无 stats 文件）
+            cfg.data.normalize_actions = True
+            cfg.data.normalize_mode = "fixed_range"
+            fixed_path = os.path.join(fixed_dir, "best_inference.pt")
+            torch.save({"model_state_dict": model.state_dict(),
+                        "config": cfg.to_dict()}, fixed_path)
+
+            image = np.random.randint(0, 255, (32, 32, 3), dtype=np.uint8)
+            history = np.random.uniform(0, 180, (3, 4)).astype(np.float32)
+            # fixed_range 端：内部 normalize → 模型 → denormalize
+            pred_fixed = ActionPredictorInference(
+                fixed_path, device="cpu").predict([image] * 3, history)
+            # 对照：raw 模型直接吃手工归一化的历史，再手工反归一化
+            pred_raw = ActionPredictorInference(raw_dir + "/best_inference.pt",
+                                                device="cpu").predict(
+                [image] * 3, normalize_action(history, 4))
+            np.testing.assert_allclose(
+                pred_fixed, denormalize_action(pred_raw, 4),
+                rtol=1e-5, atol=1e-5)
 
 
 class TestR2ImuNorm(unittest.TestCase):

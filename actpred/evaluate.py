@@ -51,20 +51,15 @@ def _load_episode(data_dir, ep_name):
     return image_files[:n], actions[:n], imus
 
 
-def _action_bounds(data_dir, action_dim, margin_ratio=0.1):
-    """从全数据集统计动作经验范围（min/max 加 margin），作为物理可行性判据。
+def _action_bounds(action_dim):
+    """固定物理界作为越界判据（与 action_norm.py 常量表共用）
 
-    actpred 侧无硬限位定义（18 列混含舵机角度/频率/延时/预留），硬编码范围不可靠；
-    用数据分布的经验界更通用。margin 默认 10% 容忍合理外推。
+    旧版用数据经验界（min/max+margin），恒值列 span≈0 时任何非零预测都
+    算越界（unnormalized 模型 oob_rate 曾恒 100%）。"越物理界"比"越经验界"
+    更符合安全语义：舵机 [0,180]、spk.F [0,5000]、spk.delay [0,2000]。
     """
-    mins = np.full(action_dim, np.inf, dtype=np.float32)
-    maxs = np.full(action_dim, -np.inf, dtype=np.float32)
-    for ep_dir in ActionDataset._valid_episode_dirs(data_dir):
-        a = np.load(ep_dir / "actions.npy").astype(np.float32)
-        mins = np.minimum(mins, a.min(axis=0))
-        maxs = np.maximum(maxs, a.max(axis=0))
-    span = np.maximum(maxs - mins, 1e-6)
-    return mins - margin_ratio * span, maxs + margin_ratio * span
+    from action_norm import action_bounds
+    return action_bounds(action_dim)
 
 
 @np.errstate(all="ignore")
@@ -133,7 +128,12 @@ def _smoothness(seq):
 
 
 def summarize(all_steps, lo, hi):
-    """汇总多个 episode 的滚动记录为报告指标"""
+    """汇总多个 episode 的滚动记录为报告指标
+
+    error_growth 改为按 episode 归一化后取中位数：
+        每 episode 内部算 (末25% MSE / 首25% MSE) → 中位数聚合。
+    避免短 episode 尖峰被长 episode 均值淹没，也更鲁棒于长度差异。
+    """
     if not all_steps:
         raise ValueError("无可评估的滚动步（episode 太短或 horizon 过小）")
     flat = [s for steps in all_steps for s in steps]
@@ -147,6 +147,18 @@ def summarize(all_steps, lo, hi):
         if vals:
             curve.append(float(np.mean(vals)))
 
+    # 逐 episode 归一化 error_growth：每 episode 自身首末段比值 → 中位数
+    growths = []
+    for steps in all_steps:
+        n = len(steps)
+        if n < 2:
+            continue
+        m = np.array([s["mse"] for s in steps], dtype=np.float32)
+        front = np.mean(m[:max(1, n // 4)])
+        back = np.mean(m[max(0, n * 3 // 4):])
+        growths.append(back / max(front, 1e-12))
+    error_growth = float(np.median(growths)) if growths else 1.0
+
     preds = np.array([s["pred"] for s in flat], dtype=np.float32)
     trues = np.array([s["true"] for s in flat], dtype=np.float32)
     oob = [s.get("oob", False) for s in flat]
@@ -156,9 +168,7 @@ def summarize(all_steps, lo, hi):
         "n_steps": len(flat),
         "overall_mse": float(np.mean(mses)),
         # 末段（后 25% 步）相对首段（前 25%）的误差比，>1 表示误差随步数发散
-        "error_growth": float(np.mean(mses[int(len(mses) * 0.75):]) /
-                              max(np.mean(mses[:max(1, int(len(mses) * 0.25))]),
-                                  1e-12)),
+        "error_growth": error_growth,
         "error_curve": curve,
         "pred_smoothness": _smoothness(preds),
         "true_smoothness": _smoothness(trues),
@@ -173,7 +183,7 @@ def evaluate(checkpoint, data_dir, episodes=None, horizon=None, device=None):
     ep_names = _episode_ids(data_dir)
     if episodes is not None:
         ep_names = ep_names[-episodes:]  # 取尾部 episode 作为留出集
-    lo, hi = _action_bounds(data_dir, predictor.action_dim)
+    lo, hi = _action_bounds(predictor.action_dim)
     all_steps = []
     for name in ep_names:
         image_files, actions, imus = _load_episode(data_dir, name)

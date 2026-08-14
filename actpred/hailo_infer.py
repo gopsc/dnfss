@@ -36,24 +36,11 @@ import numpy as np
 from PIL import Image
 
 from imu_norm import normalize_imu
+from action_norm import normalize_action, denormalize_action
+from utils import parse_action_history
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-
-# 与 predict.parse_action_history 相同逻辑；此处内联以保持
-# 本模块零 torch 依赖（HAT 部署环境只装 hailo_platform + numpy + PIL）
-
-
-def parse_action_history(s: str, action_dim: int) -> np.ndarray:
-    steps = s.split(":")
-    history = []
-    for step in steps:
-        values = [float(v) for v in step.split(",")]
-        if len(values) != action_dim:
-            raise ValueError(
-                f"Expected {action_dim} values per step, got {len(values)}")
-        history.append(values)
-    return np.array(history, dtype=np.float32)
 
 
 def _input_layer_index(name: str) -> int:
@@ -73,17 +60,22 @@ class HailoPredictor:
     """
 
     def __init__(self, hef_path: str, stats_path: str = None, vdevice=None,
-                 predict_delta: bool = False, pred_token=None):
+                 predict_delta: bool = False, pred_token=None,
+                 normalize_mode: str = "zscore"):
         """HEF 推理器。
 
         predict_delta: 模型用 --predict-delta 训练时须置 True，推理输出
             （归一化空间）会加回 history 末步再反归一化，与 predict.py 对齐。
         pred_token: np.ndarray 或 .npy 路径；export_deploy.py --pred-token-out
             产物。缺省时喂零（仅适合 pred_token 恰好全零的模型）。
+        normalize_mode: 与训练时 DataConfig.normalize_mode 一致。
+            "zscore"（默认）需传 stats_path；"fixed_range" 免 stats 文件，
+            按固定物理范围 min-max 归一化（action_norm.py）。
         """
         from hailo_platform import HEF, VDevice
 
         self._predict_delta = predict_delta
+        self._fixed_range = normalize_mode == "fixed_range"
         self._default_pred_token = None
         if pred_token is not None:
             if isinstance(pred_token, str):
@@ -113,7 +105,7 @@ class HailoPredictor:
 
             self._action_mean = None
             self._action_std = None
-            if stats_path is not None:
+            if stats_path is not None and not self._fixed_range:
                 if not os.path.exists(stats_path):
                     raise FileNotFoundError(f"统计文件不存在: {stats_path}")
                 stats = np.load(stats_path)
@@ -255,7 +247,9 @@ class HailoPredictor:
             raise ValueError(
                 f"action_history 形状应为 {expected}，实际为 {action_history.shape}")
 
-        if self._action_mean is not None:
+        if self._fixed_range:
+            action_history = normalize_action(action_history, self.action_dim)
+        elif self._action_mean is not None:
             action_history = (action_history - self._action_mean) / self._action_std
 
         from hailo_platform import FormatType
@@ -316,7 +310,9 @@ class HailoPredictor:
         if self._predict_delta:
             # 残差模式：Δ̂ + a_{t-1}（归一化空间），与 predict.py 对齐
             result = result + action_history[-1]
-        if self._action_mean is not None:
+        if self._fixed_range:
+            result = denormalize_action(result, self.action_dim)
+        elif self._action_mean is not None:
             result = result * self._action_std + self._action_mean
         if not np.all(np.isfinite(result)):
             print("WARNING: HEF output contains NaN/Inf, replacing with zeros")
@@ -370,7 +366,11 @@ def main():
     parser.add_argument("--action-history", required=True,
                         help="冒号分隔各步，每步 action_dim 个值")
     parser.add_argument("--stats", default=None,
-                        help="action_stats.npy 路径（训练时启用归一化才需要）")
+                        help="action_stats.npy 路径（zscore 归一化训练才需要）")
+    parser.add_argument("--normalize-mode", choices=["zscore", "fixed_range"],
+                        default=None,
+                        help="与训练时 normalize_mode 一致；fixed_range 免 --stats。"
+                             "缺省按 --ckpt 配置自动判定，无 --ckpt 时为 zscore")
     parser.add_argument("--pred-token", default=None,
                         help="pred_token .npy 路径（export_deploy.py "
                              "--pred-token-out 产物；缺省喂零）")
@@ -391,6 +391,7 @@ def main():
                        dtype=np.float32)
 
     predict_delta = False
+    normalize_mode = args.normalize_mode or "zscore"
     if args.ckpt:
         import torch
         ck = torch.load(args.ckpt, map_location="cpu", weights_only=True)
@@ -398,9 +399,18 @@ def main():
         predict_delta = cfg.get("train", {}).get("predict_delta", False)
         if predict_delta:
             print("predict_delta=True: HEF 输出将加回历史末步（残差模式）")
+        if args.normalize_mode is None:
+            # 未显式指定时按 checkpoint 配置判定归一化方式（旧 checkpoint 无
+            # normalize_mode 键，默认 zscore，行为不变）
+            data_cfg = cfg.get("data", {})
+            if (data_cfg.get("normalize_actions")
+                    and data_cfg.get("normalize_mode") == "fixed_range"):
+                normalize_mode = "fixed_range"
+                print("normalize_mode=fixed_range: 固定物理范围归一化（免 stats）")
 
     with HailoPredictor(args.hef, stats_path=args.stats,
-                        predict_delta=predict_delta) as predictor:
+                        predict_delta=predict_delta,
+                        normalize_mode=normalize_mode) as predictor:
         if len(args.images) != predictor.frame_len:
             raise SystemExit(
                 f"--images 需传入 {predictor.frame_len} 个路径（旧→新），"

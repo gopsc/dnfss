@@ -1,6 +1,6 @@
 import argparse
 from dataclasses import dataclass, asdict, field
-from typing import Optional
+from typing import List, Optional
 
 
 @dataclass
@@ -13,6 +13,15 @@ class DataConfig:
     data_dir: str = "./data"
     normalize_actions: bool = True
     action_stats_path: Optional[str] = None
+    # 归一化方式（仅 normalize_actions=True 时生效）：
+    #   "zscore"      数据统计 z-score（现状，依赖 action_stats.npy）
+    #   "fixed_range" 固定物理范围 min-max → [0,1]（免 stats 文件，零状态部署，
+    #                 常量表见 action_norm.py；越界值 clamp 防御）
+    normalize_mode: str = "zscore"
+    # 逐列损失权重（仅训练损失用，推理端无感知）：None → action_norm
+    # .default_column_weights(action_dim)（舵机 1.0 / spk 0.2 / 保留位 0.0）。
+    # 显式指定时长度须等于 action_dim。
+    column_weights: Optional[List[float]] = None
     # R2 方案一：MPU6050 姿态作为独立 IMU token 注入（序列 F+H+2）。
     # 0 = 关闭（默认，序列保持 F+H+1，旧 checkpoint 完全兼容）；
     # 8×N = N 个传感器的 roll,pitch,ax,ay,az,gx,gy,gz 按 pybot 脚本
@@ -84,6 +93,13 @@ def build_argparser(description: str = "") -> argparse.ArgumentParser:
     parser.add_argument("--data-dir", type=str, default=None)
     parser.add_argument("--normalize-actions", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--action-stats-path", type=str, default=None)
+    parser.add_argument("--normalize-mode", type=str, default=None,
+                        choices=["zscore", "fixed_range"],
+                        help="动作归一化方式：zscore=数据统计（依赖 action_stats.npy）；"
+                             "fixed_range=固定物理范围 min-max→[0,1]（免 stats 文件）")
+    parser.add_argument("--column-weights", type=str, default=None,
+                        help="逐列损失权重（逗号分隔 action_dim 个浮点），"
+                             "缺省用默认表（舵机1.0/spk0.2/保留位0.0）；仅影响训练损失")
     parser.add_argument("--imu-dim", type=int, default=None,
                         help="R2 方案一：MPU6050 姿态维度（0=关闭，默认；"
                              "8×N=N 个传感器拼接（≤4 个），序列变 F+H+2）")
@@ -156,6 +172,24 @@ def validate_config_values(data_cfg: DataConfig, model_cfg: ModelConfig,
             f"attn_dim={model_cfg.attn_dim} 必须能被 attn_heads="
             f"{model_cfg.attn_heads} 整除")
 
+    if data_cfg.normalize_mode not in ("zscore", "fixed_range"):
+        raise ValueError(
+            f"normalize_mode={data_cfg.normalize_mode!r} 非法，"
+            f"应为 'zscore' 或 'fixed_range'")
+
+    if data_cfg.column_weights is not None:
+        w = data_cfg.column_weights
+        if len(w) != data_cfg.action_dim:
+            raise ValueError(
+                f"column_weights 长度 {len(w)} 应等于 action_dim="
+                f"{data_cfg.action_dim}")
+        if any((not isinstance(v, (int, float))) or isinstance(v, bool)
+               or not (0.0 <= v <= 1e6) for v in w):
+            raise ValueError(
+                f"column_weights 元素应为 [0, 1e6] 内的数值，实际: {w}")
+        if not any(v > 0 for v in w):
+            raise ValueError("column_weights 全 0：损失恒 0，训练无梯度")
+
     if train_cfg is not None:
         t_checks = [
             ("batch_size", train_cfg.batch_size, 1, 65536, int),
@@ -194,6 +228,11 @@ def warn_init_from_mismatch(init_cfg: dict, current: Config):
         print(f"WARNING: init-from checkpoint 的 normalize_actions="
               f"{init_norm} 与当前运行 {current.data.normalize_actions} "
               f"不一致，输入分布不匹配会损失预训练收益（见 README 预训练说明）")
+    init_mode = init_data.get("normalize_mode", "zscore")  # 旧 checkpoint 无此键 → zscore
+    if init_norm and current.data.normalize_actions and init_mode != current.data.normalize_mode:
+        print(f"WARNING: init-from checkpoint 的 normalize_mode={init_mode} "
+              f"与当前运行 {current.data.normalize_mode} 不一致，"
+              f"归一化空间不同会损失预训练收益")
     init_dim = init_data.get("action_dim")
     if init_dim is not None and init_dim != current.data.action_dim:
         print(f"WARNING: init-from checkpoint 的 action_dim={init_dim} "
@@ -249,6 +288,8 @@ def apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         "data_dir": ("data", "data_dir"),
         "normalize_actions": ("data", "normalize_actions"),
         "action_stats_path": ("data", "action_stats_path"),
+        "normalize_mode": ("data", "normalize_mode"),
+        "column_weights": ("data", "column_weights"),
         "imu_dim": ("data", "imu_dim"),
         "backbone": ("model", "cnn_backbone"),
         "cnn_feature_dim": ("model", "cnn_feature_dim"),
@@ -276,5 +317,7 @@ def apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:
     for arg_name, (section, field) in mapping.items():
         val = args_dict.get(arg_name)
         if val is not None:
+            if field == "column_weights" and isinstance(val, str):
+                val = [float(v) for v in val.split(",")]
             setattr(getattr(cfg, section), field, val)
     return cfg

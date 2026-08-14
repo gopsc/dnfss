@@ -33,6 +33,8 @@ from config import (Config, build_argparser, apply_overrides,
                     validate_config_values, warn_init_from_mismatch)
 from model import ActionPredictor
 from mt_parser import parse_mt_directory
+from action_norm import normalize_action, default_column_weights
+from train import _weighted_mse
 
 _IMAGENET_MEAN = [0.485, 0.456, 0.406]
 _IMAGENET_STD = [0.229, 0.224, 0.225]
@@ -46,11 +48,15 @@ class MTActionDataset(Dataset):
 
     def __init__(self, mt_dir: str, history_len: int, action_dim: int,
                  file_indices: list = None, files: list = None,
-                 action_mean=None, action_std=None):
+                 action_mean=None, action_std=None,
+                 normalize_mode: str = "zscore"):
         self.history_len = history_len
         self.action_dim = action_dim
         self._action_mean = action_mean
         self._action_std = action_std
+        # 固定物理范围归一化（免统计量；action_mean 传入时优先 z-score）
+        self._fixed_range = (normalize_mode == "fixed_range"
+                             and action_mean is None)
         self.samples = []
 
         # 复用调用方已解析的结果（避免 train/val 各自重复解析同一目录）
@@ -83,6 +89,9 @@ class MTActionDataset(Dataset):
 
     def __getitem__(self, idx):
         history, target = self.samples[idx]
+        if self._fixed_range:
+            history = normalize_action(history, self.action_dim)
+            target = normalize_action(target, self.action_dim)
         history = torch.from_numpy(history.copy())
         target = torch.from_numpy(target.copy())
         if self._action_mean is not None:
@@ -110,7 +119,7 @@ def _placeholder_images(batch, frame_len, image_height, image_width,
 def pretrain_one_epoch(model, loader, optimizer, device, image_width,
                        image_height, frame_len,
                        max_grad_norm=None, noise_std=0.0,
-                       random_images: bool = False):
+                       random_images: bool = False, weights=None):
     model.train()
     total_loss = 0.0
     count = 0
@@ -127,7 +136,7 @@ def pretrain_one_epoch(model, loader, optimizer, device, image_width,
                 device, random_images)
         optimizer.zero_grad()
         pred = model(images, history)
-        loss = torch.nn.functional.mse_loss(pred, target)
+        loss = _weighted_mse(pred, target, weights)
         loss.backward()
         if max_grad_norm:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
@@ -139,7 +148,7 @@ def pretrain_one_epoch(model, loader, optimizer, device, image_width,
 
 @torch.no_grad()
 def validate(model, loader, device, image_width, image_height, frame_len,
-             random_images: bool = False):
+             random_images: bool = False, weights=None):
     model.eval()
     total_loss = 0.0
     count = 0
@@ -152,7 +161,7 @@ def validate(model, loader, device, image_width, image_height, frame_len,
                 history.size(0), frame_len, image_height, image_width,
                 device, random_images)
         pred = model(images, history)
-        loss = torch.nn.functional.mse_loss(pred, target)
+        loss = _weighted_mse(pred, target, weights)
         total_loss += loss.item() * history.size(0)
         count += history.size(0)
     if count == 0:
@@ -173,7 +182,6 @@ def main():
 
     cfg = apply_overrides(Config(), args)
     validate_config_values(cfg.data, cfg.model, cfg.train)
-    cfg.data.data_dir = args.mt_dir
 
     os.makedirs(cfg.train.checkpoint_dir, exist_ok=True)
 
@@ -205,12 +213,17 @@ def main():
     train_ds = MTActionDataset(
         args.mt_dir, cfg.data.history_len, cfg.data.action_dim,
         file_indices=train_file_indices, files=all_files,
+        normalize_mode=cfg.data.normalize_mode,
     )
 
-    # 动作归一化（与 train.py 语义一致）：无 stats 文件时按训练集
-    # targets 计算并保存到 checkpoint_dir，验证集复用同一 stats
+    # 动作归一化（与 train.py 语义一致）：zscore 模式无 stats 文件时按训练集
+    # targets 计算并保存到 checkpoint_dir，验证集复用同一 stats；
+    # fixed_range 模式免统计量，跳过此段
     action_mean = action_std = None
-    if cfg.data.normalize_actions:
+    if cfg.data.normalize_actions and cfg.data.normalize_mode == "fixed_range":
+        # 构造时 action_mean=None 已置 _fixed_range，这里只打印口径
+        print("动作归一化: fixed_range（固定物理范围 min-max→[0,1]，免 stats）")
+    elif cfg.data.normalize_actions:
         if cfg.data.action_stats_path:
             if not os.path.exists(cfg.data.action_stats_path):
                 raise FileNotFoundError(
@@ -248,6 +261,7 @@ def main():
         args.mt_dir, cfg.data.history_len, cfg.data.action_dim,
         file_indices=val_file_indices, files=all_files,
         action_mean=action_mean, action_std=action_std,
+        normalize_mode=cfg.data.normalize_mode,
     )
 
     print(f"Files: {len(train_file_indices)} train, {len(val_file_indices)} val")
@@ -272,6 +286,13 @@ def main():
     model = ActionPredictor(cfg.model, cfg.data, pretrained=False).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model params: {n_params:,}")
+
+    # 逐列损失权重（与 train.py 同口径；仅训练损失用）
+    col_w = cfg.data.column_weights
+    if col_w is None:
+        col_w = default_column_weights(cfg.data.action_dim)
+    weights_t = torch.tensor(np.asarray(col_w, dtype=np.float32), device=device)
+    print(f"Column weights: {[round(float(v), 4) for v in weights_t.tolist()]}")
     print(f"Config: action_dim={cfg.data.action_dim}, "
           f"history_len={cfg.data.history_len}, "
           f"frame_len={cfg.data.frame_len}, "
@@ -328,34 +349,40 @@ def main():
             model, train_loader, optimizer, device,
             cfg.data.image_width, cfg.data.image_height, cfg.data.frame_len,
             cfg.train.max_grad_norm, args.noise_std, args.random_images,
+            weights=weights_t,
         )
         val_loss = validate(model, val_loader, device,
                             cfg.data.image_width, cfg.data.image_height,
-                            cfg.data.frame_len, args.random_images)
+                            cfg.data.frame_len, args.random_images,
+                            weights=weights_t)
         scheduler.step()
         print(f"  train_loss={train_loss:.6f}  val_loss={val_loss:.6f}")
 
         if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            patience_counter = 0
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "val_loss": val_loss,
-                    "config": cfg.to_dict(),
-                },
-                best_path,
-            )
-            torch.save(
-                {
-                    "model_state_dict": model.state_dict(),
-                    "config": cfg.to_dict(),
-                },
-                inference_path,
-            )
-            print(f"  -> saved best (val_loss={val_loss:.6f})")
+            if not np.isfinite(val_loss):
+                print(f"WARNING: val_loss 非有限值（{val_loss}），跳过 best 更新")
+                patience_counter += 1
+            else:
+                best_val_loss = val_loss
+                patience_counter = 0
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "val_loss": val_loss,
+                        "config": cfg.to_dict(),
+                    },
+                    best_path,
+                )
+                torch.save(
+                    {
+                        "model_state_dict": model.state_dict(),
+                        "config": cfg.to_dict(),
+                    },
+                    inference_path,
+                )
+                print(f"  -> saved best (val_loss={val_loss:.6f})")
         else:
             patience_counter += 1
             if patience_counter >= cfg.train.patience:

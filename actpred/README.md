@@ -44,6 +44,13 @@ bash _run.sh train --data-dir ./data --epochs 100 --action-dim 18 \
 # R2 姿态反馈：--imu-dim 8 启用独立 IMU token（数据需含 imu.npy，见"数据格式"）
 bash _run.sh train --data-dir ./data --epochs 100 --action-dim 18 --imu-dim 8
 
+# 归一化+逐列加权：固定物理范围归一化（免 stats 文件）+ 舵机列损失权重上浮
+bash _run.sh train --data-dir ./data --epochs 100 --action-dim 18 \
+    --normalize-actions --normalize-mode fixed_range
+# 自定义列权重（逗号分隔 action_dim 个浮点；默认舵机1.0/spk0.2/保留位0.0）
+bash _run.sh train --data-dir ./data --epochs 100 --normalize-actions \
+    --normalize-mode fixed_range --column-weights "1,1,1,1,1,1,1,1,1,1,0.2,0.2,0,0,0,0,0,0"
+
 # 推理（--images 按时间顺序旧→新传入 frame_len 个图像路径，冷启动时可重复传同一帧；
 #      --action-history 格式：冒号分隔各步，每步 action_dim 个值，共 history_len 步）
 bash _run.sh --model checkpoints/best_inference.pt \
@@ -161,6 +168,8 @@ recorder.flush()
 | `--lr` | 0.001 | 学习率 |
 | `--batch-size` | 4 | 批次大小（默认分辨率 640×480；更高分辨率需调小，小分辨率可调大） |
 | `--normalize-actions` | False | 动作归一化（`--no-normalize-actions` 关闭） |
+| `--normalize-mode` | zscore | 归一化方式：`zscore`=数据统计（依赖 `action_stats.npy`）；`fixed_range`=固定物理范围 min-max→[0,1]（常量表见 `action_norm.py`，免 stats 文件，越界 clamp 防御） |
+| `--column-weights` | 舵机1.0/spk0.2/保留位0.0 | 逐列损失权重（逗号分隔 action_dim 个浮点；仅影响训练损失，推理端无感知） |
 | `--dropout` | 0.1 | Dropout 率 |
 | `--weight-decay` | 0.0001 | 权重衰减 |
 | `--val-split` | 0.15 | 验证集比例 |
@@ -185,21 +194,24 @@ recorder.flush()
 | 指标 | 含义 | 判读 |
 |------|------|------|
 | `overall_mse` | 全部滚动步的平均 MSE | 越低越好 |
-| `error_growth` | 末段(后25%)误差 / 首段(前25%)误差 | >1 表示误差随步数发散（闭环不稳） |
+| `error_growth` | 末段(后25%)误差 / 首段(前25%)误差（按 episode 分别计算后取中位数） | >1 表示误差随步数发散（闭环不稳） |
 | `error_curve` | 误差随步数的增长曲线 | 看发散拐点 |
 | `smoothness_ratio` | 预测平滑度 / 真值平滑度 | <1 表示比真值更平滑（残差模式的预期收益） |
-| `oob_rate` | 预测落在训练数据经验范围外的比例 | 越高越危险（舵机越界风险） |
+| `oob_rate` | 预测落在物理范围外的比例 | 越高越危险（舵机越界风险） |
 
-物理可行性用数据分布的经验界（min/max + 10% margin）而非硬编码范围——18 列混含
-舵机角度/频率/延时/预留，无统一硬限位。`--compare` 用于 A/B 对比（如 R1 开/关）。
+越界判定用固定物理界（`action_norm.py` 常量表：舵机 [0,180]、spk.F [0,5000] 等），
+"越物理界"比"越经验界"更符合安全语义，且恒值列不会使经验界退化。`--compare` 用于 A/B 对比（如 R1 开/关）。
 滚动复现闭环口径：模型带 imu 输入时按 episode 的 `imu.npy` 真值姿态逐步喂入
 （缺失则零向量，与 pybot 闭环无 `@MPU6050_BIND` 块时的行为一致）。
 
 ## 部署注意
 
-- 启用 `--normalize-actions` 训练的模型，其 `action_stats.npy` 保存在 checkpoint 同目录；
-  部署时**必须将 stats 文件与 checkpoint 一起拷贝**（推理端优先按 checkpoint 内记录的路径查找，
-  找不到时回退到 checkpoint 同目录的 `action_stats.npy`）。
+- 启用 `--normalize-actions` 且 `--normalize-mode zscore`（默认）训练的模型，其 `action_stats.npy`
+  保存在 checkpoint 同目录；部署时**必须将 stats 文件与 checkpoint 一起拷贝**（推理端优先按
+  checkpoint 内记录的路径查找，找不到时回退到 checkpoint 同目录的 `action_stats.npy`）。
+- `--normalize-mode fixed_range` 用固定物理范围 min-max→[0,1]（常量表见 `action_norm.py`），
+  **免 stats 文件**，消除 stats 路径类 bug 的整类风险；推理端（predict/onnx_infer/hailo_infer）
+  从 checkpoint/ONNX 元数据自动识别归一化方式，无需额外参数。
 - `actions.npy` 的列数必须与 `--action-dim` 一致；图像与动作帧数不一致时训练会打印 WARNING 并按较少者使用。
 
 ## 编程 API

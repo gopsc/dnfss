@@ -10,6 +10,7 @@ from config import (Config, build_argparser, apply_overrides,
                     validate_config_values, warn_init_from_mismatch)
 from model import ActionPredictor
 from dataset import ActionDataset
+from action_norm import default_column_weights
 
 
 def split_episodes(data_dir: str, val_ratio: float, seed: int = 42):
@@ -19,6 +20,17 @@ def split_episodes(data_dir: str, val_ratio: float, seed: int = 42):
     rng.shuffle(indices)
     val_count = max(1, int(n * val_ratio))
     return indices[val_count:], indices[:val_count]
+
+
+def _weighted_mse(pred: torch.Tensor, target: torch.Tensor,
+                  weights: torch.Tensor = None) -> torch.Tensor:
+    """逐列加权 MSE：mean(w·(pred-target)²)/mean(w)，weights None 时退化为普通 MSE。
+
+    除以 mean(w) 保持损失量级与未加权口径可比（w 全 1 时与普通 MSE 完全一致）。
+    """
+    if weights is None:
+        return torch.nn.functional.mse_loss(pred, target)
+    return (weights * (pred - target) ** 2).mean() / weights.mean()
 
 
 def _collate(batch):
@@ -46,7 +58,7 @@ def _shift_history(history: torch.Tensor, new_action: torch.Tensor) -> torch.Ten
 
 def train_one_epoch(model, loader, optimizer, device, max_grad_norm: float = None,
                     rollout_len: int = 1, ss_prob: float = 1.0,
-                    predict_delta: bool = False):
+                    predict_delta: bool = False, weights: torch.Tensor = None):
     model.train()
     total_loss = 0.0
     count = 0
@@ -59,7 +71,7 @@ def train_one_epoch(model, loader, optimizer, device, max_grad_norm: float = Non
             target = batch["target"].to(device)
             imu = batch["imu"].to(device) if "imu" in batch else None
             pred = model(images, history, imu)
-            loss = torch.nn.functional.mse_loss(pred, target)
+            loss = _weighted_mse(pred, target, weights)
             bs = images.size(0)
         else:
             # 多步 scheduled sampling：首步必用真历史；后续步以 ss_prob 用真历史、
@@ -77,7 +89,7 @@ def train_one_epoch(model, loader, optimizer, device, max_grad_norm: float = Non
                     history = true_history
                 # 否则沿用上一轮回传的 history（自预测构造）
                 pred = model(images, history, imu)
-                loss = loss + torch.nn.functional.mse_loss(pred, target)
+                loss = loss + _weighted_mse(pred, target, weights)
                 bs = images.size(0)
                 # 回传：残差模式先把 Δ̂ 加回 a_{t-1} 得到绝对动作，再移入历史
                 with torch.no_grad():
@@ -94,7 +106,8 @@ def train_one_epoch(model, loader, optimizer, device, max_grad_norm: float = Non
 
 
 @torch.no_grad()
-def validate(model, loader, device, rollout_len: int = 1, predict_delta: bool = False):
+def validate(model, loader, device, rollout_len: int = 1, predict_delta: bool = False,
+             weights: torch.Tensor = None):
     model.eval()
     total_loss = 0.0
     count = 0
@@ -105,7 +118,7 @@ def validate(model, loader, device, rollout_len: int = 1, predict_delta: bool = 
             target = batch["target"].to(device)
             imu = batch["imu"].to(device) if "imu" in batch else None
             pred = model(images, history, imu)
-            loss = torch.nn.functional.mse_loss(pred, target)
+            loss = _weighted_mse(pred, target, weights)
             bs = images.size(0)
         else:
             # 验证固定全真历史（确定性，不带 scheduled sampling 随机性），
@@ -118,7 +131,7 @@ def validate(model, loader, device, rollout_len: int = 1, predict_delta: bool = 
                 target = step["target"].to(device)
                 imu = step["imu"].to(device) if "imu" in step else None
                 pred = model(images, history, imu)
-                loss = loss + torch.nn.functional.mse_loss(pred, target)
+                loss = loss + _weighted_mse(pred, target, weights)
                 bs = images.size(0)
             loss = loss / len(batch["steps"])
         total_loss += loss.item() * bs
@@ -156,10 +169,12 @@ def main():
         cfg.data.action_stats_path, train_indices, cfg.data.frame_len,
         augment=cfg.train.augment,
         predict_delta=cfg.train.predict_delta, rollout_len=cfg.train.rollout_len,
-        imu_dim=cfg.data.imu_dim)
+        imu_dim=cfg.data.imu_dim, normalize_mode=cfg.data.normalize_mode)
     auto_stats = False
-    if cfg.data.normalize_actions and not cfg.data.action_stats_path:
+    if (cfg.data.normalize_actions and cfg.data.normalize_mode == "zscore"
+            and not cfg.data.action_stats_path):
         # 归一化统计量必须只用训练集计算，再供验证集复用，否则 val loss 不可信
+        # （fixed_range 模式免 stats 文件，跳过此段）
         stats_path = os.path.join(cfg.train.checkpoint_dir, "action_stats.npy")
         np.save(stats_path, train_ds.get_action_stats())
         print(f"Action stats saved to: {stats_path}")
@@ -171,7 +186,7 @@ def main():
         cfg.data.image_width, cfg.data.image_height, cfg.data.normalize_actions,
         cfg.data.action_stats_path, val_indices, cfg.data.frame_len,
         predict_delta=cfg.train.predict_delta, rollout_len=cfg.train.rollout_len,
-        imu_dim=cfg.data.imu_dim)
+        imu_dim=cfg.data.imu_dim, normalize_mode=cfg.data.normalize_mode)
     if auto_stats:
         # checkpoint 配置只存裸文件名：推理端按 checkpoint 目录解析相对路径
         cfg.data.action_stats_path = "action_stats.npy"
@@ -197,6 +212,13 @@ def main():
     model = ActionPredictor(cfg.model, cfg.data).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model params: {n_params:,}")
+
+    # 逐列损失权重（仅训练/验证损失用，推理端无感知）
+    col_w = cfg.data.column_weights
+    if col_w is None:
+        col_w = default_column_weights(cfg.data.action_dim)
+    weights_t = torch.tensor(np.asarray(col_w, dtype=np.float32), device=device)
+    print(f"Column weights: {[round(float(v), 4) for v in weights_t.tolist()]}")
 
     if args.init_from:
         init_ckpt = torch.load(args.init_from, map_location="cpu", weights_only=True)
@@ -236,29 +258,35 @@ def main():
                                      cfg.train.max_grad_norm,
                                      rollout_len=cfg.train.rollout_len,
                                      ss_prob=cfg.train.ss_prob,
-                                     predict_delta=cfg.train.predict_delta)
+                                     predict_delta=cfg.train.predict_delta,
+                                     weights=weights_t)
         val_loss = validate(model, val_loader, device,
                             rollout_len=cfg.train.rollout_len,
-                            predict_delta=cfg.train.predict_delta)
+                            predict_delta=cfg.train.predict_delta,
+                            weights=weights_t)
         scheduler.step()
         print(f"  train_loss={train_loss:.6f}  val_loss={val_loss:.6f}")
 
         if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            patience_counter = 0
-            torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "val_loss": val_loss,
-                "config": cfg.to_dict(),
-            }, best_path)
-            inference_path = os.path.join(cfg.train.checkpoint_dir, "best_inference.pt")
-            torch.save({
-                "model_state_dict": model.state_dict(),
-                "config": cfg.to_dict(),
-            }, inference_path)
-            print(f"  -> saved best (val_loss={val_loss:.6f})")
+            if not np.isfinite(val_loss):
+                print(f"WARNING: val_loss 非有限值（{val_loss}），跳过 best 更新")
+                patience_counter += 1
+            else:
+                best_val_loss = val_loss
+                patience_counter = 0
+                torch.save({
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "val_loss": val_loss,
+                    "config": cfg.to_dict(),
+                }, best_path)
+                inference_path = os.path.join(cfg.train.checkpoint_dir, "best_inference.pt")
+                torch.save({
+                    "model_state_dict": model.state_dict(),
+                    "config": cfg.to_dict(),
+                }, inference_path)
+                print(f"  -> saved best (val_loss={val_loss:.6f})")
         else:
             patience_counter += 1
             if patience_counter >= cfg.train.patience:
@@ -284,6 +312,15 @@ def main():
             "model_state_dict": model.state_dict(),
             "config": cfg.to_dict(),
         }, os.path.join(cfg.train.checkpoint_dir, "best_inference.pt"))
+        torch.save({
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "best_val_loss": best_val_loss,
+            "patience_counter": patience_counter,
+            "config": cfg.to_dict(),
+        }, os.path.join(cfg.train.checkpoint_dir, "best.pt"))
         print("WARNING: saved final weights as best_inference.pt (no valid validation loss)")
     else:
         print(f"Best model saved to: {best_path}")

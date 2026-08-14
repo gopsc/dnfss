@@ -8,7 +8,9 @@ from torchvision import transforms
 
 from config import parse_checkpoint_config
 from imu_norm import normalize_imu
+from action_norm import normalize_action, denormalize_action
 from model import ActionPredictor
+from utils import parse_action_history
 
 
 class ActionPredictorInference:
@@ -48,7 +50,11 @@ class ActionPredictorInference:
 
         self._action_mean = None
         self._action_std = None
-        if self._data_cfg.normalize_actions:
+        # fixed_range：固定物理范围 min-max（免 stats 文件）；旧 checkpoint 无
+        # normalize_mode 键，parse_checkpoint_config 默认 "zscore"，行为不变
+        self._fixed_range = (self._data_cfg.normalize_actions
+                             and self._data_cfg.normalize_mode == "fixed_range")
+        if self._data_cfg.normalize_actions and not self._fixed_range:
             # 优先使用 checkpoint config 记录的 stats 路径（相对路径按 checkpoint 目录解析），
             # 旧 checkpoint 无该字段时回退到 checkpoint 同目录的 action_stats.npy
             stats_path = self._data_cfg.action_stats_path
@@ -94,7 +100,10 @@ class ActionPredictorInference:
             frames.append(self._transform(img))
         img_tensor = torch.stack(frames).unsqueeze(0).to(self._device)  # (1, F, 3, S, S)
         history = torch.tensor(action_history, dtype=torch.float32)
-        if self._action_mean is not None:
+        if self._fixed_range:
+            history = torch.from_numpy(
+                normalize_action(action_history, self.action_dim))
+        elif self._action_mean is not None:
             history = (history - self._action_mean) / self._action_std
         history = history.unsqueeze(0).to(self._device)
         imu_tensor = None
@@ -106,25 +115,16 @@ class ActionPredictorInference:
         if self._predict_delta:
             # 残差：Δ̂ 加回 a_{t-1}（history 末步，同为归一化空间）→ 绝对动作
             pred = history[0, -1] + pred
-        if self._action_mean is not None:
-            pred = pred * self._action_std + self._action_mean
-        result = pred.cpu().numpy()
+        if self._fixed_range:
+            result = denormalize_action(pred.cpu().numpy(), self.action_dim)
+        else:
+            if self._action_mean is not None:
+                pred = pred * self._action_std + self._action_mean
+            result = pred.cpu().numpy()
         if not np.all(np.isfinite(result)):
             print("WARNING: predict output contains NaN/Inf, replacing with zeros")
             result = np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
         return result
-
-
-def parse_action_history(s: str, action_dim: int) -> np.ndarray:
-    steps = s.split(":")
-    history = []
-    for step in steps:
-        values = [float(v) for v in step.split(",")]
-        if len(values) != action_dim:
-            raise ValueError(
-                f"Expected {action_dim} values per step, got {len(values)}")
-        history.append(values)
-    return np.array(history, dtype=np.float32)
 
 
 def main():
