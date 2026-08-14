@@ -16,6 +16,17 @@ pip install onnxscript onnxruntime -i https://pypi.tuna.tsinghua.edu.cn/simple
 pip check
 mkdir -p checkpoints data
 
+# R2-4 防呆：确认装到的是 CPU 版 torch——requirements.txt 含 torch，
+# 若被镜像源重装成 CUDA 版（无 GPU 部署会被 CUDA 依赖拖垮）在此拦截
+python3 -c "
+import torch
+assert torch.version.cuda is None, (
+    f'检测到 CUDA 版 torch（{torch.__version__}），'
+    '请用 _set.sh 的 CPU 源重装: pip install torch torchvision '
+    '--index-url https://download.pytorch.org/whl/cpu --force-reinstall')
+print('torch CPU build OK:', torch.__version__)
+"
+
 # Pre-download MobileNetV2 weights for offline fine-tuning (optional, skip if backbone=simple)
 python3 -c "
 import torch, sys, os

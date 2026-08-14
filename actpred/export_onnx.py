@@ -1,8 +1,13 @@
 import argparse
+import sys
+
 import torch
 from torch.export import Dim
 from config import parse_checkpoint_config
 from model import ActionPredictor
+
+# 一致性校验阈值：ORT 转换与原模型输出差异超过即拦截退出（v3-P2-2）
+MAX_TOLERATED_DIFF = 1e-4
 
 
 def main():
@@ -75,6 +80,9 @@ def main():
         with torch.no_grad():
             torch_out = model(dummy_images, dummy_history, *extra_inputs).numpy()
         max_diff = np.abs(ort_out - torch_out).max()
+        if max_diff > MAX_TOLERATED_DIFF:
+            sys.exit(f"错误: ONNX 与 PyTorch 输出差异 {max_diff:.3e} > "
+                     f"{MAX_TOLERATED_DIFF:.0e}")
         print(f"ONNX 一致性验证通过（最大差异: {max_diff:.6e}）")
     except ImportError:
         print("提示: 安装 onnxruntime 可验证导出模型一致性 (pip install onnxruntime)")

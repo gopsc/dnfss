@@ -2011,6 +2011,10 @@ class TestFixedRangeNorm(unittest.TestCase):
         # 12 列：舵机 1.0 + spk 0.2
         w12 = default_column_weights(12)
         np.testing.assert_allclose(w12[10:], 0.2)
+        # 20 列：超出 18 列语义布局的扩展列默认 1.0（新执行器须参与训练）
+        w20 = default_column_weights(20)
+        np.testing.assert_allclose(w20[12:18], 0.0)
+        np.testing.assert_allclose(w20[18:], 1.0)
 
     # ---------------- dataset 链路 ----------------
 

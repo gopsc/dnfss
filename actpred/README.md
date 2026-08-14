@@ -179,7 +179,7 @@ recorder.flush()
 | `--num-workers` | 2 | DataLoader 工作进程数 |
 | `--checkpoint-dir` | ./checkpoints | 检查点保存目录 |
 | `--init-from` | 无 | 预训练 checkpoint 路径，作为微调起点（strict=False） |
-| `--resume` | 无 | 从 last.pt 断点续训练（恢复 model/optimizer/scheduler/epoch） |
+| `--resume` | 无 | 从 last.pt 断点续训练（恢复 model/optimizer/scheduler/epoch；scheduler 的 T_max 一并恢复，resume 时改 `--epochs` 不影响 LR 余弦曲线，只影响循环边界） |
 | `--save-config` | 无 | 保存配置到 JSON 文件 |
 | `--predict-delta` | False | R1-C 残差预测（target 改 Δ，推理端自动加回 a_{t-1}） |
 | `--rollout-len` | 1 | R1-B 多步展开步数 K（>1 时 scheduled sampling） |

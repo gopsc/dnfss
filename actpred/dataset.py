@@ -43,6 +43,10 @@ class ActionDataset(Dataset):
         self.rollout_len = max(1, rollout_len)
 
         self.transform = transforms.Compose([
+            # Resize 不保持宽高比（直接拉伸）是有意为之：推理端
+            # （predict/onnx_infer/_onnx_validate）使用完全相同的预处理，
+            # 训练/推理口径必须一致；改为 letterbox 会使既有 checkpoint
+            # 输入分布失配，如需变更须训练/推理同步修改并重训（P2-d）
             transforms.Resize((image_height, image_width)),
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),

@@ -489,3 +489,27 @@ def test_robot_importable_without_numpy():
     r = subprocess.run([sys.executable, "-c", child],
                        capture_output=True, text=True, cwd=repo)
     assert r.returncode == 0 and "ok" in r.stdout, r.stderr
+
+
+def test_predictor_exception_still_flushes_recorder(mock_i2c, tmp_path):
+    """P2-c：predictor 中途抛异常时 run_loop 的 finally 仍落盘，
+    已录制 steps 不丢失且异常照常向上传播（由 with robot 清理硬件）"""
+    from pybot.recorder import EpisodeRecorder
+
+    class RaisingPredictor(MockPredictor):
+        def predict(self, images, action_history):
+            if self._step >= 1:
+                raise RuntimeError("backend boom")
+            return super().predict(images, action_history)
+
+    robot = _make_robot(LOOP_MT, mock_i2c)
+    robot.active()
+    pred = RaisingPredictor(frame_len=3, history_len=2, action_dim=4)
+    rec = EpisodeRecorder(str(tmp_path), action_dim=4)
+    with pytest.raises(RuntimeError, match="backend boom"):
+        robot.run_loop(pred, hz=1000.0, max_steps=5, recorder=rec)
+    robot.deactive()
+
+    # 第 1 步已录制（第 2 步 predict 抛异常），finally flush 已落盘
+    acts = np.load(tmp_path / "episode_0000" / "actions.npy")
+    assert acts.shape[0] == 1

@@ -246,6 +246,9 @@ def main():
         model.load_state_dict(resume_ckpt["model_state_dict"])
         optimizer.load_state_dict(resume_ckpt["optimizer_state_dict"])
         scheduler.load_state_dict(resume_ckpt["scheduler_state_dict"])
+        # 注意：scheduler 状态（含 T_max）随 checkpoint 恢复，LR 余弦曲线
+        # 按原调度继续；resume 时改 --epochs 只影响循环边界，不重塑 LR
+        # 曲线（如需新曲线请重新训练，勿 resume）
         start_epoch = resume_ckpt["epoch"] + 1
         best_val_loss = resume_ckpt.get("best_val_loss", float("inf"))
         patience_counter = resume_ckpt.get("patience_counter", 0)

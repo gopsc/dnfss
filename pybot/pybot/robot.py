@@ -308,9 +308,13 @@ class RobotStruct:
                     time.sleep(remain)
                 else:
                     overrun += 1
-                    log.warning("loop overrun: step %d took %.1fms > %.1fms "
-                                "（推理+执行超过周期，实际频率已低于 %.1fHz）",
-                                step, (dt - remain) * 1000, dt * 1000, hz)
+                    # 告警节流：第 1 次及每 100 次汇总一次，避免持续 overrun
+                    # 刷屏（50% overrun @10Hz 时原实现每秒 5 条告警）
+                    if overrun == 1 or overrun % 100 == 0:
+                        log.warning("loop overrun ×%d: step %d took %.1fms > "
+                                    "%.1fms（推理+执行超过周期）",
+                                    overrun, step, (dt - remain) * 1000,
+                                    dt * 1000)
         finally:
             # max_steps 正常退出与 Ctrl-C（KeyboardInterrupt）都要落盘，
             # 否则闭环录制的 actions.npy/imu.npy 全部丢失
@@ -318,9 +322,14 @@ class RobotStruct:
                 path = recorder.flush()
                 log.info("episode saved: %s", path)
         if overrun:
-            log.warning("closed loop overrun %d/%d steps (%.0f%%)，"
-                        "建议降低 --hz 或检查推理后端延迟",
-                        overrun, step, 100.0 * overrun / max(step, 1))
+            ratio = overrun / max(step, 1)
+            if ratio > 0.10:    # 工程约束：overrun 比例 >10% 才建议降 hz
+                log.warning("closed loop overrun %d/%d steps (%.0f%%)，"
+                            "建议降低 --hz 或检查推理后端延迟",
+                            overrun, step, 100.0 * ratio)
+            else:
+                log.info("closed loop overrun %d/%d steps (%.1f%%)",
+                         overrun, step, 100.0 * ratio)
         log.info("closed loop stop after %d steps", step)
 
     def _loop_recent_frames(self, camera_var, F):

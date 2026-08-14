@@ -57,11 +57,13 @@ model.eval()
 pred_learned = model.pred_token.data.unsqueeze(1).numpy()   # (1,1,1,d)
 imu_dim = cfg.data.imu_dim
 
-# 归一化模型：torch 参考在喂入前 z-score；HailoPredictor 传 stats_path
-# 由封装内部归一化（hist_real/hist_zero 保持原始值，避免双重归一化）
+# 归一化模型：torch 参考在喂入前归一化；HailoPredictor 传 normalize_mode
+# 由封装内部归一化（hist_real/hist_zero 保持原始值，避免双重归一化）。
+# fixed_range 免 action_stats.npy（该模式训练不产出统计文件）。
 import os
 stats_path = None
-if cfg.data.normalize_actions:
+norm_mode = cfg.data.normalize_mode if cfg.data.normalize_actions else "none"
+if norm_mode == "zscore":
     stats_path = cfg.data.action_stats_path or os.path.join(
         os.path.dirname(os.path.abspath(CKPT)), "action_stats.npy")
     if not os.path.isabs(stats_path):
@@ -70,6 +72,8 @@ if cfg.data.normalize_actions:
     if not os.path.exists(stats_path):
         raise FileNotFoundError(f"统计文件不存在: {stats_path}")
     print(f"HailoPredictor stats: {stats_path}")
+elif norm_mode == "fixed_range":
+    print("fixed_range 归一化：免 action_stats.npy，按固定物理范围 min-max")
 
 from torchvision import transforms
 tf = transforms.Compose([
@@ -82,9 +86,12 @@ tf = transforms.Compose([
 def torch_pred(imgs, hist, use_learned_pred=True, imu=None):
     x = torch.stack([tf(Image.fromarray(im)) for im in imgs]).unsqueeze(0)
     h = torch.tensor(hist).unsqueeze(0)
-    if stats_path is not None:
+    if norm_mode == "zscore" and stats_path is not None:
         stats = np.load(stats_path)
         h = (h - torch.tensor(stats[0])) / torch.tensor(stats[1])
+    elif norm_mode == "fixed_range":
+        from action_norm import normalize_action
+        h = torch.from_numpy(normalize_action(h.numpy(), cfg.data.action_dim))
     ii = None
     if imu_dim > 0:
         # 与 HailoPredictor 同口径：原始姿态 → 内部归一化前需手动归一
@@ -104,7 +111,10 @@ def torch_pred(imgs, hist, use_learned_pred=True, imu=None):
 # R2 方案一：imu_dim>0 时每步传原始姿态（HailoPredictor 内部归一化）
 imu_real = np.array([5.0, -3.0] + [0.0] * 6, dtype=np.float32)
 
-with HailoPredictor(HEF_PATH, stats_path=stats_path) as p:
+# normalize_actions=False 时 normalize_mode 无意义（stats_path=None 即不归一化）
+with HailoPredictor(HEF_PATH, stats_path=stats_path,
+                    normalize_mode=(norm_mode if norm_mode != "none"
+                                    else "zscore")) as p:
     print(f"\ndims: frame_len={p.frame_len} img={p.image_width}x{p.image_height} "
           f"history={p.history_len} action_dim={p.action_dim}")
     t0 = time.perf_counter()
@@ -130,9 +140,13 @@ with HailoPredictor(HEF_PATH, stats_path=stats_path) as p:
 
     ref = torch_pred(imgs_real, hist_real, True, imu_real)
     ref_zero_pred = torch_pred(imgs_real, hist_real, False, imu_real)
-    # torch 参考是模型原始 z 空间输出；HailoPredictor 带 stats 时已反归一化
+    # torch 参考是模型原始归一化空间输出；HailoPredictor 已反归一化
     # 到原始动作空间，比较前须同空间对齐，否则归一化模型下 max_diff 无意义
-    if stats_path is not None:
+    if norm_mode == "fixed_range":
+        from action_norm import denormalize_action
+        ref = denormalize_action(ref, cfg.data.action_dim)
+        ref_zero_pred = denormalize_action(ref_zero_pred, cfg.data.action_dim)
+    elif stats_path is not None:
         s = np.load(stats_path)
         ref = ref * s[1] + s[0]
         ref_zero_pred = ref_zero_pred * s[1] + s[0]

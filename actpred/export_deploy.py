@@ -13,6 +13,7 @@ Reshape 序列。此脚本逐项改造（权重数值完全不变）：
 
 import argparse
 import os
+import sys
 
 import numpy as np
 import torch
@@ -20,6 +21,10 @@ import torch.nn as nn
 
 from config import parse_checkpoint_config
 from model import ActionPredictor
+
+# 一致性校验阈值：wrapper 改造/ORT 转换与原模型输出差异超过即拦截退出，
+# 防止 ManualAttnBlock 依赖的 PyTorch 布局约定变更静默穿透（v3-P2-2）
+MAX_TOLERATED_DIFF = 1e-4
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -280,7 +285,11 @@ def main():
     with torch.no_grad():
         orig_out = model(stacked, dummy_history.squeeze(1),
                          dummy_imu.squeeze(1).squeeze(1) if imu_dim > 0 else None)
-    print(f"wrapper 与原模型最大差异: {(ref.squeeze(1) - orig_out).abs().max():.6e}")
+    wrap_diff = (ref.squeeze(1) - orig_out).abs().max().item()
+    print(f"wrapper 与原模型最大差异: {wrap_diff:.6e}")
+    if wrap_diff > MAX_TOLERATED_DIFF:
+        sys.exit(f"错误: wrapper 与原模型差异 {wrap_diff:.3e} > "
+                 f"{MAX_TOLERATED_DIFF:.0e}（ManualAttnBlock 布局约定可能已失效）")
 
     try:
         import onnxruntime as ort
@@ -292,7 +301,11 @@ def main():
         if imu_dim > 0:
             feeds["imu"] = dummy_imu.numpy()
         ort_out = sess.run(None, feeds)[0]
-        print(f"ONNX 一致性验证通过（最大差异: {np.abs(ort_out - ref.numpy()).max():.6e}）")
+        ort_diff = np.abs(ort_out - ref.numpy()).max()
+        if ort_diff > MAX_TOLERATED_DIFF:
+            sys.exit(f"错误: ONNX 与 wrapper 差异 {ort_diff:.3e} > "
+                     f"{MAX_TOLERATED_DIFF:.0e}")
+        print(f"ONNX 一致性验证通过（最大差异: {ort_diff:.6e}）")
     except ImportError:
         pass
 

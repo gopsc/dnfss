@@ -9,9 +9,10 @@
 >
 > 本报告对照 v2 报告逐项核对修复状态，并给出本轮新发现。
 >
-> **2026-08-14 更新：P0-2（方案 B）、两个新 P1（v3-P1-1/v3-P1-2）、P2-a 残余（ONNX 分支）
-> 与 P2-a3（column_weights 文档）已修复，附回归测试（pybot +1 / actpred +7）。
-> P0/P1 全部清零，剩余 3 项新 P2 + 5 项遗留 P2 + 2 项 P3。**
+> **2026-08-14 更新：P0-2（方案 B）、两个新 P1、P2-a 残余、P2-a3 已修复；
+> 3 项新 P2（验收脚本 fixed_range / diff 断言 / overrun 节流）与 5 项遗留 P2
+> （P2-a1/P2-c 残余/P2-d/P2-e/P2-f/R2-4）亦全部闭环，附回归测试（pybot +2 / actpred +7）。
+> P0/P1/P2 全部清零，仅剩 2 项 P3（边缘/环境便利）。**
 
 ---
 
@@ -21,10 +22,10 @@
 |------|--------|----------------------|------|
 | ~~P0（崩溃/数据损坏）~~ | 0 | ~~1~~ **0（P0-2 已按方案 B 修复）** | 见 §三 |
 | ~~P1（功能风险）~~ | ~~2~~ **0（均已修复）** | ~~1~~ **0（P2-a 已闭环）** | 见 §四 |
-| P2（代码质量） | 3 | 5（P2-a3 已随 P0-2 一并修复） | 见 §五 |
+| ~~P2（代码质量）~~ | ~~3~~ **0（均已修复）** | ~~5~~ **0（全部闭环）** | 见 §五/§六 |
 | P3（边缘/环境） | 2 | 0 | 见 §五 |
 
-**重点：P0-2 曾随 85bf68f 未修复提交，本轮已按方案 B 闭环；两个新 P1 与 P2-a 残余已于本轮回合修复。**
+**重点：P0-2 曾随 85bf68f 未修复提交，本轮已按方案 B 闭环；两个新 P1、P2-a 残余与全部 P2 已于本轮回合修复。**
 
 ---
 
@@ -42,8 +43,8 @@
 | R2-9 predict.py --action-dim 陷阱 | P2 | ✅ 已修复 | predict.py 已移除该参数，统一用 `predictor.action_dim` |
 | R1-2 parse_action_history 三处重复 | P2 | ✅ 已修复 | 三推理文件均从 [utils.py](../../actpred/utils.py) 导入 |
 | R2-3 空验证集无 best.pt | P2 | ✅ 已修复 | [train.py:309-324](../../actpred/train.py#L309-L324) 保底保存最终权重 |
-| P2-c 闭环测试覆盖 | P2 | ⚠️ 大部分修复 | test_loop.py 已含 recorder 集成（imu_recorded/multi_recorded）；**predictor 异常清理路径仍无用例** |
-| P2-b numpy 三处 lazy import | P2 | ⚠️ 修复引入回归 | 改为顶层导入，**破坏零依赖承诺** → 见新发现 v3-P1-1 |
+| P2-c 闭环测试覆盖 | P2 | ✅ 已修复 | test_loop.py 含 recorder 集成 + 异常清理路径用例（test_predictor_exception_still_flushes_recorder） |
+| P2-b numpy 三处 lazy import | P2 | ✅ 已修复 | 顶层导入曾破坏零依赖（v3-P1-1），已恢复函数级 lazy import 并加守卫测试 |
 | P0-2 normalize_actions 默认值 | P0 | ✅ 已修复 | [README.md:170](../../actpred/README.md#L170) 更正为 `True` 并注明行为变更（方案 B，见 §三） |
 
 ---
@@ -91,23 +92,26 @@ _build_action_vec / _grab_frame）恢复函数内 lazy import，并在导入块�
 
 ## 五、P2/P3 新发现
 
-### v3-P2-1 验收脚本链未适配 fixed_range
+### v3-P2-1 验收脚本链未适配 fixed_range —— ✅ 已修复（2026-08-14）
 
-**位置**：[actpred/_npu_test.py:64-71](../../actpred/_npu_test.py#L64-L71)、[_onnx_validate.py:28-39](../../actpred/_onnx_validate.py#L28-L39)
+[_npu_test.py:65-76](../../actpred/_npu_test.py#L65-L76)、[_onnx_validate.py:28-42](../../actpred/_onnx_validate.py#L28-L42)
+均改为按 checkpoint config 的 `normalize_mode` 分支：zscore 照旧加载
+action_stats.npy；fixed_range 走 action_norm min-max 且免 stats 文件；
+_npu_test 另向 HailoPredictor 透传 normalize_mode、torch 参考输出按同
+模式反归一化后再对比。
 
-两脚本在 `normalize_actions=True` 时无条件 `np.load(action_stats.npy)`：fixed_range 训练不产出该文件 → `FileNotFoundError`；`_npu_test.py` 构造 HailoPredictor 时也未传 `normalize_mode`（默认 zscore），torch 参考只对 z-score 反归一化。**fixed_range 模型无法通过部署验收**（恰好是最推荐部署的模式）。建议按 checkpoint config 的 normalize_mode 分支处理（同 hailo_infer main 的自动判定逻辑）。
+### v3-P2-2 导出一致性校验只打印不拦截 —— ✅ 已修复（2026-08-14）
 
-### v3-P2-2 导出一致性校验只打印不拦截
+[export_deploy.py:288-292,303-307](../../actpred/export_deploy.py#L288-L292)
+与 [export_onnx.py:82-85](../../actpred/export_onnx.py#L82-L85) 新增
+`MAX_TOLERATED_DIFF = 1e-4` 阈值断言，超限 `sys.exit` 拦截（P2-f 的
+ManualAttnBlock 布局约定风险一并闭环）。
 
-**位置**：[export_deploy.py:283](../../actpred/export_deploy.py#L283)、[export_deploy.py:295](../../actpred/export_deploy.py#L295)、[export_onnx.py:59](../../actpred/export_onnx.py#L59)
+### v3-P2-3 run_loop overrun 逐步告警日志噪音 + 建议阈值偏离约束 —— ✅ 已修复（2026-08-14）
 
-wrapper vs 原模型、ORT vs wrapper 的 max diff 均仅 print，进程照常退出 0。ManualAttnBlock 依赖 PyTorch 内部布局约定（v2 P2-f 遗留），一旦上游变更布局，转换错误在自动化流水线中完全无感。建议加阈值断言（如 diff > 1e-4 → `SystemExit`）。
-
-### v3-P2-3 run_loop overrun 逐步告警日志噪音 + 建议阈值偏离约束
-
-**位置**：[robot.py:308-311](../../pybot/pybot/robot.py#L308-L311)
-
-每个 overrun 步都 `log.warning`——10Hz 持续 50% overrun 时每秒 5 条告警刷屏；且工程约束要求"overrun 比例 >10% 才建议降 hz"，当前 [L318-321](../../pybot/pybot/robot.py#L318-L321) 只要 overrun>0 就给建议。建议：逐步告警改节流（如每 100 步汇总一次），最终建议仅在比例 >10% 时输出。
+[robot.py:310-317](../../pybot/pybot/robot.py#L310-L317) 逐步告警节流为
+第 1 次 + 每 100 次汇总；[robot.py:324-332](../../pybot/pybot/robot.py#L324-L332)
+最终建议仅在 overrun 比例 >10% 时输出（否则 info 级汇总），对齐工程约束。
 
 ### v3-P3-1 dfc_compile.py --output 无 .hef 后缀时产物互相覆盖
 
@@ -123,30 +127,32 @@ wrapper vs 原模型、ORT vs wrapper 的 max diff 均仅 print，进程照常�
 
 ---
 
-## 六、v2 遗留 P2（仍未修复，维持原判级）
+## 六、v2 遗留 P2（已全部修复，2026-08-14）
 
-| # | 位置 | 问题 | 备注 |
+| # | 位置 | 问题 | 处理 |
 |---|------|------|------|
-| P2-a1 | [action_norm.py:55-62](../../actpred/action_norm.py#L55-L62) | `default_column_weights` 对 action_dim>18 的超出列权重恒 0 | 未来扩展性 |
-| P2-a3 | [README.md:172](../../actpred/README.md#L172) | ~~column_weights 始终生效（含不归一化训练）未在文档注明~~ ✅ 已随 P0-2 一并修复 | 已注明"始终生效" |
-| P2-d | [dataset.py:46](../../actpred/dataset.py#L46) | Resize 不保持宽高比 | 训练/推理口径一致，仅变形质量 nit |
-| P2-e | [train.py:236,248](../../actpred/train.py#L236) | resume 时 scheduler T_max 恢复旧值，改 --epochs 不影响 LR 曲线 | 语义需在文档明确 |
-| P2-f | [export_deploy.py:42-59](../../actpred/export_deploy.py#L42-L59) | ManualAttnBlock 依赖 PyTorch in_proj 内部布局 | 数值验证已缓解，配合 v3-P2-2 加断言更稳 |
-| R2-4 | actpred/_set.sh | CUDA 版 torch 误装风险 | 安装脚本注意事项 |
+| P2-a1 | [action_norm.py:55-66](../../actpred/action_norm.py#L55-L66) | ~~`default_column_weights` 对 action_dim>18 的超出列权重恒 0~~ | ✅ 扩展列默认 1.0（新执行器须参与训练），补 20 列断言 |
+| P2-a3 | [README.md:172](../../actpred/README.md#L172) | ~~column_weights 始终生效（含不归一化训练）未在文档注明~~ | ✅ 已随 P0-2 一并修复 |
+| P2-c 残余 | test_loop.py | ~~predictor 异常清理路径无用例~~ | ✅ 新增 test_predictor_exception_still_flushes_recorder（异常传播 + finally 落盘 1 步） |
+| P2-d | [dataset.py:46-49](../../actpred/dataset.py#L46-L49) | ~~Resize 不保持宽高比~~ | ✅ 注明有意为之（训练/推理同口径，变更须同步重训），不改行为 |
+| P2-e | [train.py:248-251](../../actpred/train.py#L248-L251) | ~~resume 时 scheduler T_max 恢复旧值~~ | ✅ 语义已在代码注释 + README --resume 行明确 |
+| P2-f | export_deploy.py | ~~ManualAttnBlock 依赖 PyTorch in_proj 内部布局~~ | ✅ 随 v3-P2-2 阈值断言闭环（布局失效即拦截退出） |
+| R2-4 | [_set.sh:19-28](../../actpred/_set.sh#L19-L28) | ~~CUDA 版 torch 误装风险~~ | ✅ 安装后断言 `torch.version.cuda is None`，误装即拦截并给出修复命令 |
 
 ---
 
 ## 七、修复优先级
 
-| 优先级 | 项 | 理由 |
+| 优先级 | 项 | 状态 |
 |--------|-----|------|
-| ~~P0~~ | ~~P0-2 README 与默认值对齐（方案 B）~~ ✅ 已修复 | README 默认值更正 + 行为变更注明 |
-| ~~P1~~ | ~~v3-P1-1 robot.py numpy lazy import~~ ✅ 已修复 | 零依赖承诺已恢复，附子进程回归测试 |
-| ~~P1~~ | ~~v3-P1-2 ONNX predict_delta + 元数据~~ ✅ 已修复 | 元数据写入/识别/残差加回全链路 + 7 用例 |
-| P2 | v3-P2-1 验收脚本 fixed_range 适配 | fixed_range 是最推荐部署模式，验收链不能缺席 |
-| P2 | v3-P2-2 导出 diff 阈值断言 | 一行拦截，防布局约定变更静默穿透 |
-| P2 | v3-P2-3 overrun 告警节流 + 10% 阈值 | 对齐工程约束，消除日志刷屏 |
-| P3 | v3-P3-1/-P3-2 | 边缘情况与开发环境便利 |
+| ~~P0~~ | P0-2 README 与默认值对齐（方案 B） | ✅ 已修复 |
+| ~~P1~~ | v3-P1-1 robot.py numpy lazy import | ✅ 已修复（附子进程回归测试） |
+| ~~P1~~ | v3-P1-2 ONNX predict_delta + 元数据 | ✅ 已修复（全链路 + 7 用例） |
+| ~~P2~~ | v3-P2-1 验收脚本 fixed_range 适配 | ✅ 已修复 |
+| ~~P2~~ | v3-P2-2 导出 diff 阈值断言 | ✅ 已修复（P2-f 一并闭环） |
+| ~~P2~~ | v3-P2-3 overrun 告警节流 + 10% 阈值 | ✅ 已修复 |
+| ~~P2~~ | P2-a1/P2-c 残余/P2-d/P2-e/R2-4 | ✅ 全部闭环（见 §六） |
+| P3 | v3-P3-1 dfc_compile --output 后缀校验 / v3-P3-2 conftest 内置 fcntl mock | 未修复（边缘/环境便利） |
 
 ---
 

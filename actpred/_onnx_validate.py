@@ -25,7 +25,8 @@ model.load_state_dict(ck["model_state_dict"])
 model.eval()
 
 action_stats = None
-if cfg.data.normalize_actions:
+norm_mode = cfg.data.normalize_mode if cfg.data.normalize_actions else "none"
+if norm_mode == "zscore":
     import os
     stats_path = cfg.data.action_stats_path or os.path.join(
         os.path.dirname(os.path.abspath(CKPT)), "action_stats.npy")
@@ -37,6 +38,8 @@ if cfg.data.normalize_actions:
         raise ValueError(f"action stats 形状应为 (2, {cfg.data.action_dim})，"
                          f"实际为 {action_stats.shape}: {stats_path}")
     print(f"history 将 z-score 归一化（{stats_path}）")
+elif norm_mode == "fixed_range":
+    print("history 将 fixed_range min-max 归一化（action_norm.py，免 stats）")
 
 sess = ort.InferenceSession(ONNX)
 in_names = [i.name for i in sess.get_inputs()]
@@ -62,7 +65,11 @@ hist_real = np.array([
 ], dtype=np.float32)
 hist_zero = np.zeros((5, 18), dtype=np.float32)
 
-if action_stats is not None:
+if norm_mode == "fixed_range":
+    from action_norm import normalize_action
+    hist_real = normalize_action(hist_real, cfg.data.action_dim)
+    hist_zero = normalize_action(hist_zero, cfg.data.action_dim)
+elif action_stats is not None:
     hist_real = (hist_real - action_stats[0]) / action_stats[1]
     hist_zero = (hist_zero - action_stats[0]) / action_stats[1]
 

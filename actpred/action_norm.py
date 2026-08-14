@@ -54,9 +54,13 @@ def denormalize_action(norm_action, action_dim: int = None) -> np.ndarray:
 
 def default_column_weights(action_dim: int = 18) -> np.ndarray:
     """逐列损失权重默认表：舵机 1.0（安全关键）、spk 0.2（保留梯度）、
-    保留位 0.0（恒 0 纯噪声，参与只会稀释有效梯度）"""
+    保留位 0.0（恒 0 纯噪声，参与只会稀释有效梯度）。
+    action_dim>18 的扩展列默认 1.0：超出当前 18 列语义布局的通道视为
+    新执行器，静默给 0 会让其完全不参与训练（P2-a1）。"""
     w = np.zeros(action_dim, dtype=np.float32)
     w[:min(10, action_dim)] = 1.0
     if action_dim > 10:
         w[10:min(12, action_dim)] = 0.2
+    if action_dim > 18:
+        w[18:] = 1.0
     return w
