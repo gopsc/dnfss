@@ -33,7 +33,8 @@ from config import (Config, build_argparser, apply_overrides,
                     validate_config_values, warn_init_from_mismatch)
 from model import ActionPredictor
 from mt_parser import parse_mt_directory
-from action_norm import normalize_action, default_column_weights
+from action_norm import (normalize_action, default_column_weights,
+                      is_range_mode)
 from train import _weighted_mse
 
 _IMAGENET_MEAN = [0.485, 0.456, 0.406]
@@ -54,9 +55,12 @@ class MTActionDataset(Dataset):
         self.action_dim = action_dim
         self._action_mean = action_mean
         self._action_std = action_std
-        # 固定物理范围归一化（免统计量；action_mean 传入时优先 z-score）
-        self._fixed_range = (normalize_mode == "fixed_range"
-                             and action_mean is None)
+        # 固定范围类归一化（fixed_range / log_range，免统计量；
+        # action_mean 传入时优先 z-score）
+        self._range_mode = (normalize_mode
+                            if (is_range_mode(normalize_mode)
+                                and action_mean is None)
+                            else None)
         self.samples = []
 
         # 复用调用方已解析的结果（避免 train/val 各自重复解析同一目录）
@@ -89,9 +93,11 @@ class MTActionDataset(Dataset):
 
     def __getitem__(self, idx):
         history, target = self.samples[idx]
-        if self._fixed_range:
-            history = normalize_action(history, self.action_dim)
-            target = normalize_action(target, self.action_dim)
+        if self._range_mode:
+            history = normalize_action(history, self.action_dim,
+                                       mode=self._range_mode)
+            target = normalize_action(target, self.action_dim,
+                                      mode=self._range_mode)
         history = torch.from_numpy(history.copy())
         target = torch.from_numpy(target.copy())
         if self._action_mean is not None:
@@ -220,9 +226,10 @@ def main():
     # targets 计算并保存到 checkpoint_dir，验证集复用同一 stats；
     # fixed_range 模式免统计量，跳过此段
     action_mean = action_std = None
-    if cfg.data.normalize_actions and cfg.data.normalize_mode == "fixed_range":
-        # 构造时 action_mean=None 已置 _fixed_range，这里只打印口径
-        print("动作归一化: fixed_range（固定物理范围 min-max→[0,1]，免 stats）")
+    if cfg.data.normalize_actions and is_range_mode(cfg.data.normalize_mode):
+        # 构造时 action_mean=None 已置 _range_mode，这里只打印口径
+        print(f"动作归一化: {cfg.data.normalize_mode}"
+              f"（固定物理范围→[0,1]，免 stats）")
     elif cfg.data.normalize_actions:
         if cfg.data.action_stats_path:
             if not os.path.exists(cfg.data.action_stats_path):

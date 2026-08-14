@@ -25,6 +25,17 @@ ACTION_HI = np.array(
     [1.0] * 6,              # 12-17 保留位（恒 0，span=1.0 保持归一化后为 0）
     dtype=np.float32)
 
+# 归一化方式：fixed_range 线性 min-max；log_range 在 spk 两列上用
+# log10(1+x) 对数尺度，修正低端聚集导致的精度错配
+# （10Hz 在线性尺度占 0.002、对数尺度占 0.27）
+RANGE_MODES = ("fixed_range", "log_range")
+LOG_COLS = (10, 11)         # spk.F / spk.delay
+
+
+def is_range_mode(mode: str) -> bool:
+    """normalize_mode 是否为固定范围类（fixed_range / log_range）"""
+    return mode in RANGE_MODES
+
 
 def action_bounds(action_dim: int = 18):
     """(lo, hi) 物理界：action_dim ≤ 18 取前缀；> 18 的超出列按 [0, 1] 补足"""
@@ -35,21 +46,42 @@ def action_bounds(action_dim: int = 18):
             np.concatenate([ACTION_HI, np.ones(pad, dtype=np.float32)]))
 
 
-def normalize_action(action, action_dim: int = None) -> np.ndarray:
+def normalize_action(action, action_dim: int = None,
+                     mode: str = "fixed_range") -> np.ndarray:
     """原始动作向量 → [0,1] 归一化向量（clamp 防御越界值）
 
     action: (..., action_dim) 任意前导维；action_dim 缺省取末维长度。
+    mode="fixed_range"：全列线性 min-max；
+    mode="log_range"：LOG_COLS 列用 log10(1+x)（负值先截 0），其余列线性。
     """
     a = np.asarray(action, dtype=np.float32)
     lo, hi = action_bounds(action_dim or a.shape[-1])
-    return np.clip((a - lo) / (hi - lo), 0.0, 1.0)
+    out = np.clip((a - lo) / (hi - lo), 0.0, 1.0)
+    if mode == "log_range":
+        for c in LOG_COLS:
+            if c < a.shape[-1]:
+                hc = float(hi[c])
+                col = np.clip(a[..., c], 0.0, None)
+                out[..., c] = np.log10(col + 1.0) / np.log10(hc + 1.0)
+    return out
 
 
-def denormalize_action(norm_action, action_dim: int = None) -> np.ndarray:
-    """[0,1] 归一化向量 → 原始动作向量（不 clamp，保留模型外推能力）"""
+def denormalize_action(norm_action, action_dim: int = None,
+                       mode: str = "fixed_range") -> np.ndarray:
+    """[0,1] 归一化向量 → 原始动作向量（不 clamp，保留模型外推能力）
+
+    mode="log_range" 时 LOG_COLS 列指数还原：x = 10^(n·log10(hi+1)) - 1。
+    """
     n = np.asarray(norm_action, dtype=np.float32)
     lo, hi = action_bounds(action_dim or n.shape[-1])
-    return n * (hi - lo) + lo
+    out = n * (hi - lo) + lo
+    if mode == "log_range":
+        for c in LOG_COLS:
+            if c < n.shape[-1]:
+                hc = float(hi[c])
+                out[..., c] = (np.power(10.0, n[..., c] * np.log10(hc + 1.0))
+                               - 1.0)
+    return out
 
 
 def default_column_weights(action_dim: int = 18) -> np.ndarray:

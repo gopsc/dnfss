@@ -8,7 +8,8 @@ from torchvision import transforms
 
 from config import parse_checkpoint_config
 from imu_norm import normalize_imu
-from action_norm import normalize_action, denormalize_action
+from action_norm import (normalize_action, denormalize_action,
+                      is_range_mode)
 from model import ActionPredictor
 from utils import parse_action_history
 
@@ -50,11 +51,14 @@ class ActionPredictorInference:
 
         self._action_mean = None
         self._action_std = None
-        # fixed_range：固定物理范围 min-max（免 stats 文件）；旧 checkpoint 无
-        # normalize_mode 键，parse_checkpoint_config 默认 "zscore"，行为不变
-        self._fixed_range = (self._data_cfg.normalize_actions
-                             and self._data_cfg.normalize_mode == "fixed_range")
-        if self._data_cfg.normalize_actions and not self._fixed_range:
+        # fixed_range / log_range：固定物理范围 → [0,1]（免 stats 文件）；
+        # 旧 checkpoint 无 normalize_mode 键，parse_checkpoint_config
+        # 默认 "zscore"，行为不变
+        self._range_mode = (self._data_cfg.normalize_mode
+                            if (self._data_cfg.normalize_actions
+                                and is_range_mode(self._data_cfg.normalize_mode))
+                            else None)
+        if self._data_cfg.normalize_actions and not self._range_mode:
             # 优先使用 checkpoint config 记录的 stats 路径（相对路径按 checkpoint 目录解析），
             # 旧 checkpoint 无该字段时回退到 checkpoint 同目录的 action_stats.npy
             stats_path = self._data_cfg.action_stats_path
@@ -100,9 +104,10 @@ class ActionPredictorInference:
             frames.append(self._transform(img))
         img_tensor = torch.stack(frames).unsqueeze(0).to(self._device)  # (1, F, 3, S, S)
         history = torch.tensor(action_history, dtype=torch.float32)
-        if self._fixed_range:
+        if self._range_mode:
             history = torch.from_numpy(
-                normalize_action(action_history, self.action_dim))
+                normalize_action(action_history, self.action_dim,
+                                 mode=self._range_mode))
         elif self._action_mean is not None:
             history = (history - self._action_mean) / self._action_std
         history = history.unsqueeze(0).to(self._device)
@@ -115,8 +120,9 @@ class ActionPredictorInference:
         if self._predict_delta:
             # 残差：Δ̂ 加回 a_{t-1}（history 末步，同为归一化空间）→ 绝对动作
             pred = history[0, -1] + pred
-        if self._fixed_range:
-            result = denormalize_action(pred.cpu().numpy(), self.action_dim)
+        if self._range_mode:
+            result = denormalize_action(pred.cpu().numpy(), self.action_dim,
+                                        mode=self._range_mode)
         else:
             if self._action_mean is not None:
                 pred = pred * self._action_std + self._action_mean

@@ -18,7 +18,8 @@ import numpy as np
 from PIL import Image
 
 from imu_norm import normalize_imu
-from action_norm import normalize_action, denormalize_action
+from action_norm import (normalize_action, denormalize_action,
+                      is_range_mode)
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -75,10 +76,12 @@ class OnnxPredictor:
         meta = self._read_metadata()
         if normalize_mode is None:
             normalize_mode = meta.get("normalize_mode") or "zscore"
-        if normalize_mode not in ("zscore", "fixed_range", "none"):
+        if normalize_mode not in ("zscore", "fixed_range", "none",
+                                  "log_range"):
             raise ValueError(f"normalize_mode={normalize_mode!r} 非法，"
-                             "应为 zscore/fixed_range/none")
-        self._fixed_range = normalize_mode == "fixed_range"
+                             "应为 zscore/fixed_range/none/log_range")
+        self._range_mode = (normalize_mode
+                            if is_range_mode(normalize_mode) else None)
         self._no_norm = normalize_mode == "none"
         self.normalize_mode = normalize_mode   # 解析后的最终模式（供调用方判断）
         # R1-C 残差预测：元数据 predict_delta=1 时模型输出 Δ̂，
@@ -88,7 +91,7 @@ class OnnxPredictor:
 
         self._action_mean = None
         self._action_std = None
-        if stats_path is not None and not (self._fixed_range or self._no_norm):
+        if stats_path is not None and not (self._range_mode or self._no_norm):
             if not os.path.exists(stats_path):
                 raise FileNotFoundError(f"统计文件不存在: {stats_path}")
             stats = np.load(stats_path)
@@ -158,8 +161,9 @@ class OnnxPredictor:
             raise ValueError(
                 f"action_history 形状应为 {expected}，实际为 {action_history.shape}")
 
-        if self._fixed_range:
-            action_history = normalize_action(action_history, self.action_dim)
+        if self._range_mode:
+            action_history = normalize_action(action_history, self.action_dim,
+                                              mode=self._range_mode)
         elif self._action_mean is not None:
             action_history = (action_history - self._action_mean) / self._action_std
 
@@ -175,8 +179,9 @@ class OnnxPredictor:
         if self._predict_delta:
             # 残差：Δ̂ + a_{t-1}（归一化空间，与 predict.py 对齐）
             result = result + action_history[-1]
-        if self._fixed_range:
-            result = denormalize_action(result, self.action_dim)
+        if self._range_mode:
+            result = denormalize_action(result, self.action_dim,
+                                        mode=self._range_mode)
         elif self._action_mean is not None:
             result = result * self._action_std + self._action_mean
         return result
@@ -200,7 +205,8 @@ def main():
                         help="冒号分隔各步，每步 action_dim 个值")
     parser.add_argument("--stats", default=None,
                         help="action_stats.npy 路径（zscore 归一化训练才需要）")
-    parser.add_argument("--normalize-mode", choices=["zscore", "fixed_range", "none"],
+    parser.add_argument("--normalize-mode",
+                        choices=["zscore", "fixed_range", "none", "log_range"],
                         default=None,
                         help="与训练时 normalize_mode 一致；缺省从 ONNX 元数据"
                              "自动识别（旧模型回退 zscore）")

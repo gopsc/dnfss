@@ -17,6 +17,8 @@ class DataConfig:
     #   "zscore"      数据统计 z-score（现状，依赖 action_stats.npy）
     #   "fixed_range" 固定物理范围 min-max → [0,1]（免 stats 文件，零状态部署，
     #                 常量表见 action_norm.py；越界值 clamp 防御）
+    #   "log_range"   同上，但 spk.F/spk.delay 两列用 log10(1+x) 对数尺度，
+    #                 修正低端聚集导致的精度错配（见实验报告）
     normalize_mode: str = "zscore"
     # 逐列损失权重（仅训练损失用，推理端无感知）：None → action_norm
     # .default_column_weights(action_dim)（舵机 1.0 / spk 0.2 / 保留位 0.0）。
@@ -94,9 +96,10 @@ def build_argparser(description: str = "") -> argparse.ArgumentParser:
     parser.add_argument("--normalize-actions", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--action-stats-path", type=str, default=None)
     parser.add_argument("--normalize-mode", type=str, default=None,
-                        choices=["zscore", "fixed_range"],
+                        choices=["zscore", "fixed_range", "log_range"],
                         help="动作归一化方式：zscore=数据统计（依赖 action_stats.npy）；"
-                             "fixed_range=固定物理范围 min-max→[0,1]（免 stats 文件）")
+                             "fixed_range=固定物理范围 min-max→[0,1]（免 stats 文件）；"
+                             "log_range=spk 两列对数尺度（免 stats 文件）")
     parser.add_argument("--column-weights", type=str, default=None,
                         help="逐列损失权重（逗号分隔 action_dim 个浮点），"
                              "缺省用默认表（舵机1.0/spk0.2/保留位0.0）；仅影响训练损失")
@@ -172,10 +175,10 @@ def validate_config_values(data_cfg: DataConfig, model_cfg: ModelConfig,
             f"attn_dim={model_cfg.attn_dim} 必须能被 attn_heads="
             f"{model_cfg.attn_heads} 整除")
 
-    if data_cfg.normalize_mode not in ("zscore", "fixed_range"):
+    if not (data_cfg.normalize_mode in ("zscore", "fixed_range", "log_range")):
         raise ValueError(
             f"normalize_mode={data_cfg.normalize_mode!r} 非法，"
-            f"应为 'zscore' 或 'fixed_range'")
+            f"应为 'zscore'、'fixed_range' 或 'log_range'")
 
     if data_cfg.column_weights is not None:
         w = data_cfg.column_weights

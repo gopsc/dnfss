@@ -2074,7 +2074,7 @@ class TestFixedRangeNorm(unittest.TestCase):
                                image_width=32, image_height=32, frame_len=3,
                                normalize_actions=True)
             self.assertIsNotNone(ds._action_mean)
-            self.assertFalse(ds._fixed_range)
+            self.assertIsNone(ds._range_mode)
 
     def test_mt_dataset_fixed_range(self):
         """MTActionDataset fixed_range：免统计量，按物理范围归一化"""
@@ -2252,6 +2252,98 @@ class TestR2ImuNorm(unittest.TestCase):
         out = normalize_imu(raw, 16)
         np.testing.assert_allclose(
             out, ([1.0, -1.0] + [1.0] * 6) * 2, atol=1e-6)
+
+
+class TestLogRangeNorm(unittest.TestCase):
+    """log_range 归一化：spk 两列对数尺度，其余列与 fixed_range 一致"""
+
+    def test_spk_cols_log_normalized(self):
+        """spk.F/spk.delay 按 log10(1+x)/log10(1+hi) 归一化，低端值铺开"""
+        from action_norm import normalize_action, action_bounds
+        a = np.zeros(18, dtype=np.float32)
+        a[10] = 10.0      # 常见频率：线性尺度 0.002 → 对数 0.27
+        a[11] = 10.0      # 常见时延：线性尺度 0.005 → 对数 0.31
+        out = normalize_action(a, mode="log_range")
+        _, hi = action_bounds(18)
+        self.assertAlmostEqual(float(out[10]),
+                               float(np.log10(11.0) / np.log10(hi[10] + 1.0)),
+                               places=6)
+        self.assertAlmostEqual(float(out[11]),
+                               float(np.log10(11.0) / np.log10(hi[11] + 1.0)),
+                               places=6)
+        self.assertGreater(float(out[10]), 0.25)   # 不再挤在 0.002
+        self.assertGreater(float(out[11]), 0.25)
+
+    def test_servo_cols_stay_linear(self):
+        """log_range 下舵机列与 fixed_range 完全一致"""
+        from action_norm import normalize_action
+        a = np.zeros(18, dtype=np.float32)
+        a[:10] = [0.0, 45.0, 90.0, 135.0, 180.0, 0.0, 45.0, 90.0, 135.0, 180.0]
+        lin = normalize_action(a, mode="fixed_range")
+        log = normalize_action(a, mode="log_range")
+        np.testing.assert_allclose(log[:10], lin[:10], atol=1e-7)
+        np.testing.assert_allclose(log[12:], lin[12:], atol=1e-7)
+
+    def test_log_roundtrip(self):
+        """log_range 归一化→反归一化往返一致（spk 列含 0 与常规值）"""
+        from action_norm import normalize_action, denormalize_action
+        rng = np.random.RandomState(1)
+        a = np.zeros((9, 18), dtype=np.float32)
+        a[:, :10] = rng.uniform(0, 180, (9, 10))
+        a[:, 10] = [0.0, 10.0, 100.0, 1000.0, 5000.0, 0.0, 10.0, 100.0, 1000.0]
+        a[:, 11] = [0.0, 10.0, 200.0, 2000.0, 0.0, 10.0, 200.0, 2000.0, 500.0]
+        rt = denormalize_action(normalize_action(a, mode="log_range"),
+                                mode="log_range")
+        np.testing.assert_allclose(rt, a, rtol=1e-5, atol=1e-4)
+
+    def test_negative_log_col_clipped(self):
+        """log 列负值先截 0（log10(1+x) 定义域 x>-1），不产生 NaN"""
+        from action_norm import normalize_action
+        a = np.zeros(18, dtype=np.float32)
+        a[10] = -50.0
+        a[11] = -1.0
+        out = normalize_action(a, mode="log_range")
+        self.assertEqual(float(out[10]), 0.0)
+        self.assertEqual(float(out[11]), 0.0)
+        self.assertTrue(np.all(np.isfinite(out)))
+
+    def test_dataset_log_range_mode(self):
+        """dataset normalize_mode="log_range" 时目标按对数尺度归一化"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            ep_dir = base / "episode_0001"
+            images_dir = ep_dir / "images"
+            images_dir.mkdir(parents=True)
+            for i in range(8):
+                Image.fromarray(np.random.randint(
+                    0, 255, (16, 16, 3), dtype=np.uint8)).save(
+                    images_dir / f"{i:04d}.jpg")
+            actions = np.zeros((8, 12), dtype=np.float32)
+            actions[:, 0] = 90.0    # 舵机 0.5
+            actions[:, 10] = 10.0   # spk.F → log 尺度
+            actions[:, 11] = 10.0   # spk.delay → log 尺度
+            np.save(ep_dir / "actions.npy", actions)
+            ds = ActionDataset(tmpdir, history_len=3, action_dim=12,
+                               image_width=16, image_height=16, frame_len=3,
+                               normalize_actions=True,
+                               normalize_mode="log_range")
+            self.assertIsNone(ds._action_mean)
+            self.assertIsNone(ds._action_std)
+            s = ds[3]
+            tgt = s["target"].numpy()
+            self.assertAlmostEqual(float(tgt[0]), 0.5, places=6)
+            self.assertAlmostEqual(float(tgt[10]),
+                                   float(np.log10(11.0) / np.log10(5001.0)),
+                                   places=6)
+
+    def test_config_accepts_log_range(self):
+        """normalize_mode="log_range" 通过校验；非法模式拒绝"""
+        cfg = Config()
+        cfg.data.normalize_mode = "log_range"
+        validate_config_values(cfg.data, cfg.model)
+        cfg.data.normalize_mode = "log10"
+        with self.assertRaises(ValueError):
+            validate_config_values(cfg.data, cfg.model)
 
 
 class TestR2ImuModel(unittest.TestCase):

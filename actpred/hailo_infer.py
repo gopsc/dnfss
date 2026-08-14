@@ -36,7 +36,8 @@ import numpy as np
 from PIL import Image
 
 from imu_norm import normalize_imu
-from action_norm import normalize_action, denormalize_action
+from action_norm import (normalize_action, denormalize_action,
+                      is_range_mode)
 from utils import parse_action_history
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
@@ -69,13 +70,14 @@ class HailoPredictor:
         pred_token: np.ndarray 或 .npy 路径；export_deploy.py --pred-token-out
             产物。缺省时喂零（仅适合 pred_token 恰好全零的模型）。
         normalize_mode: 与训练时 DataConfig.normalize_mode 一致。
-            "zscore"（默认）需传 stats_path；"fixed_range" 免 stats 文件，
-            按固定物理范围 min-max 归一化（action_norm.py）。
+            "zscore"（默认）需传 stats_path；"fixed_range" / "log_range"
+            免 stats 文件，按固定物理范围归一化（action_norm.py）。
         """
         from hailo_platform import HEF, VDevice
 
         self._predict_delta = predict_delta
-        self._fixed_range = normalize_mode == "fixed_range"
+        self._range_mode = (normalize_mode
+                            if is_range_mode(normalize_mode) else None)
         self._default_pred_token = None
         if pred_token is not None:
             if isinstance(pred_token, str):
@@ -105,7 +107,7 @@ class HailoPredictor:
 
             self._action_mean = None
             self._action_std = None
-            if stats_path is not None and not self._fixed_range:
+            if stats_path is not None and not self._range_mode:
                 if not os.path.exists(stats_path):
                     raise FileNotFoundError(f"统计文件不存在: {stats_path}")
                 stats = np.load(stats_path)
@@ -247,8 +249,9 @@ class HailoPredictor:
             raise ValueError(
                 f"action_history 形状应为 {expected}，实际为 {action_history.shape}")
 
-        if self._fixed_range:
-            action_history = normalize_action(action_history, self.action_dim)
+        if self._range_mode:
+            action_history = normalize_action(action_history, self.action_dim,
+                                              mode=self._range_mode)
         elif self._action_mean is not None:
             action_history = (action_history - self._action_mean) / self._action_std
 
@@ -310,8 +313,9 @@ class HailoPredictor:
         if self._predict_delta:
             # 残差模式：Δ̂ + a_{t-1}（归一化空间），与 predict.py 对齐
             result = result + action_history[-1]
-        if self._fixed_range:
-            result = denormalize_action(result, self.action_dim)
+        if self._range_mode:
+            result = denormalize_action(result, self.action_dim,
+                                        mode=self._range_mode)
         elif self._action_mean is not None:
             result = result * self._action_std + self._action_mean
         if not np.all(np.isfinite(result)):

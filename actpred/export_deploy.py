@@ -173,15 +173,17 @@ def check_token_ranges(wrapper: "DeployWrapper", frame_len: int, height: int,
     全部量化成 0），HEF 输出对任何输入恒定。必须在编译前拦截。
 
     归一化模型（normalize_actions）的 HEF 输入是归一化后的历史，
-    检查输入须与推理端一致（zscore → z 空间采样；fixed_range → [0,1]）。
+    检查输入须与推理端一致（zscore → z 空间采样；fixed_range /
+    log_range → [0,1]）。
     """
     rng = np.random.default_rng(42)
     raw = rng.integers(0, 256, size=(height, width, 3), dtype=np.uint8)
     norm = (raw.astype(np.float32) / 255.0 - IMAGENET_MEAN) / IMAGENET_STD
     frames = [torch.tensor(norm[None]) for _ in range(frame_len)]
     history = rng.uniform(0.0, 500.0, size=(1, 1, history_len, action_dim))
-    if normalize_mode == "fixed_range":
-        # fixed_range 归一化空间即 [0,1]，直接在归一化空间采样
+    from action_norm import is_range_mode
+    if is_range_mode(normalize_mode):
+        # fixed_range / log_range 归一化空间即 [0,1]，直接在归一化空间采样
         history = rng.uniform(0.0, 1.0, size=(1, 1, history_len, action_dim))
     elif action_stats_path is not None:
         stats = np.load(action_stats_path)
@@ -235,9 +237,10 @@ def main():
     h, w = cfg.data.image_height, cfg.data.image_width
     f = cfg.data.frame_len
     stats_path = None
-    if cfg.data.normalize_actions and cfg.data.normalize_mode != "fixed_range":
+    from action_norm import is_range_mode
+    if cfg.data.normalize_actions and not is_range_mode(cfg.data.normalize_mode):
         # 与 predict.py 语义一致：相对路径按 checkpoint 目录解析
-        # （fixed_range 模式免 stats 文件，跳过）
+        # （fixed_range / log_range 模式免 stats 文件，跳过）
         stats_path = cfg.data.action_stats_path
         if not stats_path:
             stats_path = os.path.join(
