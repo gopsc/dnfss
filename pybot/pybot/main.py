@@ -134,10 +134,57 @@ def _load_predictor(checkpoint):
     pybot 不硬依赖 actpred：仅 --loop 时才尝试 import，actpred 不在
     sys.path 时给出可操作提示。checkpoint 目录名决定后端（.hef → Hailo
     NPU，否则 → PyTorch），推理类由 actpred 提供。
+
+    HEF 后端会自动查找同目录下的 pred_token.npy 和 companion checkpoint
+    （pretrain_best_inference.pt / best_inference.pt），以恢复 pred_token
+    默认值和 predict_delta 训练配置——否则 Hailo 推理输出与训练语义不一致。
     """
+    import os
     try:
         if checkpoint.endswith(".hef"):
             from actpred.hailo_infer import HailoPredictor as _P
+            hef_dir = os.path.dirname(os.path.abspath(checkpoint))
+
+            # pred_token：export_deploy.py --pred-token-out 的产物
+            pred_token = None
+            pt_path = os.path.join(hef_dir, "pred_token.npy")
+            if os.path.exists(pt_path):
+                pred_token = pt_path
+                logging.info("found pred_token: %s", pt_path)
+
+            # stats_path：归一化模型的 action_stats.npy
+            stats_path = None
+            sp = os.path.join(hef_dir, "action_stats.npy")
+            if os.path.exists(sp):
+                stats_path = sp
+
+            # predict_delta：从同目录 checkpoint 读取训练配置
+            predict_delta = False
+            for name in ("pretrain_best_inference.pt",
+                         "best_inference.pt"):
+                ckpt_path = os.path.join(hef_dir, name)
+                if os.path.exists(ckpt_path):
+                    try:
+                        import torch
+                        ck = torch.load(ckpt_path, map_location="cpu",
+                                        weights_only=True)
+                        cfg = ck.get("config", {})
+                        predict_delta = cfg.get("train", {}).get(
+                            "predict_delta", False)
+                        if predict_delta:
+                            logging.info(
+                                "predict_delta=True from %s", ckpt_path)
+                    except Exception:
+                        pass
+                    break
+
+            try:
+                return _P(checkpoint, stats_path=stats_path,
+                          predict_delta=predict_delta,
+                          pred_token=pred_token)
+            except Exception:
+                logging.exception("加载 HEF 推理器失败: %s", checkpoint)
+                return None
         else:
             from actpred.predict import ActionPredictorInference as _P
     except ImportError:

@@ -108,7 +108,11 @@ class ActionPredictorInference:
             pred = history[0, -1] + pred
         if self._action_mean is not None:
             pred = pred * self._action_std + self._action_mean
-        return pred.cpu().numpy()
+        result = pred.cpu().numpy()
+        if not np.all(np.isfinite(result)):
+            print("WARNING: predict output contains NaN/Inf, replacing with zeros")
+            result = np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
+        return result
 
 
 def parse_action_history(s: str, action_dim: int) -> np.ndarray:

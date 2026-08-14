@@ -132,11 +132,13 @@ class DeployWrapper(nn.Module):
         x = self.proj_convs[i](x)                     # 1x1 conv ≡ 池化后的 img_proj
         return self.pool(x)                           # (1, d, 1, 1) NCHW
 
-    def forward(self, frame0: torch.Tensor, frame1: torch.Tensor, frame2: torch.Tensor,
-                action_history: torch.Tensor, pred_token: torch.Tensor,
-                imu: torch.Tensor = None) -> torch.Tensor:
+    def forward(self, *inputs: torch.Tensor) -> torch.Tensor:
+        # inputs = frame0..frame{F-1}, action_history, pred_token, [imu]
         # 全程 (1, 1, S, d) 布局：seq 占 W 维，避免任何 transpose
-        frames = [frame0, frame1, frame2]
+        frames = list(inputs[:self._frame_len])
+        action_history = inputs[self._frame_len]
+        pred_token = inputs[self._frame_len + 1]
+        imu = inputs[self._frame_len + 2] if self._imu_dim > 0 else None
         feats = [self._frame_feat(frames[i], i).permute(0, 2, 3, 1)
                  for i in range(self._frame_len)]     # (1, 1, 1, d) NHWC
         img_tokens = torch.cat(feats, dim=2) + self.proj_bias  # (1, 1, F, d)

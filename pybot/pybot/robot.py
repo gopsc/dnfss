@@ -368,6 +368,10 @@ class RobotStruct:
         SpeakerVar.play 强制要求 delay 键；闭环已剔除 delay 列（避免发声
         阻塞卡死节拍），此处为其补 delay=0 —— 发声但不阻塞，节拍由 hz 掌控。
         """
+        import numpy as np
+        if not np.all(np.isfinite(act)):
+            log.warning("action vector contains NaN/Inf, skipping step")
+            return
         row_sets = {}
         for j, dev, rp in exec_cols:
             row_sets.setdefault(dev, {})[rp] = float(act[j])

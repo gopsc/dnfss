@@ -34,7 +34,7 @@ class EpisodeRecorder:
     全程 None（无 IMU 硬件）则不产出 imu.npy，保持旧格式兼容。
     """
 
-    def __init__(self, output_dir, action_dim=18, imu_dim=8):
+    def __init__(self, output_dir, action_dim=18, imu_dim=0):
         self.action_dim = action_dim
         self.imu_dim = imu_dim
         self._frame_idx = 0

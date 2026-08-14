@@ -121,7 +121,7 @@ def pretrain_one_epoch(model, loader, optimizer, device, image_width,
         if noise_std > 0:
             history = history + torch.randn_like(history) * noise_std
             target = target + torch.randn_like(target) * noise_std
-        if images is None or images.size(0) != history.size(0):
+        if images is None or images.size(0) != history.size(0) or random_images:
             images = _placeholder_images(
                 history.size(0), frame_len, image_height, image_width,
                 device, random_images)
@@ -147,7 +147,7 @@ def validate(model, loader, device, image_width, image_height, frame_len,
     for batch in tqdm(loader, desc="  val  ", leave=False):
         history = batch["action_history"].to(device)
         target = batch["target"].to(device)
-        if images is None or images.size(0) != history.size(0):
+        if images is None or images.size(0) != history.size(0) or random_images:
             images = _placeholder_images(
                 history.size(0), frame_len, image_height, image_width,
                 device, random_images)

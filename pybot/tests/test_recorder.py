@@ -314,7 +314,7 @@ cam0.frame;
 
 def test_imu_npy_written_with_dict(tmp_path):
     """record 传姿态 dict → flush 产出 imu.npy（T×8），键序 roll..gz"""
-    rec = EpisodeRecorder(str(tmp_path), action_dim=18)
+    rec = EpisodeRecorder(str(tmp_path), action_dim=18, imu_dim=8)
     imu = {"roll": 1.0, "pitch": 2.0, "ax": 3.0, "ay": 4.0,
            "az": 5.0, "gx": 6.0, "gy": 7.0, "gz": 8.0}
     rec.record(None, [0.0], imu_vec=imu)
@@ -328,7 +328,7 @@ def test_imu_npy_written_with_dict(tmp_path):
 
 def test_imu_mixed_none_marks_zero(tmp_path):
     """混合数据集：部分帧无姿态 → 该帧记零向量，仍产出 imu.npy"""
-    rec = EpisodeRecorder(str(tmp_path), action_dim=18)
+    rec = EpisodeRecorder(str(tmp_path), action_dim=18, imu_dim=8)
     rec.record(None, [0.0], imu_vec=None)
     rec.record(None, [0.0], imu_vec={"roll": 9.0})
     rec.flush()

@@ -72,8 +72,25 @@ class HailoPredictor:
             action = predictor.predict(images, action_history)
     """
 
-    def __init__(self, hef_path: str, stats_path: str = None, vdevice=None):
+    def __init__(self, hef_path: str, stats_path: str = None, vdevice=None,
+                 predict_delta: bool = False, pred_token=None):
+        """HEF 推理器。
+
+        predict_delta: 模型用 --predict-delta 训练时须置 True，推理输出
+            （归一化空间）会加回 history 末步再反归一化，与 predict.py 对齐。
+        pred_token: np.ndarray 或 .npy 路径；export_deploy.py --pred-token-out
+            产物。缺省时喂零（仅适合 pred_token 恰好全零的模型）。
+        """
         from hailo_platform import HEF, VDevice
+
+        self._predict_delta = predict_delta
+        self._default_pred_token = None
+        if pred_token is not None:
+            if isinstance(pred_token, str):
+                self._default_pred_token = np.load(pred_token)
+            else:
+                self._default_pred_token = np.asarray(pred_token,
+                                                       dtype=np.float32)
 
         self._stack = contextlib.ExitStack()
         if vdevice is None:
@@ -259,6 +276,8 @@ class HailoPredictor:
         if self._pred_info is not None:
             p_shape = tuple(self._pred_info.shape)
             if pred_token is None:
+                pred_token = self._default_pred_token
+            if pred_token is None:
                 values = np.zeros(p_shape, dtype=np.float32)
             else:
                 values = np.asarray(pred_token, dtype=np.float32).reshape(p_shape)
@@ -294,8 +313,14 @@ class HailoPredictor:
             q = self._out_info.quant_info
             result = (result - q.qp_zp) * q.qp_scale
         result = result.reshape(-1)
+        if self._predict_delta:
+            # 残差模式：Δ̂ + a_{t-1}（归一化空间），与 predict.py 对齐
+            result = result + action_history[-1]
         if self._action_mean is not None:
             result = result * self._action_std + self._action_mean
+        if not np.all(np.isfinite(result)):
+            print("WARNING: HEF output contains NaN/Inf, replacing with zeros")
+            result = np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
         return result
 
     def _frame_float(self, image) -> np.ndarray:
@@ -349,6 +374,9 @@ def main():
     parser.add_argument("--pred-token", default=None,
                         help="pred_token .npy 路径（export_deploy.py "
                              "--pred-token-out 产物；缺省喂零）")
+    parser.add_argument("--ckpt", default=None,
+                        help="checkpoint .pt 路径（自动检测 predict_delta；"
+                             "HEF 部署时需要以恢复训练配置）")
     parser.add_argument("--imu", type=str, default=None,
                         help="可选姿态向量（逗号分隔，原始量纲：roll,pitch 度 / "
                              "ax..gz int16 原始值）；HEF 含 imu 输入且缺省时按零向量")
@@ -361,7 +389,18 @@ def main():
     if args.imu is not None:
         imu = np.array([float(v) for v in args.imu.split(",")],
                        dtype=np.float32)
-    with HailoPredictor(args.hef, stats_path=args.stats) as predictor:
+
+    predict_delta = False
+    if args.ckpt:
+        import torch
+        ck = torch.load(args.ckpt, map_location="cpu", weights_only=True)
+        cfg = ck.get("config", {})
+        predict_delta = cfg.get("train", {}).get("predict_delta", False)
+        if predict_delta:
+            print("predict_delta=True: HEF 输出将加回历史末步（残差模式）")
+
+    with HailoPredictor(args.hef, stats_path=args.stats,
+                        predict_delta=predict_delta) as predictor:
         if len(args.images) != predictor.frame_len:
             raise SystemExit(
                 f"--images 需传入 {predictor.frame_len} 个路径（旧→新），"

@@ -55,6 +55,7 @@ model = ActionPredictor(cfg.model, cfg.data, pretrained=False)
 model.load_state_dict(ck["model_state_dict"])
 model.eval()
 pred_learned = model.pred_token.data.unsqueeze(1).numpy()   # (1,1,1,d)
+imu_dim = cfg.data.imu_dim
 
 # 归一化模型：torch 参考在喂入前 z-score；HailoPredictor 传 stats_path
 # 由封装内部归一化（hist_real/hist_zero 保持原始值，避免双重归一化）
@@ -101,7 +102,6 @@ def torch_pred(imgs, hist, use_learned_pred=True, imu=None):
 
 
 # R2 方案一：imu_dim>0 时每步传原始姿态（HailoPredictor 内部归一化）
-imu_dim = cfg.data.imu_dim
 imu_real = np.array([5.0, -3.0] + [0.0] * 6, dtype=np.float32)
 
 with HailoPredictor(HEF_PATH, stats_path=stats_path) as p:
