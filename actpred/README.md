@@ -167,9 +167,9 @@ recorder.flush()
 | `--epochs` | 100 | 训练轮数 |
 | `--lr` | 0.001 | 学习率 |
 | `--batch-size` | 4 | 批次大小（默认分辨率 640×480；更高分辨率需调小，小分辨率可调大） |
-| `--normalize-actions` | False | 动作归一化（`--no-normalize-actions` 关闭） |
+| `--normalize-actions` | True | 动作归一化（`--no-normalize-actions` 关闭；2026-08-14 起默认开启——复现旧行为需显式关闭） |
 | `--normalize-mode` | zscore | 归一化方式：`zscore`=数据统计（依赖 `action_stats.npy`）；`fixed_range`=固定物理范围 min-max→[0,1]（常量表见 `action_norm.py`，免 stats 文件，越界 clamp 防御） |
-| `--column-weights` | 舵机1.0/spk0.2/保留位0.0 | 逐列损失权重（逗号分隔 action_dim 个浮点；仅影响训练损失，推理端无感知） |
+| `--column-weights` | 舵机1.0/spk0.2/保留位0.0 | 逐列损失权重（逗号分隔 action_dim 个浮点；仅影响训练损失，推理端无感知；**始终生效**——包括 `--no-normalize-actions` 的未归一化训练） |
 | `--dropout` | 0.1 | Dropout 率 |
 | `--weight-decay` | 0.0001 | 权重衰减 |
 | `--val-split` | 0.15 | 验证集比例 |

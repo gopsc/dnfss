@@ -9,8 +9,9 @@
 >
 > 本报告对照 v2 报告逐项核对修复状态，并给出本轮新发现。
 >
-> **2026-08-14 更新：两个新 P1（v3-P1-1/v3-P1-2）与 P2-a 残余（ONNX 分支）已修复，
-> 附回归测试（pybot +1 / actpred +7）。**
+> **2026-08-14 更新：P0-2（方案 B）、两个新 P1（v3-P1-1/v3-P1-2）、P2-a 残余（ONNX 分支）
+> 与 P2-a3（column_weights 文档）已修复，附回归测试（pybot +1 / actpred +7）。
+> P0/P1 全部清零，剩余 3 项新 P2 + 5 项遗留 P2 + 2 项 P3。**
 
 ---
 
@@ -18,12 +19,12 @@
 
 | 级别 | 新发现 | 历史遗留（v2 未修复） | 说明 |
 |------|--------|----------------------|------|
-| **P0（崩溃/数据损坏）** | 0 | **1（P0-2 未修复即被提交）** | 见 §三 |
+| ~~P0（崩溃/数据损坏）~~ | 0 | ~~1~~ **0（P0-2 已按方案 B 修复）** | 见 §三 |
 | ~~P1（功能风险）~~ | ~~2~~ **0（均已修复）** | ~~1~~ **0（P2-a 已闭环）** | 见 §四 |
-| P2（代码质量） | 3 | 6 | 见 §五 |
+| P2（代码质量） | 3 | 5（P2-a3 已随 P0-2 一并修复） | 见 §五 |
 | P3（边缘/环境） | 2 | 0 | 见 §五 |
 
-**重点：P0-2 在 v2 标记为"必须提交前修复"但仍随 85bf68f 提交；两个新 P1 与 P2-a 残余已于本轮回合修复。**
+**重点：P0-2 曾随 85bf68f 未修复提交，本轮已按方案 B 闭环；两个新 P1 与 P2-a 残余已于本轮回合修复。**
 
 ---
 
@@ -43,23 +44,17 @@
 | R2-3 空验证集无 best.pt | P2 | ✅ 已修复 | [train.py:309-324](../../actpred/train.py#L309-L324) 保底保存最终权重 |
 | P2-c 闭环测试覆盖 | P2 | ⚠️ 大部分修复 | test_loop.py 已含 recorder 集成（imu_recorded/multi_recorded）；**predictor 异常清理路径仍无用例** |
 | P2-b numpy 三处 lazy import | P2 | ⚠️ 修复引入回归 | 改为顶层导入，**破坏零依赖承诺** → 见新发现 v3-P1-1 |
-| P0-2 normalize_actions 默认值 | P0 | ❌ **未修复** | [config.py:14](../../actpred/config.py#L14) 仍为 `True`，[README.md:170](../../actpred/README.md#L170) 仍标注 `False` |
+| P0-2 normalize_actions 默认值 | P0 | ✅ 已修复 | [README.md:170](../../actpred/README.md#L170) 更正为 `True` 并注明行为变更（方案 B，见 §三） |
 
 ---
 
 ## 三、P0 遗留
 
-### P0-2（v2 遗留，未修复即提交）DataConfig normalize_actions 默认值与 README 不一致
+### P0-2 DataConfig normalize_actions 默认值与 README 不一致 —— ✅ 已修复（2026-08-14，方案 B）
 
-**位置**：[actpred/config.py:14](../../actpred/config.py#L14) vs [actpred/README.md:170](../../actpred/README.md#L170)
-
-```python
-normalize_actions: bool = True   # README 配置表仍标注默认 False
-```
-
-**问题**：v2 报告给出的两个方案（A. 恢复默认 False；B. 改 README 为 True 并标注 breaking change）均未执行，不一致状态被 85bf68f 直接提交。CLI 不传 `--normalize-actions` 时行为与 README 描述相反。
-
-**修复建议**：执行 v2 方案 B（改 README 为 `True` 并注明行为变更）——当前代码、测试（148 用例以此默认值运行）、训练实践均已按 `True` 落地，回退代码反而引入新风险。
+**修复**：[README.md:170](../../actpred/README.md#L170) 默认值更正为 `True`，
+并注明"2026-08-14 起默认开启——复现旧行为需显式 `--no-normalize-actions`"。
+代码（config.py:14 `True`）、测试、训练实践此前均已按 `True` 落地，文档对齐即闭环。
 
 ---
 
@@ -133,7 +128,7 @@ wrapper vs 原模型、ORT vs wrapper 的 max diff 均仅 print，进程照常�
 | # | 位置 | 问题 | 备注 |
 |---|------|------|------|
 | P2-a1 | [action_norm.py:55-62](../../actpred/action_norm.py#L55-L62) | `default_column_weights` 对 action_dim>18 的超出列权重恒 0 | 未来扩展性 |
-| P2-a3 | [README.md:172](../../actpred/README.md#L172) | column_weights 始终生效（含不归一化训练）未在文档注明 | 文档补一句即可 |
+| P2-a3 | [README.md:172](../../actpred/README.md#L172) | ~~column_weights 始终生效（含不归一化训练）未在文档注明~~ ✅ 已随 P0-2 一并修复 | 已注明"始终生效" |
 | P2-d | [dataset.py:46](../../actpred/dataset.py#L46) | Resize 不保持宽高比 | 训练/推理口径一致，仅变形质量 nit |
 | P2-e | [train.py:236,248](../../actpred/train.py#L236) | resume 时 scheduler T_max 恢复旧值，改 --epochs 不影响 LR 曲线 | 语义需在文档明确 |
 | P2-f | [export_deploy.py:42-59](../../actpred/export_deploy.py#L42-L59) | ManualAttnBlock 依赖 PyTorch in_proj 内部布局 | 数值验证已缓解，配合 v3-P2-2 加断言更稳 |
@@ -145,7 +140,7 @@ wrapper vs 原模型、ORT vs wrapper 的 max diff 均仅 print，进程照常�
 
 | 优先级 | 项 | 理由 |
 |--------|-----|------|
-| **P0** | P0-2 README 与默认值对齐（方案 B） | 一行文档修复，消除行为与文档相悖 |
+| ~~P0~~ | ~~P0-2 README 与默认值对齐（方案 B）~~ ✅ 已修复 | README 默认值更正 + 行为变更注明 |
 | ~~P1~~ | ~~v3-P1-1 robot.py numpy lazy import~~ ✅ 已修复 | 零依赖承诺已恢复，附子进程回归测试 |
 | ~~P1~~ | ~~v3-P1-2 ONNX predict_delta + 元数据~~ ✅ 已修复 | 元数据写入/识别/残差加回全链路 + 7 用例 |
 | P2 | v3-P2-1 验收脚本 fixed_range 适配 | fixed_range 是最推荐部署模式，验收链不能缺席 |
