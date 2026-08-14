@@ -137,14 +137,24 @@ def build_deploy_set(args):
                                  size=jitter.shape).astype(np.float32)
     pred = np.broadcast_to(v, (args.samples, 1, 1, d)).astype(np.float32) + jitter
 
+    inputs = [*frames, history, pred]
+    if cfg.imu_dim > 0:
+        # R2 方案一：imu 输入为归一化姿态（roll,pitch/180，ax..gz/32768）。
+        # 校准覆盖典型工作范围：归一化值域 ±0.5（≈±90°/±16384）均匀采样
+        imu = rng.uniform(-0.5, 0.5,
+                          size=(args.samples, 1, 1, cfg.imu_dim)).astype(np.float32)
+        inputs.append(imu)
+
     np.savez_compressed(
         args.output,
         **{f"actpred_deploy/input_layer{i + 1}": arr
-           for i, arr in enumerate([*frames, history, pred])})
+           for i, arr in enumerate(inputs)})
     print(f"部署校准集已保存: {args.output}")
     print(f"  frame0~2: {frames[0].shape}（分辨率 {w}x{h}，与 checkpoint 一致）")
     print(f"  action_history: {history.shape}  pred_token: {pred.shape}"
           f"（学习值 ±{args.pred_jitter:.0%} 抖动）")
+    if cfg.imu_dim > 0:
+        print(f"  imu: {inputs[-1].shape}（归一化值域 ±0.5 均匀采样）")
 
 
 def main():

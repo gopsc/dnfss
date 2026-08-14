@@ -89,7 +89,8 @@ class PredictionHead(nn.Module):
 class ActionPredictor(nn.Module):
     """多帧图像 + 历史动作的 Transformer 注意力融合预测器
 
-    token 序列：[img×F, act×H, PRED]，长度固定为 F+H+1，
+    token 序列：[img×F, act×H, (IMU), PRED]，长度固定为 F+H+1（imu_dim=0）
+    或 F+H+2（imu_dim>0，R2 方案一：IMU 独立 token 位于 PRED 之前），
     取 PRED 位置输出进预测头回归下一时间步动作。
     除 batch 维外全部维度静态，保证 ONNX/NPU 部署友好。
     """
@@ -107,7 +108,12 @@ class ActionPredictor(nn.Module):
         self.img_proj = nn.Linear(model_cfg.cnn_feature_dim, d)
         self.act_proj = nn.Linear(data_cfg.action_dim, d)
 
-        seq_len = data_cfg.frame_len + data_cfg.history_len + 1
+        self._imu_dim = data_cfg.imu_dim
+        if self._imu_dim > 0:
+            self.imu_proj = nn.Linear(self._imu_dim, d)
+
+        seq_len = data_cfg.frame_len + data_cfg.history_len + 1 \
+            + (1 if self._imu_dim > 0 else 0)
         self.pred_token = nn.Parameter(torch.zeros(1, 1, d))
         self.pos_embed = nn.Parameter(torch.zeros(1, seq_len, d))
         nn.init.trunc_normal_(self.pred_token, std=0.02)
@@ -131,8 +137,10 @@ class ActionPredictor(nn.Module):
         self._image_height = data_cfg.image_height
         self._cnn_feature_dim = model_cfg.cnn_feature_dim
 
-    def forward(self, images: torch.Tensor, action_history: torch.Tensor) -> torch.Tensor:
+    def forward(self, images: torch.Tensor, action_history: torch.Tensor,
+                imu: torch.Tensor = None) -> torch.Tensor:
         # images: (B, F, 3, H, W)  action_history: (B, H_len, D)
+        # imu: (B, imu_dim) 已归一化；None 时填零（无姿态先验）
         b = images.size(0)
         frames = images.reshape(
             b * self._frame_len, 3, self._image_height, self._image_width)
@@ -141,7 +149,13 @@ class ActionPredictor(nn.Module):
         img_tokens = self.img_proj(img_feat)
         act_tokens = self.act_proj(action_history)
         pred_token = self.pred_token.expand(b, -1, -1)
-        tokens = torch.cat([img_tokens, act_tokens, pred_token], dim=1)
+        parts = [img_tokens, act_tokens]
+        if self._imu_dim > 0:
+            if imu is None:
+                imu = images.new_zeros(b, self._imu_dim)
+            parts.append(self.imu_proj(imu).unsqueeze(1))
+        parts.append(pred_token)
+        tokens = torch.cat(parts, dim=1)
         tokens = tokens + self.pos_embed
         out = self.encoder(tokens)
         return self.head(out[:, -1])

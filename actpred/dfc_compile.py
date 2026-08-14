@@ -36,10 +36,14 @@ import tempfile
 NET_NAME = "actpred_deploy"
 
 
-def start_nodes(frame_count: int) -> list:
-    """export_deploy.py 的输入命名约定：frame{i} × frame_count + action_history + pred_token"""
-    return ([f"frame{i}" for i in range(frame_count)]
-            + ["action_history", "pred_token"])
+def start_nodes(frame_count: int, with_imu: bool = False) -> list:
+    """export_deploy.py 的输入命名约定：frame{i} × frame_count + action_history
+    + pred_token（R2 imu_dim>0 时末尾追加 imu）"""
+    nodes = ([f"frame{i}" for i in range(frame_count)]
+             + ["action_history", "pred_token"])
+    if with_imu:
+        nodes.append("imu")
+    return nodes
 
 
 def hailo(*args, venv_bin: str):
@@ -118,6 +122,9 @@ def main():
     parser.add_argument("--frame-count", type=int, default=3,
                         help="帧输入个数（与导出 ONNX 的 frame_len 一致，"
                              "默认 3）")
+    parser.add_argument("--with-imu", action="store_true",
+                        help="R2：导出 ONNX 含 imu 输入时开启（start nodes "
+                             "末尾追加 imu，与 export_deploy.py 命名一致）")
     parser.add_argument("--venv-bin", default="venv_dfc/bin",
                         help="安装了 hailo-sdk 的 venv bin 目录")
     args = parser.parse_args()
@@ -126,7 +133,7 @@ def main():
     if not os.path.exists(os.path.join(venv_bin, "hailo")):
         sys.exit(f"错误: {venv_bin}/hailo 不存在，请先安装 hailo-sdk")
 
-    nodes = start_nodes(args.frame_count)
+    nodes = start_nodes(args.frame_count, args.with_imu)
     input_formats = ["NHWC"] * len(nodes)
 
     workdir = tempfile.mkdtemp(prefix="dfc_")

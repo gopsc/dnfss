@@ -10,15 +10,16 @@ Transformer（pre-LN）自注意力融合，取 [PRED] token 回归下一步动�
 
 ```
 F 帧图像 (F×3×H×W) ─► 共享 CNN 编码器 ─► F 个 token ─► proj → d_model ┐
-                                                                          ├─► [img×F, act×H, PRED] + 位置编码
-动作历史 (H×D)      ─► Linear proj → d_model ─► H 个 token ────────┤        │
-可学习 [PRED] token ────────────────────────────────────────┘        ▼
-                                       TransformerEncoder (pre-LN, 2 层, 4 头, d_model=128)
+                                                                          ├─► [img×F, act×H, (IMU), PRED]
+动作历史 (H×D)      ─► Linear proj → d_model ─► H 个 token ────────┤        │        + 位置编码
+IMU 姿态 (imu_dim) ─► Linear proj → 1 个 token（R2，可选）────────┤        ▼
+可学习 [PRED] token ────────────────────────────────────────┘  TransformerEncoder (pre-LN, 2 层, 4 头, d_model=128)
                                                                                  │
                                              取 PRED 位置输出 ─► MLP 头 ─► 预测动作 (action_dim)
 ```
 
-token 序列长度固定为 F+H+1（默认 3+5+1=9），除 batch 外无动态 shape，对 NPU（如树莓派
+token 序列长度固定为 F+H+1（默认 3+5+1=9；`--imu-dim`>0 时 IMU token 插到
+PRED 之前，长度 F+H+2），除 batch 外无动态 shape，对 NPU（如树莓派
 AI 扩展板）部署友好。
 
 ## 快速开始
@@ -39,6 +40,9 @@ bash _run.sh train --data-dir ./data --epochs 100 --resume checkpoints/last.pt
 # --ss-prob P      scheduled sampling 真实历史概率（默认 1.0=全真；0.5 表示半数步用自预测回传）
 bash _run.sh train --data-dir ./data --epochs 100 --action-dim 18 \
     --predict-delta --rollout-len 4 --ss-prob 0.7
+
+# R2 姿态反馈：--imu-dim 8 启用独立 IMU token（数据需含 imu.npy，见"数据格式"）
+bash _run.sh train --data-dir ./data --epochs 100 --action-dim 18 --imu-dim 8
 
 # 推理（--images 按时间顺序旧→新传入 frame_len 个图像路径，冷启动时可重复传同一帧；
 #      --action-history 格式：冒号分隔各步，每步 action_dim 个值，共 history_len 步）
@@ -109,12 +113,20 @@ data/
             0001.jpg
             ...
         actions.npy       # shape: (T, action_dim) float32
+        imu.npy           # 可选，shape: (T, imu_dim) float32（MPU6050 姿态，R2）
     episode_002/
         ...
 ```
 
 每个 timestep 的样本：帧 `[t-frame_len+1, t]`（旧→新）+ 前 `history_len` 步动作 → 当前步动作。
 采样起点为 `max(history_len, frame_len-1)`。
+
+`imu.npy` 的键序为 `[roll, pitch, ax, ay, az, gx, gy, gz]`（roll/pitch 角度制，
+其余为 MPU6050 原始 int16），由 pybot `--record` 在脚本含 `@MPU6050_BIND` 块时
+逐帧同步落盘。**旧 episode 没有姿态数据，训练 IMU 模型需用新版 pybot 重新录制**；
+`--imu-dim`>0 时缺失 `imu.npy` 的 episode 按零向量兜底（向后兼容，但无姿态先验收益）。
+姿态归一化按物理量程固定缩放（roll/pitch ÷180，原始 int16 ÷32768），训练与推理
+共用 `imu_norm.py`，无需统计文件。
 
 ### 数据采集
 
@@ -138,6 +150,7 @@ recorder.flush()
 | `--action-dim` | 18 | 动作向量维度（对齐 bot4cj 18 列：10 舵机 + 2 云台 + 扬声器频率 + 延时 + 4 预留）|
 | `--history-len` | 5 | 历史动作窗口长度 |
 | `--frame-len` | 3 | 输入图像帧数（含当前帧，旧帧在前）|
+| `--imu-dim` | 0 | R2 姿态输入维度（>0 启用独立 IMU token；8=roll,pitch,ax,ay,az,gx,gy,gz）|
 | `--backbone` | simple | CNN 类型 (simple/mobilenet) |
 | `--attn-dim` | 128 | 注意力 token 维度 d_model（须能被 attn-heads 整除）|
 | `--attn-heads` | 4 | 注意力头数 |
@@ -177,6 +190,8 @@ recorder.flush()
 
 物理可行性用数据分布的经验界（min/max + 10% margin）而非硬编码范围——18 列混含
 舵机角度/频率/延时/预留，无统一硬限位。`--compare` 用于 A/B 对比（如 R1 开/关）。
+滚动复现闭环口径：模型带 imu 输入时按 episode 的 `imu.npy` 真值姿态逐步喂入
+（缺失则零向量，与 pybot 闭环无 `@MPU6050_BIND` 块时的行为一致）。
 
 ## 部署注意
 
@@ -195,13 +210,16 @@ print(predictor.action_dim, predictor.history_len, predictor.frame_len)  # 公�
 # images: 长度为 frame_len 的 RGB 图像列表（旧→新，末帧为当前帧；冷启动可重复同一帧）
 action = predictor.predict(images, action_history)  # np.ndarray (action_dim,)
 # action_history 形状须为 (history_len, action_dim)
+# 模型含 IMU 输入时（predictor.imu_dim 非 None）可传 imu= 原始姿态向量
+# （roll,pitch,ax,ay,az,gx,gy,gz；内部自动归一化，None 等价零向量）
+action = predictor.predict(images, action_history, imu=imu_vec)
 ```
 
 ## ONNX Runtime 后端（CPU 加速）
 
 `onnx_infer.py` 的 `OnnxPredictor` 走 ONNX Runtime CPU 推理，接口与
-`ActionPredictorInference` 对齐，维度从 ONNX 输入元数据自动推导（无需
-checkpoint）。Pi 5 实测（224×224，2026-08-13 复测）11.4ms/次含预处理
+`ActionPredictorInference` 对齐（含可选 `imu=` 入参），维度从 ONNX 输入元数据
+自动推导（无需 checkpoint）。Pi 5 实测（224×224，2026-08-13 复测）11.4ms/次含预处理
 （纯推理 10.7ms），PyTorch 21ms，约 2 倍加速，与 torch 前向输出差异
 <1e-5。数据见
 [测速报告](../docs/reports/actpred_inference_speed_benchmark_20260813.md) §6。
@@ -232,7 +250,8 @@ reshape）**无法被 DFC 解析**，必须用 `export_deploy.py` 的部署版�
 
 当前 NPU 目标分辨率为 **224×224**（pretrain checkpoint 配置），HEF 输入
 为 frame0~2 各 (1,224,224,3) NHWC + action_history (1,1,5,18) +
-pred_token (1,1,1,128)，形状与量化参数由 `hailo_infer.py` 从 vstream
+pred_token (1,1,1,128)（`--imu-dim`>0 时追加 imu (1,1,1,imu_dim)，共 6 输入），
+形状与量化参数由 `hailo_infer.py` 从 vstream
 info 自动推导，不硬编码。
 
 ```bash
@@ -269,9 +288,10 @@ python3 dfc_compile.py            # 产物 checkpoints/actpred_pretrain.hef
 > 遗留：全零历史角（z≈-3.5）超出校准输入范围（-2.7）会被截断，
 > 该角仅作连通性验证，非真实部署场景。
 
-`hailo_infer.py` 的 `HailoPredictor` 适配 5 输入 HEF，输入布局与量化
+`hailo_infer.py` 的 `HailoPredictor` 适配 5/6 输入 HEF（含可选 imu 输入，
+按形状自动归类绑定），输入布局与量化
 参数（帧归一化由量化网格 dequant(0) 自动判定）从 vstream info 自动推导，
 单元测试含 fake hailo_platform 的 5 输入与乱序报告顺序用例。CLI 支持
-`--pred-token` 喂入学习值、`--stats` 喂入归一化统计。
+`--pred-token` 喂入学习值、`--stats` 喂入归一化统计、`--imu` 喂入姿态。
 环境调研与 API 踩坑记录见
 [docs/reports/actpred_hailo_hat2_inference_research_20260813.md](../docs/reports/actpred_hailo_hat2_inference_research_20260813.md)。

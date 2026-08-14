@@ -28,7 +28,11 @@ def _episode_ids(data_dir):
 
 
 def _load_episode(data_dir, ep_name):
-    """加载单个 episode 的图像路径（自然序）与动作真值 (T, D)"""
+    """加载单个 episode 的图像路径（自然序）、动作真值 (T, D)、姿态真值 (T, imu_dim)
+
+    imu.npy 缺失时第三项返回 None（旧数据兼容，滚动时按零向量喂入）。
+    姿态保持原始量纲——predict 端内部归一化，与 pybot 闭环口径一致。
+    """
     ep_dir = [d for d in ActionDataset._valid_episode_dirs(data_dir)
               if d.name == ep_name][0]
     from dataset import _natural_key
@@ -37,7 +41,14 @@ def _load_episode(data_dir, ep_name):
                          list(images_dir.glob("*.png")), key=_natural_key)
     actions = np.load(ep_dir / "actions.npy").astype(np.float32)
     n = min(len(image_files), len(actions))
-    return image_files[:n], actions[:n]
+    imus = None
+    imu_path = ep_dir / "imu.npy"
+    if imu_path.exists():
+        imus = np.load(imu_path).astype(np.float32)
+        if imus.ndim != 2:
+            raise ValueError(f"{imu_path} 形状应为 (T, imu_dim)，实际为 {imus.shape}")
+        imus = imus[:n]
+    return image_files[:n], actions[:n], imus
 
 
 def _action_bounds(data_dir, action_dim, margin_ratio=0.1):
@@ -58,16 +69,19 @@ def _action_bounds(data_dir, action_dim, margin_ratio=0.1):
 
 @np.errstate(all="ignore")
 def rollout_episode(predictor, image_files, actions, horizon=None,
-                    lo=None, hi=None):
+                    lo=None, hi=None, imus=None):
     """单 episode 开环滚动，复现闭环口径（图像真值滚动、动作自预测回写）。
 
     从 t0 = max(history_len, frame_len-1) 起步（窗口完整处），每步：
       帧窗 = 真值图像 [t-frame_len+1, t]（旧→新）
       历史 = 前 H 步动作（首步用真值填充，之后用自预测回写，复刻 run_loop）
+      姿态 = imus[t]（predictor.imu_dim 非 None 时传入；imus 为 None 或
+             长度不足按零向量 = 无姿态先验）
       预测 â_t → 与真值 a_t 比较 → 回写历史
     返回逐步记录 dict。horizon=None 表示滚到 episode 末尾。
     """
     F, H = predictor.frame_len, predictor.history_len
+    use_imu = getattr(predictor, "imu_dim", None) is not None
     t0 = max(H, F - 1)
     n = len(actions)
     if horizon is None:
@@ -88,8 +102,12 @@ def rollout_episode(predictor, image_files, actions, horizon=None,
     for k in range(horizon):
         t = t0 + k
         frames = [load(t - F + 1 + i) for i in range(F)]
+        kwargs = {}
+        if use_imu:
+            kwargs["imu"] = (imus[t] if imus is not None and t < len(imus)
+                             else None)
         pred = np.asarray(
-            predictor.predict(frames, np.array(history)),
+            predictor.predict(frames, np.array(history), **kwargs),
             dtype=np.float32).reshape(-1)
         true = actions[t]
         err = pred - true
@@ -158,14 +176,16 @@ def evaluate(checkpoint, data_dir, episodes=None, horizon=None, device=None):
     lo, hi = _action_bounds(data_dir, predictor.action_dim)
     all_steps = []
     for name in ep_names:
-        image_files, actions = _load_episode(data_dir, name)
-        steps = rollout_episode(predictor, image_files, actions, horizon, lo, hi)
+        image_files, actions, imus = _load_episode(data_dir, name)
+        steps = rollout_episode(predictor, image_files, actions, horizon,
+                                lo, hi, imus=imus)
         if steps:
             all_steps.append(steps)
     rep = summarize(all_steps, lo, hi)
     rep["checkpoint"] = checkpoint
     rep["frame_len"] = predictor.frame_len
     rep["history_len"] = predictor.history_len
+    rep["imu_dim"] = getattr(predictor, "imu_dim", None)
     rep["predict_delta"] = getattr(predictor, "_predict_delta", False)
     return rep
 
@@ -174,6 +194,7 @@ def _fmt(rep):
     lines = [
         f"checkpoint      : {rep['checkpoint']}",
         f"predict_delta   : {rep['predict_delta']}",
+        f"imu_dim         : {rep.get('imu_dim')}",
         f"episodes/steps  : {rep['n_episodes']} / {rep['n_steps']}",
         f"overall_mse     : {rep['overall_mse']:.6f}",
         f"error_growth    : {rep['error_growth']:.3f}  (>1 = 误差随步数发散)",

@@ -31,6 +31,10 @@ cat scripts/std.mt | ./_run.sh              # 与 bot4cj 相同的管道用法
 ./_run.sh --record data/ep scripts/std.mt   # 录制 actpred 格式 episode
 ```
 
+`--record` 时若脚本含 `@MPU6050_BIND` 块，逐帧同步落盘 `imu.npy`
+（T×8：roll,pitch,ax,ay,az,gx,gy,gz，与图像/动作按帧时刻天然对齐）；
+无 IMU 硬件则保持旧格式（仅 images + actions.npy）。
+
 `-i` / `-o` 参数位保留（reserved），未来对接跨进程 FIFO。
 
 ### 实时预测闭环（`--loop`）
@@ -49,6 +53,10 @@ cat scripts/std.mt | ./_run.sh              # 与 bot4cj 相同的管道用法
 - **帧源**：闭环从 camera 守护线程队列取最近 F 帧（无阻塞），`@Camera` 的
   `framerate` 建议 ≥ 2×`hz` 以保证帧新鲜度；`capacity` 应 ≥ F（帧窗长度）。
   部署时若日志出现 `loop overrun` 告警，说明 `hz` 超过推理+执行能力，应降低 `hz`
+- **姿态回流（R2）**：脚本含 `@MPU6050_BIND` 且模型带 imu 输入
+  （`predictor.imu_dim` 非 None）时，每步读取 MPU6050 最新姿态随帧/历史
+  一同传给推理器（原始量纲，归一化在推理端完成）；模型无 imu 输入时
+  不接入推理（若带 `--record` 仍会读取落盘 imu.npy）
 
 ## 目录
 

@@ -78,30 +78,39 @@ tf = transforms.Compose([
 ])
 
 
-def torch_pred(imgs, hist, use_learned_pred=True):
+def torch_pred(imgs, hist, use_learned_pred=True, imu=None):
     x = torch.stack([tf(Image.fromarray(im)) for im in imgs]).unsqueeze(0)
     h = torch.tensor(hist).unsqueeze(0)
     if stats_path is not None:
         stats = np.load(stats_path)
         h = (h - torch.tensor(stats[0])) / torch.tensor(stats[1])
+    ii = None
+    if imu_dim > 0:
+        # 与 HailoPredictor 同口径：原始姿态 → 内部归一化前需手动归一
+        from imu_norm import normalize_imu
+        ii = torch.from_numpy(normalize_imu(imu, imu_dim)).unsqueeze(0)
     if use_learned_pred:
         with torch.no_grad():
-            return model(x, h).squeeze(0).numpy()
+            return model(x, h, ii).squeeze(0).numpy()
     saved = model.pred_token.data.clone()
     model.pred_token.data.zero_()
     with torch.no_grad():
-        out = model(x, h).squeeze(0).numpy()
+        out = model(x, h, ii).squeeze(0).numpy()
     model.pred_token.data.copy_(saved)
     return out
 
+
+# R2 方案一：imu_dim>0 时每步传原始姿态（HailoPredictor 内部归一化）
+imu_dim = cfg.data.imu_dim
+imu_real = np.array([5.0, -3.0] + [0.0] * 6, dtype=np.float32)
 
 with HailoPredictor(HEF_PATH, stats_path=stats_path) as p:
     print(f"\ndims: frame_len={p.frame_len} img={p.image_width}x{p.image_height} "
           f"history={p.history_len} action_dim={p.action_dim}")
     t0 = time.perf_counter()
-    a = p.predict(imgs_real, hist_real, pred_token=pred_learned)
-    b = p.predict(imgs_zero, hist_real, pred_token=pred_learned)
-    c = p.predict(imgs_real, hist_zero, pred_token=pred_learned)
+    a = p.predict(imgs_real, hist_real, pred_token=pred_learned, imu=imu_real)
+    b = p.predict(imgs_zero, hist_real, pred_token=pred_learned, imu=imu_real)
+    c = p.predict(imgs_real, hist_zero, pred_token=pred_learned, imu=imu_real)
     d = p.predict(imgs_zero, hist_zero, pred_token=pred_learned)
     t1 = time.perf_counter()
     print(f"4x predict: {(t1 - t0) / 4 * 1000:.1f} ms/次")
@@ -113,9 +122,14 @@ with HailoPredictor(HEF_PATH, stats_path=stats_path) as p:
     hist_sens = np.abs(a - c).max()
     print(f"\nimg sensitivity  = {img_sens:.4f}（>0.1 视为输入连通）")
     print(f"hist sensitivity = {hist_sens:.4f}（>0.1 视为输入连通）")
+    ok = img_sens > 0.1 and hist_sens > 0.1
+    if imu_dim > 0:
+        e = p.predict(imgs_real, hist_real, pred_token=pred_learned,
+                      imu=np.zeros_like(imu_real))
+        print(f"imu sensitivity  = {np.abs(a - e).max():.4f}（>0 视为姿态连通）")
 
-    ref = torch_pred(imgs_real, hist_real, True)
-    ref_zero_pred = torch_pred(imgs_real, hist_real, False)
+    ref = torch_pred(imgs_real, hist_real, True, imu_real)
+    ref_zero_pred = torch_pred(imgs_real, hist_real, False, imu_real)
     # torch 参考是模型原始 z 空间输出；HailoPredictor 带 stats 时已反归一化
     # 到原始动作空间，比较前须同空间对齐，否则归一化模型下 max_diff 无意义
     if stats_path is not None:
@@ -127,6 +141,5 @@ with HailoPredictor(HEF_PATH, stats_path=stats_path) as p:
     print(f"HEF vs torch(learned) max_diff={np.abs(a - ref).max():.4f}"
           f"（原始动作空间）")
 
-    ok = img_sens > 0.1 and hist_sens > 0.1
     print("\nPASS: HEF 输入连通，可继续与 torch 对比量化误差"
           if ok else "\nFAIL: HEF 输出对输入不敏感，编译仍有问题")

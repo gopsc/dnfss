@@ -285,6 +285,95 @@ def test_delay_not_multiple_of_10(tmp_path, mock_i2c):
     robot.deactive()
 
 
+# ---------------- IMU 姿态录制（R2） ----------------
+
+# @Camera + @MPU6050_BIND + 2 行 @Action —— 脚本驱动录制姿态
+IMU_MT = """
+@I2C
+ name        path;
+i2c-1  /dev/i2c-1;
+@
+
+@MPU6050_BIND
+     name    I2C   addr;
+mpu6050-0  i2c-1   0x69;
+@
+
+@Camera
+ name  width  height  framerate  capacity;
+ cam0    320      240        15         2;
+@
+
+@Action
+cam0.frame;
+0;
+0;
+@
+"""
+
+
+def test_imu_npy_written_with_dict(tmp_path):
+    """record 传姿态 dict → flush 产出 imu.npy（T×8），键序 roll..gz"""
+    rec = EpisodeRecorder(str(tmp_path), action_dim=18)
+    imu = {"roll": 1.0, "pitch": 2.0, "ax": 3.0, "ay": 4.0,
+           "az": 5.0, "gx": 6.0, "gy": 7.0, "gz": 8.0}
+    rec.record(None, [0.0], imu_vec=imu)
+    rec.record(None, [0.0], imu_vec=imu)
+    rec.flush()
+
+    imus = np.load(tmp_path / "episode_0000" / "imu.npy")
+    assert imus.shape == (2, 8)
+    assert list(imus[0]) == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+
+
+def test_imu_mixed_none_marks_zero(tmp_path):
+    """混合数据集：部分帧无姿态 → 该帧记零向量，仍产出 imu.npy"""
+    rec = EpisodeRecorder(str(tmp_path), action_dim=18)
+    rec.record(None, [0.0], imu_vec=None)
+    rec.record(None, [0.0], imu_vec={"roll": 9.0})
+    rec.flush()
+
+    imus = np.load(tmp_path / "episode_0000" / "imu.npy")
+    assert imus.shape == (2, 8)
+    assert np.allclose(imus[0], 0.0)
+    assert imus[1, 0] == 9.0
+
+
+def test_no_imu_no_file(tmp_path):
+    """全程无姿态（旧数据路径）→ 不产出 imu.npy，保持旧格式兼容"""
+    robot = RobotStruct(CAMERA_MT, dry_run=True)
+    robot.active()
+    rec = EpisodeRecorder(str(tmp_path), action_dim=18)
+    robot.run(recorder=rec)
+    robot.deactive()
+
+    ep_dir = tmp_path / "episode_0000"
+    assert (ep_dir / "actions.npy").exists()
+    assert not (ep_dir / "imu.npy").exists()
+
+
+def test_run_with_imu_block(tmp_path, mock_i2c):
+    """脚本含 @MPU6050_BIND 时 run() 录制产出 imu.npy 且与 actions 帧对齐"""
+    robot = RobotStruct(IMU_MT, dry_run=True)
+    robot.active()
+    # 停采样线程注入固定姿态，避免 mock 采样值干扰断言
+    sensor = robot.M["mpu6050-0"].sensor
+    sensor.stop_daemon()
+    sensor.wait_daemon()
+    sensor._latest.update(roll=-4.0, gz=12.0)
+    rec = EpisodeRecorder(str(tmp_path), action_dim=18)
+    robot.run(recorder=rec)
+    robot.deactive()
+
+    ep_dir = tmp_path / "episode_0000"
+    actions = np.load(ep_dir / "actions.npy")
+    imus = np.load(ep_dir / "imu.npy")
+    assert actions.shape == (2, 18)      # 2 行 @Action，无 Speaker 不分解
+    assert imus.shape == (2, 8)
+    assert np.allclose(imus[:, 0], -4.0)
+    assert np.allclose(imus[:, 7], 12.0)
+
+
 def test_actpred_compatibility(tmp_path, mock_i2c):
     """用 actpred 的 ActionDataset 加载录制的 episode"""
     pytest.importorskip("torch")

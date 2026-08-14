@@ -13,6 +13,10 @@ class DataConfig:
     data_dir: str = "./data"
     normalize_actions: bool = False
     action_stats_path: Optional[str] = None
+    # R2 方案一：MPU6050 姿态作为独立 IMU token 注入（序列 F+H+2）。
+    # 0 = 关闭（默认，序列保持 F+H+1，旧 checkpoint 完全兼容）；
+    # 8 = roll,pitch,ax,ay,az,gx,gy,gz（pybot recorder 的 imu.npy 格式）。
+    imu_dim: int = 0
 
 
 @dataclass
@@ -79,6 +83,9 @@ def build_argparser(description: str = "") -> argparse.ArgumentParser:
     parser.add_argument("--data-dir", type=str, default=None)
     parser.add_argument("--normalize-actions", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--action-stats-path", type=str, default=None)
+    parser.add_argument("--imu-dim", type=int, default=None,
+                        help="R2 方案一：MPU6050 姿态维度（0=关闭，默认；"
+                             "8=roll,pitch,ax,ay,az,gx,gy,gz，序列变 F+H+2）")
     parser.add_argument("--backbone", type=str, default=None, choices=["simple", "mobilenet"])
     parser.add_argument("--cnn-feature-dim", type=int, default=None)
     parser.add_argument("--fused-hidden-dim", type=int, default=None)
@@ -126,6 +133,7 @@ def validate_config_values(data_cfg: DataConfig, model_cfg: ModelConfig,
         ("history_len", data_cfg.history_len, 1, 1024, int),
         ("frame_len", data_cfg.frame_len, 1, 1024, int),
         ("action_dim", data_cfg.action_dim, 1, 1024, int),
+        ("imu_dim", data_cfg.imu_dim, 0, 64, int),
         ("cnn_feature_dim", model_cfg.cnn_feature_dim, 1, 4096, int),
         ("fused_hidden_dim", model_cfg.fused_hidden_dim, 1, 4096, int),
         ("dropout", model_cfg.dropout, 0.0, 1.0, float),
@@ -190,6 +198,11 @@ def warn_init_from_mismatch(init_cfg: dict, current: Config):
         print(f"WARNING: init-from checkpoint 的 action_dim={init_dim} "
               f"与当前运行 {current.data.action_dim} 不一致，"
               f"act_proj 权重将随机初始化")
+    init_imu = init_data.get("imu_dim", 0)      # 旧 checkpoint 无此键 → 0
+    if init_imu != current.data.imu_dim:
+        print(f"WARNING: init-from checkpoint 的 imu_dim={init_imu} "
+              f"与当前运行 {current.data.imu_dim} 不一致，"
+              f"imu_proj/pos_embed 权重将随机初始化")
 
 
 def parse_checkpoint_config(cfg_dict: dict) -> Config:
@@ -235,6 +248,7 @@ def apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         "data_dir": ("data", "data_dir"),
         "normalize_actions": ("data", "normalize_actions"),
         "action_stats_path": ("data", "action_stats_path"),
+        "imu_dim": ("data", "imu_dim"),
         "backbone": ("model", "cnn_backbone"),
         "cnn_feature_dim": ("model", "cnn_feature_dim"),
         "fused_hidden_dim": ("model", "fused_hidden_dim"),

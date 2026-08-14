@@ -57,7 +57,8 @@ def train_one_epoch(model, loader, optimizer, device, max_grad_norm: float = Non
             images = batch["images"].to(device)
             history = batch["action_history"].to(device)
             target = batch["target"].to(device)
-            pred = model(images, history)
+            imu = batch["imu"].to(device) if "imu" in batch else None
+            pred = model(images, history, imu)
             loss = torch.nn.functional.mse_loss(pred, target)
             bs = images.size(0)
         else:
@@ -71,10 +72,11 @@ def train_one_epoch(model, loader, optimizer, device, max_grad_norm: float = Non
                 true_history = step["action_history"].to(device)
                 target = step["target"].to(device)
                 prev_action = step["prev_action"].to(device)
+                imu = step["imu"].to(device) if "imu" in step else None
                 if k == 0 or rng.random_sample() < ss_prob:
                     history = true_history
                 # 否则沿用上一轮回传的 history（自预测构造）
-                pred = model(images, history)
+                pred = model(images, history, imu)
                 loss = loss + torch.nn.functional.mse_loss(pred, target)
                 bs = images.size(0)
                 # 回传：残差模式先把 Δ̂ 加回 a_{t-1} 得到绝对动作，再移入历史
@@ -101,7 +103,8 @@ def validate(model, loader, device, rollout_len: int = 1, predict_delta: bool = 
             images = batch["images"].to(device)
             history = batch["action_history"].to(device)
             target = batch["target"].to(device)
-            pred = model(images, history)
+            imu = batch["imu"].to(device) if "imu" in batch else None
+            pred = model(images, history, imu)
             loss = torch.nn.functional.mse_loss(pred, target)
             bs = images.size(0)
         else:
@@ -113,7 +116,8 @@ def validate(model, loader, device, rollout_len: int = 1, predict_delta: bool = 
                 images = step["images"].to(device)
                 history = step["action_history"].to(device)
                 target = step["target"].to(device)
-                pred = model(images, history)
+                imu = step["imu"].to(device) if "imu" in step else None
+                pred = model(images, history, imu)
                 loss = loss + torch.nn.functional.mse_loss(pred, target)
                 bs = images.size(0)
             loss = loss / len(batch["steps"])
@@ -151,7 +155,8 @@ def main():
         cfg.data.image_width, cfg.data.image_height, cfg.data.normalize_actions,
         cfg.data.action_stats_path, train_indices, cfg.data.frame_len,
         augment=cfg.train.augment,
-        predict_delta=cfg.train.predict_delta, rollout_len=cfg.train.rollout_len)
+        predict_delta=cfg.train.predict_delta, rollout_len=cfg.train.rollout_len,
+        imu_dim=cfg.data.imu_dim)
     if cfg.data.normalize_actions and not cfg.data.action_stats_path:
         # 归一化统计量必须只用训练集计算，再供验证集复用，否则 val loss 不可信
         stats_path = os.path.join(cfg.train.checkpoint_dir, "action_stats.npy")
@@ -163,7 +168,8 @@ def main():
         cfg.data.data_dir, cfg.data.history_len, cfg.data.action_dim,
         cfg.data.image_width, cfg.data.image_height, cfg.data.normalize_actions,
         cfg.data.action_stats_path, val_indices, cfg.data.frame_len,
-        predict_delta=cfg.train.predict_delta, rollout_len=cfg.train.rollout_len)
+        predict_delta=cfg.train.predict_delta, rollout_len=cfg.train.rollout_len,
+        imu_dim=cfg.data.imu_dim)
 
     print(f"Samples: {len(train_ds)} train, {len(val_ds)} val")
     if len(train_ds) == 0:

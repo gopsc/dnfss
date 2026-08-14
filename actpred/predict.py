@@ -7,6 +7,7 @@ from PIL import Image
 from torchvision import transforms
 
 from config import parse_checkpoint_config
+from imu_norm import normalize_imu
 from model import ActionPredictor
 
 
@@ -29,6 +30,10 @@ class ActionPredictorInference:
         self.action_dim = self._data_cfg.action_dim
         self.history_len = self._data_cfg.history_len
         self.frame_len = self._data_cfg.frame_len
+        # R2 方案一：imu_dim>0 时 predict 接受 imu= 原始姿态向量（内部归一化）。
+        # pybot 闭环鸭子类型约定：此属性为 None 时按旧两参调用，
+        # 故 imu_dim=0（旧 checkpoint）必须映射为 None。
+        self.imu_dim = self._data_cfg.imu_dim or None
         # R1-C 残差预测：checkpoint 记录 predict_delta=True 时，模型输出 Δ̂，
         # 需在归一化空间加回 a_{t-1}（history 末步）得到绝对动作。
         # 旧 checkpoint 无该字段，getattr 默认 False，行为与旧版一致。
@@ -67,8 +72,12 @@ class ActionPredictorInference:
             self._action_std = torch.from_numpy(stats[1].astype(np.float32)).to(self._device)
 
     @torch.no_grad()
-    def predict(self, images, action_history: np.ndarray) -> np.ndarray:
-        """images: 长度为 frame_len 的 RGB 图像序列（旧→新，末帧为当前帧）"""
+    def predict(self, images, action_history: np.ndarray,
+                imu: np.ndarray = None) -> np.ndarray:
+        """images: 长度为 frame_len 的 RGB 图像序列（旧→新，末帧为当前帧）
+        imu: 可选原始姿态向量（roll,pitch,ax,ay,az,gx,gy,gz，imu_dim>0 时
+             生效，内部按物理量程归一化；None 等价零向量 = 无姿态先验）
+        """
         if not isinstance(images, (list, tuple)):
             images = [images]
         if len(images) != self._data_cfg.frame_len:
@@ -88,7 +97,12 @@ class ActionPredictorInference:
         if self._action_mean is not None:
             history = (history - self._action_mean) / self._action_std
         history = history.unsqueeze(0).to(self._device)
-        pred = self._model(img_tensor, history).squeeze(0)  # 归一化空间
+        imu_tensor = None
+        if self._data_cfg.imu_dim > 0:
+            imu_tensor = torch.from_numpy(
+                normalize_imu(imu, self._data_cfg.imu_dim)
+            ).unsqueeze(0).to(self._device)
+        pred = self._model(img_tensor, history, imu_tensor).squeeze(0)  # 归一化空间
         if self._predict_delta:
             # 残差：Δ̂ 加回 a_{t-1}（history 末步，同为归一化空间）→ 绝对动作
             pred = history[0, -1] + pred
@@ -118,6 +132,9 @@ def main():
     parser.add_argument("--action-history", required=True,
                         help="冒号分隔各步，每步 action_dim 个值，共 history_len 步。"
                              "e.g. '0,0,0,0:1,0,0,0' (action_dim=4, history_len=2)")
+    parser.add_argument("--imu", type=str, default=None,
+                        help="可选姿态向量（逗号分隔，原始量纲：roll,pitch 度 / "
+                             "ax..gz int16 原始值）；模型 imu_dim>0 且缺省时按零向量")
     parser.add_argument("--output-format", choices=["json", "raw"], default="json")
     parser.add_argument("--device", type=str, default=None)
     args = parser.parse_args()
@@ -131,7 +148,10 @@ def main():
             f"实际为 {len(args.images)} 个。冷启动时可重复传同一帧路径。")
     images = [np.array(Image.open(p).convert("RGB")) for p in args.images]
     history = parse_action_history(args.action_history, action_dim)
-    predicted = predictor.predict(images, history)
+    imu = None
+    if args.imu is not None:
+        imu = np.array([float(v) for v in args.imu.split(",")], dtype=np.float32)
+    predicted = predictor.predict(images, history, imu=imu)
 
     if args.output_format == "json":
         print(json.dumps({"predicted_action": predicted.tolist()}, indent=2))

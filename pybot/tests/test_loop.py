@@ -58,9 +58,19 @@ name      alias;
    A      angle;
 @
 
+@I2C
+ name        path;
+i2c-1  /dev/i2c-1;
+@
+
+@PCA9685
+     name    I2C   address;
+pca9685-0  i2c-1   0x40;
+@
+
 @Servo
  name   max  min  offset  controller  channel;
-  s1    90     -       -           -        0;
+  s1    90     -       -   pca9685-0        0;
 @
 
 @Action
@@ -281,3 +291,98 @@ def test_loop_empty_queue_falls_back_synthetic(mock_i2c):
     # dry_run 合成帧是 numpy 数组（HWC uint8），非 int
     assert all(isinstance(f, np.ndarray) for f in frames)
     assert frames[0].shape == (240, 320, 3)   # LOOP_MT @Camera 320x240
+
+
+# ---------------- IMU 姿态回流（R2 方案一：独立 IMU token） ----------------
+
+# 在 LOOP_MT 基础上加 @MPU6050_BIND（i2c-1 已定义，相机块之前插入）
+LOOP_IMU_MT = LOOP_MT.replace(
+    "@Camera",
+    """@MPU6050_BIND
+     name    I2C   addr;
+mpu6050-0  i2c-1   0x69;
+@
+
+@Camera""")
+
+
+class ImuPredictor(MockPredictor):
+    """声明 imu_dim 的推理器桩：闭环应以 imu= 关键字调用"""
+
+    def __init__(self, *args, imu_dim=8, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.imu_dim = imu_dim
+        self.imus = []         # 每步收到的 imu 向量
+
+    def predict(self, images, action_history, imu=None):
+        self.imus.append(None if imu is None else np.asarray(imu).copy())
+        return super().predict(images, action_history)
+
+
+def _freeze_imu(robot, name="mpu6050-0", **vals):
+    """停掉采样线程并注入固定姿态（避免 10ms 采样覆盖测试值）"""
+    sensor = robot.M[name].sensor
+    sensor.stop_daemon()
+    sensor.wait_daemon()
+    sensor._latest.update(**vals)
+
+
+def test_loop_imu_passed_to_predictor(mock_i2c):
+    """predictor 声明 imu_dim + 脚本含 @MPU6050_BIND → 每步 imu= 向量"""
+    robot = _make_robot(LOOP_IMU_MT, mock_i2c)
+    robot.active()
+    _freeze_imu(robot, roll=1.5, pitch=-2.0, gz=30.0)
+    pred = ImuPredictor(frame_len=3, history_len=2, action_dim=4)
+    robot.run_loop(pred, hz=1000.0, max_steps=3)
+    robot.deactive()
+
+    assert len(pred.imus) == 3
+    for imu in pred.imus:
+        assert imu is not None and imu.shape == (8,)
+        # IMU_KEYS 顺序：roll pitch ax ay az gx gy gz
+        assert imu[0] == 1.5 and imu[1] == -2.0 and imu[7] == 30.0
+
+
+def test_loop_imu_zero_without_bind(mock_i2c):
+    """predictor 声明 imu_dim 但脚本无 @MPU6050_BIND → imu 零向量输入"""
+    robot = _make_robot(LOOP_MT, mock_i2c)
+    robot.active()
+    pred = ImuPredictor(frame_len=3, history_len=2, action_dim=4)
+    robot.run_loop(pred, hz=1000.0, max_steps=2)
+    robot.deactive()
+
+    assert len(pred.imus) == 2
+    for imu in pred.imus:
+        assert imu is not None and imu.shape == (8,)
+        assert np.allclose(imu, 0.0)
+
+
+def test_loop_imu_not_passed_to_legacy_predictor(mock_i2c):
+    """未声明 imu_dim 的旧推理器：保持两参调用（向后兼容）"""
+    robot = _make_robot(LOOP_IMU_MT, mock_i2c)
+    robot.active()
+    _freeze_imu(robot, roll=9.0)
+    pred = MockPredictor(frame_len=3, history_len=2, action_dim=4)
+    robot.run_loop(pred, hz=1000.0, max_steps=2)   # 不炸即兼容
+    robot.deactive()
+    assert len(pred.calls) == 2
+
+
+def test_loop_imu_recorded(mock_i2c, tmp_path):
+    """闭环录制：含 IMU 时 imu.npy 与 actions.npy 帧对齐（T 一致）"""
+    from pybot.recorder import EpisodeRecorder
+    robot = _make_robot(LOOP_IMU_MT, mock_i2c)
+    robot.active()
+    _freeze_imu(robot, roll=3.0, ay=0.5)
+    rec = EpisodeRecorder(str(tmp_path), action_dim=18)
+    pred = MockPredictor(frame_len=3, history_len=2, action_dim=4)
+    robot.run_loop(pred, hz=1000.0, max_steps=4, recorder=rec)
+    robot.deactive()
+
+    ep = tmp_path / "episode_0000"
+    actions = np.load(ep / "actions.npy")
+    imus = np.load(ep / "imu.npy")
+    assert actions.shape == (4, 18)
+    assert imus.shape == (4, 8)          # 与 actions 帧数对齐
+    assert np.allclose(imus[:, 0], 3.0)  # roll
+    assert np.allclose(imus[:, 3], 0.5)  # ay

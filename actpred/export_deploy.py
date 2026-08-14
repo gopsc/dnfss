@@ -114,6 +114,11 @@ class DeployWrapper(nn.Module):
         # 避免 DFC 对 3D Linear 的错误卷积融合
         self.act_w = nn.Parameter(m.act_proj.weight.data.t().clone())  # (D, d)
         self.act_b = nn.Parameter(m.act_proj.bias.data.clone())
+        # R2 方案一：IMU 独立 token（imu_dim>0 时追加图输入，同 MatMul+Add 手法）
+        self._imu_dim = m._imu_dim
+        if self._imu_dim > 0:
+            self.imu_w = nn.Parameter(m.imu_proj.weight.data.t().clone())
+            self.imu_b = nn.Parameter(m.imu_proj.bias.data.clone())
         # pred_token 改为图输入（常量 initializer 会被 DFC 误转置），
         # 位置编码经 concat 后的 ew_add 广播可被正确推断
         self.pos_embed4 = nn.Parameter(m.pos_embed.data.unsqueeze(1).clone())  # (1, 1, S, d)
@@ -128,14 +133,20 @@ class DeployWrapper(nn.Module):
         return self.pool(x)                           # (1, d, 1, 1) NCHW
 
     def forward(self, frame0: torch.Tensor, frame1: torch.Tensor, frame2: torch.Tensor,
-                action_history: torch.Tensor, pred_token: torch.Tensor) -> torch.Tensor:
+                action_history: torch.Tensor, pred_token: torch.Tensor,
+                imu: torch.Tensor = None) -> torch.Tensor:
         # 全程 (1, 1, S, d) 布局：seq 占 W 维，避免任何 transpose
         frames = [frame0, frame1, frame2]
         feats = [self._frame_feat(frames[i], i).permute(0, 2, 3, 1)
                  for i in range(self._frame_len)]     # (1, 1, 1, d) NHWC
         img_tokens = torch.cat(feats, dim=2) + self.proj_bias  # (1, 1, F, d)
         act_tokens = torch.matmul(action_history, self.act_w) + self.act_b  # (1, 1, H, d)
-        tokens = torch.cat([img_tokens, act_tokens, pred_token], dim=2)  # (1, 1, S, d)
+        parts = [img_tokens, act_tokens]
+        if self._imu_dim > 0:
+            # imu: (1, 1, 1, imu_dim) 归一化姿态 → (1, 1, 1, d)，位于 PRED 之前
+            parts.append(torch.matmul(imu, self.imu_w) + self.imu_b)
+        parts.append(pred_token)
+        tokens = torch.cat(parts, dim=2)                       # (1, 1, S, d)
         tokens = tokens + self.pos_embed4
         for blk in self.blocks:
             tokens = blk(tokens)
@@ -232,18 +243,25 @@ def main():
     dummy_frames = [torch.randn(1, h, w, 3) for _ in range(f)]
     dummy_history = torch.randn(1, 1, cfg.data.history_len, cfg.data.action_dim)
     dummy_pred = model.pred_token.data.unsqueeze(1).clone()  # (1, 1, 1, d)
+    imu_dim = cfg.data.imu_dim
+    # imu_dim>0 时追加归一化姿态输入（均匀采样的归一化值域）
+    dummy_imu = torch.randn(1, 1, 1, imu_dim) if imu_dim > 0 else None
+
+    extra_inputs = (dummy_imu,) if imu_dim > 0 else ()
+    extra_names = ["imu"] if imu_dim > 0 else []
 
     with torch.no_grad():
-        ref = wrapper(*dummy_frames, dummy_history, dummy_pred)
+        ref = wrapper(*dummy_frames, dummy_history, dummy_pred, *extra_inputs)
 
     torch.onnx.export(
-        wrapper, (*dummy_frames, dummy_history, dummy_pred),
+        wrapper, (*dummy_frames, dummy_history, dummy_pred, *extra_inputs),
         args.output,
-        input_names=[f"frame{i}" for i in range(f)] + ["action_history", "pred_token"],
+        input_names=[f"frame{i}" for i in range(f)] + ["action_history", "pred_token"] + extra_names,
         output_names=["predicted_action"],
         opset_version=18,
     )
-    print(f"部署版 ONNX 已导出: {args.output}（{f} 个帧输入 (1,{h},{w},3) NHWC + action_history + pred_token）")
+    print(f"部署版 ONNX 已导出: {args.output}（{f} 个帧输入 (1,{h},{w},3) NHWC + action_history + pred_token"
+          f"{' + imu' if imu_dim > 0 else ''}）")
 
     if args.pred_token_out:
         import numpy as np
@@ -252,7 +270,8 @@ def main():
 
     stacked = torch.stack([fr.permute(0, 3, 1, 2) for fr in dummy_frames], dim=1)
     with torch.no_grad():
-        orig_out = model(stacked, dummy_history.squeeze(1))
+        orig_out = model(stacked, dummy_history.squeeze(1),
+                         dummy_imu.squeeze(1).squeeze(1) if imu_dim > 0 else None)
     print(f"wrapper 与原模型最大差异: {(ref.squeeze(1) - orig_out).abs().max():.6e}")
 
     try:
@@ -262,6 +281,8 @@ def main():
         feeds = {f"frame{i}": dummy_frames[i].numpy() for i in range(f)}
         feeds["action_history"] = dummy_history.numpy()
         feeds["pred_token"] = dummy_pred.numpy()
+        if imu_dim > 0:
+            feeds["imu"] = dummy_imu.numpy()
         ort_out = sess.run(None, feeds)[0]
         print(f"ONNX 一致性验证通过（最大差异: {np.abs(ort_out - ref.numpy()).max():.6e}）")
     except ImportError:

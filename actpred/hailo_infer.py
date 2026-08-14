@@ -6,9 +6,10 @@ HEF 由 actpred ONNX 经 Hailo DFC 编译生成（量化校准后）。本封装
 vstream 名称/形状/量化参数，全部从 HEF 的 input/output vstream info 动态推导，
 支持两种布局：
 
-    新版 5 输入（export_deploy.py + dfc_compile.py 产物）：
+    新版 5/6 输入（export_deploy.py + dfc_compile.py 产物）：
         frame0~2 各 (H,W,3) NHWC uint8（ImageNet 归一化校准，负零偏自动识别）
         + action_history (1,H_len,D) + pred_token (1,1,d)
+        + imu (1,1,1,imu_dim)（R2 方案一可选输入，原始姿态内部归一化）
     旧版单图像输入：
         (1, F, 3, H, W) → NHWC uint8 (1, F, H, W, 3)
         或 (1, H, W, F*3) → 帧沿通道拼接；action_history (1, H, D)
@@ -33,6 +34,8 @@ import re
 
 import numpy as np
 from PIL import Image
+
+from imu_norm import normalize_imu
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -87,8 +90,8 @@ class HailoPredictor:
                 raise ValueError(
                     f"HEF 应只有一个输出 vstream，实际 {len(self._out_infos)}")
             self._out_info = self._out_infos[0]
-            self._frame_infos, self._history_info, self._pred_info = \
-                self._classify_inputs()
+            self._frame_infos, self._history_info, self._pred_info, \
+                self._imu_info = self._classify_inputs()
             self._derive_dims()
 
             self._action_mean = None
@@ -110,11 +113,12 @@ class HailoPredictor:
     # ---------------- 输入分类与形状推导 ----------------
 
     def _classify_inputs(self):
-        """将 HEF 输入分为 帧列表 / 动作历史 / pred_token（可能为 None）
+        """将 HEF 输入分为 帧列表 / 动作历史 / pred_token / imu（后两者可为 None）
 
         多帧输入的绑定顺序按 input_layerN 数字后缀排序，而非 vstream
         报告顺序：hailort 5.3.0 实测报告顺序被打乱（1,5,4,3,2），
         按报告顺序绑定会导致 frame1/frame2 错位。
+        imu 为 R2 方案一新增输入（1,1,1,imu_dim），旧 HEF 无此输入。
         """
         ins = list(self._in_infos)
         out_dim = tuple(self._out_info.shape)[-1]
@@ -127,24 +131,26 @@ class HailoPredictor:
             # 旧版：单一 4/5 维图像输入
             frames = [i for i in ins if len(i.shape) in (4, 5)]
         rest = [i for i in ins if i not in frames]
-        history, pred = None, None
+        history, pred, imu = None, None, None
         for i in rest:
             s = tuple(i.shape)
             if len(s) == 3 and s[-1] == out_dim:
                 history = i
             elif len(s) == 3 and s[1] == 1:
                 pred = i
+            elif len(s) == 4 and s[0] == 1 and s[1] == 1 and s[2] == 1:
+                imu = i                     # R2：imu (1,1,1,imu_dim)
             else:
                 raise ValueError(
                     f"无法识别 HEF 输入 {i.name} 形状 {s}（期望动作历史 "
-                    f"(1,H_len,D) 或 pred_token (1,1,d)）")
+                    f"(1,H_len,D)、pred_token (1,1,d) 或 imu (1,1,1,imu_dim)）")
         if not frames:
             raise ValueError("HEF 输入中未找到图像输入")
         if history is None:
             raise ValueError(
                 f"HEF 输入中未找到动作历史输入（输出维度 {out_dim}），"
                 f"实际: {[(i.name, tuple(i.shape)) for i in ins]}")
-        return frames, history, pred
+        return frames, history, pred, imu
 
     def _derive_dims(self):
         # 帧输入布局
@@ -185,6 +191,11 @@ class HailoPredictor:
         h_shape = tuple(self._history_info.shape)
         self.history_len, self.action_dim = h_shape[1], h_shape[2]
 
+        # R2：imu 输入存在时暴露 imu_dim（pybot 闭环鸭子类型据此传 imu=），
+        # 无则 None（旧 HEF 保持旧两参调用路径）
+        self.imu_dim = tuple(self._imu_info.shape)[-1] \
+            if self._imu_info is not None else None
+
         out_shape = tuple(self._out_info.shape)
         out_dim = out_shape[-1]
         if out_dim != self.action_dim:
@@ -206,8 +217,11 @@ class HailoPredictor:
     # ---------------- 推理 ----------------
 
     def predict(self, images, action_history: np.ndarray,
-                pred_token: np.ndarray = None) -> np.ndarray:
+                pred_token: np.ndarray = None,
+                imu: np.ndarray = None) -> np.ndarray:
         """images: 长度为 frame_len 的 RGB 图像列表（旧→新，末帧为当前帧）
+        imu: 可选原始姿态向量（roll,pitch,ax,ay,az,gx,gy,gz，HEF 含 imu
+             输入时生效，内部按物理量程归一化；None 等价零向量）
 
         返回 (action_dim,) float32 动作向量。pred_token 仅新版 5 输入 HEF
         需要；默认喂零，抖动校准的新 HEF 建议喂 checkpoint 学习值。
@@ -253,6 +267,16 @@ class HailoPredictor:
                 values = np.clip(np.round(values / q.qp_scale + q.qp_zp),
                                  0, 255).astype(np.uint8)
             bindings.input(self._pred_info.name).set_buffer(values)
+
+        if self._imu_info is not None:
+            i_shape = tuple(self._imu_info.shape)
+            # 原始姿态 → 物理量程归一化（与训练 dataset 同口径）
+            values = normalize_imu(imu, i_shape[-1]).reshape(i_shape)
+            if self._imu_info.format.type == FormatType.UINT8:
+                q = self._imu_info.quant_info
+                values = np.clip(np.round(values / q.qp_scale + q.qp_zp),
+                                 0, 255).astype(np.uint8)
+            bindings.input(self._imu_info.name).set_buffer(values)
 
         out_shape = tuple(self._out_info.shape)
         if self._out_info.format.type == FormatType.UINT8:
@@ -325,11 +349,18 @@ def main():
     parser.add_argument("--pred-token", default=None,
                         help="pred_token .npy 路径（export_deploy.py "
                              "--pred-token-out 产物；缺省喂零）")
+    parser.add_argument("--imu", type=str, default=None,
+                        help="可选姿态向量（逗号分隔，原始量纲：roll,pitch 度 / "
+                             "ax..gz int16 原始值）；HEF 含 imu 输入且缺省时按零向量")
     parser.add_argument("--output-format", choices=["json", "raw"],
                         default="json")
     args = parser.parse_args()
 
     pred_token = np.load(args.pred_token) if args.pred_token else None
+    imu = None
+    if args.imu is not None:
+        imu = np.array([float(v) for v in args.imu.split(",")],
+                       dtype=np.float32)
     with HailoPredictor(args.hef, stats_path=args.stats) as predictor:
         if len(args.images) != predictor.frame_len:
             raise SystemExit(
@@ -337,7 +368,8 @@ def main():
                 f"实际为 {len(args.images)} 个")
         images = [np.array(Image.open(p).convert("RGB")) for p in args.images]
         history = parse_action_history(args.action_history, predictor.action_dim)
-        predicted = predictor.predict(images, history, pred_token=pred_token)
+        predicted = predictor.predict(images, history, pred_token=pred_token,
+                                      imu=imu)
 
     if args.output_format == "json":
         print(json.dumps({"predicted_action": predicted.tolist()}, indent=2))

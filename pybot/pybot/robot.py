@@ -21,6 +21,10 @@ from .parser import MatrixParser, MatrixSaver, get_mt, parse_mt
 
 log = logging.getLogger("pybot.robot")
 
+# MPU6050 姿态向量键序（recorder.record 的 dict 取值顺序与此一致，
+# mpu6050.MPU6050._latest 的键集合相同）
+IMU_KEYS = ("roll", "pitch", "ax", "ay", "az", "gx", "gy", "gz")
+
 # 已知块名 → 硬件变量工厂（Action 特殊处理；未知块 → 插件）
 _FACTORIES = {
     "I2C": I2CVar,
@@ -156,11 +160,15 @@ class RobotStruct:
         delay_idx = self._find_delay_idx(columns)
 
         camera_var = None
+        imu_var = None
         if recorder is not None:
             camera_var = self._find_camera()
             if camera_var is None and not self.dry_run:
                 raise ValueError(
                     "--record 需要 @Camera 块（或使用 --dry-run 生成合成帧）")
+            imu_var = self._find_imu()
+            if imu_var is None:
+                log.info("--record: 无 @MPU6050_BIND 块，不产出 imu.npy")
 
         prev_vals = None
 
@@ -180,7 +188,8 @@ class RobotStruct:
                         recorder.record(
                             self._grab_frame(camera_var),
                             self._build_action_vec(
-                                step_vals, recorder.action_dim))
+                                step_vals, recorder.action_dim),
+                            imu_vec=self._read_imu(imu_var))
                     self._execute_step(step_vals, columns)
                     if self.dry_run:
                         import time
@@ -189,7 +198,8 @@ class RobotStruct:
                 if recorder is not None:
                     recorder.record(
                         self._grab_frame(camera_var),
-                        self._build_action_vec(vals, recorder.action_dim))
+                        self._build_action_vec(vals, recorder.action_dim),
+                        imu_vec=self._read_imu(imu_var))
                 self._execute_step(vals, columns)
 
             prev_vals = vals
@@ -207,6 +217,9 @@ class RobotStruct:
             frame_len / history_len / action_dim 属性与
             predict(images, action_history) -> (action_dim,) 方法。
             pybot 不 import 具体推理类，保持零依赖承诺。
+            若额外声明 imu_dim 属性（R2 方案一），则以
+            predict(images, action_history, imu=(imu_dim,)) 调用；
+            脚本无 @MPU6050_BIND 块时 imu 为零向量。
         hz: 控制频率（周期 = 1/hz 秒，须 ≥ 推理 + 执行耗时）
         max_steps: 步数上限，None 表示无限循环（Ctrl-C 退出）
         recorder: 可选 EpisodeRecorder，闭环中同步录制 (frame, action)
@@ -225,6 +238,19 @@ class RobotStruct:
         camera_var = self._find_camera()
         if camera_var is None and not self.dry_run:
             raise ValueError("闭环需要 @Camera 块（或使用 --dry-run 生成合成帧）")
+
+        imu_var = self._find_imu()
+        # 鸭子类型约定：predictor 声明 imu_dim 属性即接受 imu= 关键字
+        # （方案一：独立 IMU token）；未声明则保持旧两参调用，向后兼容
+        use_imu = getattr(predictor, "imu_dim", None) is not None
+        if imu_var is None:
+            if use_imu:
+                log.warning("predictor 声明 imu_dim 但脚本无 @MPU6050_BIND "
+                            "块，imu 将以零向量输入（等价于无姿态先验）")
+        else:
+            log.info("closed loop imu: %s → predictor %s",
+                     imu_var.name,
+                     "imu= 接入" if use_imu else "不接入（仅录制）")
 
         action = self.find_mt("Action")
         if action is None:
@@ -248,25 +274,40 @@ class RobotStruct:
         overrun = 0
         log.info("closed loop start: hz=%.1f F=%d H=%d action_dim=%d",
                  hz, F, H, action_dim)
-        while max_steps is None or step < max_steps:
-            t0 = time.monotonic()
-            frames.extend(self._loop_recent_frames(camera_var, F))   # 1 采样
-            act = predictor.predict(list(frames), np.array(history))  # 2 推理
-            act = np.asarray(act, dtype=np.float32).reshape(-1)
-            self._execute_action_vec(act, exec_cols)               # 3 执行
-            history.append(act.copy())                             # 4 回写
+        try:
+            while max_steps is None or step < max_steps:
+                t0 = time.monotonic()
+                frames.extend(self._loop_recent_frames(camera_var, F))  # 1 采样
+                imu = self._read_imu(imu_var)
+                if use_imu:                                            # 2 推理
+                    act = predictor.predict(list(frames), np.array(history),
+                                            imu=self._imu_to_vec(
+                                                imu, predictor.imu_dim))
+                else:
+                    act = predictor.predict(list(frames), np.array(history))
+                act = np.asarray(act, dtype=np.float32).reshape(-1)
+                self._execute_action_vec(act, exec_cols)               # 3 执行
+                history.append(act.copy())                             # 4 回写
+                if recorder is not None:
+                    recorder.record(
+                        frames[-1],
+                        self._build_action_vec(act, recorder.action_dim),
+                        imu_vec=imu)
+                step += 1
+                remain = dt - (time.monotonic() - t0)                  # 节拍
+                if remain > 0:
+                    time.sleep(remain)
+                else:
+                    overrun += 1
+                    log.warning("loop overrun: step %d took %.1fms > %.1fms "
+                                "（推理+执行超过周期，实际频率已低于 %.1fHz）",
+                                step, (dt - remain) * 1000, dt * 1000, hz)
+        finally:
+            # max_steps 正常退出与 Ctrl-C（KeyboardInterrupt）都要落盘，
+            # 否则闭环录制的 actions.npy/imu.npy 全部丢失
             if recorder is not None:
-                recorder.record(frames[-1],
-                                self._build_action_vec(act, recorder.action_dim))
-            step += 1
-            remain = dt - (time.monotonic() - t0)                  # 节拍
-            if remain > 0:
-                time.sleep(remain)
-            else:
-                overrun += 1
-                log.warning("loop overrun: step %d took %.1fms > %.1fms "
-                            "（推理+执行超过周期，实际频率已低于 %.1fHz）",
-                            step, (dt - remain) * 1000, dt * 1000, hz)
+                path = recorder.flush()
+                log.info("episode saved: %s", path)
         if overrun:
             log.warning("closed loop overrun %d/%d steps (%.0f%%)，"
                         "建议降低 --hz 或检查推理后端延迟",
@@ -377,6 +418,39 @@ class RobotStruct:
             if isinstance(var, CameraVar):
                 return var
         return None
+
+    def _find_imu(self):
+        """在已创建的硬件变量中查找第一个 MPU6050Var（无则 None）"""
+        for var in self.M.values():
+            if isinstance(var, MPU6050Var):
+                return var
+        return None
+
+    def _read_imu(self, imu_var):
+        """读 MPU6050 最新姿态 dict（键序见 IMU_KEYS）
+
+        无硬件 / 读失败返回 None（recorder 记零向量、predictor 侧零输入）。
+        latest() 冷启动返回全零 dict，语义安全无需特判。
+        """
+        if imu_var is None:
+            return None
+        try:
+            return imu_var.play({})
+        except Exception:
+            log.exception("imu read failed")
+            return None
+
+    @staticmethod
+    def _imu_to_vec(imu, imu_dim):
+        """姿态 dict → np 向量（按 IMU_KEYS 顺序 pad/truncate 到 imu_dim）"""
+        import numpy as np
+        vec = np.zeros(imu_dim, dtype=np.float32)
+        if imu is not None:
+            src = np.asarray([imu.get(k, 0.0) for k in IMU_KEYS],
+                             dtype=np.float32)
+            n = min(len(src), imu_dim)
+            vec[:n] = src[:n]
+        return vec
 
     def _build_action_vec(self, vals, action_dim):
         """从值列表构建动作向量，pad/truncate 到 action_dim"""

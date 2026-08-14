@@ -10,6 +10,8 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 from torchvision.transforms import functional as TF
 
+from imu_norm import IMU_SCALES
+
 
 def _natural_key(p):
     """自然排序键：'1.jpg' < '2.jpg' < ... < '10.jpg'"""
@@ -22,9 +24,12 @@ class ActionDataset(Dataset):
                  normalize_actions: bool = False,
                  action_stats_path: str = None, episode_indices: list = None,
                  frame_len: int = 3, augment: bool = False,
-                 predict_delta: bool = False, rollout_len: int = 1):
+                 predict_delta: bool = False, rollout_len: int = 1,
+                 imu_dim: int = 0):
         self.history_len = history_len
         self.action_dim = action_dim
+        # R2 方案一：>0 时样本带 "imu" 键（归一化姿态向量，缺失 episode 补零）
+        self.imu_dim = imu_dim
         self.image_width = image_width
         self.image_height = image_height
         self.frame_len = frame_len
@@ -65,12 +70,13 @@ class ActionDataset(Dataset):
                 print(f"WARNING: {ep_dir} 动作帧数 {n_frames} 与图像数 {n_images} 不一致，"
                       f"按较少者（{min(n_frames, n_images)}）使用，请检查录制完整性")
             n = min(n_frames, n_images)
+            imus = self._load_imu(ep_dir, n)
             # 第 k 步（k=0..K-1）目标时刻 t=t_start+k：帧 [t-frame_len+1, t]、
             # 历史 [t-history_len, t)、目标 actions[t]。t_start 下界保证第 0 步窗口完整，
             # 上界保证第 K-1 步目标不越界。
             start = max(history_len, frame_len - 1)
             for t_start in range(start, n - (self.rollout_len - 1)):
-                self.samples.append((image_files, actions, t_start))
+                self.samples.append((image_files, actions, imus, t_start))
 
         self._action_mean = None
         self._action_std = None
@@ -94,7 +100,7 @@ class ActionDataset(Dataset):
                 # 归一化统计基于绝对动作（与 Δ 无关）：覆盖所有样本 rollout 范围内
                 # 出现的 history 与 target 动作，保持与旧版一致的统计口径。
                 all_actions = np.stack([
-                    s[1][s[2] - self.history_len: s[2] + self.rollout_len]
+                    s[1][s[3] - self.history_len: s[3] + self.rollout_len]
                     for s in self.samples
                 ]).reshape(-1, self.action_dim)
                 self._action_mean = all_actions.mean(axis=0)
@@ -134,22 +140,57 @@ class ActionDataset(Dataset):
             return self._norm(actions[t]) - self._norm(actions[t - 1])
         return self._norm(actions[t])
 
+    def _load_imu(self, ep_dir, n):
+        """加载 episode 的 imu.npy 并按物理量程归一化（R2）
+
+        imu_dim=0（未启用）或文件缺失 → None（样本侧补零向量，等价无姿态
+        先验，混合数据集可训）。形状 pad/truncate 到 (n, imu_dim)。
+        """
+        if self.imu_dim <= 0:
+            return None
+        path = ep_dir / "imu.npy"
+        if not path.exists():
+            print(f"WARNING: {ep_dir} 无 imu.npy，该 episode 姿态按零向量处理")
+            return None
+        imus = np.load(path).astype(np.float32)
+        if imus.ndim != 2:
+            raise ValueError(
+                f"{path} 形状应为 (T, imu_dim)，实际为 {imus.shape}")
+        if imus.shape[1] != self.imu_dim:
+            fixed = np.zeros((imus.shape[0], self.imu_dim), dtype=np.float32)
+            m = min(imus.shape[1], self.imu_dim)
+            fixed[:, :m] = imus[:, :m]
+            imus = fixed
+        if len(imus) < n:                       # 与帧数对齐：不足补零
+            imus = np.concatenate([
+                imus, np.zeros((n - len(imus), self.imu_dim), dtype=np.float32)])
+        return imus[:n] / IMU_SCALES[:self.imu_dim]
+
+    def _imu_at(self, imus, t):
+        """时刻 t 的归一化姿态向量（与最新帧对齐）；无数据 → 零向量"""
+        if imus is None:
+            return torch.zeros(self.imu_dim, dtype=torch.float32)
+        return torch.tensor(imus[t], dtype=torch.float32)
+
     def __getitem__(self, idx):
-        image_files, actions, t_start = self.samples[idx]
+        image_files, actions, imus, t_start = self.samples[idx]
         if self.rollout_len == 1:
-            # 单步：与旧版输出结构完全一致
+            # 单步：与旧版输出结构完全一致（imu_dim>0 时附加 "imu" 键）
             images = self._load_frames(image_files, t_start)
             history = torch.tensor(self._norm(
                 actions[t_start - self.history_len: t_start]), dtype=torch.float32)
             target = torch.tensor(self._step_target(actions, t_start),
                                   dtype=torch.float32)
-            return {"images": images, "action_history": history, "target": target}
+            out = {"images": images, "action_history": history, "target": target}
+            if self.imu_dim > 0:
+                out["imu"] = self._imu_at(imus, t_start)
+            return out
 
         # 多步：返回 K 步序列，scheduled sampling 在 train 循环内按步取用
         steps = []
         for k in range(self.rollout_len):
             t = t_start + k
-            steps.append({
+            step = {
                 "images": self._load_frames(image_files, t),
                 # 真实历史（scheduled sampling 的真值来源；首步必用）
                 "action_history": torch.tensor(
@@ -157,7 +198,10 @@ class ActionDataset(Dataset):
                 "target": torch.tensor(self._step_target(actions, t), dtype=torch.float32),
                 # 上一步真实动作（Δ 残差的基准 a_{t-1}，归一化空间）
                 "prev_action": torch.tensor(self._norm(actions[t - 1]), dtype=torch.float32),
-            })
+            }
+            if self.imu_dim > 0:
+                step["imu"] = self._imu_at(imus, t)
+            steps.append(step)
         return {"steps": steps}
 
     def get_action_stats(self):

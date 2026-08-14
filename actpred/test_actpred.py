@@ -1714,7 +1714,8 @@ class TestR4Evaluate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             actions = np.arange(20, dtype=np.float32).reshape(10, 2)
             self._create_episode(Path(tmpdir), "episode_0001", actions)
-            image_files, acts = evaluate._load_episode(tmpdir, "episode_0001")
+            image_files, acts, _ = evaluate._load_episode(
+                tmpdir, "episode_0001")
             pred = self._ConstPredictor([100.0, 100.0])
             steps = evaluate.rollout_episode(pred, image_files, acts)
             # t0 = max(H=2, F-1=1) = 2，horizon = 10-2 = 8
@@ -1729,7 +1730,8 @@ class TestR4Evaluate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             actions = np.zeros((10, 2), dtype=np.float32)
             self._create_episode(Path(tmpdir), "episode_0001", actions)
-            image_files, acts = evaluate._load_episode(tmpdir, "episode_0001")
+            image_files, acts, _ = evaluate._load_episode(
+                tmpdir, "episode_0001")
             pred = self._ConstPredictor([0.0, 0.0])
             steps = evaluate.rollout_episode(pred, image_files, acts, horizon=3)
             self.assertEqual(len(steps), 3)
@@ -1739,7 +1741,8 @@ class TestR4Evaluate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             actions = np.zeros((2, 2), dtype=np.float32)  # n=2 <= t0=2
             self._create_episode(Path(tmpdir), "episode_0001", actions)
-            image_files, acts = evaluate._load_episode(tmpdir, "episode_0001")
+            image_files, acts, _ = evaluate._load_episode(
+                tmpdir, "episode_0001")
             pred = self._ConstPredictor([0.0, 0.0])
             self.assertIsNone(evaluate.rollout_episode(pred, image_files, acts))
 
@@ -1758,7 +1761,8 @@ class TestR4Evaluate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             actions = np.zeros((10, 2), dtype=np.float32)  # 真值全 0
             self._create_episode(Path(tmpdir), "episode_0001", actions)
-            image_files, acts = evaluate._load_episode(tmpdir, "episode_0001")
+            image_files, acts, _ = evaluate._load_episode(
+                tmpdir, "episode_0001")
             pred = self._ConstPredictor([5.0, 5.0])  # 远超 [0,0] 范围
             lo = np.zeros(2, dtype=np.float32)
             hi = np.zeros(2, dtype=np.float32)
@@ -1795,6 +1799,490 @@ class TestR4Evaluate(unittest.TestCase):
             # min=0,max=10,span=10,margin=1 → lo=-1, hi=11
             np.testing.assert_allclose(lo, [-1.0, -1.0], atol=1e-6)
             np.testing.assert_allclose(hi, [11.0, 11.0], atol=1e-6)
+
+
+class TestR2ImuNorm(unittest.TestCase):
+    """R2 姿态归一化：物理量程除数、pad/truncate、None 兜底"""
+
+    def test_scales_applied(self):
+        from imu_norm import normalize_imu, IMU_SCALES
+        raw = [180.0, -180.0, 32768.0, -32768.0, 16384.0, 655.36, -655.36, 0.0]
+        out = normalize_imu(raw, 8)
+        np.testing.assert_allclose(out, np.asarray(raw) / IMU_SCALES, atol=1e-6)
+
+    def test_none_gives_zeros(self):
+        from imu_norm import normalize_imu
+        out = normalize_imu(None, 8)
+        self.assertEqual(out.shape, (8,))
+        np.testing.assert_array_equal(out, np.zeros(8, np.float32))
+
+    def test_short_input_pads_zero(self):
+        from imu_norm import normalize_imu
+        out = normalize_imu([90.0, -90.0], 8)
+        self.assertEqual(out.shape, (8,))
+        np.testing.assert_allclose(out[:2], [0.5, -0.5], atol=1e-6)
+        np.testing.assert_array_equal(out[2:], np.zeros(6, np.float32))
+
+    def test_long_input_truncates(self):
+        from imu_norm import normalize_imu
+        out = normalize_imu([180.0] * 10, 8)
+        self.assertEqual(out.shape, (8,))
+        np.testing.assert_allclose(out[:2], [1.0, 1.0], atol=1e-6)
+
+    def test_imu_dim_prefix_of_scales(self):
+        """imu_dim<8 时取 IMU_SCALES 前缀（roll/pitch 子集可用）"""
+        from imu_norm import normalize_imu
+        out = normalize_imu([180.0, -180.0], 2)
+        self.assertEqual(out.shape, (2,))
+        np.testing.assert_allclose(out, [1.0, -1.0], atol=1e-6)
+
+
+class TestR2ImuModel(unittest.TestCase):
+    """R2 方案一模型：独立 IMU token 注入（序列 F+H+2）"""
+
+    @staticmethod
+    def _make_cfg(imu_dim):
+        cfg = Config()
+        cfg.data.image_width = 32
+        cfg.data.image_height = 32
+        cfg.data.action_dim = 4
+        cfg.data.history_len = 3
+        cfg.data.frame_len = 3
+        cfg.data.imu_dim = imu_dim
+        return cfg
+
+    def test_imu_token_changes_output(self):
+        """imu_dim>0：不同姿态输入应产生不同输出（token 真的进了序列）"""
+        cfg = self._make_cfg(imu_dim=8)
+        model = ActionPredictor(cfg.model, cfg.data).eval()
+        imgs = torch.randn(1, 3, 3, 32, 32)
+        hist = torch.randn(1, 3, 4)
+        with torch.no_grad():
+            out_zero = model(imgs, hist, torch.zeros(1, 8)).numpy()
+            out_imu = model(imgs, hist, torch.randn(1, 8)).numpy()
+        self.assertGreater(np.abs(out_zero - out_imu).max(), 1e-6)
+
+    def test_none_imu_equals_zero_vector(self):
+        """imu=None 应与显式零向量一致（无姿态先验语义）"""
+        cfg = self._make_cfg(imu_dim=8)
+        model = ActionPredictor(cfg.model, cfg.data).eval()
+        imgs = torch.randn(1, 3, 3, 32, 32)
+        hist = torch.randn(1, 3, 4)
+        with torch.no_grad():
+            a = model(imgs, hist).numpy()
+            b = model(imgs, hist, torch.zeros(1, 8)).numpy()
+        np.testing.assert_allclose(a, b, atol=1e-6)
+
+    def test_imu_dim_zero_has_no_imu_proj(self):
+        """imu_dim=0（默认）不建 imu_proj，旧 checkpoint 完全兼容"""
+        cfg = self._make_cfg(imu_dim=0)
+        model = ActionPredictor(cfg.model, cfg.data)
+        self.assertFalse(hasattr(model, "imu_proj"))
+        # 序列长度保持 F+H+1
+        self.assertEqual(model.pos_embed.shape[1], 3 + 3 + 1)
+
+    def test_imu_dim_positive_seq_len(self):
+        """imu_dim>0 时序列长度 F+H+2"""
+        cfg = self._make_cfg(imu_dim=8)
+        model = ActionPredictor(cfg.model, cfg.data)
+        self.assertEqual(model.pos_embed.shape[1], 3 + 3 + 2)
+
+    def test_dynamic_batch_with_imu(self):
+        """batch 维动态：imu 输入随 batch 变化"""
+        cfg = self._make_cfg(imu_dim=8)
+        model = ActionPredictor(cfg.model, cfg.data).eval()
+        with torch.no_grad():
+            out = model(torch.randn(2, 3, 3, 32, 32),
+                        torch.randn(2, 3, 4), torch.randn(2, 8))
+        self.assertEqual(out.shape, (2, 4))
+
+
+class TestR2ImuDataset(unittest.TestCase):
+    """R2 数据集：imu.npy 加载、归一化、缺失补零、形状修正"""
+
+    @staticmethod
+    def _create_episode(base_dir, name, n, action_dim, image_size=16,
+                        imus=None):
+        ep_dir = base_dir / name
+        images_dir = ep_dir / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(n):
+            Image.fromarray(np.random.randint(0, 255, (image_size, image_size, 3),
+                                              dtype=np.uint8)).save(
+                images_dir / f"{i:04d}.jpg")
+        actions = np.arange(n * action_dim, dtype=np.float32).reshape(
+            n, action_dim)
+        np.save(ep_dir / "actions.npy", actions)
+        if imus is not None:
+            np.save(ep_dir / "imu.npy", np.asarray(imus, dtype=np.float32))
+
+    def test_imu_loaded_and_normalized(self):
+        """imu_dim>0 且 imu.npy 存在 → 样本带归一化 imu 键"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # roll=180 → 归一化 1.0；ax=32768 → 1.0
+            imus = [[180.0, -180.0, 32768.0, 0, 0, 0, 0, 0]] * 10
+            self._create_episode(Path(tmpdir), "episode_0001", 10, 2,
+                                 imus=imus)
+            ds = ActionDataset(tmpdir, history_len=2, action_dim=2,
+                               image_width=16, image_height=16, frame_len=2,
+                               imu_dim=8)
+            sample = ds[0]
+            self.assertIn("imu", sample)
+            np.testing.assert_allclose(
+                sample["imu"].numpy(),
+                [1.0, -1.0, 1.0, 0, 0, 0, 0, 0], atol=1e-6)
+
+    def test_missing_imu_fills_zero(self):
+        """无 imu.npy 的 episode → 零向量（混合数据集可训）"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._create_episode(Path(tmpdir), "episode_0001", 10, 2)
+            ds = ActionDataset(tmpdir, history_len=2, action_dim=2,
+                               image_width=16, image_height=16, frame_len=2,
+                               imu_dim=8)
+            np.testing.assert_array_equal(
+                ds[0]["imu"].numpy(), np.zeros(8, np.float32))
+
+    def test_imu_dim_zero_no_imu_key(self):
+        """imu_dim=0 时样本无 imu 键（旧行为不变）"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._create_episode(Path(tmpdir), "episode_0001", 10, 2,
+                                 imus=[[1.0] * 8] * 10)
+            ds = ActionDataset(tmpdir, history_len=2, action_dim=2,
+                               image_width=16, image_height=16, frame_len=2)
+            self.assertNotIn("imu", ds[0])
+
+    def test_imu_dim_mismatch_padded(self):
+        """imu.npy 列数与 imu_dim 不一致 → pad/truncate 不炸"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            imus = [[180.0, -180.0]] * 10   # 只有 2 列，imu_dim=8
+            self._create_episode(Path(tmpdir), "episode_0001", 10, 2,
+                                 imus=imus)
+            ds = ActionDataset(tmpdir, history_len=2, action_dim=2,
+                               image_width=16, image_height=16, frame_len=2,
+                               imu_dim=8)
+            imu = ds[0]["imu"].numpy()
+            self.assertEqual(imu.shape, (8,))
+            np.testing.assert_allclose(imu[:2], [1.0, -1.0], atol=1e-6)
+            np.testing.assert_array_equal(imu[2:], np.zeros(6, np.float32))
+
+    def test_short_imu_aligned_with_zero_pad(self):
+        """imu.npy 行数少于帧数 → 尾部补零对齐"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            imus = [[180.0] + [0.0] * 7] * 5   # 5 行 < 10 帧
+            self._create_episode(Path(tmpdir), "episode_0001", 10, 2,
+                                 imus=imus)
+            ds = ActionDataset(tmpdir, history_len=2, action_dim=2,
+                               image_width=16, image_height=16, frame_len=2,
+                               imu_dim=8)
+            # 第 0 样本 t_start=2（有 imu），末样本 t_start=8（超出 5 行 → 0）
+            np.testing.assert_allclose(ds[0]["imu"].numpy()[0], 1.0, atol=1e-6)
+            np.testing.assert_array_equal(ds[-1]["imu"].numpy(),
+                                          np.zeros(8, np.float32))
+
+    def test_rollout_steps_carry_imu(self):
+        """多步展开时每步带对应时刻的 imu"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            imus = [[float(t), 0, 0, 0, 0, 0, 0, 0] for t in range(10)]
+            self._create_episode(Path(tmpdir), "episode_0001", 10, 2,
+                                 imus=imus)
+            ds = ActionDataset(tmpdir, history_len=2, action_dim=2,
+                               image_width=16, image_height=16, frame_len=2,
+                               rollout_len=3, imu_dim=8)
+            steps = ds[0]["steps"]
+            for k, step in enumerate(steps):
+                t = 2 + k
+                self.assertIn("imu", step)
+                np.testing.assert_allclose(step["imu"].numpy()[0],
+                                           t / 180.0, atol=1e-6)
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("onnxscript") is not None
+    and importlib.util.find_spec("onnxruntime") is not None,
+    "OnnxPredictor 测试需要 onnxscript + onnxruntime")
+class TestR2OnnxPredictorImu(unittest.TestCase):
+    """R2 ONNX 后端：含 imu 输入的导出模型推理对齐"""
+
+    @staticmethod
+    def _export_imu_onnx(tmpdir):
+        cfg = Config()
+        cfg.data.image_width = 32
+        cfg.data.image_height = 32
+        cfg.data.action_dim = 4
+        cfg.data.history_len = 3
+        cfg.data.frame_len = 3
+        cfg.data.imu_dim = 8
+        model = ActionPredictor(cfg.model, cfg.data)
+        model.eval()
+        out_path = os.path.join(tmpdir, "model_imu.onnx")
+        torch.onnx.export(
+            model,
+            (torch.randn(1, 3, 3, 32, 32), torch.randn(1, 3, 4),
+             torch.randn(1, 8)),
+            out_path,
+            input_names=["images", "action_history", "imu"],
+            output_names=["predicted_action"],
+            opset_version=18)
+        return out_path, model
+
+    def _frames(self, n):
+        return [np.random.randint(0, 255, (48, 64, 3), dtype=np.uint8)
+                for _ in range(n)]
+
+    def test_imu_dim_detected(self):
+        from onnx_infer import OnnxPredictor
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path, _ = self._export_imu_onnx(tmpdir)
+            with OnnxPredictor(path) as p:
+                self.assertEqual(p.imu_dim, 8)
+
+    def test_imu_predict_matches_torch(self):
+        """predict(imu=原始姿态) 应与 torch（手动归一化）前向一致"""
+        from imu_norm import normalize_imu
+        from onnx_infer import OnnxPredictor
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path, model = self._export_imu_onnx(tmpdir)
+            frames = self._frames(3)
+            history = np.random.randn(3, 4).astype(np.float32)
+            imu_raw = np.array([5.0, -3.0, 100, 200, 16384, 10, -20, 30],
+                               dtype=np.float32)
+            with OnnxPredictor(path) as p:
+                onnx_out = p.predict(frames, history, imu=imu_raw)
+                pre = np.stack([p._preprocess(f) for f in frames])
+                with torch.no_grad():
+                    torch_out = model(
+                        torch.from_numpy(pre[np.newaxis]),
+                        torch.from_numpy(history[np.newaxis]),
+                        torch.from_numpy(
+                            normalize_imu(imu_raw, 8)[np.newaxis])).numpy()
+            np.testing.assert_allclose(onnx_out, torch_out.reshape(-1),
+                                       atol=1e-4)
+
+    def test_imu_changes_output(self):
+        """姿态输入应影响输出（确认 imu 真的喂进了图）"""
+        from onnx_infer import OnnxPredictor
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path, _ = self._export_imu_onnx(tmpdir)
+            frames = self._frames(3)
+            history = np.random.randn(3, 4).astype(np.float32)
+            with OnnxPredictor(path) as p:
+                a = p.predict(frames, history, imu=None)
+                b = p.predict(frames, history,
+                              imu=np.array([180.0] + [0.0] * 7, np.float32))
+            self.assertGreater(np.abs(a - b).max(), 1e-6)
+
+    def test_no_imu_model_imu_dim_none(self):
+        """旧两输入 ONNX：imu_dim 为 None（pybot 鸭子类型走旧两参路径）"""
+        from onnx_infer import OnnxPredictor
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path, _ = TestOnnxPredictor._export_small_onnx(tmpdir)
+            with OnnxPredictor(path) as p:
+                self.assertIsNone(p.imu_dim)
+
+
+class TestR2EvaluateImu(unittest.TestCase):
+    """R2 评估：滚动时姿态真值按时刻传给 predict"""
+
+    class _ImuRecordingPredictor:
+        """记录每步收到的 imu 的假推理器"""
+        frame_len = 2
+        history_len = 2
+        action_dim = 2
+        imu_dim = 8
+
+        def __init__(self):
+            self.imus_received = []
+
+        def predict(self, images, history, imu=None):
+            self.imus_received.append(
+                None if imu is None else np.asarray(imu).copy())
+            return np.zeros(2, dtype=np.float32)
+
+    def test_rollout_passes_imu_per_step(self):
+        """imus 存在时逐步传 imus[t]（t0 起步与帧窗对齐）"""
+        import evaluate
+        with tempfile.TemporaryDirectory() as tmpdir:
+            actions = np.zeros((10, 2), dtype=np.float32)
+            TestR4Evaluate._create_episode(Path(tmpdir), "episode_0001",
+                                           actions)
+            imus = np.arange(80, dtype=np.float32).reshape(10, 8)
+            np.save(Path(tmpdir) / "episode_0001" / "imu.npy", imus)
+            image_files, acts, loaded = evaluate._load_episode(
+                tmpdir, "episode_0001")
+            np.testing.assert_array_equal(loaded, imus)
+            pred = self._ImuRecordingPredictor()
+            steps = evaluate.rollout_episode(pred, image_files, acts,
+                                             imus=loaded)
+            self.assertEqual(len(steps), 8)   # t0=2 → t=2..9
+            for k, rec in enumerate(steps):
+                t = 2 + k
+                np.testing.assert_array_equal(pred.imus_received[k], imus[t])
+
+    def test_rollout_without_imu_passes_none(self):
+        """imu.npy 缺失 → 每步 imu=None（等价零向量，不炸）"""
+        import evaluate
+        with tempfile.TemporaryDirectory() as tmpdir:
+            actions = np.zeros((10, 2), dtype=np.float32)
+            TestR4Evaluate._create_episode(Path(tmpdir), "episode_0001",
+                                           actions)
+            image_files, acts, loaded = evaluate._load_episode(
+                tmpdir, "episode_0001")
+            self.assertIsNone(loaded)
+            pred = self._ImuRecordingPredictor()
+            evaluate.rollout_episode(pred, image_files, acts, imus=loaded)
+            self.assertTrue(all(v is None for v in pred.imus_received))
+
+    def test_legacy_predictor_not_given_imu_kwarg(self):
+        """imu_dim=None 的旧推理器不应收到 imu 关键字（鸭子类型兼容）"""
+        import evaluate
+        with tempfile.TemporaryDirectory() as tmpdir:
+            actions = np.zeros((10, 2), dtype=np.float32)
+            TestR4Evaluate._create_episode(Path(tmpdir), "episode_0001",
+                                           actions)
+            image_files, acts, _ = evaluate._load_episode(
+                tmpdir, "episode_0001")
+            pred = TestR4Evaluate._ConstPredictor([0.0, 0.0])  # 无 imu_dim
+            steps = evaluate.rollout_episode(pred, image_files, acts)
+            self.assertEqual(len(steps), 8)
+            self.assertEqual(pred.calls, 8)
+
+
+class TestR2HailoImu(unittest.TestCase):
+    """R2 HEF 封装：6 输入布局（frame×3 + history + pred_token + imu）"""
+
+    def _frames(self, n, size=8):
+        return [np.random.randint(0, 255, (size, size, 3), dtype=np.uint8)
+                for _ in range(n)]
+
+    def _install_six_input_fake(self, seen):
+        infos_in = [
+            _FakeVStreamInfo("net/input_layer1", (8, 8, 3),
+                             _FakeFormatType.FLOAT32),
+            _FakeVStreamInfo("net/input_layer2", (8, 8, 3),
+                             _FakeFormatType.FLOAT32),
+            _FakeVStreamInfo("net/input_layer3", (8, 8, 3),
+                             _FakeFormatType.FLOAT32),
+            _FakeVStreamInfo("net/input_layer4", (1, 2, 3),
+                             _FakeFormatType.FLOAT32),
+            _FakeVStreamInfo("net/input_layer5", (1, 1, 4),
+                             _FakeFormatType.FLOAT32),
+            _FakeVStreamInfo("net/input_layer6", (1, 1, 1, 8),
+                             _FakeFormatType.FLOAT32),
+        ]
+        infos_out = [_FakeVStreamInfo("net/conv49", (1, 1, 3),
+                                      _FakeFormatType.FLOAT32)]
+
+        def transform(b):
+            seen["imu"] = np.asarray(
+                b.input("net/input_layer6").get_buffer()).copy()
+            _first_row_transform("net/input_layer4", "net/conv49")(b)
+
+        _install_fake_hailo(self, infos_in, infos_out, transform)
+
+    def test_imu_input_classified_and_bound(self):
+        """imu (1,1,1,8) 输入应被识别为姿态而非 pred_token，绑定归一化值"""
+        from hailo_infer import HailoPredictor
+        seen = {}
+        self._install_six_input_fake(seen)
+        with HailoPredictor("fake.hef") as p:
+            self.assertEqual(p.imu_dim, 8)
+            # roll=180° → 归一化 1.0
+            p.predict(self._frames(3), np.zeros((2, 3), np.float32),
+                      imu=np.array([180.0] + [0.0] * 7, np.float32))
+        self.assertEqual(seen["imu"].shape, (1, 1, 1, 8))
+        np.testing.assert_allclose(seen["imu"][0, 0, 0, 0], 1.0, atol=1e-6)
+        np.testing.assert_array_equal(seen["imu"][0, 0, 0, 1:],
+                                      np.zeros(7, np.float32))
+
+    def test_imu_none_binds_zeros(self):
+        """imu=None → 零向量绑定（无姿态先验）"""
+        from hailo_infer import HailoPredictor
+        seen = {}
+        self._install_six_input_fake(seen)
+        with HailoPredictor("fake.hef") as p:
+            p.predict(self._frames(3), np.zeros((2, 3), np.float32))
+        np.testing.assert_array_equal(seen["imu"], np.zeros((1, 1, 1, 8)))
+
+    def test_imu_uint8_quantized(self):
+        """uint8 量化边缘：归一化值按 quant_info 量化"""
+        from hailo_infer import HailoPredictor
+        q_imu = _FakeQuantInfo(qp_zp=128.0, qp_scale=0.01)
+        infos_in = [
+            _FakeVStreamInfo("net/input_layer1", (8, 8, 3),
+                             _FakeFormatType.FLOAT32),
+            _FakeVStreamInfo("net/input_layer2", (8, 8, 3),
+                             _FakeFormatType.FLOAT32),
+            _FakeVStreamInfo("net/input_layer3", (8, 8, 3),
+                             _FakeFormatType.FLOAT32),
+            _FakeVStreamInfo("net/input_layer4", (1, 2, 3),
+                             _FakeFormatType.FLOAT32),
+            _FakeVStreamInfo("net/input_layer5", (1, 1, 4),
+                             _FakeFormatType.FLOAT32),
+            _FakeVStreamInfo("net/input_layer6", (1, 1, 1, 8),
+                             _FakeFormatType.UINT8, q_imu),
+        ]
+        infos_out = [_FakeVStreamInfo("net/conv49", (1, 1, 3),
+                                      _FakeFormatType.FLOAT32)]
+        seen = {}
+
+        def transform(b):
+            seen["imu"] = np.asarray(
+                b.input("net/input_layer6").get_buffer()).copy()
+            _first_row_transform("net/input_layer4", "net/conv49")(b)
+
+        _install_fake_hailo(self, infos_in, infos_out, transform)
+        with HailoPredictor("fake.hef") as p:
+            # roll=18° → 归一化 0.1 → 量化 round(0.1/0.01+128)=138
+            p.predict(self._frames(3), np.zeros((2, 3), np.float32),
+                      imu=np.array([18.0] + [0.0] * 7, np.float32))
+        self.assertEqual(seen["imu"].dtype, np.uint8)
+        self.assertEqual(seen["imu"][0, 0, 0, 0], 138)
+        # 零值 → round(0/0.01+128)=128
+        np.testing.assert_array_equal(seen["imu"][0, 0, 0, 1:],
+                                      np.full(7, 128, np.uint8))
+
+
+class TestR2DfcCompileImu(unittest.TestCase):
+    """R2 dfc_compile：--with-imu 时 start_nodes 末尾追加 imu"""
+
+    def test_start_nodes_with_imu(self):
+        from dfc_compile import start_nodes
+        self.assertEqual(start_nodes(3, with_imu=True),
+                         ["frame0", "frame1", "frame2",
+                          "action_history", "pred_token", "imu"])
+
+    def test_start_nodes_without_imu_unchanged(self):
+        from dfc_compile import start_nodes
+        self.assertEqual(start_nodes(3),
+                         ["frame0", "frame1", "frame2",
+                          "action_history", "pred_token"])
+        self.assertEqual(start_nodes(3, with_imu=False), start_nodes(3))
+
+
+class TestR2ConfigImu(unittest.TestCase):
+    """R2 配置：imu_dim 校验与覆盖"""
+
+    def test_default_imu_dim_zero(self):
+        self.assertEqual(DataConfig().imu_dim, 0)
+
+    def test_imu_dim_out_of_range_raises(self):
+        data = DataConfig(imu_dim=65)
+        with self.assertRaises(ValueError):
+            validate_config_values(data, ModelConfig())
+        data = DataConfig(imu_dim=-1)
+        with self.assertRaises(ValueError):
+            validate_config_values(data, ModelConfig())
+
+    def test_imu_dim_cli_override(self):
+        args = build_argparser().parse_args(["--imu-dim", "8"])
+        cfg = apply_overrides(Config(), args)
+        self.assertEqual(cfg.data.imu_dim, 8)
+
+    def test_checkpoint_config_roundtrip_with_imu(self):
+        cfg = Config()
+        cfg.data.imu_dim = 8
+        restored = parse_checkpoint_config(cfg.to_dict())
+        self.assertEqual(restored.data.imu_dim, 8)
 
 
 if __name__ == "__main__":
