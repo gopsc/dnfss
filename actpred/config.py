@@ -11,7 +11,7 @@ class DataConfig:
     history_len: int = 5
     frame_len: int = 3
     data_dir: str = "./data"
-    normalize_actions: bool = False
+    normalize_actions: bool = True
     action_stats_path: Optional[str] = None
     # R2 方案一：MPU6050 姿态作为独立 IMU token 注入（序列 F+H+2）。
     # 0 = 关闭（默认，序列保持 F+H+1，旧 checkpoint 完全兼容）；
