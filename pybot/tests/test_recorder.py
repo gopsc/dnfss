@@ -439,8 +439,9 @@ def test_actpred_compatibility(tmp_path, mock_i2c):
         from dataset import ActionDataset
         ds = ActionDataset(str(tmp_path), history_len=5,
                            action_dim=18, frame_len=3)
-        # 19 帧，start=max(5,2)=5，samples: t=5..18 → 14 个样本
-        assert len(ds) == 14
+        # 20 帧（10 行 × 2 微步，99c1bc1 起首行也分解为重复步），
+        # start=max(5,2)=5，samples: t=5..19 → 15 个样本
+        assert len(ds) == 15
         sample = ds[0]
         # ActionDataset 默认 resize 到 640×480，与相机原始尺寸无关
         assert sample["images"].shape == (3, 3, 480, 640)  # (F, C, H, W)

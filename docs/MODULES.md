@@ -1,7 +1,7 @@
 # 模块清单（blackbird / micro_servers）
 
 > 一套 DIY 的轻量级「进程托管式微服务」（UniServe Framework）。
-> 混合语言：C++20（core/gateway/ca/dnfs2/db2/memdb/fsys/captcha2/lib*）、Python（static/dnfs/db/ai_review/smtp/captcha/confs/redirect80/BotOps/aibox/actpred/pybot/pymsg，多为遗留）、Go（waf）、仓颉/Cangjie（bot4cj）。
+> 混合语言：C++20（core/gateway/ca/dnfs2/db2/memdb/fsys/captcha2/lib*）、Python（static/dnfs/db/ai_review/smtp/captcha/confs/redirect80/BotOps/aibox/actpred/pybot/mtc/pymsg，多为遗留）、Go（waf）、仓颉/Cangjie（bot4cj）。
 > 由 `core` 读 `services.yaml` 拉起并守护各子进程；`waf:443 → ca:8443 → gateway:8445 → 业务服务` 为对外主链路。
 
 ## 一、核心与编排
@@ -54,6 +54,7 @@
 |------|------|------|------|
 | bot4cj | 仓颉/Cangjie | — (树莓派 I2C) | 机器人硬件脚本解析器，解析 `.mt` 驱动 PCA9685 舵机 / MPU6050 陀螺仪 / 扬声器，面向 Dashun 蜘蛛机器人 |
 | pybot | Python | — (树莓派) | bot4cj 的 Python 迁移版：`.mt` 动作脚本解析器（零第三方依赖，与仓颉版逐语义对齐）；支持执行 / `--dry-run` / `--record` 录制 actpred episode（含 imu.npy）/ `--loop` 实时预测闭环 |
+| mtc | Python | — | 命令式动作脚本（Python DSL）→ `.mt` 编译器：`exec` 注入命名空间 → 时间轴 IR（非阻塞语义、重叠截断）→ 10ms 栅格化；产物可由 pybot/bot4cj 直接执行，零第三方依赖 |
 | lci | C++ | — (/dev/fb0) | 嵌入式帧缓冲图形界面（无需 X11/Wayland），矢量 GB2312 中文字库、图片渲染、实时数据可视化 |
 | 3d | — (资产) | — | 机器人 / 机械臂 CAD 模型（STEP/STL/SLDPRT），bot4cj 配套硬件资产 |
 
@@ -91,5 +92,5 @@
 - **日志链路**：各服务 `log_client.py`（异步批量）→ `db2:8005` Logs 表（fail-safe，db2 不可用时静默丢弃）
 - **配置链路**：`gateway` → `core` 内嵌 confs:8010（内存缓存 + mtime 重载，仅 gateway.ini）；其余服务配置纯 CLI 传递
 - **数据/审核/邮件/缓存**：`dnfs2` → `db2:8005`（pymsg 持久化）；`dnfs2` → `ai_review:8007`（审核）；注册邮件 `ca` → `smtp:8008`；登录验证码 `ca` → `captcha2:8009`；`memdb:8011`（内存缓存，libmsg RPC，暂无业务调用方，预留热点数据/会话缓存）
-- **机器人数据链**：`pybot --record` 录制 episode（images + actions.npy + imu.npy）→ `actpred` 两阶段训练 → ONNX/Hailo HEF 部署 → `pybot --loop` 实时预测闭环（bot4cj 语义对齐）
+- **机器人数据链**：`mtc` 编译 Python DSL → `.mt`（或手写 `.mt`）→ `pybot` 执行 / `--record` 录制 episode（images + actions.npy + imu.npy）→ `actpred` 两阶段训练 → ONNX/Hailo HEF 部署 → `pybot --loop` 实时预测闭环（bot4cj 语义对齐）
 - **端口一览**：80 redirect80 · 443 waf · 8443 ca · 8445 gateway · 5200/8010 core · 9200 fsys · 8006 dnfs2 · 8005 db2 · 8007 ai_review · 8009 captcha2 · 8008 smtp · 8011 memdb · 8765 aibox

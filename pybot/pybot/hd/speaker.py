@@ -7,7 +7,8 @@
     dry_run 模式下仅记日志立即返回（不 sleep、不出声）。
 
 时序约定：play() 阻塞总耗时对齐 delay_ms（与仓颉版 sleep(delay) 节拍一致），
-播放提前结束则补足剩余时间。
+播放提前结束则补足剩余时间。frequency <= 0 为静音节拍（不出声仅保节拍，
+对齐仓颉版 sleep 占位语义），正频率仍按 [min_f, max_f] 钳制。
 """
 
 import logging
@@ -44,7 +45,18 @@ class Speaker:
             log.warning("aplay not found, speaker degrades to silent sleep")
 
     def play(self, frequency, delay_ms):
-        """播放 frequency Hz 正弦波 delay_ms 毫秒（阻塞）"""
+        """播放 frequency Hz 正弦波 delay_ms 毫秒（阻塞）
+
+        frequency <= 0 为静音节拍：不出声、仅保持 delay 时序（对齐
+        仓颉版 sleep 占位语义）。此前 0Hz 会被钳制到 min_f 发出低鸣，
+        破坏了 .mt 首行 freq=0（jump.mt/std.mt）的静默意图。
+        """
+        if frequency <= 0:                      # 静音节拍
+            if self.dry_run:
+                log.info("speaker(dry-run): silence %dms", delay_ms)
+                return
+            time.sleep(delay_ms / 1000.0)
+            return
         # 频率钳制（与仓颉版一致）
         if frequency > self.max_f:
             frequency = self.max_f

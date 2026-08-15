@@ -69,6 +69,7 @@
 | [dnfs](dnfs/) | Python(Flask) | 8006 | ~~树状网络文件系统~~（遗留，已由 dnfs2 平替） |
 | [db2](db2/) | C++20 | 8005 | 通用数据库服务，基于 pymsg 协议（TCP 长度前缀帧 + JSON）的 SQL-over-TCP，参数化查询防注入；内置集中式日志收集（Logs 表 + 自动清理） |
 | [db](db/) | Python(pymsg) | 8005 | ~~通用数据库服务~~（遗留，已由 db2 平替） |
+| [memdb](memdb/) | C++20 | 8011 | 内存缓存数据库（libmemdb 模板库 + libmsg RPC），TTL 惰性驱逐，9 路由（ping/set/get/del/update/exists/size/show/expire），线程安全 + 优雅退出；暂无业务调用方，预留热点数据/会话缓存 |
 | [ai_review](ai_review/) | Python(Flask) | 8007 | AI 内容审核服务，DeepSeek LLM + ChromaDB RAG，支持人工反馈纠偏 |
 | [captcha2](captcha2/) | C++20 | 8009 | 验证码服务（pymsg/TCP），生成图形验证码（5 分钟过期、一次性），经 ca 的 `GET /captcha/image` 代理给浏览器 |
 | [captcha](captcha/) | Python(pymsg) | 8009 | ~~验证码服务~~（遗留，已由 captcha2 平替） |
@@ -77,6 +78,9 @@
 | [aibox](aibox/) | Python | 8765 | 独立 AI 智能体系统（DeepSeek + WebSocket），自带技能系统/记忆/任务调度，由 core 拉起但与主干微服务无调用关系 |
 | [BotOps](BotOps/) | Python | — | aibox 智能体 TUI 前端（Textual），WebSocket 连接 aibox，支持 Markdown 增量流式渲染、思考模式展示、任务独立侧栏、自动重连 |
 | [bot4cj](bot4cj/) | 仓颉(Cangjie) | — | 机器人硬件脚本解析器，解析 .mt 矩阵脚本通过 I2C 驱动 PCA9685 舵机 / MPU6050 陀螺仪，面向树莓派 Dashun 蜘蛛机器人平台（独立硬件项目） |
+| [pybot](pybot/) | Python | — | bot4cj 的 Python 迁移版：.mt 动作脚本解析器（零第三方依赖，与仓颉版逐语义对齐）；支持执行 / `--dry-run` / `--record` 录制 actpred episode（含 imu.npy）/ `--loop` 实时预测闭环 |
+| [mtc](mtc/) | Python | — | 命令式动作脚本（Python DSL）→ .mt 编译器：非阻塞时间轴 + 10ms 栅格展开，输出可由 pybot/bot4cj 直接执行；零第三方依赖 |
+| [actpred](actpred/) | Python(PyTorch) | — | 动作预测模型（图像 + 动作历史 → 下一动作），bot4cj/pybot 的「大脑」配套；两阶段训练（.mt 预训练 → episode 微调），ONNX/Hailo HEF 部署（实验） |
 | [lci](lci/) | C++ | — | 嵌入式帧缓冲图形界面（LCI），基于 `/dev/fb0` 直接操作显存，无需 X11/Wayland，矢量字体、图片渲染、实时数据可视化，面向树莓派等嵌入式环境 |
 
 ### core（核心模块 · 进程托管服务）
@@ -171,6 +175,12 @@
 - 安全机制：表名白名单（字母数字下划线）、`sqlite3_bind_text` 参数绑定、仅反射已有表无法建删表、RpcServer 异常脱敏。
 - 配置全部经 CLI 传递（CLI > 环境变量 > 默认值，原 `db.ini` 迁入 `core/services.yaml` 的 CLI args），不依赖 confs；详见 [db2/README.md](db2/README.md)。
 
+### memdb（内存缓存数据库）
+
+- 基于 [libmemdb](libmemdb/)（C++20 header-only 模板库：三索引存储——`std::list` 主存 + `unordered_map` 键索引 + `multiset` TTL 索引，TTL 惰性驱逐）+ [libmsg](libmsg/) RPC 服务，监听 127.0.0.1:8011。
+- 9 路由：`ping` / `set` / `get` / `del` / `update` / `exists` / `size` / `show` / `expire`；`std::mutex` 保护线程安全，SIGINT/SIGTERM 优雅退出。
+- 已纳入 `core/services.yaml` 自启动；暂无业务调用方，预留热点数据/会话缓存；详见 [memdb/README.md](memdb/README.md)。
+
 ### ai_review（AI 内容审核服务）
 
 - 基于 DeepSeek LLM + ChromaDB 向量检索的 RAG 审核架构。
@@ -243,6 +253,21 @@
 - 附带数学库（矩阵运算、NN/CNN、Adam 优化器）、CUDA GPU 加速 kernel 和 Lua 硬件模块（ADS1115 / ADS1256 / SPI）。
 - 与主干微服务完全独立，需部署在树莓派上独立运行。
 
+### pybot（机器人动作脚本解析器 · Python 迁移版）
+
+- [bot4cj](#bot4cj机器人硬件脚本解析器) 的 Python 迁移版，零第三方依赖（纯标准库），与仓颉版逐语义对齐（含占位符 `-` 递归继承、微步分解、块序依赖）。
+- 三种运行模式：脚本执行 `run()`、`--record` 录制 actpred episode（images + actions.npy + imu.npy，≤4 个 MPU6050 按块行序拼接）、`--loop` 实时预测闭环（daemon 线程队列非阻塞取帧，overrun 告警）。
+- 扬声器静音语义：`frequency <= 0` 不出声仅保持节拍（对齐仓颉版 sleep 占位语义）。
+- Windows 开发机可跑测试（fcntl mock + 符号链接 fallback）；详见 [pybot/README.md](pybot/README.md)。
+
+### mtc（.mt 脚本编译器）
+
+- 命令式动作脚本（Python DSL）→ `.mt` 矩阵脚本编译器，零第三方依赖；产物可直接由 pybot / bot4cj 执行。
+- 管线：script.py `exec` 注入命名空间 → 事件收集 → 时间轴 IR（相对→绝对、重叠截断）→ 10ms 栅格化 → out.mt。
+- 非阻塞时间轴语义：`Action`/`SetTo`/`Beep` 在当前游标处注册运动段即返回，`Delay`/`Wait` 推进游标，并发运动天然表达；`dur` 须为 10 的倍数（与 pybot 微步节拍一致）。
+- 扬声器通道静止值回落 0（段前/段间空隙/段后 = 静音），与 pybot speaker 静音语义对齐；`spk.frequency`/`spk.delay` 列自动成对补齐。
+- 用法：`python -m mtc walk.py -o walk.mt`（须在 `mtc/` 目录或设 `PYTHONPATH=mtc` 运行）；详见 [mtc/README.md](mtc/README.md)。
+
 ### lci（嵌入式帧缓冲图形界面）
 
 - LCI（Linux Chinese Interface）是基于 Linux 帧缓冲设备（`/dev/fb0`）的图形界面系统，**无需 X11 或 Wayland**，直接 `mmap` 操作显存，专为树莓派等嵌入式环境设计。
@@ -291,8 +316,12 @@
 | 8007 | ai_review | 127.0.0.1 | AI 审核（仅内部调用） |
 | 8009 | captcha2 | 127.0.0.1 | 验证码服务（pymsg/TCP，经 ca 代理） |
 | 8008 | smtp | 127.0.0.1 | 邮件服务（仅内部调用，注册验证码邮件后端） |
+| 8011 | memdb | 127.0.0.1 | 内存缓存数据库（libmsg RPC，仅内部调用，暂无业务调用方） |
 | 8765 | aibox | 127.0.0.1 | AI 智能体（WebSocket，独立产品） |
 | — | bot4cj | — (树莓派 I2C) | 机器人硬件脚本解析器（独立硬件项目，不联网） |
+| — | pybot | — (树莓派) | bot4cj 的 Python 迁移版（.mt 解析/录制/--loop 实时闭环，独立硬件项目） |
+| — | mtc | — | 命令式动作脚本 → .mt 编译器（开发期工具，无端口） |
+| — | actpred | — | 动作预测模型训练/部署（实验，无端口） |
 | — | lci | — (树莓派 /dev/fb0) | 嵌入式帧缓冲图形界面（独立硬件项目，不联网） |
 | — | BotOps | — | aibox 智能体 TUI 前端（WebSocket 客户端，连接 aibox:8765） |
 

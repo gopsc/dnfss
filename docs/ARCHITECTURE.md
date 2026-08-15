@@ -89,6 +89,7 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
     BotOps (aibox 的 TUI 前端)
     bot4cj (Cangjie + 树莓派 I2C, 硬件)
     pybot (Python, bot4cj 的迁移版: .mt 解析/录制/实时闭环)
+    mtc (Python, 命令式动作脚本 → .mt 编译器, 开发期工具)
     lci (C++ /dev/fb0, 嵌入式 GUI)
     actpred / libtry (实验 / 支撑库)
 
@@ -148,6 +149,7 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
 | **BotOps** | Python | — | — | aibox 的 TUI 前端 | 独立 |
 | **bot4cj** | Cangjie | — | 树莓派 I2C | 机器人脚本解析器 | 独立硬件 |
 | **pybot** | Python | — | 树莓派 | bot4cj 的 Python 迁移版（.mt 解析、actpred episode 录制、--loop 实时预测闭环） | 独立硬件 |
+| **mtc** | Python | — | — | 命令式动作脚本（Python DSL）→ .mt 编译器（非阻塞时间轴 IR + 10ms 栅格化），pybot/bot4cj 的脚本 authoring 工具 | 开发期工具 |
 | **lci** | C++ | — | /dev/fb0 | 嵌入式帧缓冲 GUI | 独立硬件 |
 | **actpred** | Python | — | — | 动作预测（图像+动作历史→下一动作），bot4cj/pybot 的「大脑」配套 | 实验 |
 | **libtry** | C | — | — | 嵌入式脚本解释器 | 支撑 |
@@ -248,7 +250,7 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
 5. **fsys README 图示滞后**：✅ 已修正（2026-08-10）。`fsys/README.md` 架构图与配置章节已更新为 `ca:8443 → gateway:8445`、纯 CLI 配置。
 6. **工作记忆偏差**：✅ 已同步。`ca:8443 → gateway:8445`、`dnfs2`、confs 内嵌 core 均已写入各文档。
 7. **dnfs2 README 图示滞后**：✅ 已修正（2026-08-10）。`dnfs2/README.md` 架构图与验签描述已更新为 ca:8443（CLI 参数 `--gateway-url` 指向 ca）。
-8. **memdb / pybot 未进根 README**：⏳ 待回填（2026-08-15 发现）。`memdb:8011` 已入 services.yaml、`pybot`（bot4cj Python 迁移版）已落库，但根 `README.md` 模块表与端口一览尚未收录；本文件与 MODULES.md 已同步。
+8. **memdb / pybot / mtc 未进根 README**：✅ 已回填（2026-08-15）。`memdb:8011`、`pybot`（bot4cj Python 迁移版）、`mtc`（Python DSL → .mt 编译器，2026-08-15 落地）连同 `actpred` 已入根 `README.md` 模块表与端口一览；本文件与 MODULES.md 已同步。
 
 ---
 
