@@ -37,6 +37,9 @@ Servo("s8",  -180, 0, 0, "pca9685-0", 7)   # rf1
 Servo("s9",   180, 0, 0, "pca9685-0", 8)   # cam0
 Servo("s10",  180, 0, 0, "pca9685-0", 9)   # cam1
 
+# 录制源（pybot --record 需要 @Camera 块）
+Camera("cam0", 640, 480, 30, 8)
+
 # stand：10ms（一个栅格步）内到位并保持；首行即目标值，无爬升
 SetTo("s1", 45, 10)
 SetTo("s2", 0, 10)

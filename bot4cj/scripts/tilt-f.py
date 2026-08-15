@@ -32,6 +32,9 @@ _SERVOS = [("s1",   90, 0),   # rb0
 for _name, _max, _ch in _SERVOS:
     Servo(_name, _max, 0, 0, "pca9685-0", _ch)
 
+# 录制源（pybot --record 需要 @Camera 块）
+Camera("cam0", 640, 480, 30, 8)
+
 _STAND = [45, 0, 45, 0, 45, 0, 45, 0, 90, 90]
 
 def stand(dur=10):
