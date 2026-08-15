@@ -25,7 +25,8 @@ class ActionDataset(Dataset):
                  image_width: int = 640, image_height: int = 480,
                  normalize_actions: bool = False,
                  action_stats_path: str = None, episode_indices: list = None,
-                 frame_len: int = 3, augment: bool = False,
+                 frame_len: int = 3, sample_indices: list = None,
+                 augment: bool = False,
                  predict_delta: bool = False, rollout_len: int = 1,
                  imu_dim: int = 0, normalize_mode: str = "zscore",
                  onehot: bool = False, onehot_sigma: float = 1.0):
@@ -63,6 +64,7 @@ class ActionDataset(Dataset):
         episodes = ActionDataset._valid_episode_dirs(data_dir)
         if episode_indices is not None:
             episodes = [episodes[i] for i in episode_indices]
+        self._sample_indices = sample_indices
 
         # 样本存 (image_files, actions, t_start)：t_start 是 rollout 第一步的目标时刻，
         # __getitem__ 按 rollout_len 展开 K 步。存原始数组引用避免重复加载/拷贝。
@@ -92,6 +94,13 @@ class ActionDataset(Dataset):
             start = max(history_len, frame_len - 1)
             for t_start in range(start, n - (self.rollout_len - 1)):
                 self.samples.append((image_files, actions, imus, t_start))
+
+        # 样本级随机划分：按样本索引过滤（相邻微步高度相关，随机划分
+        # 会让 val 略乐观——高相关样本的近邻大量在训练集，见训练报告）
+        if sample_indices is not None:
+            idx_set = set(sample_indices)
+            self.samples = [s for i, s in enumerate(self.samples)
+                            if i in idx_set]
 
         self._action_mean = None
         self._action_std = None

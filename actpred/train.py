@@ -206,14 +206,36 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    train_indices, val_indices = split_episodes(
-        cfg.data.data_dir, cfg.train.val_split, seed=cfg.train.seed)
-    print(f"Episodes: {len(train_indices)} train, {len(val_indices)} val")
+    if cfg.train.val_split_mode == "sample":
+        # 样本级随机划分：先建全量数据集取样本索引，再按 seed 随机分成
+        # train/val（zscore 统计量仍只由训练样本计算，经 stats 文件复用）
+        probe_ds = ActionDataset(
+            cfg.data.data_dir, cfg.data.history_len, cfg.data.action_dim,
+            cfg.data.image_width, cfg.data.image_height, False,
+            cfg.data.action_stats_path, None, cfg.data.frame_len,
+            predict_delta=cfg.train.predict_delta,
+            rollout_len=cfg.train.rollout_len, imu_dim=cfg.data.imu_dim,
+            normalize_mode=cfg.data.normalize_mode)
+        n = len(probe_ds)
+        rng = np.random.RandomState(cfg.train.seed)
+        perm = rng.permutation(n)
+        val_count = max(1, int(n * cfg.train.val_split))
+        val_idx = perm[:val_count]
+        train_idx = perm[val_count:]
+        train_indices = None
+        val_indices = None
+        print(f"Sample split: {n - val_count} train, {val_count} val "
+              f"(mode=sample)")
+    else:
+        train_indices, val_indices = split_episodes(
+            cfg.data.data_dir, cfg.train.val_split, seed=cfg.train.seed)
+        print(f"Episodes: {len(train_indices)} train, {len(val_indices)} val")
 
     train_ds = ActionDataset(
         cfg.data.data_dir, cfg.data.history_len, cfg.data.action_dim,
         cfg.data.image_width, cfg.data.image_height, cfg.data.normalize_actions,
         cfg.data.action_stats_path, train_indices, cfg.data.frame_len,
+        sample_indices=train_idx if cfg.train.val_split_mode == "sample" else None,
         augment=cfg.train.augment,
         predict_delta=cfg.train.predict_delta, rollout_len=cfg.train.rollout_len,
         imu_dim=cfg.data.imu_dim, normalize_mode=cfg.data.normalize_mode,
@@ -233,6 +255,7 @@ def main():
         cfg.data.data_dir, cfg.data.history_len, cfg.data.action_dim,
         cfg.data.image_width, cfg.data.image_height, cfg.data.normalize_actions,
         cfg.data.action_stats_path, val_indices, cfg.data.frame_len,
+        sample_indices=val_idx if cfg.train.val_split_mode == "sample" else None,
         predict_delta=cfg.train.predict_delta, rollout_len=cfg.train.rollout_len,
         imu_dim=cfg.data.imu_dim, normalize_mode=cfg.data.normalize_mode,
         onehot=cfg.data.onehot, onehot_sigma=cfg.data.onehot_sigma)

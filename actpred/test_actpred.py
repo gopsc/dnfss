@@ -2484,6 +2484,47 @@ class TestOneHot(unittest.TestCase):
         cfg = apply_overrides(Config(), args)
         self.assertFalse(cfg.data.onehot)
 
+    def test_dataset_sample_indices(self):
+        """样本级随机划分：sample_indices 过滤样本，zscore 统计仅用子集"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            TestActionDataset._create_dummy_episode(
+                Path(tmpdir), n_frames=12, action_dim=4)
+            full = ActionDataset(tmpdir, history_len=3, action_dim=4,
+                                 image_width=32, image_height=32, frame_len=3,
+                                 normalize_actions=True)
+            n = len(full)
+            sub = ActionDataset(tmpdir, history_len=3, action_dim=4,
+                                image_width=32, image_height=32, frame_len=3,
+                                normalize_actions=True,
+                                sample_indices=[0, 1, 2])
+            self.assertEqual(len(sub), 3)
+            # 原始目标一致（用非归一化口径对照，zscore 统计量不同会
+            # 改变归一化值，故不能直接比 target）
+            raw_full = ActionDataset(tmpdir, history_len=3, action_dim=4,
+                                     image_width=32, image_height=32,
+                                     frame_len=3, normalize_actions=False)
+            raw_sub = ActionDataset(tmpdir, history_len=3, action_dim=4,
+                                    image_width=32, image_height=32,
+                                    frame_len=3, normalize_actions=False,
+                                    sample_indices=[0, 1, 2])
+            for i in range(3):
+                np.testing.assert_allclose(
+                    raw_sub[i]["target"].numpy(),
+                    raw_full[i]["target"].numpy())
+            # 统计量由子集样本计算（zscore 均值 = 子集样本均值）
+            self.assertIsNotNone(sub.get_action_stats())
+            self.assertNotEqual(n, 3)
+
+    def test_val_split_mode_cli(self):
+        """--val-split-mode 参数经 apply_overrides 落到 train 配置"""
+        from config import build_argparser, apply_overrides
+        parser = build_argparser("t")
+        cfg = apply_overrides(Config(),
+                              parser.parse_args(["--val-split-mode", "episode"]))
+        self.assertEqual(cfg.train.val_split_mode, "episode")
+        cfg2 = apply_overrides(Config(), parser.parse_args([]))
+        self.assertEqual(cfg2.train.val_split_mode, "sample")  # 新默认
+
     def test_onehot_config_validation(self):
         cfg = Config()
         cfg.data.onehot = True

@@ -60,6 +60,11 @@ class TrainConfig:
     lr: float = 1e-3
     weight_decay: float = 1e-4
     val_split: float = 0.15
+    # 验证集划分方式：
+    #   "episode" 整集划分（防数据泄漏，但单 episode 验证噪声大）
+    #   "sample"  样本级随机划分（默认：多集混合、验证集更大更稳，
+    #             代价是相邻高相关样本泄漏使 val 略乐观）
+    val_split_mode: str = "sample"
     checkpoint_dir: str = "./checkpoints"
     patience: int = 15
     num_workers: int = 2
@@ -132,6 +137,10 @@ def build_argparser(description: str = "") -> argparse.ArgumentParser:
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--weight-decay", type=float, default=None)
     parser.add_argument("--val-split", type=float, default=None)
+    parser.add_argument("--val-split-mode", type=str, default=None,
+                        choices=["episode", "sample"],
+                        help="验证集划分：episode=整集（防泄漏但噪声大）；"
+                             "sample=样本级随机（默认，更大更稳）")
     parser.add_argument("--checkpoint-dir", type=str, default=None)
     parser.add_argument("--patience", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=None)
@@ -337,6 +346,7 @@ def apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         "lr": ("train", "lr"),
         "weight_decay": ("train", "weight_decay"),
         "val_split": ("train", "val_split"),
+        "val_split_mode": ("train", "val_split_mode"),
         "checkpoint_dir": ("train", "checkpoint_dir"),
         "patience": ("train", "patience"),
         "num_workers": ("train", "num_workers"),
