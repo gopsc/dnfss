@@ -128,8 +128,10 @@ class ActionPredictorInference:
                 from action_norm import default_column_weights
                 col_w = default_column_weights(self.action_dim)
             fixed = fixed_zero_columns(col_w, self.action_dim)
-            m = fixed != 0.0
-            result[m] = fixed[m]
+            # 按权重掩码覆盖（固定 0 的列也须覆盖——掩码不能只看常量值）
+            w = np.asarray(col_w, dtype=np.float32)
+            result[w[:self.action_dim] <= 0.0] = (
+                fixed[w[:self.action_dim] <= 0.0])
             if not np.all(np.isfinite(result)):
                 result = np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
             return result

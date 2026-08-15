@@ -130,8 +130,8 @@ def train_one_epoch(model, loader, optimizer, device, max_grad_norm: float = Non
                         # 权重 0 列固定为常量，防自预测垃圾进入历史
                         fixed = fixed_zero_columns(
                             weights.cpu().numpy(), action_dim)
-                        m = fixed != 0.0
-                        raw[m] = fixed[m]
+                        w = weights.cpu().numpy()[:action_dim]
+                        raw[w <= 0.0] = fixed[w <= 0.0]
                         abs_action = torch.from_numpy(normalize_action(
                             raw, action_dim, mode=range_mode)).to(device)
                     else:

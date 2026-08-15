@@ -2525,6 +2525,22 @@ class TestOneHot(unittest.TestCase):
         cfg2 = apply_overrides(Config(), parser.parse_args([]))
         self.assertEqual(cfg2.train.val_split_mode, "sample")  # 新默认
 
+    def test_fixed_zero_value_still_applied(self):
+        """固定 0 的列（spk.F）也必须被覆盖——掩码按权重而非常量值"""
+        from bins import decode, fixed_zero_columns, START
+        from action_norm import default_column_weights
+        # 构造 spk.F 头输出 1000Hz 附近 logits（垃圾预测）
+        logits = np.full((1, 1864), -10.0, dtype=np.float32)
+        logits[0, START[10] + 25] = 0.0      # 1000Hz 附近箱
+        raw = decode(logits, 18)
+        self.assertGreater(float(raw[0, 10]), 100.0)   # 未覆盖时是垃圾
+        w = default_column_weights(18)
+        fixed = fixed_zero_columns(w, 18)
+        mask = np.asarray(w, dtype=np.float32) <= 0.0
+        raw[0, mask] = fixed[mask]
+        self.assertEqual(float(raw[0, 10]), 0.0)      # 固定后归零
+        self.assertEqual(float(raw[0, 11]), 10.0)
+
     def test_action_jitter(self):
         """角度抖动增强：历史加有界高斯噪声，目标保持干净"""
         with tempfile.TemporaryDirectory() as tmpdir:
