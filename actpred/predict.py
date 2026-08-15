@@ -10,6 +10,7 @@ from config import parse_checkpoint_config
 from imu_norm import normalize_imu
 from action_norm import (normalize_action, denormalize_action,
                       is_range_mode)
+from bins import decode as bin_decode
 from model import ActionPredictor
 from utils import parse_action_history
 
@@ -37,6 +38,7 @@ class ActionPredictorInference:
         # pybot 闭环鸭子类型约定：此属性为 None 时按旧两参调用，
         # 故 imu_dim=0（旧 checkpoint）必须映射为 None。
         self.imu_dim = self._data_cfg.imu_dim or None
+        self._onehot = self._data_cfg.onehot
         # R1-C 残差预测：checkpoint 记录 predict_delta=True 时，模型输出 Δ̂，
         # 需在归一化空间加回 a_{t-1}（history 末步）得到绝对动作。
         # 旧 checkpoint 无该字段，getattr 默认 False，行为与旧版一致。
@@ -117,6 +119,12 @@ class ActionPredictorInference:
                 normalize_imu(imu, self._data_cfg.imu_dim)
             ).unsqueeze(0).to(self._device)
         pred = self._model(img_tensor, history, imu_tensor).squeeze(0)  # 归一化空间
+        if self._onehot:
+            # 多头 logits → 期望值解码 → 原始量纲（箱生活在原始空间）
+            result = bin_decode(pred.cpu().numpy(), self.action_dim)
+            if not np.all(np.isfinite(result)):
+                result = np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
+            return result
         if self._predict_delta:
             # 残差：Δ̂ 加回 a_{t-1}（history 末步，同为归一化空间）→ 绝对动作
             pred = history[0, -1] + pred

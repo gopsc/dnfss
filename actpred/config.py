@@ -24,6 +24,15 @@ class DataConfig:
     # .default_column_weights(action_dim)（舵机 1.0 / spk 0.2 / 保留位 0.0）。
     # 显式指定时长度须等于 action_dim。
     column_weights: Optional[List[float]] = None
+    # 多头 one-hot 分类输出（bins.py 分箱）：True 时监督目标为多组 one-hot
+    # （舵机 1°/箱 ×10、spk 对数 32 箱 ×2，共 1864 logits），损失用加权 CE，
+    # 推理端期望值解码。要求 normalize_actions=True 且 normalize_mode 为
+    # 范围类（fixed_range/log_range）——历史输入沿用范围归一化，免 stats。
+    # 与 predict_delta 互斥（残差在连续空间定义）。
+    onehot: bool = False
+    # one-hot 软标签高斯宽度（箱）：0=硬标签；>0 真值扩散到邻近箱，
+    # 缓解小样本下分类面数据稀疏（1°/箱 × 804 样本多数箱极少被访问）
+    onehot_sigma: float = 1.0
     # R2 方案一：MPU6050 姿态作为独立 IMU token 注入（序列 F+H+2）。
     # 0 = 关闭（默认，序列保持 F+H+1，旧 checkpoint 完全兼容）；
     # 8×N = N 个传感器的 roll,pitch,ax,ay,az,gx,gy,gz 按 pybot 脚本
@@ -100,6 +109,11 @@ def build_argparser(description: str = "") -> argparse.ArgumentParser:
                         help="动作归一化方式：zscore=数据统计（依赖 action_stats.npy）；"
                              "fixed_range=固定物理范围 min-max→[0,1]（免 stats 文件）；"
                              "log_range=spk 两列对数尺度（免 stats 文件）")
+    parser.add_argument("--onehot", action=argparse.BooleanOptionalAction,
+                        default=None,
+                        help="多头 one-hot 分类输出（bins.py 分箱，舵机 1°/箱）")
+    parser.add_argument("--onehot-sigma", type=float, default=None,
+                        help="one-hot 软标签高斯宽度（箱，0=硬标签，默认 1.0）")
     parser.add_argument("--column-weights", type=str, default=None,
                         help="逐列损失权重（逗号分隔 action_dim 个浮点），"
                              "缺省用默认表（舵机1.0/spk0.2/保留位0.0）；仅影响训练损失")
@@ -179,6 +193,21 @@ def validate_config_values(data_cfg: DataConfig, model_cfg: ModelConfig,
         raise ValueError(
             f"normalize_mode={data_cfg.normalize_mode!r} 非法，"
             f"应为 'zscore'、'fixed_range' 或 'log_range'")
+
+    if data_cfg.onehot:
+        if not data_cfg.normalize_actions:
+            raise ValueError("onehot=True 要求 normalize_actions=True"
+                             "（历史输入须范围归一化）")
+        if not (data_cfg.normalize_mode in ("fixed_range", "log_range")):
+            raise ValueError(
+                f"onehot=True 要求 normalize_mode 为范围类，"
+                f"实际为 {data_cfg.normalize_mode!r}")
+        if train_cfg.predict_delta:
+            raise ValueError("onehot 与 predict_delta 互斥"
+                             "（残差定义在连续空间）")
+    if not (0.0 <= data_cfg.onehot_sigma <= 10.0):
+        raise ValueError(
+            f"onehot_sigma={data_cfg.onehot_sigma} 应在 [0, 10] 内")
 
     if data_cfg.column_weights is not None:
         w = data_cfg.column_weights
@@ -293,6 +322,8 @@ def apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         "action_stats_path": ("data", "action_stats_path"),
         "normalize_mode": ("data", "normalize_mode"),
         "column_weights": ("data", "column_weights"),
+        "onehot": ("data", "onehot"),
+        "onehot_sigma": ("data", "onehot_sigma"),
         "imu_dim": ("data", "imu_dim"),
         "backbone": ("model", "cnn_backbone"),
         "cnn_feature_dim": ("model", "cnn_feature_dim"),

@@ -127,8 +127,10 @@ class ActionPredictor(nn.Module):
             encoder_layer, num_layers=model_cfg.attn_layers,
             enable_nested_tensor=False)
 
+        from bins import TOTAL_BINS
+        head_out = TOTAL_BINS if data_cfg.onehot else data_cfg.action_dim
         self.head = PredictionHead(
-            d, model_cfg.fused_hidden_dim, data_cfg.action_dim, model_cfg.dropout)
+            d, model_cfg.fused_hidden_dim, head_out, model_cfg.dropout)
 
         self._frame_len = data_cfg.frame_len
         self._history_len = data_cfg.history_len

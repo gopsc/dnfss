@@ -12,6 +12,7 @@ from torchvision.transforms import functional as TF
 
 from imu_norm import imu_scales
 from action_norm import normalize_action, is_range_mode
+from bins import encode as bin_encode
 
 
 def _natural_key(p):
@@ -26,7 +27,8 @@ class ActionDataset(Dataset):
                  action_stats_path: str = None, episode_indices: list = None,
                  frame_len: int = 3, augment: bool = False,
                  predict_delta: bool = False, rollout_len: int = 1,
-                 imu_dim: int = 0, normalize_mode: str = "zscore"):
+                 imu_dim: int = 0, normalize_mode: str = "zscore",
+                 onehot: bool = False, onehot_sigma: float = 1.0):
         self.history_len = history_len
         self.action_dim = action_dim
         # 固定范围类归一化（fixed_range / log_range，免 stats 文件）；
@@ -34,6 +36,9 @@ class ActionDataset(Dataset):
         self._range_mode = (normalize_mode
                             if (normalize_actions and is_range_mode(normalize_mode))
                             else None)
+        # 多头 one-hot：监督目标为多组 one-hot（bins.py），历史仍走 _norm
+        self.onehot = onehot
+        self.onehot_sigma = onehot_sigma
         # R2 方案一：>0 时样本带 "imu" 键（归一化姿态向量，缺失 episode 补零）
         self.imu_dim = imu_dim
         self.image_width = image_width
@@ -151,7 +156,12 @@ class ActionDataset(Dataset):
         return torch.stack(frames)  # (F, 3, H, W)
 
     def _step_target(self, actions, t):
-        """时刻 t 的监督目标（归一化空间）；predict_delta 时为 Δ=actions[t]-actions[t-1]"""
+        """时刻 t 的监督目标；onehot 时为多组 one-hot（原始空间分箱），
+        predict_delta 时为 Δ=actions[t]-actions[t-1]（归一化空间），
+        否则为归一化连续值"""
+        if self.onehot:
+            return bin_encode(actions[t], self.action_dim,
+                              sigma=self.onehot_sigma)
         if self.predict_delta:
             return self._norm(actions[t]) - self._norm(actions[t - 1])
         return self._norm(actions[t])

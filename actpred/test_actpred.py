@@ -2347,6 +2347,176 @@ class TestLogRangeNorm(unittest.TestCase):
             validate_config_values(cfg.data, cfg.model)
 
 
+class TestOneHot(unittest.TestCase):
+    """多头 one-hot 输出：bins.py 编解码、软标签、dataset 目标、加权 CE、
+    config 校验"""
+
+    # ---------------- bins.py ----------------
+
+    def test_encode_hard_onehot(self):
+        from bins import encode, START, BINS_PER_COL
+        a = np.zeros((2, 18), dtype=np.float32)
+        a[0, 0] = 45.0
+        a[0, 10] = 10.0
+        a[0, 11] = 200.0
+        a[1, 0] = 46.5
+        o = encode(a)
+        self.assertEqual(o.shape, (2, 1864))
+        # 每行 12 头各一个 1，其余 0
+        self.assertEqual(float(o.sum()), 24.0)
+        self.assertEqual(np.argmax(o[0, START[0]:START[1]]), 45)
+        self.assertEqual(np.argmax(o[1, START[0]:START[1]]), 46)
+        # 保留位列无头，恒 0
+        np.testing.assert_allclose(o[:, START[12]:], 0.0)
+
+    def test_encode_log_bins_spread_low_end(self):
+        """对数箱：10Hz 与 1000Hz 落在不同箱，低端不再挤在一起"""
+        from bins import encode, START
+        a = np.zeros((2, 18), dtype=np.float32)
+        a[0, 10] = 10.0
+        a[1, 10] = 1000.0
+        o = encode(a)
+        b0 = np.argmax(o[0, START[10]:START[11]])
+        b1 = np.argmax(o[1, START[10]:START[11]])
+        self.assertNotEqual(b0, b1)
+        self.assertGreater(b1, b0)
+
+    def test_encode_soft_label(self):
+        """软标签：真值附近多箱非零且组内概率和为 1"""
+        from bins import encode, START
+        a = np.zeros((1, 18), dtype=np.float32)
+        a[0, 0] = 45.0
+        o = encode(a, sigma=1.0)
+        head = o[0, START[0]:START[1]]
+        self.assertGreater(np.count_nonzero(head), 1)
+        self.assertAlmostEqual(float(head.sum()), 1.0, places=6)
+        # 峰值在真值箱
+        self.assertEqual(np.argmax(head), 45)
+
+    def test_decode_expectation(self):
+        """期望值解码：与真值一致时还原箱中心；子箱分辨率由概率内插"""
+        from bins import encode, decode, START, BINS_PER_COL
+        a = np.zeros((1, 18), dtype=np.float32)
+        a[0, 0] = 45.0
+        a[0, 10] = 10.0
+        logits = np.log(encode(a) + 1e-8)
+        d = decode(logits)
+        self.assertAlmostEqual(float(d[0, 0]), 45.5, places=3)   # 箱中心
+        self.assertGreater(float(d[0, 10]), 10.0)                # 对数箱中心偏右
+        # 混合概率内插：45 箱 0.6 / 46 箱 0.4 → 45.9
+        # （背景须 -1e9 使尾部概率可忽略；-10 背景的尾部质量 × 高箱中心
+        # 会贡献 ~0.7°，属测试构造假象）
+        logits2 = np.full((1, 1864), -1e9, dtype=np.float32)
+        logits2[0, START[0] + 45] = np.log(0.6)
+        logits2[0, START[0] + 46] = np.log(0.4)
+        d2 = decode(logits2)
+        self.assertAlmostEqual(float(d2[0, 0]), 45.9, places=4)
+
+    def test_decode_preserves_reserved_cols_zero(self):
+        from bins import decode
+        logits = np.zeros((2, 1864), dtype=np.float32)
+        d = decode(logits)
+        np.testing.assert_allclose(d[:, 12:], 0.0)
+
+    # ---------------- dataset 链路 ----------------
+
+    def test_dataset_onehot_targets(self):
+        """onehot 模式：目标为多组 one-hot，历史仍按范围归一化"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            ep_dir = base / "episode_0001"
+            images_dir = ep_dir / "images"
+            images_dir.mkdir(parents=True)
+            for i in range(8):
+                Image.fromarray(np.random.randint(
+                    0, 255, (16, 16, 3), dtype=np.uint8)).save(
+                    images_dir / f"{i:04d}.jpg")
+            actions = np.zeros((8, 12), dtype=np.float32)
+            actions[:, 0] = 90.0
+            np.save(ep_dir / "actions.npy", actions)
+            ds = ActionDataset(tmpdir, history_len=3, action_dim=12,
+                               image_width=16, image_height=16, frame_len=3,
+                               normalize_actions=True,
+                               normalize_mode="fixed_range",
+                               onehot=True, onehot_sigma=0.0)
+            s = ds[3]
+            tgt = s["target"]
+            self.assertEqual(tgt.shape, (1864,))
+            from bins import START
+            self.assertEqual(np.argmax(tgt.numpy()[START[0]:START[1]]), 90)
+            # 历史仍为连续归一化值（90° → 0.5）
+            np.testing.assert_allclose(
+                s["action_history"].numpy()[:, 0], 0.5, atol=1e-6)
+
+    # ---------------- 加权 CE ----------------
+
+    def test_onehot_ce(self):
+        from train import _onehot_ce
+        from bins import encode, START
+        logits = torch.zeros(2, 1864)
+        a = np.zeros((2, 18), dtype=np.float32)
+        a[0, 0] = 45.0
+        a[1, 0] = 90.0
+        targets = torch.from_numpy(encode(a, sigma=0.0))
+        w = torch.tensor([1.0] * 10 + [0.2, 0.0] + [0.0] * 6)
+        # 全部 12 头都预测正确 → CE≈0
+        logits = torch.log(targets + 1e-9)
+        loss = _onehot_ce(logits, targets, w, 18)
+        self.assertLess(float(loss), 1e-3)
+        # 第 2 行 head0 错箱（预测 bin 0，真值 90）→ 加权 CE 上升
+        bad = logits.clone()
+        bad[1, START[0]] = 0.0
+        bad[1, START[0] + 90] = float(np.log(1e-9))
+        loss_bad = _onehot_ce(bad, targets, w, 18)
+        self.assertGreater(float(loss_bad), 0.5)
+
+    # ---------------- config 校验 ----------------
+
+    def test_onehot_cli_override_applied(self):
+        """--onehot CLI 标志经 apply_overrides 落到 cfg.data.onehot（回归：
+        曾漏映射导致静默退化为回归训练）"""
+        from config import build_argparser, apply_overrides
+        parser = build_argparser("t")
+        args = parser.parse_args(["--onehot", "--onehot-sigma", "2.0"])
+        cfg = apply_overrides(Config(), args)
+        self.assertTrue(cfg.data.onehot)
+        self.assertEqual(cfg.data.onehot_sigma, 2.0)
+        # 缺省不开启
+        args = parser.parse_args([])
+        cfg = apply_overrides(Config(), args)
+        self.assertFalse(cfg.data.onehot)
+
+    def test_onehot_config_validation(self):
+        cfg = Config()
+        cfg.data.onehot = True
+        cfg.data.normalize_actions = True
+        cfg.data.normalize_mode = "fixed_range"
+        validate_config_values(cfg.data, cfg.model, cfg.train)
+        # 与 predict_delta 互斥
+        cfg.train.predict_delta = True
+        with self.assertRaises(ValueError):
+            validate_config_values(cfg.data, cfg.model, cfg.train)
+        # 要求范围类归一化
+        cfg.train.predict_delta = False
+        cfg.data.normalize_mode = "zscore"
+        with self.assertRaises(ValueError):
+            validate_config_values(cfg.data, cfg.model, cfg.train)
+
+    def test_onehot_model_output_shape(self):
+        """onehot 模型前向输出 TOTAL_BINS logits"""
+        cfg = Config()
+        cfg.data.onehot = True
+        cfg.data.normalize_mode = "fixed_range"
+        cfg.data.image_width = 32
+        cfg.data.image_height = 32
+        m = ActionPredictor(cfg.model, cfg.data, pretrained=False)
+        from bins import TOTAL_BINS
+        images = torch.randn(2, cfg.data.frame_len, 3, 32, 32)
+        history = torch.randn(2, cfg.data.history_len, cfg.data.action_dim)
+        out = m(images, history)
+        self.assertEqual(out.shape, (2, TOTAL_BINS))
+
+
 class TestR2ImuModel(unittest.TestCase):
     """R2 方案一模型：独立 IMU token 注入（序列 F+H+2）"""
 

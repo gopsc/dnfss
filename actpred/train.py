@@ -8,6 +8,8 @@ from tqdm import tqdm
 
 from config import (Config, build_argparser, apply_overrides,
                     validate_config_values, warn_init_from_mismatch)
+from action_norm import normalize_action, is_range_mode
+from bins import encode as bin_encode, decode as bin_decode, START, HEAD_COLS
 from model import ActionPredictor
 from dataset import ActionDataset
 from action_norm import default_column_weights
@@ -48,6 +50,28 @@ def _collate(batch):
     return default_collate(batch)
 
 
+def _onehot_ce(logits: torch.Tensor, targets: torch.Tensor,
+               weights: torch.Tensor, action_dim: int) -> torch.Tensor:
+    """多头加权交叉熵：每组 softmax 与 one-hot（或软标签）求 CE，按列权重加权
+
+    logits/targets: (B, TOTAL_BINS)；weights: (action_dim,) 列权重向量。
+    软标签（sigma>0）各组概率和恒 1，CE 定义一致。
+    """
+    ls = None
+    head_ce = []
+    for c in HEAD_COLS:
+        if c >= action_dim:
+            break
+        s, e = START[c], START[c + 1]
+        # 逐头 log_softmax（不能整行：各头 bin 数不同，且整行 max 会
+        # 把其他头压到 -1e9 量级，CE 爆炸）
+        head_ce.append(-(targets[:, s:e]
+                         * torch.log_softmax(logits[:, s:e], dim=-1)).sum(-1))
+    head_ce = torch.stack(head_ce, dim=1)   # (B, n_heads)
+    w = weights[:head_ce.size(1)]
+    return (head_ce * w).sum() / (w.sum() * head_ce.size(0))
+
+
 def _shift_history(history: torch.Tensor, new_action: torch.Tensor) -> torch.Tensor:
     """动作历史左移一步、追加 new_action 到末尾（scheduled sampling 回传自预测用）。
 
@@ -58,7 +82,9 @@ def _shift_history(history: torch.Tensor, new_action: torch.Tensor) -> torch.Ten
 
 def train_one_epoch(model, loader, optimizer, device, max_grad_norm: float = None,
                     rollout_len: int = 1, ss_prob: float = 1.0,
-                    predict_delta: bool = False, weights: torch.Tensor = None):
+                    predict_delta: bool = False, weights: torch.Tensor = None,
+                    onehot: bool = False, range_mode: str = None,
+                    action_dim: int = 18):
     model.train()
     total_loss = 0.0
     count = 0
@@ -71,7 +97,8 @@ def train_one_epoch(model, loader, optimizer, device, max_grad_norm: float = Non
             target = batch["target"].to(device)
             imu = batch["imu"].to(device) if "imu" in batch else None
             pred = model(images, history, imu)
-            loss = _weighted_mse(pred, target, weights)
+            loss = (_onehot_ce(pred, target, weights, action_dim) if onehot
+                    else _weighted_mse(pred, target, weights))
             bs = images.size(0)
         else:
             # 多步 scheduled sampling：首步必用真历史；后续步以 ss_prob 用真历史、
@@ -89,11 +116,21 @@ def train_one_epoch(model, loader, optimizer, device, max_grad_norm: float = Non
                     history = true_history
                 # 否则沿用上一轮回传的 history（自预测构造）
                 pred = model(images, history, imu)
-                loss = loss + _weighted_mse(pred, target, weights)
+                loss = loss + (_onehot_ce(pred, target, weights, action_dim)
+                               if onehot
+                               else _weighted_mse(pred, target, weights))
                 bs = images.size(0)
-                # 回传：残差模式先把 Δ̂ 加回 a_{t-1} 得到绝对动作，再移入历史
+                # 回传：onehot 先期望值解码（原始空间）再按范围归一化；
+                # 残差模式把 Δ̂ 加回 a_{t-1} 得到绝对动作；再移入历史
                 with torch.no_grad():
-                    abs_action = prev_action + pred if predict_delta else pred
+                    if onehot:
+                        raw = bin_decode(pred.detach().cpu().numpy(),
+                                         action_dim)
+                        abs_action = torch.from_numpy(normalize_action(
+                            raw, action_dim, mode=range_mode)).to(device)
+                    else:
+                        abs_action = (prev_action + pred
+                                      if predict_delta else pred)
                     history = _shift_history(true_history, abs_action.detach())
             loss = loss / len(batch["steps"])
         loss.backward()
@@ -107,7 +144,8 @@ def train_one_epoch(model, loader, optimizer, device, max_grad_norm: float = Non
 
 @torch.no_grad()
 def validate(model, loader, device, rollout_len: int = 1, predict_delta: bool = False,
-             weights: torch.Tensor = None):
+             weights: torch.Tensor = None, onehot: bool = False,
+             action_dim: int = 18):
     model.eval()
     total_loss = 0.0
     count = 0
@@ -118,7 +156,8 @@ def validate(model, loader, device, rollout_len: int = 1, predict_delta: bool = 
             target = batch["target"].to(device)
             imu = batch["imu"].to(device) if "imu" in batch else None
             pred = model(images, history, imu)
-            loss = _weighted_mse(pred, target, weights)
+            loss = (_onehot_ce(pred, target, weights, action_dim) if onehot
+                    else _weighted_mse(pred, target, weights))
             bs = images.size(0)
         else:
             # 验证固定全真历史（确定性，不带 scheduled sampling 随机性），
@@ -131,7 +170,9 @@ def validate(model, loader, device, rollout_len: int = 1, predict_delta: bool = 
                 target = step["target"].to(device)
                 imu = step["imu"].to(device) if "imu" in step else None
                 pred = model(images, history, imu)
-                loss = loss + _weighted_mse(pred, target, weights)
+                loss = loss + (_onehot_ce(pred, target, weights, action_dim)
+                               if onehot
+                               else _weighted_mse(pred, target, weights))
                 bs = images.size(0)
             loss = loss / len(batch["steps"])
         total_loss += loss.item() * bs
@@ -169,7 +210,8 @@ def main():
         cfg.data.action_stats_path, train_indices, cfg.data.frame_len,
         augment=cfg.train.augment,
         predict_delta=cfg.train.predict_delta, rollout_len=cfg.train.rollout_len,
-        imu_dim=cfg.data.imu_dim, normalize_mode=cfg.data.normalize_mode)
+        imu_dim=cfg.data.imu_dim, normalize_mode=cfg.data.normalize_mode,
+        onehot=cfg.data.onehot, onehot_sigma=cfg.data.onehot_sigma)
     auto_stats = False
     if (cfg.data.normalize_actions and cfg.data.normalize_mode == "zscore"
             and not cfg.data.action_stats_path):
@@ -186,7 +228,8 @@ def main():
         cfg.data.image_width, cfg.data.image_height, cfg.data.normalize_actions,
         cfg.data.action_stats_path, val_indices, cfg.data.frame_len,
         predict_delta=cfg.train.predict_delta, rollout_len=cfg.train.rollout_len,
-        imu_dim=cfg.data.imu_dim, normalize_mode=cfg.data.normalize_mode)
+        imu_dim=cfg.data.imu_dim, normalize_mode=cfg.data.normalize_mode,
+        onehot=cfg.data.onehot, onehot_sigma=cfg.data.onehot_sigma)
     if auto_stats:
         # checkpoint 配置只存裸文件名：推理端按 checkpoint 目录解析相对路径
         cfg.data.action_stats_path = "action_stats.npy"
@@ -219,6 +262,14 @@ def main():
         col_w = default_column_weights(cfg.data.action_dim)
     weights_t = torch.tensor(np.asarray(col_w, dtype=np.float32), device=device)
     print(f"Column weights: {[round(float(v), 4) for v in weights_t.tolist()]}")
+    range_mode = (cfg.data.normalize_mode
+                  if (cfg.data.normalize_actions
+                      and is_range_mode(cfg.data.normalize_mode))
+                  else None)
+    if cfg.data.onehot:
+        print(f"One-hot 输出: {sum(1 for c in HEAD_COLS if c < cfg.data.action_dim)} 头"
+              f" / {sum(START[c + 1] - START[c] for c in HEAD_COLS if c < cfg.data.action_dim)} bins"
+              f"（sigma={cfg.data.onehot_sigma}）")
 
     if args.init_from:
         init_ckpt = torch.load(args.init_from, map_location="cpu", weights_only=True)
@@ -257,16 +308,19 @@ def main():
 
     for epoch in range(start_epoch, cfg.train.epochs + 1):
         print(f"\nEpoch {epoch}/{cfg.train.epochs}  lr={optimizer.param_groups[0]['lr']:.6f}")
-        train_loss = train_one_epoch(model, train_loader, optimizer, device,
-                                     cfg.train.max_grad_norm,
-                                     rollout_len=cfg.train.rollout_len,
-                                     ss_prob=cfg.train.ss_prob,
-                                     predict_delta=cfg.train.predict_delta,
-                                     weights=weights_t)
+        train_loss = train_one_epoch(
+            model, train_loader, optimizer, device,
+            cfg.train.max_grad_norm,
+            rollout_len=cfg.train.rollout_len,
+            ss_prob=cfg.train.ss_prob,
+            predict_delta=cfg.train.predict_delta,
+            weights=weights_t, onehot=cfg.data.onehot,
+            range_mode=range_mode, action_dim=cfg.data.action_dim)
         val_loss = validate(model, val_loader, device,
                             rollout_len=cfg.train.rollout_len,
                             predict_delta=cfg.train.predict_delta,
-                            weights=weights_t)
+                            weights=weights_t, onehot=cfg.data.onehot,
+                            action_dim=cfg.data.action_dim)
         scheduler.step()
         print(f"  train_loss={train_loss:.6f}  val_loss={val_loss:.6f}")
 
