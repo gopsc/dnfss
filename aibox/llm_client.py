@@ -126,7 +126,7 @@ class DeepSeekClient(LLMClient):
                 self.base_url,
                 headers=self._headers(),
                 json=payload,
-                timeout=30,
+                timeout=self.timeout,
                 proxies=self._resolve_proxies(),
             )
             if response.status_code == 200:

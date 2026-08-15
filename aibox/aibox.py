@@ -650,6 +650,8 @@ def run_full_subagent(role, task, config, logger=None, model=None,
             sub_chat.client = create_llm_client(config, api_key=None, logger=logger, model=model)
 
         # 轮次限制：防止工具调用无限循环
+        # 注意：超限时不置 conversation_active=False——那会触发 think_and_respond
+        # 的对话重置逻辑，清空子代理上下文，导致后续收尾报告丢失全部过程信息
         turn_count = [0]
         original_think = sub_chat.think_and_respond
 
@@ -658,7 +660,6 @@ def run_full_subagent(role, task, config, logger=None, model=None,
             if turn_count[0] > max_turns:
                 if logger:
                     logger.warning(f"子代理达到最大轮次 {max_turns}，强制结束")
-                sub_chat.conversation_active = False
                 return "已达到最大对话轮次，任务结束。"
             return original_think(input_text, output_callback, is_continuation)
 
@@ -689,11 +690,36 @@ def run_full_subagent(role, task, config, logger=None, model=None,
         sub_chat.think_and_respond(task, output_callback=sub_think_callback)
 
         if logger:
-            logger.info(f"子代理完成，共 {turn_count[0]} 轮，开始总结...")
+            logger.info(f"子代理完成，共 {turn_count[0]} 轮，请求子代理生成最终报告...")
 
-        # 总结子代理对话内容
-        summary = _summarize_subagent_conversation(sub_chat.messages, config, logger, model)
-        return summary
+        # 收尾报告由子代理自己生成：它拥有全部上下文（工具输出、中间结论），
+        # 比外部摘要器（只能看到截断后的对话转录）更完整，也不会丢最终回答。
+        # 走 original_think 绕过轮次限制：即使任务因 max_turns 被截断也能收尾。
+        if _effective_output_callback is not None:
+            _effective_output_callback("line", "\n📝 [子代理收尾] 生成最终报告...\n")
+        wrap_up_prompt = (
+            "【收尾】请不要再调用任何工具，基于以上完整执行过程，输出最终报告，包含：\n"
+            "1. 任务完成情况与结论\n"
+            "2. 关键过程：做了什么、重要命令/文件/数据\n"
+            "3. 产物清单（如有，附绝对路径）\n"
+            "4. 未解决的问题（如有）\n"
+            "这份报告将原样返回给派生你的主代理，请自包含、力求完整。"
+        )
+        report = None
+        try:
+            report = original_think(wrap_up_prompt, output_callback=sub_think_callback,
+                                    is_continuation=True)
+        except Exception as e:
+            if logger:
+                logger.error(f"子代理收尾报告生成异常: {e}")
+        if report and str(report).strip():
+            return str(report).strip()
+
+        # 兜底：收尾失败时取最后一条有内容的助手消息
+        for msg in reversed(sub_chat.messages):
+            if msg.get("role") == "assistant" and msg.get("content"):
+                return f"【子代理最终回答】\n{msg['content']}"
+        return "子代理未产生有效对话内容。"
 
     except Exception as e:
         if logger:
@@ -701,63 +727,12 @@ def run_full_subagent(role, task, config, logger=None, model=None,
         return f"❌ 子代理执行失败: {str(e)}"
 
 
-def _summarize_subagent_conversation(messages, config, logger=None, model=None) -> str:
-    """总结子代理对话内容，提取关键信息返回给父代理。"""
-    # 过滤掉 system 消息，保留对话部分
-    conversation = []
-    for msg in messages:
-        if msg["role"] == "system":
-            continue
-        role_label = "用户" if msg["role"] == "user" else \
-                     "助手" if msg["role"] == "assistant" else "工具"
-        content = msg.get("content", "")
-        if content:
-            if len(content) > 2000:
-                content = content[:2000] + "...(已截断)"
-            conversation.append(f"[{role_label}] {content}")
-
-    if not conversation:
-        return "子代理未产生有效对话内容。"
-
-    # 限制对话长度用于总结
-    conversation_text = "\n".join(conversation)
-    if len(conversation_text) > 8000:
-        conversation_text = conversation_text[:8000] + "\n...(对话过长已截断)"
-
-    try:
-        summary_client = create_llm_client(config, api_key=None, logger=logger, model=model)
-        summary_prompt = f"""请总结以下子代理对话的关键内容，提取：
-1. 完成的任务或解决的问题
-2. 关键发现或结论
-3. 重要数据或信息
-4. 未解决的问题（如有）
-
-对话内容：
-{conversation_text}
-
-请用简洁的要点形式总结，不超过500字。"""
-
-        result = summary_client.chat_completion(
-            [{"role": "user", "content": summary_prompt}],
-            temperature=0.3,
-            max_tokens=800
-        )
-
-        if result:
-            return f"【子代理执行总结】\n{result.strip()}"
-        return "【子代理执行总结】\n子代理已完成任务，但无法生成总结。"
-    except Exception as e:
-        if logger:
-            logger.error(f"子代理总结失败: {e}")
-        return f"【子代理执行总结】\n子代理已完成任务。（总结生成失败: {str(e)}）"
-
-
 class SubAgentTool(Tool):
     """派生子代理工具 - 主代理可派生拥有全部工具和独立上下文的完整子代理执行任务。
 
     子代理是完整的对话实例，拥有文件操作、命令执行、网页访问、技能扩展等
     全部工具能力。独立上下文窗口（不污染主对话），多轮对话直到任务完成。
-    结束后自动总结对话内容，返回摘要给父代理。
+    结束后由子代理基于完整执行过程生成最终报告，返回给父代理。
     """
 
     def get_name(self) -> str:
@@ -766,7 +741,7 @@ class SubAgentTool(Tool):
     def get_description(self) -> str:
         return """派生子代理执行任务。子代理拥有全部工具能力和独立的上下文窗口，不会污染主对话上下文。
 适用场景：需要多步骤操作的任务（如文件处理、命令执行、信息检索）、需要独立上下文的复杂任务。
-子代理可进行多轮工具调用，任务完成后自动总结并返回摘要。
+子代理可进行多轮工具调用，任务完成后由子代理基于完整执行过程生成最终报告（结论/关键过程/产物清单/未解决问题）返回。
 参数说明：
 - role：子代理的角色设定（作为系统提示词），如"你是一位资深代码审查专家"
 - task：要交给子代理执行的具体任务
