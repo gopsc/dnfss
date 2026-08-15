@@ -2,7 +2,7 @@
 
 > 权威架构参考。本文以 `core/services.yaml`（实际运行清单）与 `git HEAD` 为事实来源。
 > 与根目录 `README.md` 的偏差见文末「§10 与 README 的偏差」。
-> 最后核对于：2026-08-10。
+> 最后核对于：2026-08-15。
 
 ---
 
@@ -31,8 +31,8 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
   ┌─────────────────────────────────────────────────────────────┐
   │                    Blackbird 系统边界                         │
   │  waf → ca → gateway → {fsys, dnfs2, core}                    │
-  │  内部：db2 / ai_review / smtp / captcha2 / core(confs)        │
-  │  独立：aibox(+BotOps) / bot4cj / lci                         │
+  │  内部：db2 / memdb / ai_review / smtp / captcha2 / core(confs) │
+  │  独立：aibox(+BotOps) / bot4cj+pybot / lci                    │
   └─────────────────────────────────────────────────────────────┘
         │  pymsg/TCP (内部 RPC)          │  SMTP (外部邮件)
         ▼                                ▼
@@ -88,11 +88,13 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
     aibox :8765 (Python WebSocket, 独立产品)
     BotOps (aibox 的 TUI 前端)
     bot4cj (Cangjie + 树莓派 I2C, 硬件)
+    pybot (Python, bot4cj 的迁移版: .mt 解析/录制/实时闭环)
     lci (C++ /dev/fb0, 嵌入式 GUI)
-    actpred / memdb / libtry (实验 / 支撑库)
+    actpred / libtry (实验 / 支撑库)
 
   日志链路: 各服务 log_client ──pymsg──► db2:8005 Logs 表 (fail-safe, db 不可用时静默丢弃)
   配置链路: gateway ──pymsg get──► core 内嵌 confs :8010 (confs/configs/gateway.ini, mtime 自动重载；其余服务配置纯 CLI 传递)
+  内存缓存: memdb :8011 (libmemdb + libmsg RPC, TTL 惰性驱逐；暂无业务调用方，预留热点数据/会话缓存)
 ```
 
 > 注：`core` 启动参数为 `./nidus.out -i . --serve 5200 --confs 8010`（`-i .` 指向 services.yaml 所在目录），`--confs` 启用内嵌配置服务（由 confs2 合并而来，与 Python confs 协议兼容）。
@@ -138,15 +140,16 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
 | **fsys** | C++20 | 9200 | 127.0.0.1 | 前端托管 + dnfs 代理（static 的 C++ 重写） | 生产 |
 | **dnfs2** | C++20 | 8006 | 127.0.0.1 | 树状笔记 CRUD | 生产（dnfs 的 C++ 重写） |
 | **db2** | C++20 | 8005 | 127.0.0.1 | 通用 DB(pymsg execute) + 日志汇聚 | 生产（db 的 C++ 重写） |
+| **memdb** | C++20 | 8011 | 127.0.0.1 | 内存缓存数据库（libmemdb + libmsg RPC，TTL 惰性驱逐，9 路由） | 生产（2026-08 合入 services.yaml） |
 | **ai_review** | Python | 8007 | 127.0.0.1 | AI 内容审核（DeepSeek + ChromaDB RAG） | 生产 |
 | **smtp** | Python | 8008 | 127.0.0.1 | 邮件验证码后端（pymsg） | 生产（smtp3 C++ 重写待上线） |
 | **captcha2** | C++20 | 8009 | 127.0.0.1 | 图形验证码（pymsg） | 生产（captcha 的 C++ 重写） |
 | **aibox** | Python | 8765 | 127.0.0.1 | 独立 AI 智能体（WebSocket） | 独立产品 |
 | **BotOps** | Python | — | — | aibox 的 TUI 前端 | 独立 |
 | **bot4cj** | Cangjie | — | 树莓派 I2C | 机器人脚本解析器 | 独立硬件 |
+| **pybot** | Python | — | 树莓派 | bot4cj 的 Python 迁移版（.mt 解析、actpred episode 录制、--loop 实时预测闭环） | 独立硬件 |
 | **lci** | C++ | — | /dev/fb0 | 嵌入式帧缓冲 GUI | 独立硬件 |
-| **actpred** | Python | — | — | ML 预训练/推理 | 实验 |
-| **memdb** | C++20 | — | — | 内存数据库 | 实验/支撑 |
+| **actpred** | Python | — | — | 动作预测（图像+动作历史→下一动作），bot4cj/pybot 的「大脑」配套 | 实验 |
 | **libtry** | C | — | — | 嵌入式脚本解释器 | 支撑 |
 
 ### 已被替代、不应再部署的遗留模块（不在 services.yaml）
@@ -170,6 +173,7 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
 | libcrypt | C++20 | AES_CBC / RSA / SHA256 / Base64 |
 | libsqlite3 | C++20 | SQLite3 header-only 封装 |
 | libmsg | C++20 | pymsg 协议 C++ 实现（4B 大端长度前缀 + UTF-8 JSON），与 Python pymsg 字节级兼容，提供 RpcClient/RpcServer/AsyncQueue |
+| libmemdb | C++20 | header-only 内存数据库模板库：三索引存储（list 主存 + 键索引 + TTL 索引），TTL 惰性驱逐；memdb 服务基于此库 |
 | liblogc | C++20 | 统一集中式日志客户端（`us/LogC.hpp`，对应 Python `log_client.py`）：pymsg/TCP 异步批量写 db2 Logs 表，队列上限 1 万条 + 级别过滤 + fail-safe，C++ 服务共用 |
 | libtry | C | 嵌入式脚本解释器（递归下降，中文标识符） |
 | pymsg | Python | 自研 RPC 基础库（`[4B 大端长度][UTF-8 JSON]`），Python 侧 db/log_client 依赖 |
@@ -195,7 +199,7 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
 - 三层覆盖：confs 默认值 → 环境变量 → 命令行参数。
 
 ### 7.4 弹性 / 容错
-- 启动顺序敏感：`core` 拉起顺序为 db2→ai_review→dnfs2→smtp→fsys→waf→ca→gateway→captcha2→aibox→redirect80；pymsg 客户端带 `retry_on_refused` 等依赖就绪。
+- 启动顺序敏感：`core` 拉起顺序为 db2→memdb→ai_review→dnfs2→smtp→fsys→waf→ca→gateway→captcha2→aibox→redirect80（共 12 个）；pymsg 客户端带 `retry_on_refused` 等依赖就绪。
 - 日志 fail-safe：db2 不可用时静默丢弃，不影响业务。
 - 有状态单点：`smtp` / `captcha2` 验证码存进程内存，**不支持多实例水平扩展**（需换 Redis 才能扩）。
 
@@ -244,6 +248,7 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
 5. **fsys README 图示滞后**：✅ 已修正（2026-08-10）。`fsys/README.md` 架构图与配置章节已更新为 `ca:8443 → gateway:8445`、纯 CLI 配置。
 6. **工作记忆偏差**：✅ 已同步。`ca:8443 → gateway:8445`、`dnfs2`、confs 内嵌 core 均已写入各文档。
 7. **dnfs2 README 图示滞后**：✅ 已修正（2026-08-10）。`dnfs2/README.md` 架构图与验签描述已更新为 ca:8443（CLI 参数 `--gateway-url` 指向 ca）。
+8. **memdb / pybot 未进根 README**：⏳ 待回填（2026-08-15 发现）。`memdb:8011` 已入 services.yaml、`pybot`（bot4cj Python 迁移版）已落库，但根 `README.md` 模块表与端口一览尚未收录；本文件与 MODULES.md 已同步。
 
 ---
 

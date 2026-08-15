@@ -1,7 +1,7 @@
 # 模块清单（blackbird / micro_servers）
 
 > 一套 DIY 的轻量级「进程托管式微服务」（UniServe Framework）。
-> 混合语言：C++20（core/gateway/ca/dnfs2/db2/fsys/captcha2/lib*）、Python（static/dnfs/db/ai_review/smtp/captcha/confs/redirect80/BotOps/aibox/actpred/pymsg，多为遗留）、Go（waf）、仓颉/Cangjie（bot4cj）。
+> 混合语言：C++20（core/gateway/ca/dnfs2/db2/memdb/fsys/captcha2/lib*）、Python（static/dnfs/db/ai_review/smtp/captcha/confs/redirect80/BotOps/aibox/actpred/pybot/pymsg，多为遗留）、Go（waf）、仓颉/Cangjie（bot4cj）。
 > 由 `core` 读 `services.yaml` 拉起并守护各子进程；`waf:443 → ca:8443 → gateway:8445 → 业务服务` 为对外主链路。
 
 ## 一、核心与编排
@@ -38,6 +38,7 @@
 | smtp | Python/pymsg | 8008 | 邮件服务，注册邮箱验证码后端（路由 send_email/verify_email/health），6 位码内存存储、冷却/限流/熔断（smtp3 C++ 重写待上线） |
 | captcha | Python/pymsg | 8009 | 验证码服务，图形验证码（一次性、5 分钟过期），经 ca `GET /captcha/image` 代理给浏览器（遗留，已由 captcha2 平替） |
 | captcha2 | C++20 | 8009 | captcha 的 C++20 重实现（pymsg），路由 image/verify/health 对齐 |
+| memdb | C++20 | 8011 | 内存缓存数据库（libmemdb 模板库 + libmsg RPC），TTL 惰性驱逐，9 路由（ping/set/get/del/update/exists/size/show/expire），线程安全 + SIGINT/SIGTERM 优雅退出 |
 
 ## 五、AI 智能体与前端
 
@@ -52,6 +53,7 @@
 | 模块 | 语言 | 端口 | 职责 |
 |------|------|------|------|
 | bot4cj | 仓颉/Cangjie | — (树莓派 I2C) | 机器人硬件脚本解析器，解析 `.mt` 驱动 PCA9685 舵机 / MPU6050 陀螺仪 / 扬声器，面向 Dashun 蜘蛛机器人 |
+| pybot | Python | — (树莓派) | bot4cj 的 Python 迁移版：`.mt` 动作脚本解析器（零第三方依赖，与仓颉版逐语义对齐）；支持执行 / `--dry-run` / `--record` 录制 actpred episode（含 imu.npy）/ `--loop` 实时预测闭环 |
 | lci | C++ | — (/dev/fb0) | 嵌入式帧缓冲图形界面（无需 X11/Wayland），矢量 GB2312 中文字库、图片渲染、实时数据可视化 |
 | 3d | — (资产) | — | 机器人 / 机械臂 CAD 模型（STEP/STL/SLDPRT），bot4cj 配套硬件资产 |
 
@@ -64,17 +66,17 @@
 | libcrypt | C++ | 加密库：`AES_CBC`、`MyRSA`、`SHA256`、`Base64`、`Crypto_Basic` |
 | libsqlite3 | C++ | SQLite3 header-only 封装 |
 | libmsg | C++ | pymsg 协议 C++ 实现（4B 大端长度前缀 + UTF-8 载荷），`MsgClient/Server`、`RpcClient/Server`、`AsyncQueue`，与 Python pymsg 字节级兼容 |
+| libmemdb | C++20 | header-only 内存数据库模板库：三索引存储（`std::list` 主存 + `unordered_map` 键索引 + `multiset` TTL 索引），insert/remove/update/search 等操作，TTL 惰性驱逐；memdb 服务即基于此库 |
 | liblogc | C++ | 统一集中式日志客户端（`us/LogC.hpp`，对应 Python `log_client.py`）：pymsg/TCP 异步批量写 db2 Logs 表，队列上限 1 万条 + 级别过滤 + fail-safe，ca/core/gateway/captcha2/smtp3 等 C++ 服务共用 |
 | libtry | C | 嵌入式脚本解释器（~741 行），手写递归下降，支持中文标识符，用于嵌入式操作界面 shell |
 | pymsg | Python | 自研 RPC 基础库（`[4B 长度][UTF-8 JSON]`），db 服务端与各 `log_client.py` 的基础依赖（setuptools 包） |
-| memdb | C++ | 内存数据库（include/src），内部组件，未在主 README 模块表列出 |
 
 ## 八、测试与文档
 
 | 模块 | 说明 |
 |------|------|
 | tests | 黑盒测试套件（`test_db.py`/`test_gateway.py`/`test_waf.py`/`test_dnfs.py`/`test_captcha.py`/`test_smtp.py`/`test_ai_review.py`/`test_static.py`/`test_core_confs.py`），纯标准库 HTTP/TCP 用户旅程模拟，经 `test_runner.py` 统一调度（详见 [tests/blackbox/README.md](../tests/blackbox/README.md)） |
-| docs | 文档聚合（security/ 审计、reviews/ 审查、reports/ 分析），57 篇 md |
+| docs | 文档聚合（security/ 审计、reviews/ 审查、reports/ 分析），70 篇 md |
 
 ## 九、根级构建与部署脚本
 
@@ -88,5 +90,6 @@
 - **请求主链路**：client → `redirect80`(:80→443) → `waf`(:443 TLS + WAF) → `ca`(:8443 认证+前置转发) → `gateway`(:8445 纯转发) → `fsys`(:9200) / `dnfs2`(:8006)
 - **日志链路**：各服务 `log_client.py`（异步批量）→ `db2:8005` Logs 表（fail-safe，db2 不可用时静默丢弃）
 - **配置链路**：`gateway` → `core` 内嵌 confs:8010（内存缓存 + mtime 重载，仅 gateway.ini）；其余服务配置纯 CLI 传递
-- **数据/审核/邮件**：`dnfs2` → `db2:8005`（pymsg 持久化）；`dnfs2` → `ai_review:8007`（审核）；注册邮件 `ca` → `smtp:8008`；登录验证码 `ca` → `captcha2:8009`
-- **端口一览**：80 redirect80 · 443 waf · 8443 ca · 8445 gateway · 5200/8010 core · 9200 fsys · 8006 dnfs2 · 8005 db2 · 8007 ai_review · 8009 captcha2 · 8008 smtp · 8765 aibox
+- **数据/审核/邮件/缓存**：`dnfs2` → `db2:8005`（pymsg 持久化）；`dnfs2` → `ai_review:8007`（审核）；注册邮件 `ca` → `smtp:8008`；登录验证码 `ca` → `captcha2:8009`；`memdb:8011`（内存缓存，libmsg RPC，暂无业务调用方，预留热点数据/会话缓存）
+- **机器人数据链**：`pybot --record` 录制 episode（images + actions.npy + imu.npy）→ `actpred` 两阶段训练 → ONNX/Hailo HEF 部署 → `pybot --loop` 实时预测闭环（bot4cj 语义对齐）
+- **端口一览**：80 redirect80 · 443 waf · 8443 ca · 8445 gateway · 5200/8010 core · 9200 fsys · 8006 dnfs2 · 8005 db2 · 8007 ai_review · 8009 captcha2 · 8008 smtp · 8011 memdb · 8765 aibox
