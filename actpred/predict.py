@@ -10,7 +10,7 @@ from config import parse_checkpoint_config
 from imu_norm import normalize_imu
 from action_norm import (normalize_action, denormalize_action,
                       is_range_mode)
-from bins import decode as bin_decode
+from bins import decode as bin_decode, fixed_zero_columns
 from model import ActionPredictor
 from utils import parse_action_history
 
@@ -120,8 +120,16 @@ class ActionPredictorInference:
             ).unsqueeze(0).to(self._device)
         pred = self._model(img_tensor, history, imu_tensor).squeeze(0)  # 归一化空间
         if self._onehot:
-            # 多头 logits → 期望值解码 → 原始量纲（箱生活在原始空间）
+            # 多头 logits → 期望值解码 → 原始量纲（箱生活在原始空间）；
+            # 权重 0 列固定为常量（delay=10ms 等），防闭环垃圾回写
             result = bin_decode(pred.cpu().numpy(), self.action_dim)
+            col_w = self._data_cfg.column_weights
+            if col_w is None:
+                from action_norm import default_column_weights
+                col_w = default_column_weights(self.action_dim)
+            fixed = fixed_zero_columns(col_w, self.action_dim)
+            m = fixed != 0.0
+            result[m] = fixed[m]
             if not np.all(np.isfinite(result)):
                 result = np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
             return result

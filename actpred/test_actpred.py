@@ -2004,14 +2004,12 @@ class TestFixedRangeNorm(unittest.TestCase):
         from action_norm import default_column_weights
         w18 = default_column_weights(18)
         np.testing.assert_allclose(w18[:10], 1.0)
-        self.assertAlmostEqual(float(w18[10]), 0.2, places=6)  # spk.F 保留梯度
-        np.testing.assert_allclose(w18[11:], 0.0)  # spk.delay 步级恒值 + 保留位
+        np.testing.assert_allclose(w18[10:], 0.0)  # spk 两列 + 保留位全 0
         # 小 action_dim：全部落在舵机段 → 全 1.0
         np.testing.assert_allclose(default_column_weights(4), 1.0)
-        # 12 列：舵机 1.0 + spk.F 0.2，delay 0
+        # 12 列：舵机 1.0，spk 两列 0
         w12 = default_column_weights(12)
-        self.assertAlmostEqual(float(w12[10]), 0.2, places=6)
-        self.assertEqual(float(w12[11]), 0.0)
+        np.testing.assert_allclose(w12[10:], 0.0)
         # 20 列：超出 18 列语义布局的扩展列默认 1.0（新执行器须参与训练）
         w20 = default_column_weights(20)
         np.testing.assert_allclose(w20[12:18], 0.0)
@@ -2501,6 +2499,19 @@ class TestOneHot(unittest.TestCase):
         cfg.data.normalize_mode = "zscore"
         with self.assertRaises(ValueError):
             validate_config_values(cfg.data, cfg.model, cfg.train)
+
+    def test_fixed_zero_columns(self):
+        """权重 0 列固定常量：spk.F→0、spk.delay→10ms、保留位→0"""
+        from bins import fixed_zero_columns
+        from action_norm import default_column_weights
+        fixed = fixed_zero_columns(default_column_weights(18), 18)
+        np.testing.assert_allclose(fixed[:10], 0.0)
+        self.assertEqual(float(fixed[10]), 0.0)
+        self.assertEqual(float(fixed[11]), 10.0)
+        np.testing.assert_allclose(fixed[12:], 0.0)
+        # 全 1 权重 → 无固定列
+        np.testing.assert_allclose(
+            fixed_zero_columns(np.ones(4), 4), 0.0)
 
     def test_onehot_model_output_shape(self):
         """onehot 模型前向输出 TOTAL_BINS logits"""

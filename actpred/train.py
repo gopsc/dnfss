@@ -9,7 +9,8 @@ from tqdm import tqdm
 from config import (Config, build_argparser, apply_overrides,
                     validate_config_values, warn_init_from_mismatch)
 from action_norm import normalize_action, is_range_mode
-from bins import encode as bin_encode, decode as bin_decode, START, HEAD_COLS
+from bins import (encode as bin_encode, decode as bin_decode,
+                      fixed_zero_columns, START, HEAD_COLS)
 from model import ActionPredictor
 from dataset import ActionDataset
 from action_norm import default_column_weights
@@ -126,6 +127,11 @@ def train_one_epoch(model, loader, optimizer, device, max_grad_norm: float = Non
                     if onehot:
                         raw = bin_decode(pred.detach().cpu().numpy(),
                                          action_dim)
+                        # 权重 0 列固定为常量，防自预测垃圾进入历史
+                        fixed = fixed_zero_columns(
+                            weights.cpu().numpy(), action_dim)
+                        m = fixed != 0.0
+                        raw[m] = fixed[m]
                         abs_action = torch.from_numpy(normalize_action(
                             raw, action_dim, mode=range_mode)).to(device)
                     else:

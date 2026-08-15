@@ -29,6 +29,26 @@ TOTAL_BINS = int(START[-1])      # 1864
 LOG_COLS = (10, 11)              # 对数分箱列
 LOG_HI = {10: 5000.0, 11: 2000.0}
 
+# 权重 0 列的输出固定值（原始量纲）：spk.F 固定 0（只影响声音不影响
+# 运动，闭环中持续发声无意义）；spk.delay 在步级数据中恒 10ms（微动作
+# 分解的隐式节拍）。无监督头在闭环中会输出中段垃圾污染历史，
+# 推理/反馈时直接固定为常量。其余权重 0 列（保留位）固定 0。
+FIXED_OUTPUT = {10: 0.0, 11: 10.0}
+
+
+def fixed_zero_columns(weights, action_dim: int = 18) -> np.ndarray:
+    """按列权重表返回权重<=0 列的固定输出向量（其余列 0）
+
+    与 default_column_weights 联动：列权重 0 → 推理输出固定为
+    FIXED_OUTPUT 常量（缺省 0），避免无监督头在闭环反馈中输出垃圾。
+    """
+    w = np.asarray(weights, dtype=np.float32)
+    fixed = np.zeros(action_dim, dtype=np.float32)
+    for i in range(min(action_dim, len(w))):
+        if w[i] <= 0.0:
+            fixed[i] = FIXED_OUTPUT.get(i, 0.0)
+    return fixed
+
 
 def bin_edges(col: int) -> np.ndarray:
     """列 col 的箱边界数组（长度 bins+1），原始量纲递增"""
