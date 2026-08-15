@@ -813,12 +813,26 @@ var editing_id = null;	/* 编辑模式：正在编辑的节点 id，null 表示�
 var moving_node = null;	/* 移动模式：待移动的节点 {id, pid, title, content}，null 表示未在移动 */
 
 /* ===== 输入框自动高度调整 ===== */
+/* 中文输入法 composition 期间每个拼音字母都会触发 input；若每次都做塌陷测量，
+ * 页面总高度反复变化，滚到页面底部输入时 scrollTop 被浏览器钳制又回弹，
+ * 表现为页面位置反复横跳。故 composition 中跳过，compositionend 后统一调整一次。 */
+var _content_composing = false;
 function autoResizeTextarea(el) {
+	var doc = document.scrollingElement || document.documentElement;
+	var prevTop = doc.scrollTop;
 	el.style.height = 'auto';
 	el.style.height = Math.min(el.scrollHeight, 400) + 'px';
 	el.style.overflowY = el.scrollHeight > 400 ? 'auto' : 'hidden';
+	/* 塌陷测量会触发整页同步布局：若页面瞬时变矮导致滚动位置被钳制，恢复原位 */
+	if (doc.scrollTop < prevTop) doc.scrollTop = prevTop;
 }
-input_note_content.addEventListener('input', function() {
+input_note_content.addEventListener('compositionstart', function() { _content_composing = true; });
+input_note_content.addEventListener('compositionend', function() {
+	_content_composing = false;
+	autoResizeTextarea(input_note_content);
+});
+input_note_content.addEventListener('input', function(e) {
+	if (_content_composing || (e && e.isComposing)) return;
 	autoResizeTextarea(input_note_content);
 });
 function resetTextareaHeight() {
