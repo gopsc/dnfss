@@ -25,3 +25,6 @@ waf/certs/
 
 # 运行时日志（HailoRT 等）
 hailort.log
+
+# 录制产物（可复现：mtc DSL → 编译 → pybot --record）
+actpred/data_v3

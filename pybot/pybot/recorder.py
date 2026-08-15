@@ -17,6 +17,12 @@ from pathlib import Path
 
 log = logging.getLogger("pybot.recorder")
 
+# spk.F 列（动作契约列 10）与模型固定输出对齐：F2 方案下推理端该列恒为
+# 常量 0（actpred/bins.py FIXED_OUTPUT），而脚本真实值可达 1000Hz——
+# 保留真值会产生"模型 0 vs 数据 1000"的评估伪影。v3 起录制时写常量 0。
+# spk.delay（列 11）无需处理：微步录制下恒为 10.0，与 FIXED_OUTPUT 一致。
+SPK_F_COL = 10
+
 
 class EpisodeRecorder:
     """录制 actpred 格式的 episode（images/*.jpg + actions.npy [+ imu.npy]）
@@ -80,6 +86,8 @@ class EpisodeRecorder:
         src = np.asarray(action_vec, dtype=np.float32).ravel()
         n = min(len(src), self.action_dim)
         vec[:n] = src[:n]
+        if self.action_dim > SPK_F_COL:
+            vec[SPK_F_COL] = 0.0
         self._actions.append(vec)
 
         if imu_vec is None:
