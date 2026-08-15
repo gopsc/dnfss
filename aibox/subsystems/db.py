@@ -51,12 +51,56 @@ class MemoryDatabase:
                 )
             ''')
 
-            cursor.execute('''
-                CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
-                USING fts5(topic, summary, content, tags, content=memories)
-            ''')
+            self._init_fts_table(conn)
 
             conn.commit()
+
+    def _fts_trigram_supported(self, conn) -> bool:
+        """检测当前 SQLite 是否支持 trigram 分词器（需 SQLite >= 3.34）"""
+        try:
+            conn.execute("CREATE VIRTUAL TABLE temp.__trigram_probe USING fts5(x, tokenize='trigram')")
+            conn.execute("DROP TABLE temp.__trigram_probe")
+            return True
+        except sqlite3.OperationalError:
+            return False
+
+    def _init_fts_table(self, conn):
+        """初始化 FTS5 全文索引表。
+
+        优先使用 trigram 分词器（中文可检索，unicode61 对中文不分词）；
+        检测到旧 unicode61 表时自动迁移：DROP 重建后从 memories 表回灌全量数据。
+        环境不支持 trigram 时退回 unicode61 建表，中文搜索由 LIKE 兜底。
+        """
+        cursor = conn.cursor()
+        trigram_ok = self._fts_trigram_supported(conn)
+        tokenize_opt = ", tokenize='trigram'" if trigram_ok else ""
+        create_sql = (
+            "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts "
+            f"USING fts5(topic, summary, content, tags, content=memories{tokenize_opt})"
+        )
+
+        row = cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='memories_fts'"
+        ).fetchone()
+
+        need_backfill = False
+        if row is None:
+            need_backfill = True  # 新库（memories 可能已有数据，回灌无害）
+        elif trigram_ok and "trigram" not in (row[0] or ""):
+            # 旧 unicode61 表 → 迁移为 trigram
+            cursor.execute("DROP TABLE memories_fts")
+            need_backfill = True
+
+        cursor.execute(create_sql)
+
+        if need_backfill:
+            count = cursor.execute('''
+                INSERT INTO memories_fts (rowid, topic, summary, content, tags)
+                SELECT id, topic, summary, COALESCE(content, ''), COALESCE(tags, '')
+                FROM memories
+            ''').rowcount
+            if count:
+                self.logger.info(f"FTS5 索引已使用 trigram 分词重建并回灌 {count} 条记忆")
 
     def add_memory(self, topic: str, summary: str, content: str = None,
                    start_time: str = None, end_time: str = None,
@@ -106,7 +150,11 @@ class MemoryDatabase:
             return deleted
 
     def search_memories(self, keywords: List[str], match_all: bool = False, limit: int = None) -> List[Dict]:
-        """多关键词模糊搜索记忆"""
+        """多关键词模糊搜索记忆。
+
+        优先走 FTS5 全文检索；FTS 无结果时（trigram 对 <3 字符的中文短词
+        无法命中、旧表 unicode61 对中文不分词等场景）用 LIKE 兜底。
+        """
         if not keywords:
             return []
 
@@ -117,11 +165,18 @@ class MemoryDatabase:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            if match_all:
-                query = " AND ".join([f'"{kw}"' for kw in keywords])
-            else:
-                query = " OR ".join([f'"{kw}"' for kw in keywords])
+            results = self._search_via_fts(cursor, keywords, match_all, limit)
+            if not results:
+                results = self._search_via_like(cursor, keywords, match_all, limit)
 
+        return results
+
+    def _search_via_fts(self, cursor, keywords: List[str], match_all: bool, limit: int) -> List[Dict]:
+        """FTS5 全文检索（关键词含特殊字符导致 MATCH 语法错误时返回空，走 LIKE 兜底）"""
+        joiner = " AND " if match_all else " OR "
+        query = joiner.join([f'"{kw}"' for kw in keywords])
+
+        try:
             cursor.execute('''
                 SELECT m.*, rank
                 FROM memories m
@@ -130,14 +185,45 @@ class MemoryDatabase:
                 ORDER BY m.end_time DESC, rank, m.importance DESC
                 LIMIT ?
             ''', (query, limit))
+        except sqlite3.OperationalError as e:
+            self.logger.warning(f"FTS5 检索失败（改用 LIKE 兜底）: {e}")
+            return []
 
-            results = []
-            for row in cursor.fetchall():
-                memory = dict(row)
-                if memory.get('tags'):
-                    memory['tags'] = memory['tags'].split(',')
-                results.append(memory)
+        return self._rows_to_memories(cursor.fetchall())
 
+    def _search_via_like(self, cursor, keywords: List[str], match_all: bool, limit: int) -> List[Dict]:
+        """LIKE 模糊检索兜底（转义 %/_/\\ 防止关键词被当作通配符）"""
+        fields = ["topic", "summary", "content", "tags"]
+
+        def escape(kw: str) -> str:
+            return kw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+        conditions = []
+        params = []
+        for kw in keywords:
+            pattern = f"%{escape(kw)}%"
+            per_field = " OR ".join([f"{f} LIKE ? ESCAPE '\\'" for f in fields])
+            conditions.append(f"({per_field})")
+            params.extend([pattern] * len(fields))
+
+        joiner = " AND " if match_all else " OR "
+        cursor.execute(
+            f"SELECT * FROM memories WHERE {joiner.join(conditions)} "
+            f"ORDER BY end_time DESC, importance DESC LIMIT ?",
+            (*params, limit),
+        )
+
+        return self._rows_to_memories(cursor.fetchall())
+
+    @staticmethod
+    def _rows_to_memories(rows) -> List[Dict]:
+        """sqlite3.Row 列表转记忆字典列表（tags 逗号串拆分为列表）"""
+        results = []
+        for row in rows:
+            memory = dict(row)
+            if memory.get('tags'):
+                memory['tags'] = memory['tags'].split(',')
+            results.append(memory)
         return results
 
     def get_recent_memories(self, limit: int = 10) -> List[Dict]:

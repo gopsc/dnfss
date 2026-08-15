@@ -55,7 +55,7 @@ python aibox.py
 
 启动后，WebSocket 服务器将运行在 `ws://localhost:8765`（地址与端口可在 `config.json` 的 `system.websocket_host` / `system.websocket_port` 中修改）。
 
-> 注意：本模块入口文件为 `aibox.py`（当前约 3706 行，集成 WebSocket 服务器、AI 引擎、工具/技能系统、任务调度器于一体；自 v3.0 起工具类与子系统已抽离至 `tools/`、`subsystems/`、`common/`、`tests/` 包，aibox.py 仅保留核心类与编排逻辑）。`client.py` 为示例 WebSocket 客户端，`voice_client.py` 为语音客户端，`llm_client.py` 为多厂商大模型客户端抽象层，`_run.sh` 为被 `core` 拉起的启动脚本。
+> 注意：本模块入口文件为 `aibox.py`（当前约 3018 行，集成 WebSocket 服务器、AI 引擎、工具/技能系统、任务调度器于一体；自 v3.0 起工具类与子系统已抽离至 `tools/`、`subsystems/`、`common/`、`tests/` 包，aibox.py 仅保留核心类与编排逻辑）。`client.py` 为示例 WebSocket 客户端，`voice_client.py` 为语音客户端，`llm_client.py` 为多厂商大模型客户端抽象层，`_run.sh` 为被 `core` 拉起的启动脚本。
 
 ## 📁 目录结构
 
@@ -73,11 +73,13 @@ aibox/
 │   ├── constants.py   # 常量定义
 │   ├── i18n.py       # 多语言
 │   └── logger.py     # 日志器
-├── subsystems/        # 子系统包（Wave 1：从 aibox.py 抽离的基础设施）
-│   ├── executors.py        # CommandExecutor + SubprocessCommandExecutor
-│   ├── prompt_manager.py   # PromptManager（单例，提示词按数字前缀排序加载）
-│   ├── db.py               # MemoryDatabase + MemoDatabase（SQLite）
-│   └── skill_manager.py    # SkillManager（技能发现/加载/热重载）
+├── subsystems/        # 子系统包（Wave 1/2：从 aibox.py 抽离的基础设施）
+│   ├── executors.py              # CommandExecutor + SubprocessCommandExecutor
+│   ├── prompt_manager.py         # PromptManager（单例，提示词按数字前缀排序加载）
+│   ├── db.py                     # MemoryDatabase + MemoDatabase（SQLite，FTS5 trigram 中文检索 + LIKE 兜底）
+│   ├── skill_manager.py          # SkillManager（技能发现/加载/热重载）
+│   ├── conversation_history.py   # ConversationHistory（对话历史管理）
+│   └── conversation_compressor.py # ConversationCompressor（对话压缩，注入 llm_client 解耦）
 ├── tools/             # 工具系统包（A 批 + B 批共 17 个工具类）
 │   ├── base.py             # Tool 抽象基类
 │   ├── registry.py         # ToolRegistry 工具注册器
@@ -88,14 +90,16 @@ aibox/
 │   ├── prompt_tools.py     # B 批：UpdateIdentity/UpdateSoul/SaveMemoryAndEndConversation
 │   ├── proxy_tools.py      # B 批：SetProxy/GetProxy
 │   └── misc_tools.py       # B 批：AskUserTool
-├── tests/             # 单元测试套件（171 项全过）
-│   ├── conftest.py              # sys.path 配置 + websockets 桩
-│   ├── test_basic_tools.py      # A 批工具 43 项
-│   ├── test_b_tools.py          # B 批工具 58 项
-│   ├── test_executors.py        # 命令执行器
-│   ├── test_prompt_manager.py   # 提示词管理器
-│   ├── test_db.py               # 记忆/备忘录数据库
-│   └── test_skill_manager.py    # 技能管理器
+├── tests/             # 单元测试套件（232 项全过）
+│   ├── conftest.py                    # sys.path 配置 + websockets 桩
+│   ├── test_basic_tools.py            # A 批工具 43 项
+│   ├── test_b_tools.py                # B 批工具 58 项
+│   ├── test_executors.py              # 命令执行器
+│   ├── test_prompt_manager.py         # 提示词管理器
+│   ├── test_db.py                     # 记忆/备忘录数据库（含中文检索/迁移）
+│   ├── test_conversation_history.py   # 对话历史
+│   ├── test_conversation_compressor.py # 对话压缩器
+│   └── test_skill_manager.py          # 技能管理器
 ├── skills/            # 内置扩展技能（*.py 可执行脚本 / *.md Markdown 技能）
 │   ├── hello-world.py
 │   ├── aes-crypto.py
@@ -130,7 +134,7 @@ common  ←  subsystems  ←  tools  ←  aibox.py
 ```bash
 # 从仓库根目录运行
 py -m pytest aibox/tests -q
-# 当前：171 项全过，约 11s
+# 当前：232 项全过，约 11s
 ```
 
 运行期数据存放于 `~/.aibox/`：
@@ -791,6 +795,18 @@ elif command == "/mycommand":
 
 ## 📄 更新日志
 
+### v3.1
+- ✅ **修复 FTS5 中文搜索失效**（[subsystems/db.py](subsystems/db.py)）：
+  - FTS5 虚拟表改用 `tokenize='trigram'` 分词器（需 SQLite >= 3.34，环境不支持时自动退回 unicode61）
+  - 旧 unicode61 表在启动时自动迁移：DROP 重建后从 memories 表回灌全量数据
+  - `search_memories` 增加 LIKE 模糊检索兜底（trigram 对 <3 字符中文短词无法命中；关键词中 `%`/`_` 已转义为字面字符；MATCH 语法错误不再抛异常）
+- ✅ **修复对话压缩 Token 阈值不生效**：
+  - `should_compress` 补齐 Token 数判断：消息条数或 Token 数任一达到阈值即触发压缩（此前 `compress_token_threshold` 为死配置）
+  - `compress_conversation` 配套：Token 触发（消息数未超阈值）时按比例压缩早期消息，不再因目标消息数计算而跳过
+- ✅ **ConversationCompressor 抽离至 [subsystems/conversation_compressor.py](subsystems/conversation_compressor.py)**（Wave 3）：
+  - 构造注入 `llm_client`（客户端抽象层）替代 AI 引擎实例，打破与 `DeepSeekChat` 的循环引用
+  - aibox.py 3517 → 3018 行；配套 17 项单元测试（估算/阈值判断/压缩流程/LLM 失败回退/孤立 tool 消息清理）
+
 ### v3.0
 - ✅ **模块化重构（aibox.py 8450 行 → 3706 行，缩减 56%）**：
   - **A 批基础工具抽离**（[tools/basic_tools.py](tools/basic_tools.py)）：`FileToolBase` / `ReadFileTool` / `WriteFileTool` / `ListFilesTool` / `SimpleWebCrawlerTool` / `GetCurrentTimeTool` / `CalculatorTool` 共 7 类，无外部子系统依赖；配套 43 项单元测试
@@ -799,7 +815,7 @@ elif command == "/mycommand":
   - **测试套件**：[tests/](tests/) 目录 171 项全过，覆盖 A/B 批工具与 Wave 1 子系统
   - **修复**：`subsystems/db.py` 的 `get_recent_memories(limit=None)` SQL datatype mismatch bug（`LIMIT ?` 传 None 时移除 LIMIT 子句）
   - **架构约束**：建立 `common ← subsystems ← tools ← aibox` 单向依赖，禁止反向引用；`tools/__init__.py` 与 `subsystems/__init__.py` 采用"重导出"策略，调用点无需关心子模块位置
-  - **未抽离**：Wave 2（`TaskScheduler` / `ConversationHistory`）、Wave 3（`ConversationCompressor`）、C 批工具（`ExpressEmotionTool` / `SubAgentTool`）、核心类（`DeepSeekChat` / `WebSocketHandler` / `EnhancedAIManager`）仍保留在 `aibox.py` 内
+  - **未抽离**：`TaskScheduler`、C 批工具（`ExpressEmotionTool` / `SubAgentTool`）、核心类（`DeepSeekChat` / `WebSocketHandler` / `EnhancedAIManager`）仍保留在 `aibox.py` 内（`ConversationHistory` 于 Wave 2、`ConversationCompressor` 于 v3.1 抽离）
 
 ### v2.9
 - ✅ **编排者-执行者工具分层（工具集 profile）**：

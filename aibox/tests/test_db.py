@@ -70,6 +70,87 @@ def test_memory_search_empty_keywords_returns_empty(mem_db):
     assert mem_db.search_memories([]) == []
 
 
+def test_memory_search_chinese_keyword(mem_db):
+    """中文关键词应可检索（trigram 分词或 LIKE 兜底）。"""
+    mem_db.add_memory(topic="天气查询", summary="今天天气晴朗", content="气温25度")
+    mem_db.add_memory(topic="会议安排", summary="下午三点开会", content="会议室A")
+
+    results = mem_db.search_memories(["天气"])
+    assert len(results) == 1
+    assert results[0]["topic"] == "天气查询"
+
+
+def test_memory_search_chinese_match_all(mem_db):
+    """中文多关键词 match_all：全部命中才返回。"""
+    mem_db.add_memory(topic="天气查询", summary="今天天气晴朗", content="气温25度")
+    mem_db.add_memory(topic="天气与会议", summary="开会前先查天气", content="会议室A")
+
+    results = mem_db.search_memories(["天气", "开会"], match_all=True)
+    assert len(results) == 1
+    assert results[0]["topic"] == "天气与会议"
+
+
+def test_memory_search_like_escape_wildcards(mem_db):
+    """LIKE 兜底路径中 %/_ 应被转义为字面字符，不当作通配符。"""
+    import sqlite3
+    mem_db.add_memory(topic="progress", summary="100% done")
+    mem_db.add_memory(topic="task_a", summary="plain text")
+    mem_db.add_memory(topic="taskXa", summary="wildcard trap")
+
+    def like_search(kw):
+        with sqlite3.connect(mem_db.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            return mem_db._search_via_like(conn.cursor(), [kw], match_all=False, limit=100)
+
+    # "%" 为字面字符："100%" 只命中 progress，不当作任意串通配
+    results = like_search("100%")
+    assert [r["topic"] for r in results] == ["progress"]
+
+    # "_" 为字面字符："ask_" 只命中 task_a；若未转义，taskXa 也会被 %ask_% 误匹配
+    results = like_search("ask_")
+    assert [r["topic"] for r in results] == ["task_a"]
+
+
+def test_memory_fts_migration_from_unicode61(tmp_path):
+    """旧 unicode61 FTS 表在重新打开时应自动迁移为 trigram 并回灌数据。"""
+    import sqlite3
+    db_path = str(tmp_path / "legacy.db")
+
+    # 模拟旧库：unicode61 建表 + 写入数据
+    conn = sqlite3.connect(db_path)
+    conn.execute('''CREATE TABLE memories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, topic TEXT NOT NULL, summary TEXT NOT NULL,
+        content TEXT, start_time TEXT NOT NULL, end_time TEXT NOT NULL,
+        created_at TEXT NOT NULL, tags TEXT, importance INTEGER DEFAULT 1)''')
+    conn.execute('''CREATE VIRTUAL TABLE memories_fts
+        USING fts5(topic, summary, content, tags, content=memories)''')
+    conn.execute("INSERT INTO memories (topic, summary, start_time, end_time, created_at) "
+                 "VALUES ('天气查询', '今天天气晴朗', 't', 't', 't')")
+    conn.execute("INSERT INTO memories_fts (rowid, topic, summary) VALUES (1, '天气查询', '今天天气晴朗')")
+    conn.commit()
+    conn.close()
+
+    # 重新打开 → 自动迁移 → 中文可搜
+    db = MemoryDatabase(db_path=db_path)
+    results = db.search_memories(["天气"])
+    assert len(results) == 1
+    assert results[0]["topic"] == "天气查询"
+
+    # 迁移后 FTS 表应为 trigram 分词（环境支持时）
+    conn = sqlite3.connect(db_path)
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE name='memories_fts'").fetchone()[0]
+    fts_count = conn.execute("SELECT COUNT(*) FROM memories_fts").fetchone()[0]
+    conn.close()
+    assert fts_count == 1  # 数据已回灌
+    try:
+        probe = sqlite3.connect(":memory:")
+        probe.execute("CREATE VIRTUAL TABLE t USING fts5(x, tokenize='trigram')")
+        probe.close()
+        assert "trigram" in sql
+    except sqlite3.OperationalError:
+        pass  # 环境不支持 trigram，保持 unicode61 属预期行为
+
+
 def test_memory_delete(mem_db):
     mid = mem_db.add_memory(topic="待删除", summary="摘要")
     assert mem_db.delete_memory(mid) is True
