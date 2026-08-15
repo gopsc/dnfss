@@ -11,7 +11,8 @@ from torchvision import transforms
 from torchvision.transforms import functional as TF
 
 from imu_norm import imu_scales
-from action_norm import normalize_action, is_range_mode
+from action_norm import (normalize_action, is_range_mode,
+                      action_bounds)
 from bins import encode as bin_encode
 
 
@@ -26,7 +27,7 @@ class ActionDataset(Dataset):
                  normalize_actions: bool = False,
                  action_stats_path: str = None, episode_indices: list = None,
                  frame_len: int = 3, sample_indices: list = None,
-                 augment: bool = False,
+                 augment: bool = False, action_jitter: float = 0.0,
                  predict_delta: bool = False, rollout_len: int = 1,
                  imu_dim: int = 0, normalize_mode: str = "zscore",
                  onehot: bool = False, onehot_sigma: float = 1.0):
@@ -40,6 +41,8 @@ class ActionDataset(Dataset):
         # 多头 one-hot：监督目标为多组 one-hot（bins.py），历史仍走 _norm
         self.onehot = onehot
         self.onehot_sigma = onehot_sigma
+        # 动作历史角度抖动（原始空间加噪，σ ∝ 列物理范围）
+        self.action_jitter = action_jitter
         # R2 方案一：>0 时样本带 "imu" 键（归一化姿态向量，缺失 episode 补零）
         self.imu_dim = imu_dim
         self.image_width = image_width
@@ -133,6 +136,19 @@ class ActionDataset(Dataset):
     def __len__(self):
         return len(self.samples)
 
+    def _jit_history(self, hist_raw):
+        """对原始动作历史加高斯抖动（σ = action_jitter × 列物理范围）
+
+        制造虚拟邻近状态对抗微步样本相关性；与闭环自预测历史噪声同源。
+        目标（真值）不抖动——监督信号保持干净。
+        """
+        if self.action_jitter <= 0.0:
+            return hist_raw
+        lo, hi = action_bounds(self.action_dim)
+        sigma = self.action_jitter * (hi - lo)
+        noise = np.random.normal(0.0, sigma, hist_raw.shape).astype(np.float32)
+        return hist_raw + noise
+
     def _norm(self, a):
         """动作归一化（numpy → torch 前在 numpy 空间做，保持 float32）
 
@@ -212,8 +228,9 @@ class ActionDataset(Dataset):
         if self.rollout_len == 1:
             # 单步：与旧版输出结构完全一致（imu_dim>0 时附加 "imu" 键）
             images = self._load_frames(image_files, t_start)
-            history = torch.tensor(self._norm(
-                actions[t_start - self.history_len: t_start]), dtype=torch.float32)
+            history = torch.tensor(self._norm(self._jit_history(
+                actions[t_start - self.history_len: t_start])),
+                dtype=torch.float32)
             target = torch.tensor(self._step_target(actions, t_start),
                                   dtype=torch.float32)
             out = {"images": images, "action_history": history, "target": target}
@@ -229,7 +246,8 @@ class ActionDataset(Dataset):
                 "images": self._load_frames(image_files, t),
                 # 真实历史（scheduled sampling 的真值来源；首步必用）
                 "action_history": torch.tensor(
-                    self._norm(actions[t - self.history_len: t]), dtype=torch.float32),
+                    self._norm(self._jit_history(
+                        actions[t - self.history_len: t])), dtype=torch.float32),
                 "target": torch.tensor(self._step_target(actions, t), dtype=torch.float32),
                 # 上一步真实动作（Δ 残差的基准 a_{t-1}，归一化空间）
                 "prev_action": torch.tensor(self._norm(actions[t - 1]), dtype=torch.float32),

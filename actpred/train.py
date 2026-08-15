@@ -239,7 +239,8 @@ def main():
         augment=cfg.train.augment,
         predict_delta=cfg.train.predict_delta, rollout_len=cfg.train.rollout_len,
         imu_dim=cfg.data.imu_dim, normalize_mode=cfg.data.normalize_mode,
-        onehot=cfg.data.onehot, onehot_sigma=cfg.data.onehot_sigma)
+        onehot=cfg.data.onehot, onehot_sigma=cfg.data.onehot_sigma,
+        action_jitter=cfg.data.action_jitter)
     auto_stats = False
     if (cfg.data.normalize_actions and cfg.data.normalize_mode == "zscore"
             and not cfg.data.action_stats_path):
@@ -258,7 +259,8 @@ def main():
         sample_indices=val_idx if cfg.train.val_split_mode == "sample" else None,
         predict_delta=cfg.train.predict_delta, rollout_len=cfg.train.rollout_len,
         imu_dim=cfg.data.imu_dim, normalize_mode=cfg.data.normalize_mode,
-        onehot=cfg.data.onehot, onehot_sigma=cfg.data.onehot_sigma)
+        onehot=cfg.data.onehot, onehot_sigma=cfg.data.onehot_sigma,
+        action_jitter=cfg.data.action_jitter)
     if auto_stats:
         # checkpoint 配置只存裸文件名：推理端按 checkpoint 目录解析相对路径
         cfg.data.action_stats_path = "action_stats.npy"

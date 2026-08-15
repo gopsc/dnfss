@@ -33,6 +33,11 @@ class DataConfig:
     # one-hot 软标签高斯宽度（箱）：0=硬标签；>0 真值扩散到邻近箱，
     # 缓解小样本下分类面数据稀疏（1°/箱 × 804 样本多数箱极少被访问）
     onehot_sigma: float = 1.0
+    # 动作历史角度抖动增强（原始量纲比例）：>0 时对输入历史加
+    # 高斯噪声，σ = action_jitter × 列物理范围（舵机 0.01 → ±1.8°）。
+    # 制造虚拟邻近状态，对抗微步插值样本高度相关导致的有效多样性
+    # 不足；且与闭环自预测历史噪声同源，增强反馈鲁棒性。目标不变。
+    action_jitter: float = 0.0
     # R2 方案一：MPU6050 姿态作为独立 IMU token 注入（序列 F+H+2）。
     # 0 = 关闭（默认，序列保持 F+H+1，旧 checkpoint 完全兼容）；
     # 8×N = N 个传感器的 roll,pitch,ax,ay,az,gx,gy,gz 按 pybot 脚本
@@ -119,6 +124,9 @@ def build_argparser(description: str = "") -> argparse.ArgumentParser:
                         help="多头 one-hot 分类输出（bins.py 分箱，舵机 1°/箱）")
     parser.add_argument("--onehot-sigma", type=float, default=None,
                         help="one-hot 软标签高斯宽度（箱，0=硬标签，默认 1.0）")
+    parser.add_argument("--action-jitter", type=float, default=None,
+                        help="动作历史角度抖动（原始量纲比例，0=关；"
+                             "如 0.01 = 舵机 ±1.8°）")
     parser.add_argument("--column-weights", type=str, default=None,
                         help="逐列损失权重（逗号分隔 action_dim 个浮点），"
                              "缺省用默认表（舵机1.0/spk0.2/保留位0.0）；仅影响训练损失")
@@ -214,6 +222,9 @@ def validate_config_values(data_cfg: DataConfig, model_cfg: ModelConfig,
         if train_cfg.predict_delta:
             raise ValueError("onehot 与 predict_delta 互斥"
                              "（残差定义在连续空间）")
+    if not (0.0 <= data_cfg.action_jitter <= 1.0):
+        raise ValueError(
+            f"action_jitter={data_cfg.action_jitter} 应在 [0, 1] 内")
     if not (0.0 <= data_cfg.onehot_sigma <= 10.0):
         raise ValueError(
             f"onehot_sigma={data_cfg.onehot_sigma} 应在 [0, 10] 内")
@@ -333,6 +344,7 @@ def apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         "column_weights": ("data", "column_weights"),
         "onehot": ("data", "onehot"),
         "onehot_sigma": ("data", "onehot_sigma"),
+        "action_jitter": ("data", "action_jitter"),
         "imu_dim": ("data", "imu_dim"),
         "backbone": ("model", "cnn_backbone"),
         "cnn_feature_dim": ("model", "cnn_feature_dim"),

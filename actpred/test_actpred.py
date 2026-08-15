@@ -2525,6 +2525,56 @@ class TestOneHot(unittest.TestCase):
         cfg2 = apply_overrides(Config(), parser.parse_args([]))
         self.assertEqual(cfg2.train.val_split_mode, "sample")  # 新默认
 
+    def test_action_jitter(self):
+        """角度抖动增强：历史加有界高斯噪声，目标保持干净"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            ep_dir = base / "episode_0001"
+            images_dir = ep_dir / "images"
+            images_dir.mkdir(parents=True)
+            for i in range(10):
+                Image.fromarray(np.random.randint(
+                    0, 255, (16, 16, 3), dtype=np.uint8)).save(
+                    images_dir / f"{i:04d}.jpg")
+            actions = np.zeros((10, 4), dtype=np.float32)
+            actions[:, 0] = 90.0
+            np.save(ep_dir / "actions.npy", actions)
+            # jitter=0：历史 = 原始归一化值
+            ds0 = ActionDataset(tmpdir, history_len=3, action_dim=4,
+                                image_width=16, image_height=16, frame_len=3,
+                                normalize_actions=True,
+                                normalize_mode="fixed_range",
+                                action_jitter=0.0)
+            np.testing.assert_allclose(
+                ds0[3]["action_history"].numpy()[:, 0], 0.5, atol=1e-6)
+            # jitter>0：历史围绕 0.5 抖动（0.1×180=18°→归一化 σ=0.1），
+            # 目标仍是干净的 0.5
+            np.random.seed(42)
+            dsj = ActionDataset(tmpdir, history_len=3, action_dim=4,
+                                image_width=16, image_height=16, frame_len=3,
+                                normalize_actions=True,
+                                normalize_mode="fixed_range",
+                                action_jitter=0.1)
+            hist = dsj[3]["action_history"].numpy()[:, 0]
+            tgt = dsj[3]["target"].numpy()[0]
+            self.assertGreater(float(np.std(hist)), 0.01)   # 确实抖了
+            self.assertLess(float(np.abs(hist - 0.5).max()), 0.45)  # 有界
+            self.assertAlmostEqual(float(tgt), 0.5, places=6)  # 目标干净
+            # 同一索引两次采样抖动不同（每次 __getitem__ 重新加噪）
+            hist2 = dsj[3]["action_history"].numpy()[:, 0]
+            self.assertFalse(np.allclose(hist, hist2))
+
+    def test_action_jitter_cli(self):
+        """--action-jitter 参数映射与校验"""
+        from config import build_argparser, apply_overrides
+        cfg = apply_overrides(Config(),
+                              build_argparser("t").parse_args(
+                                  ["--action-jitter", "0.02"]))
+        self.assertEqual(cfg.data.action_jitter, 0.02)
+        cfg.data.action_jitter = 1.5
+        with self.assertRaises(ValueError):
+            validate_config_values(cfg.data, cfg.model, cfg.train)
+
     def test_onehot_config_validation(self):
         cfg = Config()
         cfg.data.onehot = True
