@@ -1,78 +1,199 @@
 #include <us/RpcServer.hpp>
-#include <us/RpcClient.hpp>
-
-#include <boost/json.hpp>
-
 #include <us/memdb.hpp>
 
-#include <string>
+#include <boost/program_options.hpp>
+
+#include <atomic>
+#include <csignal>
+#include <cstdint>
 #include <iostream>
+#include <mutex>
+#include <stdexcept>
+#include <string>
+#include <thread>
 
 namespace json = boost::json;
-
-
-
-struct ClientConfig {
-    std::string connected_host      = "127.0.0.1";
-    int         connected_port      = 8005;
-    std::string service_name        = "db2";
-    double      timeout             = 10.0;
-    bool        retry_on_refused    = true;
-};
+namespace po   = boost::program_options;
 
 struct ServerConfig {
-    std::string listen_host     = "127.0.0.1";
-    int         listen_port     = 8011;
-    int         workers         = 4;
-    std::string db_url          = "sqlite:///database.db";
+    std::string listen_host = "127.0.0.1";
+    int         listen_port = 8011;
+    int         workers     = 4;
+    int         max_time    = 600;   // 默认 TTL 10 分钟
 };
 
-static std::string get_db_path(const std::string url) {
-    const std::string prefix = "sqlite:///";
-    if (url.rfind(prefix, 0) == 0) {
-        return url.substr(prefix.size());
-    }
-    return url;
+static std::atomic<bool> g_running{true};
+
+static void signal_handler(int) {
+    g_running = false;
 }
 
-
-
-class DBConnection {
-private:
-    ClientConfig __cfg;
-
-
-public:
-    explicit DBConnection(const ClientConfig& cfg) :
-        __cfg(cfg) {}
-    ~DBConnection() = default;
-
-    std::string get_from_sql(const std::string& sql_name) {
-        pmc::net::RpcClient client(__cfg.connected_host, __cfg.connected_port, __cfg.service_name, __cfg.timeout, __cfg.retry_on_refused);
-
-        try {
-            auto data = client.call("execute", {{"action", "select"}, {"table", "memdb"}, {"where", {"sql_name", sql_name}}});
-            
-        } catch (const std::exception& err) {
-            std::cerr << "[memdb] Error: 连接失败: " << err.what() << std::endl;
-            std::exit(1);
-        }
-    }
-};
-
-
 class MemdbServer {
-
-
 private:
     ServerConfig __cfg;
+    Memdb<std::string, std::string> __db;
+    pmc::net::RpcServer __rpc;
+    std::mutex __mtx;
 
+    static const std::string& _require_string(const json::object& req, const std::string& field) {
+        auto it = req.find(field);
+        if (it == req.end()) {
+            throw std::runtime_error("missing required field: " + field);
+        }
+        if (!it->value().is_string()) {
+            throw std::runtime_error("field '" + field + "' must be a string");
+        }
+        return it->value().as_string();
+    }
 
 public:
-    explicit MemdbServer(const ServerConfig& cfg) :
-        __cfg(cfg) {}
+    explicit MemdbServer(const ServerConfig& cfg)
+        : __cfg(cfg)
+        , __db(cfg.max_time)
+        , __rpc(cfg.listen_host, cfg.listen_port,
+                {.workers = cfg.workers})
+    {
+        _register_routes();
+    }
 
-    void start() {
-        //TODO 编写
+    void start() { __rpc.start(); }
+    void stop()  { __rpc.stop(); }
+
+private:
+    void _register_routes() {
+        // ---- 健康检查 ----
+        __rpc.add_route("ping", [](const json::object&) -> json::value {
+            return "pong";
+        });
+
+        // ---- set: 插入键值对 ----
+        __rpc.add_route("set", [this](const json::object& req) -> json::value {
+            const auto& key = _require_string(req, "key");
+            const auto& val = _require_string(req, "value");
+            std::lock_guard<std::mutex> lock(__mtx);
+            return __db.insert(key, val);
+        });
+
+        // ---- get: 查询键 ----
+        __rpc.add_route("get", [this](const json::object& req) -> json::value {
+            const auto& key = _require_string(req, "key");
+            std::lock_guard<std::mutex> lock(__mtx);
+            auto result = __db.search(key);
+            if (result.has_value()) {
+                return json::string(*result);
+            }
+            return nullptr;
+        });
+
+        // ---- del: 删除键 ----
+        __rpc.add_route("del", [this](const json::object& req) -> json::value {
+            const auto& key = _require_string(req, "key");
+            std::lock_guard<std::mutex> lock(__mtx);
+            return __db.remove(key);
+        });
+
+        // ---- update: 更新键值（可选刷新 TTL）----
+        __rpc.add_route("update", [this](const json::object& req) -> json::value {
+            const auto& key = _require_string(req, "key");
+            const auto& val = _require_string(req, "value");
+            bool refresh_ttl = false;
+            if (auto it = req.find("refresh_ttl"); it != req.end() && it->value().is_bool()) {
+                refresh_ttl = it->value().as_bool();
+            }
+            std::lock_guard<std::mutex> lock(__mtx);
+            return __db.update(key, val, refresh_ttl);
+        });
+
+        // ---- exists: 检查键是否存在 ----
+        __rpc.add_route("exists", [this](const json::object& req) -> json::value {
+            const auto& key = _require_string(req, "key");
+            std::lock_guard<std::mutex> lock(__mtx);
+            return __db.search(key).has_value();
+        });
+
+        // ---- size: 当前条目数 ----
+        __rpc.add_route("size", [this](const json::object&) -> json::value {
+            std::lock_guard<std::mutex> lock(__mtx);
+            return static_cast<int64_t>(__db.size());
+        });
+
+        // ---- show: 导出所有条目 ----
+        __rpc.add_route("show", [this](const json::object&) -> json::value {
+            std::lock_guard<std::mutex> lock(__mtx);
+            json::array result;
+            for (const auto& col : __db.get_db()) {
+                json::object entry;
+                entry["key"]   = json::string(col.key);
+                entry["value"] = json::string(col.value);
+                result.push_back(std::move(entry));
+            }
+            return result;
+        });
+
+        // ---- expire: 更新值并重置 TTL（等价于 del + set）----
+        __rpc.add_route("expire", [this](const json::object& req) -> json::value {
+            const auto& key = _require_string(req, "key");
+            const auto& val = _require_string(req, "value");
+            std::lock_guard<std::mutex> lock(__mtx);
+            __db.remove(key);
+            return __db.insert(key, val);
+        });
     }
 };
+
+
+int main(int argc, char** argv) {
+    std::signal(SIGINT, signal_handler);
+    std::signal(SIGTERM, signal_handler);
+
+    ServerConfig cfg;
+
+    po::options_description desc("memdb options");
+    desc.add_options()
+        ("help,h",                                  "display help")
+        ("instance",  po::value<std::string>()->default_value("memdb"), "instance name")
+        ("log-level", po::value<std::string>()->default_value("info"),  "log level")
+        ("host",      po::value<std::string>()->default_value("127.0.0.1"), "listen host")
+        ("port",      po::value<int>()->default_value(8011), "listen port")
+        ("workers",   po::value<int>()->default_value(4),    "worker threads")
+        ("max-time",  po::value<int>()->default_value(600),  "default TTL (seconds)");
+
+    po::variables_map vm;
+    po::store(po::parse_command_line(argc, argv, desc), vm);
+    po::notify(vm);
+
+    if (vm.count("help")) {
+        std::cout << desc << std::endl;
+        return 0;
+    }
+
+    cfg.listen_host = vm["host"].as<std::string>();
+    cfg.listen_port = vm["port"].as<int>();
+    cfg.workers     = vm["workers"].as<int>();
+    cfg.max_time    = vm["max-time"].as<int>();
+
+    auto instance  = vm["instance"].as<std::string>();
+    auto log_level = vm["log-level"].as<std::string>();
+
+    MemdbServer server(cfg);
+
+    std::cout << "[memdb:" << instance << "] log-level=" << log_level
+              << " listening on " << cfg.listen_host
+              << ":" << cfg.listen_port << std::endl;
+
+    std::thread server_thread([&server]() {
+        server.start();
+    });
+
+    while (g_running) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    std::cout << "\n[memdb:" << instance << "] shutting down..." << std::endl;
+    server.stop();
+    if (server_thread.joinable()) {
+        server_thread.join();
+    }
+
+    return 0;
+}

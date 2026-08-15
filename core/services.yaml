@@ -36,6 +36,25 @@ services:
     depends_on: []
     sleep_before: 0
 
+  # --- 内存缓存 ---
+  - name: memdb
+    cmd: bash /opt/micro_servers/memdb/_run.sh
+    args:
+      - "--instance"
+      - "memdb"
+      - "--log-level"
+      - "info"
+      - "--host"
+      - "127.0.0.1"
+      - "--port"
+      - "8011"
+      - "--workers"
+      - "4"
+      - "--max-time"
+      - "600"
+    depends_on: []
+    sleep_before: 0
+
   # --- AI 审核 ---
   - name: ai_review
     cmd: bash /opt/micro_servers/ai_review/_run.sh

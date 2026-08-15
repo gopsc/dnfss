@@ -4,7 +4,7 @@
 #include <chrono>
 #include <set>
 #include <optional>
-#include <cmath>
+#include <algorithm>
 
 
 
@@ -20,7 +20,6 @@ struct memdb_column {
 };
 
 struct index_keys {
-    T key;
     std::list <memdb_column>::iterator item;
 };
 
@@ -39,7 +38,27 @@ private:
     std::multiset <index_timestamp> time_touch;
     size_t __size = 0;
     int MAX_TIME = 60 * 10;       // 10分钟
-    void flush();
+    void flush() {
+        if (this -> time_touch.empty()) {
+            return;
+        }
+        std::chrono::system_clock::time_point now_time = std::chrono::system_clock::now();
+        auto it = this -> time_touch.begin() -> item;
+
+        while (now_time >= it -> timestamp) {
+            this -> __size--;
+            key_t to_be_del_k = it -> key;
+            this -> db.erase(it);
+            this -> keys.erase(to_be_del_k);
+            this -> time_touch.erase(this -> time_touch.begin());
+
+            if (this -> time_touch.empty()) {
+                return;
+            }
+            it = this -> time_touch.begin() -> item;
+            now_time = std::chrono::system_clock::now();
+        }
+    }
 
 
 
@@ -53,11 +72,12 @@ public:
 
     explicit Memdb() = default;
     explicit Memdb(int max_time) : MAX_TIME(std::max(0, max_time)) {}
-    explicit Memdb& operator=(const Memdb& to_be_cp_memdb) = default;
-    explicit ~Memdb() = default;
+    Memdb& operator=(const Memdb& to_be_cp_memdb) = default;
+    ~Memdb() = default;
 
 
-    size_t size() const {
+    size_t size() {
+        this -> flush();
         return this -> __size;
     }
 
@@ -65,7 +85,8 @@ public:
         return this -> keys;
     }
 
-    const std::list <memdb_column>& get_db() const {
+    const std::list<memdb_column>& get_db() {
+        this -> flush();
         return this -> db;
     }
 
@@ -89,9 +110,8 @@ public:
         this -> db.push_back(new_column);
 
         Memdb::index_keys new_key;
-        new_key.key = to_be_ins_k;
         new_key.item = std::prev(this -> db.end());
-        this -> keys[to_be_ins_k] = new_key;
+        this -> keys.emplace(to_be_ins_k, new_key);
 
         Memdb::index_timestamp new_time_touch;
         new_time_touch.item = std::prev(this -> db.end());
@@ -104,13 +124,20 @@ public:
 
     bool remove(key_t to_be_del_k) {
         this -> flush();
-        if (this -> keys.find(to_be_del_k) == this -> keys.end()) {
+        auto kit = this -> keys.find(to_be_del_k);
+        if (kit == this -> keys.end()) {
             return this -> fail;
         }
 
-        typename std::list <memdb_column>::iterator it = this -> keys[to_be_del_k].item;
-        this -> keys.erase(it -> key);
-        this -> time_touch.erase({it});
+        typename std::list <memdb_column>::iterator it = kit -> second.item;
+        this -> keys.erase(kit);
+        auto range = this -> time_touch.equal_range({it});
+        for (auto sit = range.first; sit != range.second; ++sit) {
+            if (sit -> item == it) {
+                this -> time_touch.erase(sit);
+                break;
+            }
+        }
         this -> db.erase(it);
         this -> __size--;
 
@@ -119,18 +146,26 @@ public:
 
     bool update(key_t to_be_udt_k, value_t udt_v, bool need_to_udt_timetouch=false) {
         this -> flush();
-        if (this -> keys.find(to_be_udt_k) == this -> keys.end()) {
+        auto kit = this -> keys.find(to_be_udt_k);
+        if (kit == this -> keys.end()) {
             return this -> fail;
         }
 
-        typename std::list <memdb_column>::iterator it = this -> keys[to_be_udt_k].item;
+        typename std::list <memdb_column>::iterator it = kit -> second.item;
         it -> value = udt_v;
         if (need_to_udt_timetouch == true) {
-            std::chrono::system_clock::time_point now_time = std::chrono::system_clock::now();
-            T copy_k = it -> key;
-            U copy_v = it -> value;
-            this -> remove(copy_k);
-            this -> insert(copy_k, copy_v);
+            auto range = this -> time_touch.equal_range({it});
+            for (auto sit = range.first; sit != range.second; ++sit) {
+                if (sit -> item == it) {
+                    this -> time_touch.erase(sit);
+                    break;
+                }
+            }
+            it -> timestamp = std::chrono::system_clock::now()
+                            + std::chrono::seconds(MAX_TIME);
+            Memdb::index_timestamp new_time_touch;
+            new_time_touch.item = it;
+            this -> time_touch.insert(new_time_touch);
         }
 
         return this -> succ;
@@ -138,11 +173,11 @@ public:
 
     std::optional<U> search(key_t to_be_sch_k) {
         this -> flush();
-        if (this -> keys.find(to_be_sch_k) == this -> keys.end()) {
+        auto kit = this -> keys.find(to_be_sch_k);
+        if (kit == this -> keys.end()) {
             return std::nullopt;
         }
 
-        typename std::list <memdb_column>::iterator it = this -> keys[to_be_sch_k].item;
-        return it -> value;
+        return kit -> second.item -> value;
     }
 };
