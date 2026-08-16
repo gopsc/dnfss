@@ -86,6 +86,7 @@ def build_image_samples(n_samples, frame_len, height, width, rng,
 
 def build_deploy_set(args):
     import torch
+    from action_norm import is_range_mode, normalize_action
     from model import ActionPredictor
 
     ckpt = torch.load(args.model, map_location="cpu", weights_only=True)
