@@ -163,6 +163,7 @@ class RobotStruct:
             raise ValueError("no @Action matrix in script")
         columns = self._validate_action(action)     # Q05: 执行前整表校验
         delay_idx = self._find_delay_idx(columns)
+        freq_idx = self._find_freq_idx(columns)
 
         camera_var = None
         imu_vars = []
@@ -198,8 +199,8 @@ class RobotStruct:
                     if recorder is not None:
                         recorder.record(
                             self._grab_frame(camera_var),
-                            self._build_action_vec(
-                                step_vals, recorder.action_dim),
+                            self._record_vec(step_vals, recorder.action_dim,
+                                              freq_idx),
                             imu_vec=self._read_imus(imu_vars))
                     self._execute_step(step_vals, columns)
                     if self.dry_run:
@@ -209,7 +210,7 @@ class RobotStruct:
                 if recorder is not None:
                     recorder.record(
                         self._grab_frame(camera_var),
-                        self._build_action_vec(vals, recorder.action_dim),
+                        self._record_vec(vals, recorder.action_dim, freq_idx),
                         imu_vec=self._read_imus(imu_vars))
                 self._execute_step(vals, columns)
 
@@ -415,6 +416,22 @@ class RobotStruct:
                self._resolve_param(param) == "delay":
                 return j
         return None
+
+    def _find_freq_idx(self, columns):
+        """找到 spk.F（frequency）列索引；无 Speaker 返回 None"""
+        for j, (dev, param) in enumerate(columns):
+            if isinstance(self.M.get(dev), SpeakerVar) and \
+               self._resolve_param(param) == "frequency":
+                return j
+        return None
+
+    def _record_vec(self, vals, action_dim, freq_idx=None):
+        """构建录制动作向量；spk.F 列固定写 0（只影响声音不影响运动，
+        与模型固定输出契约一致——音频元数据不进入学习数据）"""
+        vec = self._build_action_vec(vals, action_dim)
+        if freq_idx is not None:
+            vec[freq_idx] = 0.0
+        return vec
 
     def _build_step_vals(self, prev_vals, target_vals, columns, k, n):
         """为微步 k 构建插值后的值列表"""
