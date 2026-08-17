@@ -159,6 +159,26 @@ class SubprocessCommandExecutor(CommandExecutor):
             if output_queue:
                 output_queue.put(("line", line.rstrip('\n') + "\n"))
 
+        # N4 修复（审计 2026-08-18，二次修正）：reader 线程收尾。
+        # 超时/截断/宽限到期 break 后，reader 可能仍阻塞在 readline
+        # （Windows shell=True 下孙进程持管道写端，永远等不到 EOF）。
+        # 注意：此时不能 close stdout——CPython 流对象内部有锁，
+        # readline 持锁阻塞时 close() 会一同挂起直到 readline 返回
+        # （实测命令超时被拖满整个 Start-Sleep 时长）。reader 为 daemon
+        # 线程，孙进程退出收到 EOF 后自然结束，不阻塞主流程；
+        # reader 已正常退出的场景才 close 显式释放管道 fd。
+        if reader_done.is_set():
+            try:
+                process.stdout.close()
+            except Exception:
+                pass
+        else:
+            reader.join(timeout=2)
+            if reader.is_alive():
+                self.logger.warning(
+                    "reader 线程仍阻塞在管道读取（孙进程持写端），已放弃等待，"
+                    "线程由 daemon 兜底、随管道 EOF 自然退出")
+
         return ''.join(output_chunks), timeout_occurred, truncated
 
     def execute(self, command: str, timeout: int = 30, work_dir: str = None, env: Dict = None, **kwargs) -> str:

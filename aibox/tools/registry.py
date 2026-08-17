@@ -36,6 +36,8 @@ class ToolRegistry:
         self.logger = logger or Logger("ToolRegistry")
         self.current_output_queue = None  # 用于流式输出的队列
         self.skill_manager: Optional['SkillManager'] = None  # 技能管理器引用
+        # 单工具流式执行总上限（工具自身秒级超时之外的兜底；测试可调小）
+        self.stream_tool_timeout = 3600
     
     def register(self, tool: Tool, is_builtin: bool = False):
         """注册工具，可以标记是否为内置工具"""
@@ -100,14 +102,20 @@ class ToolRegistry:
                 # 此前 while thread.is_alive() 在工具内部卡死（如子进程
                 # 等待 stdin）时永不退出；超时后放弃等待，避免本调用
                 # 线程被连带挂起。
-                tool_timeout = 3600  # 单工具总上限 1 小时（工具自身的秒级超时之外的兜底）
+                # N6 修复（审计 2026-08-18）：超时路径此前直接 return，
+                # 跳过下方清理——daemon 线程继续持有 tool.output_queue
+                # 实例属性，属性被后续调用覆盖到新会话队列后，僵尸输出
+                # 会混入后续对话流。现在统一在出口清理。
+                tool_timeout = self.stream_tool_timeout
                 deadline = time.time() + tool_timeout
                 final_result = None
+                timed_out = False
                 while thread.is_alive() or not output_queue.empty():
                     if time.time() > deadline:
                         self.logger.warning(
                             f"工具 {name} 流式执行超过 {tool_timeout}s 总上限，放弃等待")
-                        return f"❌ 工具执行超时（>{tool_timeout}s，已放弃等待）"
+                        timed_out = True
+                        break
                     try:
                         msg_type, content = output_queue.get(timeout=0.1)
                         if msg_type == "line":
@@ -121,14 +129,21 @@ class ToolRegistry:
                                 self.current_output_queue.put(("complete", content))
                     except queue.Empty:
                         continue
-                
-                thread.join(timeout=5)
-                if thread.is_alive():
-                    return "❌ 工具执行超时"
-                
-                result = final_result or ""
+
+                if not timed_out:
+                    thread.join(timeout=5)
+                    if thread.is_alive():
+                        timed_out = True
+
+                # 统一清理（正常与超时路径都必须执行）：断开实例属性，
+                # 僵尸 daemon 线程的 send_line 落到 None 上不再外写
                 tool.streaming_output = False
                 tool.output_queue = None
+
+                if timed_out:
+                    result = f"❌ 工具执行超时（>{tool_timeout}s，已放弃等待）"
+                else:
+                    result = final_result or ""
             else:
                 # 普通执行
                 result = tool.execute(**kwargs)
