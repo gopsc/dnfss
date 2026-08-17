@@ -2,7 +2,7 @@
 
 > 权威架构参考。本文以 `core/services.yaml`（实际运行清单）与 `git HEAD` 为事实来源。
 > 与根目录 `README.md` 的偏差见文末「§10 与 README 的偏差」。
-> 最后核对于：2026-08-15。
+> 最后核对于：2026-08-17。
 
 ---
 
@@ -148,7 +148,7 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
 | **aibox** | Python | 8765 | 127.0.0.1 | 独立 AI 智能体（WebSocket） | 独立产品 |
 | **BotOps** | Python | — | — | aibox 的 TUI 前端 | 独立 |
 | **bot4cj** | Cangjie | — | 树莓派 I2C | 机器人脚本解析器 | 独立硬件 |
-| **pybot** | Python | — | 树莓派 | bot4cj 的 Python 迁移版（.mt 解析、actpred episode 录制、--loop 实时预测闭环） | 独立硬件 |
+| **pybot** | Python | — | 树莓派 | bot4cj 的 Python 迁移版（.mt 解析、actpred episode 录制、--loop 实时预测闭环；HEF 后端自动异步，推理与执行上一步动作并行） | 独立硬件 |
 | **mtc** | Python | — | — | 命令式动作脚本（Python DSL）→ .mt 编译器（非阻塞时间轴 IR + 10ms 栅格化），pybot/bot4cj 的脚本 authoring 工具 | 开发期工具 |
 | **lci** | C++ | — | /dev/fb0 | 嵌入式帧缓冲 GUI | 独立硬件 |
 | **actpred** | Python | — | — | 动作预测（图像+动作历史→下一动作），bot4cj/pybot 的「大脑」配套 | 实验 |
@@ -236,6 +236,7 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
 - **smtp3 待上线**：C++ 重写已完成并通过安全审计，但 services.yaml 仍指向 Python `smtp`，建议择机平替以消除最后一块 Python 有状态服务。
 - **可观测性缺口**：缺 tracing/metrics/告警，建议后续引入轻量方案（或复用 db2 Logs + 定时聚合）。
 - **水平扩展限制**：smtp/captcha 内存态为单点，若需多实例需引入 Redis 等共享存储。
+- **panel 面板微服务（规划中）**：设计稿见 [docs/panel_service.md](panel_service.md)——背景视图 + 各服务自持控件片段（iframe 沙箱 + BFF 转发），解决整页应用互相改前端代码的耦合问题；落地后需三处同步（本文件 / MODULES.md / 根 README）。
 
 ---
 

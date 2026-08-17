@@ -78,7 +78,7 @@
 | [aibox](aibox/) | Python | 8765 | 独立 AI 智能体系统（DeepSeek + WebSocket），自带技能系统/记忆/任务调度，由 core 拉起但与主干微服务无调用关系 |
 | [BotOps](BotOps/) | Python | — | aibox 智能体 TUI 前端（Textual），WebSocket 连接 aibox，支持 Markdown 增量流式渲染、思考模式展示、任务独立侧栏、自动重连 |
 | [bot4cj](bot4cj/) | 仓颉(Cangjie) | — | 机器人硬件脚本解析器，解析 .mt 矩阵脚本通过 I2C 驱动 PCA9685 舵机 / MPU6050 陀螺仪，面向树莓派 Dashun 蜘蛛机器人平台（独立硬件项目） |
-| [pybot](pybot/) | Python | — | bot4cj 的 Python 迁移版：.mt 动作脚本解析器（零第三方依赖，与仓颉版逐语义对齐）；支持执行 / `--dry-run` / `--record` 录制 actpred episode（含 imu.npy）/ `--loop` 实时预测闭环 |
+| [pybot](pybot/) | Python | — | bot4cj 的 Python 迁移版：.mt 动作脚本解析器（零第三方依赖，与仓颉版逐语义对齐）；支持执行 / `--dry-run` / `--record` 录制 actpred episode（含 imu.npy）/ `--loop` 实时预测闭环（HEF 后端自动异步，推理与执行并行） |
 | [mtc](mtc/) | Python | — | 命令式动作脚本（Python DSL）→ .mt 编译器：非阻塞时间轴 + 10ms 栅格展开，输出可由 pybot/bot4cj 直接执行；零第三方依赖 |
 | [actpred](actpred/) | Python(PyTorch) | — | 动作预测模型（图像 + 动作历史 → 下一动作），bot4cj/pybot 的「大脑」配套；两阶段训练（.mt 预训练 → episode 微调），ONNX/Hailo HEF 部署（实验） |
 | [lci](lci/) | C++ | — | 嵌入式帧缓冲图形界面（LCI），基于 `/dev/fb0` 直接操作显存，无需 X11/Wayland，矢量字体、图片渲染、实时数据可视化，面向树莓派等嵌入式环境 |
@@ -256,7 +256,7 @@
 ### pybot（机器人动作脚本解析器 · Python 迁移版）
 
 - [bot4cj](#bot4cj机器人硬件脚本解析器) 的 Python 迁移版，零第三方依赖（纯标准库），与仓颉版逐语义对齐（含占位符 `-` 递归继承、微步分解、块序依赖）。
-- 三种运行模式：脚本执行 `run()`、`--record` 录制 actpred episode（images + actions.npy + imu.npy，≤4 个 MPU6050 按块行序拼接）、`--loop` 实时预测闭环（daemon 线程队列非阻塞取帧，overrun 告警）。
+- 三种运行模式：脚本执行 `run()`、`--record` 录制 actpred episode（images + actions.npy + imu.npy，≤4 个 MPU6050 按块行序拼接）、`--loop` 实时预测闭环（daemon 线程队列非阻塞取帧，overrun 告警；HEF 后端自动走异步推理——执行上一步动作与 NPU 推理并行，滞后一拍）。
 - 扬声器静音语义：`frequency <= 0` 不出声仅保持节拍（对齐仓颉版 sleep 占位语义）。
 - Windows 开发机可跑测试（fcntl mock + 符号链接 fallback）；详见 [pybot/README.md](pybot/README.md)。
 

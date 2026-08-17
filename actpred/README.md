@@ -311,3 +311,17 @@ python3 dfc_compile.py            # 产物 checkpoints/actpred_pretrain.hef
 `--pred-token` 喂入学习值、`--stats` 喂入归一化统计、`--imu` 喂入姿态。
 环境调研与 API 踩坑记录见
 [docs/reports/actpred_hailo_hat2_inference_research_20260813.md](../docs/reports/actpred_hailo_hat2_inference_research_20260813.md)。
+
+### 异步推理（`predict_async`，run_async 流水线）
+
+`HailoPredictor.predict_async(images, action_history, pred_token=None, imu=None)`
+提交异步推理并立即返回 `_AsyncJob`，需要结果时 `job.result(timeout)` 阻塞获取：
+
+- 与同步 `predict` 语义/输出完全一致（公共 `_prepare_inputs/_fill_bindings/_postprocess`）
+- 内部维护 4 个绑定缓冲池 + 完成回调；在途任务超过缓冲数时提交会阻塞等待
+  空闲缓冲，`job.result` 超时**不会**释放缓冲（缓冲由完成回调释放）
+- 连续提交（≥2 个在途）时 NPU 保持满负荷：实测连续吞吐 6.0ms vs 同步
+  15.5ms（约 2.6×）；扩展测试覆盖乱序取结果/混合调用/缓冲压力/300 次
+  稳定性/4 线程并发，输出与同步 0 差异
+- pybot `--loop` 检测到 `predict_async` 即自动走异步闭环（推理期间并行
+  执行上一步动作），见 [pybot/README.md](../pybot/README.md)

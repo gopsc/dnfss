@@ -50,6 +50,11 @@ cat scripts/std.mt | ./_run.sh              # 与 bot4cj 相同的管道用法
 
 - checkpoint 后缀 `.hef` → Hailo NPU 后端，否则 → PyTorch 后端
 - `hz` 须 ≥ 推理 + 执行耗时（ONNX ~11ms / Hailo ~12ms，hz ≤ 50 安全）
+- **异步推理路径**：predictor 提供 `predict_async`（Hailo NPU 后端，见
+  actpred `hailo_infer.py`）时自动启用——提交推理后**并行执行上一步动作**
+  （滞后一拍执行，动作与状态错位一拍，10Hz 下 = 100ms，对微动作步态影响
+  可忽略），隐藏真实 I2C 执行耗时（实测 HEF 步耗时 ~16ms → ~12ms）；
+  PyTorch/ONNX 同步路径不变
 - `@Action` 表头列数须 ≤ `action_dim`（默认 18），闭环中跳过 `spk.delay` 阻塞
 - **帧源**：闭环从 camera 守护线程队列取最近 F 帧（无阻塞），`@Camera` 的
   `framerate` 建议 ≥ 2×`hz` 以保证帧新鲜度；`capacity` 应 ≥ F（帧窗长度）。
