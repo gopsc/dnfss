@@ -5,6 +5,7 @@
 #include <set>
 #include <optional>
 #include <algorithm>
+#include <utility>
 
 
 
@@ -72,7 +73,35 @@ public:
 
     explicit Memdb() = default;
     explicit Memdb(int max_time) : MAX_TIME(std::max(0, max_time)) {}
-    Memdb& operator=(const Memdb& to_be_cp_memdb) = default;
+
+    // 深拷贝：重建索引，保证 keys/time_touch 的迭代器指向副本自身的 list
+    Memdb(const Memdb& other)
+        : __size(other.__size), MAX_TIME(other.MAX_TIME) {
+        this -> db = other.db;
+        for (auto it = this -> db.begin(); it != this -> db.end(); ++it) {
+            Memdb::index_keys new_key;
+            new_key.item = it;
+            this -> keys.emplace(it -> key, new_key);
+
+            Memdb::index_timestamp new_time_touch;
+            new_time_touch.item = it;
+            this -> time_touch.insert(new_time_touch);
+        }
+    }
+
+    Memdb& operator=(const Memdb& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Memdb tmp(other);
+        std::swap(this -> db, tmp.db);
+        std::swap(this -> keys, tmp.keys);
+        std::swap(this -> time_touch, tmp.time_touch);
+        std::swap(this -> __size, tmp.__size);
+        std::swap(this -> MAX_TIME, tmp.MAX_TIME);
+        return *this;
+    }
+
     ~Memdb() = default;
 
 
