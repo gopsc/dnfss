@@ -861,7 +861,7 @@ class DeepSeekChat:
                  history_manager: ConversationHistory = None, memory_db: MemoryDatabase = None,
                  memo_db: MemoDatabase = None, command_executor: CommandExecutor = None,
                  prompt_manager: PromptManager = None, skill_manager: SkillManager = None,
-                 tool_profile: str = TOOL_PROFILE_ORCHESTRATOR):
+                 tool_profile: str = TOOL_PROFILE_ORCHESTRATOR, enable_memory: bool = True):
         self.config = ConfigManager()
         self.logger = Logger("DeepSeek", debug_level if debug_level is not None else Logger("").level)
         self.debug_level = self.logger.level
@@ -872,7 +872,9 @@ class DeepSeekChat:
         self.api_key = self.client.api_key
         self.name = self.client.name
         self.history_manager = history_manager
-        self.memory_db = memory_db
+        # enable_memory=False 时置空，注册层（_register_tools）依此跳过 MemoryTool，
+        # 使记忆工具 schema 不出现在请求中，LLM 无从调用——干净禁用而非运行期拦截
+        self.memory_db = memory_db if enable_memory else None
         self.memo_db = memo_db
         self.prompt_manager = prompt_manager or PromptManager()
         self.history_loaded = False
@@ -886,7 +888,7 @@ class DeepSeekChat:
         
         self.max_history = max_history or constants.DEFAULT_MAX_HISTORY
         self.preserve_system = constants.PRESERVE_SYSTEM_PROMPTS
-        self.stats = {"api_calls": 0, "tool_calls": 0, "errors": []}
+        self.stats = {"api_calls": 0, "tool_calls": 0, "errors": [], "tool_failed": False}
         
         # 取消机制：threading.Event 用于跨线程信号，HTTP 中断由客户端抽象层负责
         self._cancel_event = threading.Event()
@@ -1232,6 +1234,11 @@ class DeepSeekChat:
                 except Exception as e:
                     result_raw = f"❌ 工具 {tool_name} 执行异常: {str(e)}"
                     self.logger.error(f"工具 {tool_name} 执行异常: {e}")
+                    self.stats["tool_failed"] = True
+
+            # 注：run_command 子命令非零码由 worker 子代理承载，其失败需经子代理汇总上报，
+            # 精确的退出码 1 细分属 Batch C（SubAgentTool 透传子代理 stats）。
+            # 此处仅标记 orchestrator 直接感知的工具异常。
 
             # 安全转换并清理结果
             result = self._sanitize_tool_result(result_raw)
@@ -1342,9 +1349,14 @@ class DeepSeekChat:
                 self.logger.debug(f"压缩检查触发: {reason}")
                 original_count = len(self.messages)
                 original_tokens = self.compressor.estimate_tokens(self.messages)
-                
-                print(f"\n📦 {i18n.get('conversation_compress')}...")
-                print(f"   触发原因: {reason}")
+
+                # 压缩提示走 output_callback（line 类型），由回调端决定去向：
+                # WebSocket 模式 → 前端过程区；CLI once 模式 → stderr（不污染 stdout 管道）
+                if output_callback:
+                    output_callback("line", f"\n📦 {i18n.get('conversation_compress')}...\n   触发原因: {reason}\n")
+                else:
+                    print(f"\n📦 {i18n.get('conversation_compress')}...")
+                    print(f"   触发原因: {reason}")
                 
                 self.messages = self.compressor.compress_conversation(self.messages)
                 
@@ -2813,6 +2825,8 @@ def parse_args():
     parser.add_argument('--once', type=str, metavar='QUERY', help='一次性对话：执行 QUERY 并输出结果后退出')
     parser.add_argument('--quiet', action='store_true', help='静默模式：仅 stdout 输出回答正文，过程行/思考全静默（适合管道）')
     parser.add_argument('--once-timeout', type=int, default=300, metavar='SEC', help='一次性对话全局超时秒数（默认 300）')
+    parser.add_argument('--no-save-memory', action='store_true', help='一次性对话不注册记忆工具，禁止写入记忆数据库')
+    parser.add_argument('--show-reasoning', action='store_true', help='一次性对话在 stderr 显示思考过程流（默认不显示）')
 
     return parser.parse_args()
 
@@ -2950,6 +2964,7 @@ def handle_once_mode(manager, args) -> bool:
         memo_db=manager.memo_db,
         command_executor=manager.command_executor,
         prompt_manager=manager.prompt_manager,
+        enable_memory=not args.no_save_memory,  # --no-save-memory → 干净禁用 MemoryTool
     )
     manager.ai = ai  # 挂到 manager 上，cancel() 可达
 
@@ -2968,8 +2983,13 @@ def handle_once_mode(manager, args) -> bool:
                 sys.stderr.write(str(content) + "\n")
                 sys.stderr.flush()
                 state["exit_code"] = 2
-            elif msg_type in ("line", "reasoning", "reasoning_start", "reasoning_end"):
+            elif msg_type == "line":
                 if not args.quiet:
+                    sys.stderr.write(str(content))
+                    sys.stderr.flush()
+            elif msg_type in ("reasoning", "reasoning_start", "reasoning_end"):
+                # thinking 流默认静默，仅 --show-reasoning 显式开启（且非 --quiet）
+                if args.show_reasoning and not args.quiet:
                     sys.stderr.write(str(content))
                     sys.stderr.flush()
             # ai_break / dialogue_ended：CLI 无 widget 概念，忽略
@@ -3015,6 +3035,9 @@ def handle_once_mode(manager, args) -> bool:
     if state["interrupted"]:
         print(f"\n{i18n.get('user_interrupted')}", file=sys.stderr)
         sys.exit(3)
+    # 工具执行链路失败（run_command 非零码或工具异常）→ 退出码 1
+    if state["exit_code"] == 0 and ai.stats.get("tool_failed"):
+        state["exit_code"] = 1
     sys.exit(state["exit_code"])
 
 
