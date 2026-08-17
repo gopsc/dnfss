@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from common import constants
+from common import ConfigManager, constants
 from subsystems import (
     MemoryDatabase, MemoDatabase, PromptManager, SkillManager,
     SubprocessCommandExecutor,
@@ -423,6 +423,160 @@ def test_get_proxy_when_disabled():
     r = t.execute()
     # 默认未启用代理
     assert "未启用" in r or "启用" in r
+
+
+# ---------- SetProxyTool 连通性验证（设置前验证，失败不落盘） ----------
+
+@pytest.fixture
+def fresh_config(tmp_path, monkeypatch):
+    """隔离 ConfigManager 单例：AI_CONFIG_PATH 指向临时文件，前后重置类状态"""
+    cfg_file = tmp_path / "config.json"
+    monkeypatch.setenv("AI_CONFIG_PATH", str(cfg_file))
+
+    def _reset():
+        ConfigManager._instance = None
+        ConfigManager._config = None
+        ConfigManager._config_path = None
+
+    _reset()
+    yield ConfigManager
+    _reset()
+
+
+class _FakeResp:
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+
+def _fake_session_factory(exc=None, resp=None):
+    """构造替代 requests.Session 的假类：get() 抛异常或返回假响应"""
+    calls = []
+
+    class _FakeSession:
+        def __init__(self):
+            self.trust_env = True
+
+        def get(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            if exc:
+                raise exc
+            return resp
+
+    _FakeSession.calls = calls
+    return _FakeSession
+
+
+def test_check_connectivity_ok(monkeypatch):
+    fake = _fake_session_factory(resp=_FakeResp(204))
+    monkeypatch.setattr("tools.proxy_tools.requests.Session", fake)
+    t = SetProxyTool()
+    ok, kind, detail = t._check_connectivity("127.0.0.1", 1080, None, None)
+    assert ok and kind == ""
+    # trust_env 必须关掉：排除系统 http_proxy 环境变量干扰
+    assert fake.calls, "应发出探测请求"
+
+
+def test_check_connectivity_classification(monkeypatch, tmp_path):
+    """异常类型/消息 → 错误类型分类（与系统语言无关）"""
+    import requests as requests_lib
+    cases = [
+        # Windows 本地化的连接拒绝消息：靠异常类型而非英文关键词分类
+        (requests_lib.exceptions.ConnectionError(
+            "[WinError 10061] 由于目标计算机积极拒绝，无法连接。"), "connect_failed"),
+        # ConnectTimeout 同时继承 ConnectionError/Timeout，必须按 Timeout 归类
+        (requests_lib.exceptions.ConnectTimeout("connection timeout"), "timeout"),
+        (requests_lib.exceptions.ConnectionError(
+            "SOCKS5 authentication failed"), "auth_failed"),
+        (requests_lib.exceptions.ConnectionError(
+            "Missing dependencies for SOCKS support."), "missing_dependency"),
+        (Exception("Read timed out"), "timeout"),          # 兜底：非 requests 异常按消息
+        (Exception("Connection refused"), "connect_failed"),
+        (Exception("something weird"), "error"),
+    ]
+    t = SetProxyTool()
+    for exc, expect_kind in cases:
+        monkeypatch.setattr(
+            "tools.proxy_tools.requests.Session",
+            _fake_session_factory(exc=exc))
+        ok, kind, _ = t._check_connectivity("127.0.0.1", 1080, "u", "p")
+        assert not ok
+        assert kind == expect_kind, f"{exc!r} 应分类为 {expect_kind}，实际 {kind}"
+
+
+def test_check_connectivity_bad_status(monkeypatch):
+    """探测端点返回非 200/204 → probe_failed"""
+    monkeypatch.setattr(
+        "tools.proxy_tools.requests.Session",
+        _fake_session_factory(resp=_FakeResp(502)))
+    t = SetProxyTool()
+    ok, kind, detail = t._check_connectivity("127.0.0.1", 1080, None, None)
+    assert not ok and kind == "probe_failed"
+
+
+def test_set_proxy_rejected_when_unreachable(fresh_config, monkeypatch):
+    """验证失败：返回 ❌ 且配置不落盘"""
+    monkeypatch.setattr(
+        SetProxyTool, "_check_connectivity",
+        lambda self, h, p, u, pw: (False, "connect_failed", "Connection refused"))
+    t = SetProxyTool()
+    r = t.execute(host="10.255.255.1", port=1080)
+    assert "❌" in r
+    assert "未保存" in r
+    # 配置未写入：代理仍未启用
+    assert fresh_config().get_proxy() is None
+
+
+def test_set_proxy_saved_when_check_passes(fresh_config, monkeypatch):
+    """验证通过：配置保存且结果带连通性详情"""
+    monkeypatch.setattr(
+        SetProxyTool, "_check_connectivity",
+        lambda self, h, p, u, pw: (True, "", "探测成功 HTTP 204"))
+    t = SetProxyTool()
+    r = t.execute(host="127.0.0.1", port=1080)
+    assert "✅" in r
+    assert "探测成功" in r
+    proxies = fresh_config().get_proxy()
+    assert proxies and "127.0.0.1:1080" in proxies["http"]
+
+
+def test_set_proxy_skip_check_bypasses_validation(fresh_config, monkeypatch):
+    """skip_check=True：不验证直接保存（代理未启动的预配置场景）"""
+    called = []
+
+    def _no_call(self, *a, **kw):
+        called.append(1)
+        raise AssertionError("skip_check=True 时不应调用验证")
+
+    monkeypatch.setattr(SetProxyTool, "_check_connectivity", _no_call)
+    t = SetProxyTool()
+    r = t.execute(host="127.0.0.1", port=1080, skip_check=True)
+    assert "✅" in r
+    assert not called
+    assert fresh_config().get_proxy() is not None
+
+
+def test_set_proxy_disabled_skips_check(fresh_config, monkeypatch):
+    """enabled=False：禁用代理无需验证"""
+    def _no_call(self, *a, **kw):
+        raise AssertionError("禁用代理不应触发验证")
+
+    monkeypatch.setattr(SetProxyTool, "_check_connectivity", _no_call)
+    t = SetProxyTool()
+    r = t.execute(host="127.0.0.1", port=1080, enabled=False)
+    assert "✅" in r
+    assert fresh_config().get_proxy() is None  # 禁用态 get_proxy 返回 None
+
+
+def test_set_proxy_empty_env_hint(fresh_config, monkeypatch):
+    """username + password_env 指向未设环境变量：精准提示而非裸 auth 失败"""
+    monkeypatch.delenv("AIBOX_TEST_SOCKS_PW", raising=False)
+    t = SetProxyTool()
+    r = t.execute(host="127.0.0.1", port=1080,
+                  username="u1", password_env="AIBOX_TEST_SOCKS_PW")
+    assert "❌" in r
+    assert "环境变量" in r
+    assert "未保存" in r
+    assert fresh_config().get_proxy() is None
 
 
 # ==================== AskUserTool ====================
