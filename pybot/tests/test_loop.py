@@ -104,6 +104,14 @@ def _make_robot(mt_text, mock_i2c):
     return RobotStruct(io.StringIO(mt_text), dry_run=True)
 
 
+class AsyncMockPredictor(MockPredictor):
+    """带 predict_async 的鸭子类型桩：异步返回与同步相同的可辨识动作"""
+
+    def predict_async(self, images, action_history):
+        act = self.predict(images, action_history)
+        return type("Job", (), {"result": lambda self, timeout=None: act})()
+
+
 # ---------------- 冷启动 ----------------
 
 def test_cold_start_fills_windows(mock_i2c):
@@ -228,6 +236,44 @@ def test_loop_pacing(mock_i2c):
     elapsed = time.monotonic() - t0
     robot.deactive()
     assert elapsed >= 0.09   # 允许少量计时误差
+
+
+# ---------------- 异步推理路径 ----------------
+
+def test_loop_async_uses_predict_async(mock_i2c):
+    """predictor 声明 predict_async 时闭环走异步路径（执行滞后一拍）"""
+    robot = _make_robot(LOOP_MT, mock_i2c)
+    pred = AsyncMockPredictor(frame_len=3, history_len=2, action_dim=4)
+    robot.active()
+    robot.run_loop(pred, hz=1000.0, max_steps=3)
+    robot.deactive()
+    # 3 步闭环 → 3 次异步推理（calls 由桩内 predict 记录）
+    assert len(pred.calls) == 3
+    # history 回写与同步一致：第 3 步历史末步 = 第 2 步预测动作 [2,3,4,5]
+    _, hist2 = pred.calls[2]
+    np.testing.assert_allclose(hist2[-1], [2, 3, 4, 5])
+
+
+def test_loop_async_executes_prev_action(mock_i2c):
+    """异步模式执行滞后一拍：第 k 步执行第 k-1 步预测的动作"""
+    robot = _make_robot(LOOP_MT, mock_i2c)
+    fd = robot.M["i2c-1"].play({})["fd"]
+    robot.active()
+    mock_i2c.journal.clear()
+    pred = AsyncMockPredictor(frame_len=3, history_len=2, action_dim=4)
+    robot.run_loop(pred, hz=1000.0, max_steps=3)
+    robot.deactive()
+
+    writes = [(e[2], e[3]) for e in mock_i2c.journal
+              if e[0] == "write_reg" and e[1] == fd]
+    # 预测序列：step0→[1,2,3,4], step1→[2,3,4,5], step2→[3,4,5,6]
+    # 执行序列（滞后一拍）：step1 执行 [1,2,3,4]，step2 执行 [2,3,4,5]
+    off = lambda deg: int((0.5 + 2 * deg / 180) * 4096 / 20)  # noqa: E731
+    off_reg = lambda ch: 0x06 + 4 * ch + 2   # noqa: E731 —— LEDx_OFF_L
+    s1_vals = [v for r, v in writes if r == off_reg(0)]   # s1 ch0
+    s2_vals = [v for r, v in writes if r == off_reg(1)]   # s2 ch1
+    assert s1_vals == [off(1) & 0xFF, off(2) & 0xFF]   # step0/step1 预测的 s1
+    assert s2_vals == [off(2) & 0xFF, off(3) & 0xFF]   # step0/step1 预测的 s2
 
 
 # ---------------- 帧源：守护线程队列 ----------------

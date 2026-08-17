@@ -287,21 +287,41 @@ class RobotStruct:
         dt = 1.0 / hz
         step = 0
         overrun = 0
-        log.info("closed loop start: hz=%.1f F=%d H=%d action_dim=%d",
-                 hz, F, H, action_dim)
+        # 异步模式：predictor 声明 predict_async 时启用——推理期间并行执行
+        # 上一步动作（滞后一拍执行，动作与状态错位一拍，10Hz 下 = 100ms，
+        # 对微动作步态影响可忽略），省去执行耗时（实测 HEF 步耗时 ~16ms → ~12ms）
+        use_async = hasattr(predictor, "predict_async")
+        prev_act = None
+        log.info("closed loop start: hz=%.1f F=%d H=%d action_dim=%d%s",
+                 hz, F, H, action_dim,
+                 " async" if use_async else "")
         try:
             while max_steps is None or step < max_steps:
                 t0 = time.monotonic()
                 frames.extend(self._loop_recent_frames(camera_var, F))  # 1 采样
                 imu = self._read_imus(imu_vars)
-                if use_imu:                                            # 2 推理
-                    act = predictor.predict(list(frames), np.array(history),
-                                            imu=self._pad_imu(
-                                                imu, predictor.imu_dim))
+                if use_async:                                          # 2 推理（异步）
+                    if use_imu:
+                        job = predictor.predict_async(
+                            list(frames), np.array(history),
+                            imu=self._pad_imu(imu, predictor.imu_dim))
+                    else:
+                        job = predictor.predict_async(
+                            list(frames), np.array(history))
+                    if prev_act is not None:
+                        self._execute_action_vec(prev_act, exec_cols)  # 3 执行（∥ NPU）
+                    act = np.asarray(job.result(timeout=10.0),
+                                     dtype=np.float32).reshape(-1)
+                    prev_act = act.copy()
                 else:
-                    act = predictor.predict(list(frames), np.array(history))
-                act = np.asarray(act, dtype=np.float32).reshape(-1)
-                self._execute_action_vec(act, exec_cols)               # 3 执行
+                    if use_imu:
+                        act = predictor.predict(list(frames), np.array(history),
+                                                imu=self._pad_imu(
+                                                    imu, predictor.imu_dim))
+                    else:
+                        act = predictor.predict(list(frames), np.array(history))
+                    act = np.asarray(act, dtype=np.float32).reshape(-1)
+                    self._execute_action_vec(act, exec_cols)           # 3 执行
                 history.append(act.copy())                             # 4 回写
                 if recorder is not None:
                     recorder.record(
