@@ -64,13 +64,35 @@ class ConfigManager:
 
             # 大模型调用接口
             "api": {
+                "provider": "openai_compatible",       # 提供商：deepseek / openai_compatible（OpenAI Chat Completions 协议兼容）
                 "deepseek_api_url": "https://api.deepseek.com/chat/completions",    # deepseek API URL
                 "deepseek_model": "deepseek-v4-flash",      # 模型名字
                 "reasoning_enabled": False,                 # 开启思维链
                 "api_key_env": "DEEPSEEK_API_KEY",          # API-KEY所在的环境变量
                 "timeout": 120,                             # 调用大模型请求超时时间
-                "temperature": 0.7                          # 大模型对话温度（类似思维发散程度）
+                "temperature": 0.7,                         # 大模型对话温度（类似思维发散程度）
+                "default_model": "deepseek"                 # 默认模型档案名（对应 models 节的 key）
             },
+
+            # 多模型档案：可配置多个 OpenAI Chat Completions 兼容端点，按名称选择
+            # 示例（在 ~/.aibox/config.json 中添加）：
+            #   "models": {
+            #     "kimi": {
+            #       "api_url": "https://api.moonshot.cn/v1/chat/completions",
+            #       "model": "kimi-k2",
+            #       "api_key_env": "MOONSHOT_API_KEY",   # 未配置回退 api.api_key_env；空串 "" 为免密端点
+            #       "reasoning_enabled": false,
+            #       "timeout": 120
+            #     },
+            #     "local": {
+            #       "api_url": "http://localhost:11434/v1/chat/completions",
+            #       "model": "qwen3:32b",
+            #       "api_key_env": ""
+            #     }
+            #   }
+            # 选择优先级：--model <档案名> > api.default_model > 回退旧 api 扁平节。
+            # 默认留空：用户未配置档案时走旧 api 节（零破坏）。
+            "models": {},
 
             # 大模型上下文
             "context": {

@@ -23,6 +23,8 @@
 - 🛡️ **内存安全防护**：文件读取按需加载不全载、命令输出 1MB 限制、单行超长截断、工具结果多层防护防止 OOM
 - 🔒 **错误自动恢复**：API 请求失败自动回滚消息，工具结果安全清洗（控制字符过滤、非字符串转换）
 - 🛑 **可靠中断机制**：支持 Ctrl+C 实时中断，通过 `threading.Event` + HTTP 连接关闭 + 子进程 kill 三层取消，流式响应和长时间运行命令均可立即终止
+- 💻 **CLI 一次性对话**：`--once "问题"` 不启动 WebSocket 直接执行并退出，stdout/stderr 分流可管道组合，支持 `--quiet` / `--show-reasoning` / `--worker-only` / `--model` / `--temperature` / `--once-timeout`
+- 🔀 **多模型档案**：`config.json` 的 `models` 节可配置多个 OpenAI Chat Completions 兼容端点（DeepSeek/Kimi/Qwen/本地 Ollama 等），按名称切换，档案级 api_url/model/api_key_env/reasoning_enabled/timeout
 
 ## 🚀 快速开始
 
@@ -90,7 +92,7 @@ aibox/
 │   ├── prompt_tools.py     # B 批：UpdateIdentity/UpdateSoul/SaveMemoryAndEndConversation
 │   ├── proxy_tools.py      # B 批：SetProxy/GetProxy
 │   └── misc_tools.py       # B 批：AskUserTool
-├── tests/             # 单元测试套件（232 项全过）
+├── tests/             # 单元测试套件（264 项全过）
 │   ├── conftest.py                    # sys.path 配置 + websockets 桩
 │   ├── test_basic_tools.py            # A 批工具 43 项
 │   ├── test_b_tools.py                # B 批工具 58 项
@@ -99,7 +101,9 @@ aibox/
 │   ├── test_db.py                     # 记忆/备忘录数据库（含中文检索/迁移）
 │   ├── test_conversation_history.py   # 对话历史
 │   ├── test_conversation_compressor.py # 对话压缩器
-│   └── test_skill_manager.py          # 技能管理器
+│   ├── test_skill_manager.py          # 技能管理器
+│   ├── test_once_mode.py              # CLI 一次性对话模式（Batch A/B/C 15 项）
+│   └── test_models_profile.py         # 多模型档案（Batch D 17 项）
 ├── skills/            # 内置扩展技能（*.py 可执行脚本 / *.md Markdown 技能）
 │   ├── hello-world.py
 │   ├── aes-crypto.py
@@ -134,7 +138,7 @@ common  ←  subsystems  ←  tools  ←  aibox.py
 ```bash
 # 从仓库根目录运行
 py -m pytest aibox/tests -q
-# 当前：232 项全过，约 11s
+# 当前：264 项全过
 ```
 
 运行期数据存放于 `~/.aibox/`：
@@ -502,15 +506,63 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
     "broadcast_enabled": true
   },
   "api": {
-    "provider": "deepseek",
+    "provider": "openai_compatible",
     "deepseek_api_url": "https://api.deepseek.com/chat/completions",
     "deepseek_model": "deepseek-v4-flash",
     "reasoning_enabled": false,
     "api_key_env": "DEEPSEEK_API_KEY",
     "timeout": 120,
-    "temperature": 0.7
+    "temperature": 0.7,
+    "default_model": "deepseek"
   },
-  "context": {
+  "models": {},
+  ```
+
+### 🔀 多模型档案（models 节）
+
+`models` 可配置多个 OpenAI Chat Completions 协议兼容端点，按**档案名**切换（v3.2）：
+
+```json
+{
+  "models": {
+    "kimi": {
+      "api_url": "https://api.moonshot.cn/v1/chat/completions",
+      "model": "kimi-k2",
+      "api_key_env": "MOONSHOT_API_KEY",
+      "reasoning_enabled": false,
+      "timeout": 120
+    },
+    "local": {
+      "api_url": "http://localhost:11434/v1/chat/completions",
+      "model": "qwen3:32b",
+      "api_key_env": ""
+    }
+  },
+  "api": { "default_model": "kimi" }
+}
+```
+
+**档案字段**：
+
+| 字段 | 说明 |
+|---|---|
+| `api_url` | 端点 URL（OpenAI Chat Completions 协议） |
+| `model` | 该档案使用的模型名 |
+| `api_key_env` | API Key 环境变量名；**未配置回退 `api.api_key_env`；显式空串 `""` 为本地免密端点**（Ollama/vLLM） |
+| `reasoning_enabled` | 档案级思考模式开关（缺省回退 `api.reasoning_enabled`） |
+| `timeout` | 请求超时秒数 |
+
+**选择优先级**：`--model <档案名>`（命中 `models` 节）→ `api.default_model` 指向档案 → 回退旧 `api` 扁平节。
+
+`--model` 传**裸模型名**（未命中档案）时，沿用默认端点与 Key，仅覆盖模型名——即 "同端点换模型" 语义。
+
+**兼容性**：`models` 留空 `{}` 时行为与旧版完全一致（走 `api` 节），已有配置无需任何改动。
+
+其余配置节：
+
+  ```json
+  {
+    "context": {
     "max_history_messages": 500,
     "max_context_messages": 120,
     "max_tokens": 8192,
@@ -595,6 +647,14 @@ python aibox.py [选项]
   --memo-add "标题|内容|时间"  添加任务
   --memo-list           列出任务
   --memo-complete ID    完成任务
+  --once QUERY          一次性对话：执行 QUERY 后退出（不启动 WebSocket）
+  --quiet               一次性模式静默输出（stdout 仅回答正文）
+  --show-reasoning      一次性模式输出思考流（默认静默，走 stderr）
+  --no-save-memory      一次性模式禁用记忆工具（干净跳过，不进请求 schema）
+  --worker-only         一次性模式纯执行面（worker profile，无人格/记忆工具）
+  --model NAME          模型档案名（models 节）或裸模型名（同端点换模型）
+  --temperature T       覆盖配置的对话温度
+  --once-timeout SEC    一次性模式全局超时（默认 300 秒）
 ```
 
 ### 使用示例
@@ -615,6 +675,30 @@ python aibox.py --memo-add "提醒开会|下午3点会议室A|+1h"
 # 查看所有任务
 python aibox.py --memo-list
 ```
+
+### 💻 CLI 一次性对话（--once）
+
+不启动 WebSocket，单次执行后退出。回答正文走 **stdout**，工具过程/思考流走 **stderr**，可直接管道组合：
+
+```bash
+# 基础问答
+python aibox.py --once "帮我看下当前日期"
+
+# 管道组合（--quiet 静默模式）
+python aibox.py --once --quiet "列出当前目录 py 文件" | grep ".py" | wc -l
+
+# 按档案名选模型 / 同端点换模型
+python aibox.py --once --model kimi "总结这段代码"
+python aibox.py --once --model deepseek-v4-lite "1+1?"
+
+# 纯执行面（无人格/记忆，单次收敛，适合脚本调用）
+python aibox.py --once --worker-only "执行 echo hello 并返回输出"
+
+# 显式开启思考流 / 禁用记忆写入
+python aibox.py --once --show-reasoning --no-save-memory "分析这个问题"
+```
+
+**退出码**：`0` 成功 / `1` 工具执行失败 / `2` API 调用失败 / `3` 用户中断（Ctrl+C）/ `4` 全局超时。
 
 ## 🔄 架构流程
 
@@ -794,6 +878,14 @@ elif command == "/mycommand":
 3. 确认工具返回值为字符串且不含二进制/控制字符
 
 ## 📄 更新日志
+
+### v3.2
+- ✅ **CLI 一次性对话模式（`--once`）**（分三批落地，开发文档见 [docs/reports/aibox_cli_once_mode_dev_doc.md](../docs/reports/aibox_cli_once_mode_dev_doc.md)）：
+  - **Batch A**：`--once QUERY` / `--quiet` / `--once-timeout`；不启动 WebSocket，执行后退出；回答走 stdout、过程走 stderr，可管道组合；SIGINT 与超时复用三层取消机制
+  - **Batch B**：`--no-save-memory`（`enable_memory` 开关干净禁用 MemoryTool）、`--show-reasoning`（思考流默认静默）；压缩提示改走 output_callback 不再污染 stdout；退出码 1（工具执行失败）
+  - **Batch C**：SQLite WAL（多 CLI 进程并发写锁缓解）、`--worker-only`（纯执行面 + 精简 system prompt 防人格污染）、`--model` / `--temperature` 覆盖、子代理工具失败标记透传（`_SUBAGENT_TOOL_FAILED_MARKER` → orchestrator stats）
+- ✅ **多模型档案（`models` 配置节）**：配置多个 OpenAI Chat Completions 兼容端点（DeepSeek/Kimi/Qwen/本地 Ollama 等）按档案名切换；`--model` 支持档案名与裸模型名（同端点换模型）双语义；档案级 `api_key_env` 三级语义（回退 / 显式 / 空串免密）；档案级 `reasoning_enabled` 优先于全局；`models: {}` 时零破坏回退旧 `api` 节；`llm_client.py` 增加 `openai_compatible` / `openai` provider 别名
+- ✅ **测试**：264 项全过（once 模式 15 项 + 多模型档案 17 项新增）
 
 ### v3.1
 - ✅ **修复 FTS5 中文搜索失效**（[subsystems/db.py](subsystems/db.py)）：

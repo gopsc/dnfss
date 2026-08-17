@@ -219,17 +219,31 @@ class DeepSeekClient(LLMClient):
             }
 
 
-def resolve_api_key(api_key: Optional[str], config=None) -> str:
-    """解析 API Key：优先显式传入，其次环境变量，最后 ~/.cert/deepseek.key。"""
+def resolve_api_key(api_key: Optional[str], config=None,
+                    env_name: Optional[str] = None,
+                    allow_missing: bool = False) -> str:
+    """解析 API Key：优先显式传入，其次环境变量，最后 ~/.cert/deepseek.key。
+
+    env_name: 档案级环境变量名（来自 models.<name>.api_key_env）；
+              None 时回退 config 的 api.api_key_env。
+    allow_missing: 本地免密端点（models.<name>.api_key_env 为空串）时，
+              允许无 Key，返回空串（Bearer 空头，Ollama/vLLM 忽略）。
+    """
     if api_key:
         return api_key
-    env_name = None
-    if config is not None and hasattr(config, "get"):
-        env_name = config.get("api.api_key_env")
-    env_name = env_name or "DEEPSEEK_API_KEY"
+    if env_name is None:
+        if config is not None and hasattr(config, "get"):
+            env_name = config.get("api.api_key_env")
+        env_name = env_name or "DEEPSEEK_API_KEY"
+    if not env_name:  # 档案显式置空 → 免密端点
+        if allow_missing:
+            return ""
+        raise RuntimeError("模型档案 api_key_env 配置为空且未启用免密")
     env_key = os.environ.get(env_name)
     if env_key:
         return env_key
+    if allow_missing:
+        return ""
     try:
         home = os.environ.get("HOME", os.environ["USERPROFILE"])
         key_path = os.path.join(home, ".cert", "deepseek.key")
@@ -240,26 +254,72 @@ def resolve_api_key(api_key: Optional[str], config=None) -> str:
             f"请设置环境变量 {env_name} 或在配置文件中设置 API Key")
 
 
+def _resolve_model_profile(config, model: Optional[str]):
+    """解析模型档案。返回 (profile_dict, effective_model_name)。
+
+    优先级：model 命中 models.<name> 档案 > api.default_model 档案 > None（回退旧 api 节）。
+    model 未命中档案时视为裸模型名（同端点换模型，用默认档案的 url/key，模型名用裸名）。
+    """
+    if config is None or not hasattr(config, "get"):
+        return None, model
+    models = config.get("models") or {}
+    if not isinstance(models, dict):
+        return None, model
+
+    explicit = models.get(model) if model else None
+    default_name = config.get("api.default_model")
+    default_profile = models.get(default_name) if default_name else None
+
+    if explicit is not None:
+        # model 是档案名 → 完整采用该档案（url/key/模型名）
+        return explicit, explicit.get("model") or model
+    if default_profile is not None:
+        # model 是裸名或未指定 → 默认档案的 url/key，模型名被裸名覆盖
+        return default_profile, model or default_profile.get("model")
+    return None, model
+
+
 def create_llm_client(config, api_key: Optional[str] = None,
                       logger=None, model: Optional[str] = None) -> LLMClient:
-    """根据配置创建对应厂商的 LLM 客户端。可通过 `api.provider` 切换厂商。
+    """根据配置创建对应厂商的 LLM 客户端。
+
+    模型选择优先级：
+      1. model 命中 models 节档案名 → 采用该档案（api_url/model/api_key_env/timeout）
+      2. api.default_model 指向的档案 → model 为裸模型名时覆盖档案内模型名
+      3. 均未配置 → 回退旧 api 扁平节（deepseek_api_url/deepseek_model）
+
+    provider: deepseek / openai_compatible / openai 均映射到 DeepSeekClient
+    （OpenAI Chat Completions 协议兼容实现，厂商差异由子类覆写 _parse_delta）。
 
     Args:
         config: 配置对象（需提供 get 方法）。
         api_key: 显式传入的 API Key；为 None 时按 resolve_api_key 解析。
         logger: 可选日志对象。
-        model: 可选模型名覆盖；为 None 时使用配置中的 `api.deepseek_model`。
-               子代理等场景可通过此参数显式指定与主代理不同的模型。
+        model: 档案名或裸模型名。
     """
-    provider = (config.get("api.provider", "deepseek") or "deepseek").lower()
-    base_url = config.get("api.deepseek_api_url")
-    model = model or config.get("api.deepseek_model", "deepseek-v4-flash")
-    timeout = config.get("api.timeout", 30)
+    profile, model = _resolve_model_profile(config, model)
 
-    resolved_key = resolve_api_key(api_key, config)
+    env_name = None
+    allow_missing = False
+    if profile is not None:
+        base_url = profile.get("api_url")
+        timeout = profile.get("timeout") or config.get("api.timeout", 30)
+        env_name = profile.get("api_key_env")
+        if env_name == "":
+            allow_missing = True  # 档案显式空串 → 本地免密端点
+    else:
+        provider = (config.get("api.provider", "deepseek") or "deepseek").lower()
+        base_url = config.get("api.deepseek_api_url")
+        model = model or config.get("api.deepseek_model", "deepseek-v4-flash")
+        timeout = config.get("api.timeout", 30)
 
-    if provider in ("deepseek", "deepseek-chat"):
-        return DeepSeekClient(
+    resolved_key = resolve_api_key(api_key, config, env_name=env_name,
+                                   allow_missing=allow_missing)
+
+    if profile is not None:
+        provider = "openai_compatible"
+    if provider in ("deepseek", "deepseek-chat", "openai_compatible", "openai"):
+        client = DeepSeekClient(
             api_key=resolved_key,
             model=model,
             base_url=base_url,
@@ -267,6 +327,11 @@ def create_llm_client(config, api_key: Optional[str] = None,
             config=config,
             logger=logger,
         )
+        # 档案级思考模式开关（未配置时回退全局 api.reasoning_enabled）
+        if profile is not None:
+            client.reasoning_enabled = profile.get(
+                "reasoning_enabled", config.get("api.reasoning_enabled", False))
+        return client
 
     # 其他 OpenAI 兼容厂商：可直接复用 DeepSeekClient（继承其协议解析），
     # 或在此接入专有实现。新增厂商时在此扩展即可。

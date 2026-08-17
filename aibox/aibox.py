@@ -934,6 +934,12 @@ class DeepSeekChat:
             except Exception:
                 pass
     
+    def _reasoning_enabled(self) -> bool:
+        """思考模式开关：客户端带档案级 reasoning_enabled 属性时优先（多模型档案），否则用全局配置"""
+        return getattr(self.client, "reasoning_enabled", None) \
+            if getattr(self.client, "reasoning_enabled", None) is not None \
+            else constants.REASONING_ENABLED
+
     def _is_cancelled(self) -> bool:
         """检查是否已被取消。"""
         return self._cancel_event.is_set()
@@ -1451,7 +1457,7 @@ class DeepSeekChat:
             # 工具调用后的递归继续（is_continuation=True）时不重复发送"思考中"提示，
             # 因为前端已处于活跃AI状态，重复提示会导致冗余/重复输出
             output_callback("line", f"\n{i18n.get('thinking', current_time)}\n")
-            if constants.REASONING_ENABLED:
+            if self._reasoning_enabled():
                 output_callback("reasoning_start", "🤔 思考中...")
             else:
                 # 普通模式先显示助手前缀
@@ -1476,7 +1482,7 @@ class DeepSeekChat:
                 temperature=self.temperature,
                 max_tokens=constants.DEFAULT_MAX_TOKENS,
                 tools=tools,
-                reasoning_enabled=constants.REASONING_ENABLED,
+                reasoning_enabled=self._reasoning_enabled(),
             ):
                 # 流式循环中检查取消信号
                 if self._is_cancelled():

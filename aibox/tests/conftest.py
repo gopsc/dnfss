@@ -13,6 +13,8 @@ from pathlib import Path
 # 把 aibox 目录加入 sys.path（无需安装为包即可 import tools/common）
 AIBOX_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(AIBOX_DIR))
+# tests 目录也加入：测试文件互相导入（如 test_models_profile 复用 test_once_mode 的 _make_ai）
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # 桩掉 websockets（aibox.py 顶部 import websockets，测试环境可能未安装）
 if "websockets" not in sys.modules:
