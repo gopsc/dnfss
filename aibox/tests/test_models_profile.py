@@ -869,6 +869,176 @@ class TestL4aChatCompletionFailover:
         assert kwargs["temperature"] == 0.5 and kwargs["max_tokens"] == 99
 
 
+# ==================== L4b：stream_chat 首事件前转移 + 中断联动 ====================
+
+def _fake_stream(events=None, exc=None, before=None):
+    """构造伪 stream_chat 可调用：先 before()，逐个 yield events，最后抛 exc。"""
+    def call(*args, **kwargs):
+        if before is not None:
+            before()
+        for e in (events or []):
+            yield e
+        if exc is not None:
+            raise exc
+    return call
+
+
+class TestL4bStreamFailover:
+    """L4b：流式仅在首事件前转移；已产出事件/用户中断绝不转移。
+
+    - 转移窗口：连接建立失败、HTTP 429/5xx（TransientLLMError）——此时未产出任何事件
+    - 不转移：产出首个事件后的任何失败（重放会前端重复/工具增量错乱）、cancel 引发的异常
+    - cancel() 广播整条链并置标志；chat_completion 同样受标志保护
+    """
+
+    EVENTS = [{"type": "reasoning", "text": "think"},
+              {"type": "content", "text": "hello"},
+              {"type": "done"}]
+
+    def _client(self, name, stream=None, completion=None):
+        c = mock.MagicMock()
+        c.name = name
+        if stream is not None:
+            c.stream_chat = mock.MagicMock(side_effect=stream)
+        if completion is not None:
+            c.chat_completion = mock.MagicMock(side_effect=completion)
+        return c
+
+    def _fc(self, primary, fallback):
+        from llm_client import FailoverClient
+        return FailoverClient([primary, fallback])
+
+    def test_failover_before_first_event(self):
+        """主档案未产出任何事件即瞬时失败 → 转移 fallback，事件完整来自 fallback"""
+        from llm_client import TransientLLMError
+        primary = self._client("deepseek",
+                               stream=_fake_stream(exc=TransientLLMError("HTTP 429")))
+        fallback = self._client("kimi", stream=_fake_stream(events=self.EVENTS))
+        fc = self._fc(primary, fallback)
+        assert list(fc.stream_chat([{"role": "user", "content": "q"}])) == self.EVENTS
+        assert fallback.stream_chat.called
+
+    def test_failover_on_connection_error_before_events(self):
+        """主档案连接失败（未产出事件）→ 转移成功"""
+        primary = self._client("deepseek",
+                               stream=_fake_stream(exc=requests.exceptions.ConnectionError("boom")))
+        fallback = self._client("kimi", stream=_fake_stream(events=self.EVENTS))
+        fc = self._fc(primary, fallback)
+        assert list(fc.stream_chat([{"role": "user", "content": "q"}])) == self.EVENTS
+
+    def test_no_failover_after_first_event(self):
+        """已产出 1 个事件后失败 → 直接上抛，不调 fallback（防前端重复输出）"""
+        primary = self._client("deepseek",
+                               stream=_fake_stream(events=self.EVENTS[:1],
+                                                   exc=requests.exceptions.ConnectionError("mid")))
+        fallback = self._client("kimi", stream=_fake_stream(events=self.EVENTS))
+        fc = self._fc(primary, fallback)
+        with pytest.raises(requests.exceptions.ConnectionError):
+            list(fc.stream_chat([{"role": "user", "content": "q"}]))
+        fallback.stream_chat.assert_not_called()
+
+    def test_cancel_never_fails_over_stream(self):
+        """用户中断（cancel 引发连接异常）→ 上抛原异常，绝不转移"""
+        holder = {}
+
+        def do_cancel():
+            holder["fc"].cancel()
+
+        primary = self._client("deepseek",
+                               stream=_fake_stream(before=do_cancel,
+                                                   exc=requests.exceptions.ConnectionError("cancelled")))
+        fallback = self._client("kimi", stream=_fake_stream(events=self.EVENTS))
+        fc = self._fc(primary, fallback)
+        holder["fc"] = fc
+        with pytest.raises(requests.exceptions.ConnectionError):
+            list(fc.stream_chat([{"role": "user", "content": "q"}]))
+        fallback.stream_chat.assert_not_called()
+        assert fc._cancelled is True
+        primary.cancel.assert_called_once()  # 广播到主 client
+
+    def test_cancel_never_fails_over_chat_completion(self):
+        """chat_completion 期间的 cancel 引发异常 → 返回 None，不转移"""
+        holder = {}
+
+        def raise_after_cancel(*a, **k):
+            holder["fc"].cancel()
+            raise requests.exceptions.ConnectionError("cancelled")
+
+        primary = self._client("deepseek", completion=raise_after_cancel)
+        fallback = self._client("kimi", stream=_fake_stream(events=self.EVENTS))
+        fc = self._fc(primary, fallback)
+        holder["fc"] = fc
+        assert fc.chat_completion([{"role": "user", "content": "q"}]) is None
+        fallback.chat_completion.assert_not_called()
+
+    def test_cancel_broadcasts_to_whole_chain(self):
+        """fc.cancel() → 链上全部 client.cancel() 均被调用 + 自身置标志"""
+        primary = self._client("deepseek")
+        fallback = self._client("kimi")
+        fc = self._fc(primary, fallback)
+        fc.cancel()
+        assert fc._cancelled is True
+        primary.cancel.assert_called_once()
+        fallback.cancel.assert_called_once()
+
+    def test_chain_exhausted_raises_last(self):
+        """全链首事件前瞬时失败 → 抛最后一个异常（既有错误处理接住）"""
+        from llm_client import TransientLLMError
+        primary = self._client("deepseek", stream=_fake_stream(exc=requests.exceptions.Timeout("t1")))
+        fallback = self._client("kimi", stream=_fake_stream(exc=TransientLLMError("HTTP 500")))
+        fc = self._fc(primary, fallback)
+        with pytest.raises(TransientLLMError):
+            list(fc.stream_chat([{"role": "user", "content": "q"}]))
+
+    def test_all_cooling_raises_runtime_error(self):
+        """全链处于冷却期 → RuntimeError（不发任何请求）"""
+        import time as _time
+        primary = self._client("deepseek", stream=_fake_stream(events=self.EVENTS))
+        fallback = self._client("kimi", stream=_fake_stream(events=self.EVENTS))
+        fc = self._fc(primary, fallback)
+        fc._fail_at = {"deepseek": _time.monotonic(), "kimi": _time.monotonic()}
+        with pytest.raises(RuntimeError, match="冷却期"):
+            list(fc.stream_chat([{"role": "user", "content": "q"}]))
+        primary.stream_chat.assert_not_called()
+
+    def test_cooldown_skips_failed_primary_stream(self):
+        """主档案冷却中 → 流式直接走 fallback"""
+        import time as _time
+        primary = self._client("deepseek", stream=_fake_stream(events=self.EVENTS))
+        fallback = self._client("kimi", stream=_fake_stream(events=self.EVENTS))
+        fc = self._fc(primary, fallback)
+        fc._fail_at["deepseek"] = _time.monotonic()
+        assert list(fc.stream_chat([{"role": "user", "content": "q"}])) == self.EVENTS
+        primary.stream_chat.assert_not_called()
+
+    def test_success_does_not_touch_fallback(self):
+        """主档案成功（含 done 自然结束）→ fallback 从未被调"""
+        primary = self._client("deepseek", stream=_fake_stream(events=self.EVENTS))
+        fallback = self._client("kimi", stream=_fake_stream(events=self.EVENTS))
+        fc = self._fc(primary, fallback)
+        assert list(fc.stream_chat([{"role": "user", "content": "q"}])) == self.EVENTS
+        fallback.stream_chat.assert_not_called()
+
+    def test_http_transient_status_raises_transient(self):
+        """裸 DeepSeekClient.stream_chat：429/503 → TransientLLMError（可转移信号）"""
+        from llm_client import DeepSeekClient, TransientLLMError
+        c = DeepSeekClient(api_key="k", model="m", base_url="https://x")
+        for status in (429, 503):
+            resp = mock.MagicMock(status_code=status, text="err")
+            with mock.patch("llm_client.requests.post", return_value=resp):
+                with pytest.raises(TransientLLMError):
+                    list(c.stream_chat([{"role": "user", "content": "hi"}]))
+
+    def test_http_auth_status_raises_runtime(self):
+        """裸 DeepSeekClient.stream_chat：401 → RuntimeError（非瞬时，不触发转移类型）"""
+        from llm_client import DeepSeekClient
+        c = DeepSeekClient(api_key="k", model="m", base_url="https://x")
+        resp = mock.MagicMock(status_code=401, text="unauthorized")
+        with mock.patch("llm_client.requests.post", return_value=resp):
+            with pytest.raises(RuntimeError, match="401"):
+                list(c.stream_chat([{"role": "user", "content": "hi"}]))
+
+
 # ==================== DeepSeekChat 档案级 reasoning 读取 ====================
 
 class TestChatReasoningFlag:

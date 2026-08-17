@@ -47,6 +47,9 @@ class LLMClient(ABC):
         self.default_temperature = default_temperature
         # 当前活动的 HTTP 响应引用，供 cancel() 强制关闭底层连接以中断阻塞读取
         self._current_response = None
+        # L4b：用户中断标志——cancel() 强关连接引发的异常与真实网络故障不可区分，
+        # FailoverClient 据此标志跳过转移（否则用户越中断、系统越换厂商重试）
+        self._cancelled = False
 
     @property
     def name(self) -> str:
@@ -70,6 +73,7 @@ class LLMClient(ABC):
 
     def cancel(self):
         """中断当前流式请求。线程安全，可从任意线程调用。"""
+        self._cancelled = True
         resp = self._current_response
         self._current_response = None
         if resp is not None:
@@ -202,6 +206,10 @@ class DeepSeekClient(LLMClient):
         self._current_response = response
 
         if response.status_code != 200:
+            if response.status_code == 429 or response.status_code >= 500:
+                # L4b：瞬时故障显式分类（此时尚未产出任何事件，可安全转移重放）
+                raise TransientLLMError(
+                    f"LLM 流式请求瞬时失败: HTTP {response.status_code}: {response.text[:200]}")
             raise RuntimeError(
                 f"HTTP {response.status_code}: {response.text}")
 
@@ -275,7 +283,10 @@ class FailoverClient:
     失败档案进入冷却期（cooldown_seconds，默认 60s），期间直接跳过，
     避免每次请求都撞刚失败的端点。链耗尽返回 None（与 chat_completion 失败契约一致）。
 
-    stream_chat 暂直接委托主 client（L4b 实现首 token 前转移）。
+    L4b 范围——stream_chat 仅**首事件前**故障转移（连接失败/HTTP 429/5xx，
+    尚未产出任何 reasoning/content/tool_call 事件，重放对用户不可见）；
+    已产出事件后失败直接上抛（重放会导致前端重复输出/工具增量错乱）；
+    用户中断（cancel() 置位）引发的连接异常绝不转移。
     """
 
     def __init__(self, clients: List, logger=None, cooldown_seconds: float = 60.0):
@@ -283,6 +294,7 @@ class FailoverClient:
         self.logger = logger
         self.cooldown_seconds = cooldown_seconds
         self._fail_at = {}  # client.name → 失败时刻（time.monotonic）
+        self._cancelled = False
 
     def __getattr__(self, item):
         # 未显式定义的属性/方法委托主 client（name/model/api_key/cancel 等）；
@@ -305,8 +317,21 @@ class FailoverClient:
     def _mark_fail(self, client):
         self._fail_at[client.name] = time.monotonic()
 
+    def cancel(self):
+        """L4b：中断链上全部 client（任一可能正在流式中）并置自身中断标志。
+
+        显式定义以覆盖 __getattr__ 委托——包装器必须同时通知整条链。
+        """
+        self._cancelled = True
+        for client in self._clients:
+            try:
+                client.cancel()
+            except Exception:
+                pass
+
     def chat_completion(self, messages: List[Dict], temperature: float = None,
                         max_tokens: int = 1024, **kwargs):
+        self._cancelled = False  # 新一轮请求，清除上一轮中断标志
         last_exc = None
         tried = 0
         for client in self._clients:
@@ -322,6 +347,8 @@ class FailoverClient:
                 # None：认证/参数类 4xx 或响应异常——不可转移，直接透传
                 return None
             except (TransientLLMError, requests.exceptions.RequestException) as e:
+                if self._cancelled:
+                    return None  # 用户中断引发的异常：不转移
                 last_exc = e
                 self._mark_fail(client)
                 self._log("warning", f"模型档案 {client.name} 瞬时故障（{e}），转移下一档案")
@@ -332,11 +359,35 @@ class FailoverClient:
                     max_tokens: int = 8192, tools: Optional[List[Dict]] = None,
                     tool_choice: Optional[str] = None,
                     reasoning_enabled: bool = False, **extra) -> Iterator[Dict]:
-        # L4a：暂不转移（L4b 实现首 token 前转移），直接委托主 client
-        yield from self._clients[0].stream_chat(
-            messages, temperature=temperature, max_tokens=max_tokens,
-            tools=tools, tool_choice=tool_choice,
-            reasoning_enabled=reasoning_enabled, **extra)
+        """L4b：流式转移——仅首事件前故障可安全重放（对用户不可见）。"""
+        self._cancelled = False  # 新一轮请求，清除上一轮中断标志
+        last_exc = None
+        for client in self._clients:
+            if self._cooling(client):
+                self._log("info", f"模型档案 {client.name} 处于失败冷却期，跳过")
+                continue
+            produced_any = False
+            try:
+                for event in client.stream_chat(
+                        messages, temperature=temperature, max_tokens=max_tokens,
+                        tools=tools, tool_choice=tool_choice,
+                        reasoning_enabled=reasoning_enabled, **extra):
+                    produced_any = True
+                    yield event
+                return  # 自然结束（含 done 事件）视为成功
+            except (TransientLLMError, requests.exceptions.RequestException) as e:
+                if self._cancelled:
+                    raise  # 用户中断（cancel 强关连接）：绝不转移
+                if produced_any:
+                    raise  # 已向消费方产出事件，重放会重复输出/工具增量错乱
+                last_exc = e
+                self._mark_fail(client)
+                self._log("warning",
+                          f"模型档案 {client.name} 流式瞬时故障（首事件前，{e}），转移下一档案")
+        if last_exc is not None:
+            raise last_exc  # 链耗尽：抛最后异常，由既有错误处理（回滚/报错）接住
+        raise RuntimeError(
+            f"全部 {len(self._clients)} 个模型档案处于失败冷却期，暂不可用")
 
 
 def resolve_api_key(api_key: Optional[str], config=None,
