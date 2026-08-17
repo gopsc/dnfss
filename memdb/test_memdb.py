@@ -206,13 +206,13 @@ def test_missing_params(c, cnt):
     cnt.check(not ok, "get missing 'key' returns error", f"got {data}")
 
 
-def test_concurrent(c, cnt):
+def test_concurrent(c, cnt, host="127.0.0.1", port=8011):
     """并发 set/get：验证 mutex 保护不崩溃"""
     errors = []
     results = []
 
     def worker(worker_id):
-        client = MemdbClient()
+        client = MemdbClient(host, port)
         for i in range(20):
             key = f"concurrent:w{worker_id}:k{i}"
             ok, _ = client.call("set", key=key, value=str(worker_id))
@@ -266,7 +266,7 @@ def main():
     test_show(c, cnt)
     test_expire(c, cnt)
     test_missing_params(c, cnt)
-    test_concurrent(c, cnt)
+    test_concurrent(c, cnt, host, port)
 
     return 0 if cnt.summary() else 1
 

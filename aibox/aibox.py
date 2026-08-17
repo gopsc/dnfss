@@ -2808,7 +2808,12 @@ def parse_args():
     # 调度器选项
     parser.add_argument('--no-scheduler', action='store_true', help='禁用任务调度器')
     parser.add_argument('--scheduler-interval', type=float, default=1.0, help='调度器检查间隔（秒）')
-    
+
+    # 一次性对话模式（CLI 单次调用：执行 QUERY 后退出，不启动 WebSocket）
+    parser.add_argument('--once', type=str, metavar='QUERY', help='一次性对话：执行 QUERY 并输出结果后退出')
+    parser.add_argument('--quiet', action='store_true', help='静默模式：仅 stdout 输出回答正文，过程行/思考全静默（适合管道）')
+    parser.add_argument('--once-timeout', type=int, default=300, metavar='SEC', help='一次性对话全局超时秒数（默认 300）')
+
     return parser.parse_args()
 
 
@@ -2918,8 +2923,99 @@ def handle_memo_commands(manager):
         else:
             print(i18n.get('memo_complete_failed', args.memo_complete))
         return True
-    
+
     return False
+
+
+def handle_once_mode(manager, args) -> bool:
+    """一次性对话模式：命中 --once 则执行单次 AI 对话并以退出码结束进程。
+
+    设计要点（详见 docs/reports/aibox_cli_once_mode_dev_doc.md）：
+    - stdout 仅输出 AI 回答正文（chunk 流式），line/reasoning 过程行走 stderr，管道安全
+    - 退出码：0 成功 / 2 API 或链路失败 / 3 用户中断(Ctrl+C) / 4 全局超时
+    - 复用三层中断机制（Event + HTTP 关闭 + 子进程 kill）：SIGINT 与超时 Timer 均走 cancel()
+    - 状态隔离：不加载对话历史、不挂全局退出回调（与 TaskScheduler 任务实例同款隔离）
+    """
+    if not args.once:
+        return False
+
+    # 独立 AI 实例：orchestrator 工具分层不变；不加载历史、不触发全局归档
+    ai = DeepSeekChat(
+        api_key=None,
+        max_history=constants.DEFAULT_MAX_HISTORY,
+        debug_level=manager.logger.level,
+        exit_callback=None,          # AI 主动结束对话时不触发全局归档/重置
+        history_manager=None,        # 单次模式不加载/不写对话历史
+        memory_db=manager.memory_db,
+        memo_db=manager.memo_db,
+        command_executor=manager.command_executor,
+        prompt_manager=manager.prompt_manager,
+    )
+    manager.ai = ai  # 挂到 manager 上，cancel() 可达
+
+    state = {"exit_code": 0, "interrupted": False, "timed_out": False}
+
+    def cli_callback(msg_type, content):
+        """AI 流式输出回调：chunk→stdout（权威内容），其余→stderr（过程元信息）。"""
+        try:
+            if msg_type == "chunk":
+                sys.stdout.write(content)
+                sys.stdout.flush()
+            elif msg_type == "complete":
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+            elif msg_type == "error":
+                sys.stderr.write(str(content) + "\n")
+                sys.stderr.flush()
+                state["exit_code"] = 2
+            elif msg_type in ("line", "reasoning", "reasoning_start", "reasoning_end"):
+                if not args.quiet:
+                    sys.stderr.write(str(content))
+                    sys.stderr.flush()
+            # ai_break / dialogue_ended：CLI 无 widget 概念，忽略
+        except (BrokenPipeError, OSError):
+            # 下游管道提前关闭（如 | head -1）：终止 AI，避免无效消耗
+            ai.cancel()
+
+    # Ctrl+C → 三层取消（与 WebSocket interrupt 路径等价），随后以退出码 3 结束
+    def _sigint_handler(sig, frame):
+        state["interrupted"] = True
+        manager.cancel()
+    signal.signal(signal.SIGINT, _sigint_handler)
+
+    # 全局超时：守护 Timer 到点 cancel，随后以退出码 4 结束
+    def _on_timeout():
+        state["timed_out"] = True
+        manager.cancel()
+    timer = threading.Timer(max(1, args.once_timeout), _on_timeout)
+    timer.daemon = True
+    timer.start()
+
+    try:
+        response = ai.think_and_respond(args.once, cli_callback)
+        # 未走 error 回调但仍无有效回答时，视为链路失败
+        if state["exit_code"] == 0 and not state["interrupted"] and not state["timed_out"]:
+            if response is None or (isinstance(response, str) and not response.strip()):
+                state["exit_code"] = 2
+    except KeyboardInterrupt:
+        state["interrupted"] = True
+    except Exception as e:
+        print(f"{i18n.get('error_prefix')}{e}", file=sys.stderr)
+        state["exit_code"] = 2
+    finally:
+        timer.cancel()
+        try:
+            ai.cancel()  # 兜底清理可能残留的子进程
+        except Exception:
+            pass
+
+    if state["timed_out"]:
+        print(f"\n⏰ 一次性对话超时（{args.once_timeout} 秒）", file=sys.stderr)
+        sys.exit(4)
+    if state["interrupted"]:
+        print(f"\n{i18n.get('user_interrupted')}", file=sys.stderr)
+        sys.exit(3)
+    sys.exit(state["exit_code"])
 
 
 # ==================== 主程序 ====================
@@ -2982,10 +3078,14 @@ def main():
     
     if handle_check_commands(manager):
         return
-    
+
     if handle_memo_commands(manager):
         return
-    
+
+    # 一次性对话模式（--once）：执行后内部 sys.exit，不启动 WebSocket
+    if handle_once_mode(manager, args):
+        return
+
     # 运行WebSocket服务器
     manager.run()
 
