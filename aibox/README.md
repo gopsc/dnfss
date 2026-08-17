@@ -887,8 +887,10 @@ elif command == "/mycommand":
 ### v3.3
 - ✅ **安全审计与修复**（两轮审计报告见 [docs/reports/aibox_audit_20260817.md](../docs/reports/aibox_audit_20260817.md)）：
   - **Batch E（命令执行保护链修复）**：`CommandLineTool.execute_streaming` 纯委托注入的 executor（删除绕过 1MB/超时/中断保护的 150 行重复 Popen 实现）；`SubprocessCommandExecutor` 读取循环线程化（后台 reader 线程 + 0.1s 超时轮询，静默命令超时不再失效）；两处 `Popen` 改 `stdin=DEVNULL`（等待输入的命令不再永久挂起工具线程）；write_file 指引 heredoc 定界符唯一化；registry 流式转发循环加 3600s 总超时兜底。PoC 回归 5/5 + 全量单测通过
-  - **Batch F（凭据保护）**：SOCKS5 代理密码不再明文落盘——`_save_config` 落盘前强制脱敏（纵深防御），新增 `password_env` 环境变量注入（对齐 `api_key_env` 惯例），旧版明文配置加载时自动迁移清除；`registry` debug 日志对 `password`/`api_key`/`token`/`secret`/`authorization` 参数打码
-- ✅ **测试**：267 项全过（Batch E PoC 回归 + Batch F 配置脱敏 3 项新增）
+  - **Batch F（凭据保护 + 线程收尾）**：
+    - **F1**：SOCKS5 代理密码不再明文落盘——`_save_config` 落盘前强制脱敏（纵深防御），新增 `password_env` 环境变量注入（对齐 `api_key_env` 惯例），旧版明文配置加载时自动迁移清除；`registry` debug 日志对 `password`/`api_key`/`token`/`secret`/`authorization` 参数打码
+    - **F2**：registry 流式转发超时路径统一清理 `tool.streaming_output`/`tool.output_queue`（消除僵尸 daemon 线程经实例属性把输出混入后续会话队列的串流路径），`stream_tool_timeout` 提为实例属性（默认 3600s，测试可调）；`SubprocessCommandExecutor` reader 线程收尾——正常 EOF 后显式 close 释放管道 fd，仍阻塞时有限 join 后放弃（daemon 兜底）；实证修正：CPython 流锁下阻塞中的 readline 无法被 `close()` 中断（首版实现致超时被拖满命令时长，已按 PoC 回归修正）
+- ✅ **测试**：272 项全过（Batch E PoC 回归 + F1 配置脱敏 3 项 + F2 超时清理/线程收尾 5 项新增）
 
 ### v3.2
 - ✅ **CLI 一次性对话模式（`--once`）**（分三批落地，开发文档见 [docs/reports/aibox_cli_once_mode_dev_doc.md](../docs/reports/aibox_cli_once_mode_dev_doc.md)）：
