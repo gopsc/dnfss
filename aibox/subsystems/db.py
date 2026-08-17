@@ -36,6 +36,8 @@ class MemoryDatabase:
     def _init_database(self):
         """初始化数据库表"""
         with sqlite3.connect(self.db_path) as conn:
+            # WAL 模式：读写并发不互斥，缓解多 CLI 进程并发写锁等待
+            conn.execute("PRAGMA journal_mode=WAL")
             cursor = conn.cursor()
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS memories (

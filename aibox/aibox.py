@@ -602,9 +602,12 @@ def run_light_subagent(role, task, config, logger=None, model=None,
         return f"❌ 子代理执行失败: {str(e)}"
 
 
+# 子代理结果标记：供 _handle_tool_calls 检测工具失败并剥离
+_SUBAGENT_TOOL_FAILED_MARKER = "[SUBAGENT_TOOL_FAILED]\n"
+
 def run_full_subagent(role, task, config, logger=None, model=None,
                       temperature=None, max_tokens=2048, max_turns=10,
-                      output_callback=None) -> str:
+                      output_callback=None, outcome: dict = None) -> str:
     """完整子代理：拥有全部工具，独立上下文，多轮对话直到任务完成。
 
     子代理是完整的 DeepSeekChat 实例，拥有文件操作、命令执行、网页访问、
@@ -712,6 +715,11 @@ def run_full_subagent(role, task, config, logger=None, model=None,
         except Exception as e:
             if logger:
                 logger.error(f"子代理收尾报告生成异常: {e}")
+
+        # 透传子代理工具失败状态（供 SubAgentTool → orchestrator stats 汇总）
+        if outcome is not None:
+            outcome["tool_failed"] = sub_chat.stats.get("tool_failed", False)
+
         if report and str(report).strip():
             return str(report).strip()
 
@@ -814,12 +822,17 @@ class SubAgentTool(Tool):
                 max_turns: int = 10, **kwargs) -> str:
         if error := self.validate_params(["role", "task"], role=role, task=task):
             return error
+        outcome: dict = {}
         result = run_full_subagent(role, task, self.config, logger=self.logger,
                                    model=model, temperature=temperature,
                                    max_tokens=max_tokens, max_turns=max_turns,
-                                   output_callback=self._subagent_output)
+                                   output_callback=self._subagent_output,
+                                   outcome=outcome)
         # 冲刷子代理回答缓冲（最后一段 chunk 可能尚未发出）
         self._flush_subagent_answer()
+        # 子代理内部工具失败 → 打上标记，由 _handle_tool_calls 检测并置 orchestrator stats
+        if outcome.get("tool_failed"):
+            result = _SUBAGENT_TOOL_FAILED_MARKER + result
         return result
 
 
@@ -861,16 +874,19 @@ class DeepSeekChat:
                  history_manager: ConversationHistory = None, memory_db: MemoryDatabase = None,
                  memo_db: MemoDatabase = None, command_executor: CommandExecutor = None,
                  prompt_manager: PromptManager = None, skill_manager: SkillManager = None,
-                 tool_profile: str = TOOL_PROFILE_ORCHESTRATOR, enable_memory: bool = True):
+                 tool_profile: str = TOOL_PROFILE_ORCHESTRATOR, enable_memory: bool = True,
+                 model: str = None, temperature: float = None):
         self.config = ConfigManager()
         self.logger = Logger("DeepSeek", debug_level if debug_level is not None else Logger("").level)
         self.debug_level = self.logger.level
         # 工具集 profile：决定本实例注册哪套工具（orchestrator 管理面 / worker 执行面）
         self.tool_profile = tool_profile
-        # 大模型客户端（抽象层，支持多厂商切换）
-        self.client = create_llm_client(self.config, api_key=api_key, logger=self.logger)
+        # 大模型客户端（抽象层，支持多厂商切换）；model 显式传入时覆盖配置默认
+        self.client = create_llm_client(self.config, api_key=api_key, logger=self.logger, model=model)
         self.api_key = self.client.api_key
         self.name = self.client.name
+        # temperature 显式传入时覆盖 constants 默认（一次性 CLI 可指定更确定性的采样）
+        self.temperature = temperature if temperature is not None else constants.DEFAULT_TEMPERATURE
         self.history_manager = history_manager
         # enable_memory=False 时置空，注册层（_register_tools）依此跳过 MemoryTool，
         # 使记忆工具 schema 不出现在请求中，LLM 无从调用——干净禁用而非运行期拦截
@@ -1236,9 +1252,11 @@ class DeepSeekChat:
                     self.logger.error(f"工具 {tool_name} 执行异常: {e}")
                     self.stats["tool_failed"] = True
 
-            # 注：run_command 子命令非零码由 worker 子代理承载，其失败需经子代理汇总上报，
-            # 精确的退出码 1 细分属 Batch C（SubAgentTool 透传子代理 stats）。
-            # 此处仅标记 orchestrator 直接感知的工具异常。
+            # 子代理内部工具失败透传：SubAgentTool 在结果前缀打标记，此处检测并置 stats
+            if tool_name == "create_subagent" and result_raw and \
+                    str(result_raw).startswith(_SUBAGENT_TOOL_FAILED_MARKER):
+                self.stats["tool_failed"] = True
+                result_raw = str(result_raw)[len(_SUBAGENT_TOOL_FAILED_MARKER):]
 
             # 安全转换并清理结果
             result = self._sanitize_tool_result(result_raw)
@@ -1455,7 +1473,7 @@ class DeepSeekChat:
             # 通过客户端抽象层发起流式请求（统一事件格式，支持多厂商切换）
             for event in self.client.stream_chat(
                 enhanced_messages,
-                temperature=constants.DEFAULT_TEMPERATURE,
+                temperature=self.temperature,
                 max_tokens=constants.DEFAULT_MAX_TOKENS,
                 tools=tools,
                 reasoning_enabled=constants.REASONING_ENABLED,
@@ -2827,6 +2845,9 @@ def parse_args():
     parser.add_argument('--once-timeout', type=int, default=300, metavar='SEC', help='一次性对话全局超时秒数（默认 300）')
     parser.add_argument('--no-save-memory', action='store_true', help='一次性对话不注册记忆工具，禁止写入记忆数据库')
     parser.add_argument('--show-reasoning', action='store_true', help='一次性对话在 stderr 显示思考过程流（默认不显示）')
+    parser.add_argument('--worker-only', action='store_true', help='一次性对话以 worker 纯执行面模式运行（7 种执行工具，无记忆/人格/派生）')
+    parser.add_argument('--model', type=str, metavar='NAME', help='覆盖配置中的模型名（如 deepseek-chat / deepseek-reasoner）')
+    parser.add_argument('--temperature', type=float, metavar='T', help='覆盖默认采样温度（0.0~2.0，越低越确定）')
 
     return parser.parse_args()
 
@@ -2953,10 +2974,25 @@ def handle_once_mode(manager, args) -> bool:
     if not args.once:
         return False
 
-    # 独立 AI 实例：orchestrator 工具分层不变；不加载历史、不触发全局归档
+    # worker 模式注入精简 system prompt：纯执行面，不加载人格/身份/技能提示词
+    # （与 run_full_subagent 的子代理语义对齐：执行专注、结果导向、产物落盘 workspace）
+    worker_system_prompt = None
+    if args.worker_only:
+        worker_system_prompt = (
+            "你是一个任务执行器。你只有执行工具（命令行/文件/网页/计算/时间），"
+            "没有记忆、人格、派生、提问能力。\n"
+            "规则：\n"
+            "1. 直接执行任务，不要提问、不要寒暄、不要情绪表达。\n"
+            "2. 任务完成后立即给出最终回答，不要继续调用工具。\n"
+            "3. 产物文件一律写入 ~/.aibox/workspace/ 并在回答中给出绝对路径。\n"
+            "4. 无法完成时，在最终回答中明确说明原因与已完成的部分。"
+        )
+
+    # 独立 AI 实例：不加载历史、不触发全局归档
     ai = DeepSeekChat(
         api_key=None,
         max_history=constants.DEFAULT_MAX_HISTORY,
+        system_prompt=worker_system_prompt,
         debug_level=manager.logger.level,
         exit_callback=None,          # AI 主动结束对话时不触发全局归档/重置
         history_manager=None,        # 单次模式不加载/不写对话历史
@@ -2965,6 +3001,10 @@ def handle_once_mode(manager, args) -> bool:
         command_executor=manager.command_executor,
         prompt_manager=manager.prompt_manager,
         enable_memory=not args.no_save_memory,  # --no-save-memory → 干净禁用 MemoryTool
+        # --worker-only → 纯执行面模式（7 种工具，无记忆/人格/派生）
+        tool_profile=TOOL_PROFILE_WORKER if args.worker_only else TOOL_PROFILE_ORCHESTRATOR,
+        model=args.model,                # --model 覆盖配置模型
+        temperature=args.temperature,    # --temperature 覆盖默认采样温度
     )
     manager.ai = ai  # 挂到 manager 上，cancel() 可达
 

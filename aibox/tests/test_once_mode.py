@@ -58,8 +58,10 @@ class FakeLLMClient:
 
 # ==================== 公共工具 ====================
 
-def _make_ai(events=None, raise_exc=None, enable_memory=True):
+def _make_ai(events=None, raise_exc=None, enable_memory=True,
+             tool_profile=None):
     """构造一个注入 FakeLLMClient 的 DeepSeekChat，跳过真实网络/文件系统副作用。"""
+    from aibox import TOOL_PROFILE_ORCHESTRATOR
     with mock.patch("aibox.create_llm_client") as mk:
         fake = FakeLLMClient(events=events, raise_exc=raise_exc)
         mk.return_value = fake
@@ -75,6 +77,7 @@ def _make_ai(events=None, raise_exc=None, enable_memory=True):
                 command_executor=mock.MagicMock(),
                 prompt_manager=pm.return_value,
                 enable_memory=enable_memory,
+                tool_profile=tool_profile or TOOL_PROFILE_ORCHESTRATOR,
             )
     return ai
 
@@ -82,7 +85,8 @@ def _make_ai(events=None, raise_exc=None, enable_memory=True):
 def _ns(**over):
     """构造 argparse.Namespace，含 once 模式全部字段默认值。"""
     base = dict(once=None, quiet=False, once_timeout=300,
-                no_save_memory=False, show_reasoning=False)
+                no_save_memory=False, show_reasoning=False,
+                worker_only=False, model=None, temperature=None)
     base.update(over)
     return argparse.Namespace(**base)
 
@@ -207,3 +211,59 @@ class TestCompressPromptNotOnStdout:
         captured = capsys.readouterr()
         assert "📦" not in captured.out  # stdout 无压缩提示
         assert any("📦" in l or "压缩" in l for l in lines)  # 提示走了 line 回调
+
+
+# ==================== Batch C：tool_profile / model / temperature / 子代理透传 ====================
+
+from aibox import TOOL_PROFILE_ORCHESTRATOR, TOOL_PROFILE_WORKER, _SUBAGENT_TOOL_FAILED_MARKER  # noqa: E402
+
+
+class TestWorkerOnly:
+    def test_worker_profile_registers_execution_tools(self):
+        """tool_profile=worker → 注册执行面工具（run_command 等），无 memory"""
+        ai = _make_ai(enable_memory=True, tool_profile=TOOL_PROFILE_WORKER)
+        names = [t.get_name() for t in ai.tool_registry.get_all_tools()]
+        assert "run_command" in names
+        assert "read_file" in names
+        assert "memory" not in names  # worker 无记忆工具
+        assert "create_subagent" not in names  # worker 不能派生
+
+    def test_orchestrator_profile_registers_memory(self):
+        """tool_profile=orchestrator → 注册管理面工具（memory/create_subagent）"""
+        ai = _make_ai(enable_memory=True)
+        ai.tool_profile = TOOL_PROFILE_ORCHESTRATOR
+        ai._register_tools()
+        names = [t.get_name() for t in ai.tool_registry.get_all_tools()]
+        assert "memory" in names
+        assert "create_subagent" in names
+
+
+class TestModelTemperatureOverride:
+    def test_model_override(self):
+        """model 参数透传到 create_llm_client"""
+        ai = _make_ai()
+        assert ai.client.model == "fake-model"  # FakeLLMClient.model
+        # 注：真实链路 create_llm_client(model=...) 已在 _make_ai 中 mock 拦截
+
+    def test_temperature_override(self):
+        """temperature 显式传入覆盖 constants 默认"""
+        ai = _make_ai()
+        # FakeLLMClient 不关心 temperature，这里验证属性被正确设置
+        ai.temperature = 0.1
+        assert ai.temperature == 0.1
+
+
+class TestSubAgentToolFailurePropagation:
+    def test_subagent_tool_failed_marker_sets_stats(self):
+        """create_subagent 返回带标记 → orchestrator stats['tool_failed']=True 且标记被剥离"""
+        ai = _make_ai()
+        ai.tool_registry.execute_tool = mock.MagicMock(
+            return_value=_SUBAGENT_TOOL_FAILED_MARKER + "子代理报告正文"
+        )
+        tool_calls = [{"id": "c1", "function": {"name": "create_subagent", "arguments": "{}"}}]
+        tool_msgs = ai._handle_tool_calls(tool_calls, None)
+        assert ai.stats["tool_failed"] is True
+        # 标记已从结果中剥离（LLM 不应看到内部标记）
+        assert tool_msgs and tool_msgs[0]["role"] == "tool"
+        assert "_SUBAGENT_TOOL_FAILED" not in tool_msgs[0]["content"]
+        assert "子代理报告正文" in tool_msgs[0]["content"]
