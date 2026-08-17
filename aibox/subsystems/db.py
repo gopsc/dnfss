@@ -176,7 +176,10 @@ class MemoryDatabase:
     def _search_via_fts(self, cursor, keywords: List[str], match_all: bool, limit: int) -> List[Dict]:
         """FTS5 全文检索（关键词含特殊字符导致 MATCH 语法错误时返回空，走 LIKE 兜底）"""
         joiner = " AND " if match_all else " OR "
-        query = joiner.join([f'"{kw}"' for kw in keywords])
+        # N7：短语内双引号翻倍转义——关键词含 " 时若不翻倍会提前闭合短语
+        # 边界，破坏 MATCH 语法或改变匹配语义（FTS5 短语引号转义规则）
+        terms = [f'"{kw.replace(chr(34), chr(34) * 2)}"' for kw in keywords]
+        query = joiner.join(terms)
 
         try:
             cursor.execute('''
@@ -414,7 +417,8 @@ class MemoDatabase:
             params = [compare_time, compare_time]
 
             if limit:
-                query += f' LIMIT {limit}'
+                query += ' LIMIT ?'
+                params.append(int(limit))
 
             cursor.execute(query, params)
 
@@ -455,10 +459,12 @@ class MemoDatabase:
                 ORDER BY created_at ASC
             '''
 
+            params = []
             if limit:
-                query += f' LIMIT {limit}'
+                query += ' LIMIT ?'
+                params.append(int(limit))
 
-            cursor.execute(query)
+            cursor.execute(query, params)
 
             results = []
             for row in cursor.fetchall():
@@ -508,64 +514,78 @@ class MemoDatabase:
 
     def mark_as_triggered(self, memo_id: int) -> Optional[str]:
         """标记任务已被触发，并根据重复规则计算下一次提醒时间"""
-        memo = self.get_memo(memo_id)
-        if not memo:
-            return None
-
+        # N10：读取与更新收进同一连接的 BEGIN IMMEDIATE 事务。此前先
+        # get_memo（独立连接）后 UPDATE，check-then-act 之间存在竞态：
+        # 调度器并发触发同一任务会双计数/双推进 repeat。IMMEDIATE 在事务
+        # 开始即取写锁，串行化并发触发。
         now = datetime.now()
         next_reminder = None
 
         with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            try:
+                cursor.execute('SELECT * FROM memos WHERE id = ?', (memo_id,))
+                row = cursor.fetchone()
+                if row is None:
+                    conn.rollback()
+                    return None
+                memo = dict(row)
+                if memo.get('tags'):
+                    memo['tags'] = memo['tags'].split(',')
 
-            cursor.execute('''
-                UPDATE memos
-                SET last_triggered_at = ?, trigger_count = trigger_count + 1
-                WHERE id = ?
-            ''', (now.strftime(constants.DATETIME_FORMAT), memo_id))
+                cursor.execute('''
+                    UPDATE memos
+                    SET last_triggered_at = ?, trigger_count = trigger_count + 1
+                    WHERE id = ?
+                ''', (now.strftime(constants.DATETIME_FORMAT), memo_id))
 
-            # 处理重复任务
-            if memo['repeat_type'] != 'none' and not self._should_end_repeat(memo, now):
-                # 使用当前时间作为基准来计算下一次执行时间
-                next_reminder = self._calculate_next_reminder(memo, now)
+                # 处理重复任务
+                if memo['repeat_type'] != 'none' and not self._should_end_repeat(memo, now):
+                    # 使用当前时间作为基准来计算下一次执行时间
+                    next_reminder = self._calculate_next_reminder(memo, now)
 
-                if next_reminder:
-                    cursor.execute('''
-                        UPDATE memos
-                        SET reminder_time = ?
-                        WHERE id = ?
-                    ''', (next_reminder.strftime(constants.DATETIME_FORMAT), memo_id))
+                    if next_reminder:
+                        cursor.execute('''
+                            UPDATE memos
+                            SET reminder_time = ?
+                            WHERE id = ?
+                        ''', (next_reminder.strftime(constants.DATETIME_FORMAT), memo_id))
 
-                    self.logger.info(f"任务 #{memo_id} 已更新下一次执行时间: {next_reminder}")
-                else:
-                    # 重复结束，标记为完成
+                        self.logger.info(f"任务 #{memo_id} 已更新下一次执行时间: {next_reminder}")
+                    else:
+                        # 重复结束，标记为完成
+                        cursor.execute('''
+                            UPDATE memos
+                            SET is_completed = 1, completed_at = ?
+                            WHERE id = ?
+                        ''', (now.strftime(constants.DATETIME_FORMAT), memo_id))
+
+                        self.logger.info(f"任务 #{memo_id} 重复结束，已标记为完成")
+                elif memo['is_immediate']:
+                    # 即时任务执行后标记为完成
                     cursor.execute('''
                         UPDATE memos
                         SET is_completed = 1, completed_at = ?
                         WHERE id = ?
                     ''', (now.strftime(constants.DATETIME_FORMAT), memo_id))
 
-                    self.logger.info(f"任务 #{memo_id} 重复结束，已标记为完成")
-            elif memo['is_immediate']:
-                # 即时任务执行后标记为完成
-                cursor.execute('''
-                    UPDATE memos
-                    SET is_completed = 1, completed_at = ?
-                    WHERE id = ?
-                ''', (now.strftime(constants.DATETIME_FORMAT), memo_id))
+                    self.logger.info(f"即时任务 #{memo_id} 已完成")
+                else:
+                    # 一次性任务，标记为完成
+                    cursor.execute('''
+                        UPDATE memos
+                        SET is_completed = 1, completed_at = ?
+                        WHERE id = ?
+                    ''', (now.strftime(constants.DATETIME_FORMAT), memo_id))
 
-                self.logger.info(f"即时任务 #{memo_id} 已完成")
-            else:
-                # 一次性任务，标记为完成
-                cursor.execute('''
-                    UPDATE memos
-                    SET is_completed = 1, completed_at = ?
-                    WHERE id = ?
-                ''', (now.strftime(constants.DATETIME_FORMAT), memo_id))
+                    self.logger.info(f"任务 #{memo_id} 已完成")
 
-                self.logger.info(f"任务 #{memo_id} 已完成")
-
-            conn.commit()
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
         return next_reminder.strftime(constants.DATETIME_FORMAT) if next_reminder else None
 

@@ -11,7 +11,7 @@ import threading
 import time
 from typing import Dict, List, Optional, Tuple
 
-from common import Logger, i18n
+from common import Logger, constants, i18n
 
 from .base import Tool
 
@@ -110,6 +110,11 @@ class ToolRegistry:
                 deadline = time.time() + tool_timeout
                 final_result = None
                 timed_out = False
+                # N8：流式转发同样受 TOOL_MAX_RESULT_LENGTH 约束——此前仅非流式
+                # 返回值受限，超长内容（如记忆全文）经流式通道可完整推到前端
+                line_budget = constants.TOOL_MAX_RESULT_LENGTH
+                forwarded = 0
+                truncation_noted = False
                 while thread.is_alive() or not output_queue.empty():
                     if time.time() > deadline:
                         self.logger.warning(
@@ -119,9 +124,25 @@ class ToolRegistry:
                     try:
                         msg_type, content = output_queue.get(timeout=0.1)
                         if msg_type == "line":
+                            piece = str(content) if content is not None else ""
+                            if forwarded >= line_budget:
+                                # 预算耗尽：停止转发，仅提示一次
+                                if not truncation_noted:
+                                    truncation_noted = True
+                                    if self.current_output_queue:
+                                        self.current_output_queue.put(
+                                            ("line", f"\n⚠️ 流式输出超过 {line_budget} 字符上限，已停止转发剩余内容\n"))
+                                continue
+                            remaining = line_budget - forwarded
+                            if len(piece) > remaining:
+                                piece = piece[:remaining] + \
+                                    f"\n⚠️ 流式输出超过 {line_budget} 字符上限，已截断"
+                                forwarded = line_budget
+                            else:
+                                forwarded += len(piece)
                             # 发送到当前队列（会通过WebSocket发送）
                             if self.current_output_queue:
-                                self.current_output_queue.put(("line", content))
+                                self.current_output_queue.put(("line", piece))
                         elif msg_type == "complete":
                             final_result = content
                             # 也发送完整结果

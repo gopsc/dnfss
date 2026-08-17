@@ -61,7 +61,10 @@ class ConversationHistory:
             try:
                 with open(self.history_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
-            except:
+            except Exception as e:
+                # N16：收窄为 Exception——裸 except 连 KeyboardInterrupt/SystemExit
+                # 也吞掉；损坏时重置为空索引并告警
+                self.logger.warning(f"历史索引文件损坏，已重置: {e}")
                 return {"conversations": [], "last_id": 0}
         return {"conversations": [], "last_id": 0}
 
@@ -132,8 +135,14 @@ class ConversationHistory:
                 importance=2
             )
 
+        # N16：归档文件名加序号防同秒覆盖——DATE_FORMAT 精度为秒，
+        # 同一秒内两次归档（如测试/快速重置）会静默覆盖前一份
         timestamp = datetime.now().strftime(constants.DATE_FORMAT)
         archive_filename = f"conversation_{timestamp}.json"
+        counter = 1
+        while (self.archive_dir / archive_filename).exists():
+            archive_filename = f"conversation_{timestamp}_{counter}.json"
+            counter += 1
         archive_path = self.archive_dir / archive_filename
 
         with open(archive_path, 'w', encoding='utf-8') as f:

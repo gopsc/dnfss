@@ -534,6 +534,14 @@ class ExpressEmotionTool(Tool):
         if not name:
             return ""
         path = os.path.join(constants.SKILLS_DIR, name + ".md")
+        # N12：persona 为 LLM 可控输入，做路径边界校验——normcase 统一大小写与
+        # 分隔符后要求解析结果仍在 SKILLS_DIR 内，防止 ../../ 越界读取并注入
+        skills_root = os.path.normcase(os.path.abspath(constants.SKILLS_DIR))
+        resolved = os.path.normcase(os.path.abspath(path))
+        if not resolved.startswith(skills_root + os.sep):
+            self.logger.warning(f"人格技能名非法（越界路径）: {name}")
+            return ""
+        path = resolved
         if not os.path.isfile(path):
             self.logger.warning(f"未找到人格技能文件: {path}")
             return ""
@@ -612,7 +620,8 @@ _SUBAGENT_TOOL_FAILED_MARKER = "[SUBAGENT_TOOL_FAILED]\n"
 
 def run_full_subagent(role, task, config, logger=None, model=None,
                       temperature=None, max_tokens=2048, max_turns=10,
-                      output_callback=None, outcome: dict = None) -> str:
+                      output_callback=None, outcome: dict = None,
+                      cancel_event=None) -> str:
     """完整子代理：拥有全部工具，独立上下文，多轮对话直到任务完成。
 
     子代理是完整的 DeepSeekChat 实例，拥有文件操作、命令执行、网页访问、
@@ -623,8 +632,12 @@ def run_full_subagent(role, task, config, logger=None, model=None,
     output_callback: 可选回调(msg_type, content)，用于转发子代理的实时思考过程
     （reasoning_start / reasoning / reasoning_end），不传则静默执行。
 
+    cancel_event: 父代理取消事件（N5）。传入时子代理共享该事件并起观察者
+    线程转发深度中断——父级取消（用户中断 / --once 超时）可即时终止子代理。
+
     供 create_subagent 工具使用。
     """
+    _watch_done = threading.Event()  # N5：取消观察者线程退出信号（finally 置位）
     try:
         max_tokens = max(1, min(int(max_tokens or 2048), constants.DEFAULT_MAX_TOKENS))
         temp = temperature if temperature is not None else constants.DEFAULT_TEMPERATURE
@@ -652,6 +665,23 @@ def run_full_subagent(role, task, config, logger=None, model=None,
             debug_level=0,
             exit_callback=None,
         )
+
+        # N5（审计 2026-08-18）：父代理取消传播。子代理此前持完全独立的
+        # _cancel_event/executor/HTTP client，父级 cancel 或 --once 超时杀不到
+        # 它，需等子代理自行结束。现共享父取消事件（子代理在 think 前置、
+        # 工具调用间、流式事件间的既有检查点立即感知），并由观察者线程转发
+        # 深度中断（sub_chat.cancel() 强关在途 HTTP 流并 kill 其子进程）。
+        if cancel_event is not None:
+            sub_chat._cancel_event = cancel_event
+
+            def _watch_parent_cancel():
+                while not _watch_done.wait(timeout=0.2):
+                    if cancel_event.is_set():
+                        sub_chat.cancel()
+                        return
+
+            threading.Thread(target=_watch_parent_cancel, daemon=True,
+                             name="subagent-cancel-watch").start()
 
         # 覆盖模型（如果指定了不同模型）
         # M1：经 set_client 统一替换——同步刷新 compressor.llm_client 与
@@ -740,6 +770,9 @@ def run_full_subagent(role, task, config, logger=None, model=None,
         if logger:
             logger.error(f"子代理执行异常: {e}")
         return f"❌ 子代理执行失败: {str(e)}"
+    finally:
+        # N5：通知取消观察者线程退出（子代理已结束，无论成败）
+        _watch_done.set()
 
 
 class SubAgentTool(Tool):
@@ -749,6 +782,12 @@ class SubAgentTool(Tool):
     全部工具能力。独立上下文窗口（不污染主对话），多轮对话直到任务完成。
     结束后由子代理基于完整执行过程生成最终报告，返回给父代理。
     """
+
+    def __init__(self, logger=None, cancel_event=None):
+        super().__init__(logger)
+        # N5：父代理（DeepSeekChat）取消事件——父级被取消（用户中断/--once
+        # 超时）时传播给 run_full_subagent，即时终止子代理
+        self.cancel_event = cancel_event
 
     def get_name(self) -> str:
         return "create_subagent"
@@ -859,7 +898,8 @@ class SubAgentTool(Tool):
                                    model=model, temperature=temperature,
                                    max_tokens=max_tokens, max_turns=max_turns,
                                    output_callback=self._subagent_output,
-                                   outcome=outcome)
+                                   outcome=outcome,
+                                   cancel_event=self.cancel_event)
         # 冲刷子代理回答缓冲（最后一段 chunk 可能尚未发出）
         self._flush_subagent_answer()
         # 子代理内部工具失败 → 打上标记，由 _handle_tool_calls 检测并置 orchestrator stats
@@ -1103,7 +1143,8 @@ class DeepSeekChat:
         builtin_tools.append(GetProxyTool(self.logger))
 
         # 子代理工具：主代理可派生独立上下文/角色的轻量子代理执行任务
-        builtin_tools.append(SubAgentTool(self.logger))
+        # cancel_event 注入（N5）：父级取消传播到子代理
+        builtin_tools.append(SubAgentTool(self.logger, cancel_event=self._cancel_event))
 
         # 注册内置工具（标记为内置）
         self.tool_registry.register_many(builtin_tools, is_builtin=True)
@@ -1243,122 +1284,140 @@ class DeepSeekChat:
         # 结果大小阈值（字符数），从配置获取
         MAX_RESULT_LENGTH = constants.TOOL_MAX_RESULT_LENGTH
         
-        for tool_call in tool_calls:
-            # 每个工具调用前检查取消信号
-            if self._is_cancelled():
-                self.logger.info("工具调用被用户中断")
-                break
-            
-            function = tool_call.get("function", {})
-            tool_name = function.get("name", "unknown")
-            arguments = function.get("arguments", "{}")
-            tc_id = tool_call.get("id") or f"call_fallback_{self.stats['tool_calls']}_{int(time.time()*1000)}"
-            
-            try:
-                args = json.loads(arguments) if arguments else {}
-            except json.JSONDecodeError:
-                args = {}
-            
-            # 开始调用工具时发送提示
-            if output_callback:
-                output_callback("line", "\n\n")
-                output_callback("line", f"🔧 调用工具: {tool_name}\n")
-            
-            result_raw = None
-            if self.tool_profile == TOOL_PROFILE_ORCHESTRATOR and tool_name in WORKER_ONLY_TOOLS:
-                # 编排者不持有执行面工具：拦截并纠正，引导改用 create_subagent
-                result_raw = (
-                    f"⛔ '{tool_name}' 调用被拦截：你是编排者，没有执行面工具（命令/文件/网页由 worker 子代理持有）。\n"
-                    "请改用 create_subagent 派生子代理执行该任务：在 role 中写明执行者身份，"
-                    "在 task 中写清目标、具体步骤与验收标准（任务描述须自包含，子代理无法向你提问）。"
-                )
-                self.logger.warning(f"编排者误调执行面工具 {tool_name}，已拦截并引导改用 create_subagent")
-            else:
+        # N2 修复（审计 2026-08-18）：drain 线程改为整个工具批次仅创建一个，
+        # 由独立 stop 事件控制生命周期，批次结束（正常/异常/中断）在 finally
+        # 中统一置位、join 并排空残余。此前每次工具调用都启动一个仅靠 cancel
+        # 事件退出的常驻线程（注释声称"队列空自动退出"，循环条件却从未检查
+        # 队列是否为空），闭包长期持有 output_callback（含 websocket 引用）
+        # 阻碍 GC，常驻服务下线程与内存持续累积。
+        drain_stop = threading.Event()
+
+        def _drain_queue(q=output_queue, cb=output_callback, stop_event=drain_stop):
+            """持续排空 output_queue 并转发 line 输出（长时间工具执行期间防 WS 空闲断线）"""
+            while not stop_event.is_set():
                 try:
-                    # 启动后台线程持续排空 output_queue，将流式输出实时转发给 output_callback，
-                    # 避免 SubAgent 等长时间工具执行期间前端收不到数据导致 WS 空闲断线
-                    def _drain_queue(q=output_queue, cb=output_callback, stop_event=self._cancel_event):
-                        while not stop_event.is_set():
-                            try:
-                                msg_type, content = q.get(timeout=0.1)
-                                if cb and msg_type == "line":
-                                    cb("line", str(content) if content is not None else "")
-                            except queue.Empty:
-                                continue
+                    msg_type, content = q.get(timeout=0.1)
+                    if cb and msg_type == "line":
+                        cb("line", str(content) if content is not None else "")
+                except queue.Empty:
+                    continue
 
-                    import threading as _th
-                    drain_thread = _th.Thread(target=_drain_queue, daemon=True)
-                    drain_thread.start()
+        drain_thread = threading.Thread(target=_drain_queue, daemon=True,
+                                        name="tool-output-drain")
+        drain_thread.start()
 
-                    result_raw = self.tool_registry.execute_tool(tool_name, **args)
+        try:
+            for tool_call in tool_calls:
+                # 每个工具调用前检查取消信号
+                if self._is_cancelled():
+                    self.logger.info("工具调用被用户中断")
+                    break
 
-                    # 工具执行完毕，排空队列中剩余内容并等待 drain 线程退出
-                    while not output_queue.empty():
-                        try:
-                            msg_type, content = output_queue.get_nowait()
-                            if output_callback and msg_type == "line":
-                                output_callback("line", str(content) if content is not None else "")
-                        except queue.Empty:
-                            break
-                    # drain 线程会在下一次 get 超时后自动退出（队列已空）
-                except Exception as e:
-                    result_raw = f"❌ 工具 {tool_name} 执行异常: {str(e)}"
-                    self.logger.error(f"工具 {tool_name} 执行异常: {e}")
-                    self.stats["tool_failed"] = True
+                function = tool_call.get("function", {})
+                tool_name = function.get("name", "unknown")
+                arguments = function.get("arguments", "{}")
+                tc_id = tool_call.get("id") or f"call_fallback_{self.stats['tool_calls']}_{int(time.time()*1000)}"
 
-            # 子代理内部工具失败透传：SubAgentTool 在结果前缀打标记，此处检测并置 stats
-            if tool_name == "create_subagent" and result_raw and \
-                    str(result_raw).startswith(_SUBAGENT_TOOL_FAILED_MARKER):
-                self.stats["tool_failed"] = True
-                result_raw = str(result_raw)[len(_SUBAGENT_TOOL_FAILED_MARKER):]
+                try:
+                    args = json.loads(arguments) if arguments else {}
+                except json.JSONDecodeError:
+                    args = {}
 
-            # 安全转换并清理结果
-            result = self._sanitize_tool_result(result_raw)
-
-            # drain 线程已排空队列中的 line 输出，这里只需判断是否有流式输出
-            has_stream_output = not output_queue.empty()
-
-            # 普通（非流式）工具没有队列输出，直接发送结果
-            if not has_stream_output and output_callback and result:
-                output_callback("line", result + "\n")
-            
-            # 检查结果大小，如果超过阈值，不保留截断内容，仅返回提示信息
-            if len(result) > MAX_RESULT_LENGTH:
-                truncated_note = f"⚠️ 工具调用结果长度超过 {MAX_RESULT_LENGTH} 字符，已丢弃。请使用更精确的查询获取所需信息。"
-                result = truncated_note
+                # 开始调用工具时发送提示
                 if output_callback:
-                    output_callback("line", truncated_note + "\n")
-            
-            # 结束调用工具时发送换行
-            if output_callback:
-                output_callback("line", "\n\n")
-            
-            # 历史记录（安全截断）
-            if self.history_manager:
+                    output_callback("line", "\n\n")
+                    output_callback("line", f"🔧 调用工具: {tool_name}\n")
+
+                result_raw = None
+                if self.tool_profile == TOOL_PROFILE_ORCHESTRATOR and tool_name in WORKER_ONLY_TOOLS:
+                    # 编排者不持有执行面工具：拦截并纠正，引导改用 create_subagent
+                    result_raw = (
+                        f"⛔ '{tool_name}' 调用被拦截：你是编排者，没有执行面工具（命令/文件/网页由 worker 子代理持有）。\n"
+                        "请改用 create_subagent 派生子代理执行该任务：在 role 中写明执行者身份，"
+                        "在 task 中写清目标、具体步骤与验收标准（任务描述须自包含，子代理无法向你提问）。"
+                    )
+                    self.logger.warning(f"编排者误调执行面工具 {tool_name}，已拦截并引导改用 create_subagent")
+                else:
+                    try:
+                        result_raw = self.tool_registry.execute_tool(tool_name, **args)
+                        # 排空队列中剩余标记（complete 标记供 has_stream_output 判定、
+                        # 残余 line 补发）——与 drain 线程并发消费安全（每项仅被消费一次）
+                        while not output_queue.empty():
+                            try:
+                                msg_type, content = output_queue.get_nowait()
+                                if output_callback and msg_type == "line":
+                                    output_callback("line", str(content) if content is not None else "")
+                            except queue.Empty:
+                                break
+                    except Exception as e:
+                        result_raw = f"❌ 工具 {tool_name} 执行异常: {str(e)}"
+                        self.logger.error(f"工具 {tool_name} 执行异常: {e}")
+                        self.stats["tool_failed"] = True
+
+                # 子代理内部工具失败透传：SubAgentTool 在结果前缀打标记，此处检测并置 stats
+                if tool_name == "create_subagent" and result_raw and \
+                        str(result_raw).startswith(_SUBAGENT_TOOL_FAILED_MARKER):
+                    self.stats["tool_failed"] = True
+                    result_raw = str(result_raw)[len(_SUBAGENT_TOOL_FAILED_MARKER):]
+
+                # 安全转换并清理结果
+                result = self._sanitize_tool_result(result_raw)
+
+                # drain 线程持续转发 line 输出，这里通过 complete 标记判断是否流式工具
+                has_stream_output = not output_queue.empty()
+
+                # 普通（非流式）工具没有队列输出，直接发送结果
+                if not has_stream_output and output_callback and result:
+                    output_callback("line", result + "\n")
+
+                # 检查结果大小，如果超过阈值，不保留截断内容，仅返回提示信息
+                if len(result) > MAX_RESULT_LENGTH:
+                    truncated_note = f"⚠️ 工具调用结果长度超过 {MAX_RESULT_LENGTH} 字符，已丢弃。请使用更精确的查询获取所需信息。"
+                    result = truncated_note
+                    if output_callback:
+                        output_callback("line", truncated_note + "\n")
+
+                # 结束调用工具时发送换行
+                if output_callback:
+                    output_callback("line", "\n\n")
+
+                # 历史记录（安全截断）
+                if self.history_manager:
+                    try:
+                        history_preview = result[:200] + "..." if len(result) > 200 else result
+                        self.history_manager.add_tool_call(tool_name, args, history_preview)
+                    except Exception:
+                        pass
+
+                # 检查是否结束对话
+                end_conversation = (tool_name == "save_memory_and_end_conversation" and "✅" in result)
+                if end_conversation:
+                    self.logger.info("检测到保存记忆并结束对话工具调用")
+                    self.conversation_active = False
+
+                tool_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "content": result
+                })
+
+                if end_conversation:
+                    break
+        finally:
+            # 停止 drain 线程并回收（线程 0.1s 轮询粒度内感知置位）
+            drain_stop.set()
+            drain_thread.join(timeout=2)
+            # 排空残余输出（drain 停止后无并发消费者，残余 line 补发）
+            while True:
                 try:
-                    history_preview = result[:200] + "..." if len(result) > 200 else result
-                    self.history_manager.add_tool_call(tool_name, args, history_preview)
-                except Exception:
-                    pass
-            
-            # 检查是否结束对话
-            end_conversation = (tool_name == "save_memory_and_end_conversation" and "✅" in result)
-            if end_conversation:
-                self.logger.info("检测到保存记忆并结束对话工具调用")
-                self.conversation_active = False
-            
-            tool_messages.append({
-                "role": "tool",
-                "tool_call_id": tc_id,
-                "content": result
-            })
-            
-            if end_conversation:
-                break
-        
-        # 清除输出队列
-        self.tool_registry.set_output_queue(None)
-        
+                    msg_type, content = output_queue.get_nowait()
+                    if output_callback and msg_type == "line":
+                        output_callback("line", str(content) if content is not None else "")
+                except queue.Empty:
+                    break
+            # 清除输出队列
+            self.tool_registry.set_output_queue(None)
+
         return tool_messages
 
     def _should_search_memory(self, user_input: str) -> bool:
@@ -1960,7 +2019,7 @@ class WebSocketHandler:
         self.logger = Logger("WebSocket")
         self.connected_clients = set()
         self.client_sessions = {}
-        self._processing_tasks = {}  # websocket id -> 当前正在处理的asyncio Task
+        self._processing_tasks = {}  # websocket -> {asyncio.Task}（N14：集合登记，支持并发多任务）
         self._shared_skill_manager = None  # 共享技能管理器（懒加载，供所有连接复用）
     
     def _get_shared_skill_manager(self):
@@ -2020,7 +2079,9 @@ class WebSocketHandler:
     
     async def unregister(self, websocket):
         """注销客户端"""
-        self.connected_clients.remove(websocket)
+        # N13：discard 替代 remove——并发注销/重复注销时 remove 抛 KeyError
+        # 会逃逸到调用方（如 broadcast 的 except 分支），discard 幂等
+        self.connected_clients.discard(websocket)
         if websocket in self.client_sessions:
             session = self.client_sessions.pop(websocket)
             # 释放该连接独立的AI实例资源
@@ -2128,7 +2189,8 @@ class WebSocketHandler:
         for websocket in self.connected_clients.copy():
             try:
                 await self.send_message(websocket, message)
-            except:
+            except Exception:
+                # N13：不再裸 except——吞掉 CancelledError 会破坏任务取消语义
                 await self.unregister(websocket)
     
     async def broadcast_task_status(self, task: Dict, status: str, message: str = None):
@@ -2322,12 +2384,20 @@ class WebSocketHandler:
                         if not ai.is_busy():
                             break
                 # 重置对话状态，重新加载系统提示词
-                ai.reset_conversation(reload_prompts=True)
+                # N3：reset_conversation 内部同步获取 _msg_lock（繁忙对话持锁
+                # 可达数十秒），直接调用会冻结整个事件循环（所有连接的心跳/
+                # 消息收发全部停摆）。移入线程池执行，事件循环仅等待结果。
+                loop = asyncio.get_running_loop()
+
+                def _do_reset():
+                    ai.reset_conversation(reload_prompts=True)
+                    # 重新初始化提示词管理器（确保最新）
+                    self.ai_manager.prompt_manager.reload()
+
+                await loop.run_in_executor(None, _do_reset)
                 # 重置该连接对话进行中标记
                 if session:
                     session["dialogue_in_progress"] = False
-                # 重新初始化提示词管理器（确保最新）
-                self.ai_manager.prompt_manager.reload()
                 self.logger.info(i18n.get('new_conversation_reset'))
                 
                 await self.send_message(websocket, {
@@ -2785,20 +2855,26 @@ class EnhancedAIManager:
                 task = asyncio.create_task(
                     self.ws_handler.handle_message(websocket, message)
                 )
-                self.ws_handler._processing_tasks[id(websocket)] = task
+                # N14：按连接登记任务集合。此前按 ws id 覆盖式登记，同连接并发
+                # 多任务时先完成任务的 done_callback 会误 pop 掉后续任务的登记
+                tasks = self.ws_handler._processing_tasks.setdefault(websocket, set())
+                tasks.add(task)
 
-                def _cleanup_task(t, ws_id=id(websocket)):
-                    self.ws_handler._processing_tasks.pop(ws_id, None)
+                def _cleanup_task(t, ws=websocket):
+                    pending = self.ws_handler._processing_tasks.get(ws)
+                    if pending is not None:
+                        pending.discard(t)
                 task.add_done_callback(_cleanup_task)
         except websockets.exceptions.ConnectionClosed as e:
             self.logger.info(f"连接关闭: {e}")
         except Exception as e:
             self.logger.error(f"处理错误: {e}")
         finally:
-            # 连接关闭时取消正在进行的处理任务
-            task = self.ws_handler._processing_tasks.pop(id(websocket), None)
-            if task and not task.done():
-                task.cancel()
+            # 连接关闭时取消该连接所有仍在进行的处理任务（N14：此前仅最后一个）
+            pending = self.ws_handler._processing_tasks.pop(websocket, set())
+            for t in pending:
+                if not t.done():
+                    t.cancel()
             await self.ws_handler.unregister(websocket)
 
     async def websocket_server(self):

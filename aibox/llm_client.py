@@ -47,9 +47,6 @@ class LLMClient(ABC):
         self.default_temperature = default_temperature
         # 当前活动的 HTTP 响应引用，供 cancel() 强制关闭底层连接以中断阻塞读取
         self._current_response = None
-        # L4b：用户中断标志——cancel() 强关连接引发的异常与真实网络故障不可区分，
-        # FailoverClient 据此标志跳过转移（否则用户越中断、系统越换厂商重试）
-        self._cancelled = False
 
     @property
     def name(self) -> str:
@@ -72,8 +69,11 @@ class LLMClient(ABC):
                 pass
 
     def cancel(self):
-        """中断当前流式请求。线程安全，可从任意线程调用。"""
-        self._cancelled = True
+        """中断当前流式请求。线程安全，可从任意线程调用。
+
+        注：用户中断标志由 FailoverClient 维护（其 cancel() 广播整条链并置
+        自身 _cancelled，据此跳过转移）——底层 client 只负责强关连接。
+        """
         resp = self._current_response
         self._current_response = None
         if resp is not None:
@@ -213,7 +213,7 @@ class DeepSeekClient(LLMClient):
                     f"LLM 流式请求瞬时失败: HTTP {response.status_code}: {response.text[:200]}",
                     retry_after=_retry_after_of(response))
             raise RuntimeError(
-                f"HTTP {response.status_code}: {response.text}")
+                f"HTTP {response.status_code}: {response.text[:200]}")
 
         try:
             for line in response.iter_lines():
@@ -282,12 +282,16 @@ class TransientLLMError(RuntimeError):
 
 
 def _retry_after_of(response) -> Optional[float]:
-    """从 Retry-After 响应头解析冷却秒数（仅支持数字秒格式，其余忽略返回 None）。"""
+    """从 Retry-After 响应头解析冷却秒数（仅支持数字秒格式，其余忽略返回 None）。
+
+    P2：上限 cap 3600s——异常/恶意服务端返回超大值（如 999999）时，
+    避免档案被单条响应头冷却数天。
+    """
     try:
         v = response.headers.get("Retry-After")
         if v is None:
             return None
-        return max(1.0, float(v))
+        return min(max(1.0, float(v)), 3600.0)
     except (TypeError, ValueError, AttributeError):
         return None
 
@@ -316,6 +320,11 @@ class FailoverClient:
       - timeout_budget 限制整条链尝试的总秒数（缺省不限），耗尽即停止尝试剩余档案，
         防止长链故障时超时叠加（3 档案最坏 3×timeout）
       - 429 响应带 Retry-After（数字秒）时按其延长该档案冷却期
+
+    并发契约（P4）：实例非线程安全（_cancelled/_call_started/_stats 无锁）。
+    当前调用面满足"单线程串行调用 + cancel() 可从其他线程"的模式（compressor
+    在 _msg_lock 内同步调用、子代理各持独立实例）；如需多线程共享调用，
+    需由调用方加锁或为实例补锁。
     """
 
     def __init__(self, clients: List, logger=None, cooldown_seconds: float = 60.0,
@@ -657,23 +666,35 @@ def create_llm_client(config, api_key: Optional[str] = None,
         # L4a：构造 fallback 链（一层，不递归——fallback 档案自身的 fallback 字段被忽略）
         models = config.get("models") or {}
         chain = [primary]
+        seen = {profile_name}  # P6：重复项去重（冷却键同名冲突/重复撞同端点）
         for fb_name in fallback_names:
             if fb_name == profile_name:
                 raise ValueError(
                     f"模型档案 '{profile_name}' 的 fallback 不能包含自身，"
                     f"请检查 config.json 的 models.{profile_name}.fallback")
+            if fb_name in seen:
+                if logger is not None and hasattr(logger, "warning"):
+                    logger.warning(f"fallback 列表重复项 '{fb_name}'，已忽略")
+                continue
+            seen.add(fb_name)
             fb_profile = models.get(fb_name)
             if fb_profile is None:
                 raise ValueError(
                     f"模型档案 '{profile_name}' 的 fallback 指向不存在的档案 '{fb_name}'，"
                     f"可用档案：{', '.join(models) or '（无）'}")
             try:
+                # P3：fallback 档案与主档案同等校验（缺 api_url/model 时跳过并告警，
+                # 而非构造出 model=None 的 client 在请求期表现为神秘失败）
+                _validate_profile(fb_name, fb_profile)
+                fb_model = fb_profile.get("model")
+                _require_model(fb_name, fb_model)
                 chain.append(_construct_profile_client(
-                    config, fb_profile, fb_name, fb_profile.get("model"),
+                    config, fb_profile, fb_name, fb_model,
                     logger=logger))
-            except RuntimeError as e:
-                # 环境问题（如 fallback 档案缺 API Key）：跳过该 fallback 并告警，
-                # 不阻断主档案可用性（配置结构错误在上方已硬性拦截）
+            except (RuntimeError, ValueError) as e:
+                # 环境问题（如 fallback 档案缺 API Key）或配置缺陷（缺 model）：
+                # 跳过该 fallback 并告警，不阻断主档案可用性
+                # （配置结构错误——fallback 指向不存在的档案——在上方已硬性拦截）
                 if logger is not None and hasattr(logger, "warning"):
                     logger.warning(f"fallback 档案 '{fb_name}' 构造失败，已忽略：{e}")
         return FailoverClient(chain, logger=logger,
