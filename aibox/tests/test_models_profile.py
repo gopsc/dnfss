@@ -297,6 +297,97 @@ class TestH2SchemaValidation:
                 create_llm_client(_cfg(models=models, default_model=None), model="kimi")
 
 
+# ==================== H3：--model 服务模式传导 ====================
+
+class TestH3ModelPlumbing:
+    """H3：--model 此前仅在 --once 模式生效，WebSocket 服务模式被静默忽略。
+
+    验证进程级覆盖传导链：main() → EnhancedAIManager(model) →
+    add_ai / WebSocketHandler._create_session_ai / TaskScheduler._create_task_ai
+    三类 AI 实例的 DeepSeekChat(model=...) 构造参数。
+    """
+
+    def _stub_logger(self):
+        return types.SimpleNamespace(level=0, info=lambda *a, **k: None,
+                                     warning=lambda *a, **k: None,
+                                     error=lambda *a, **k: None)
+
+    def test_manager_stores_and_passes_model_to_add_ai(self):
+        """EnhancedAIManager(model) → add_ai() → DeepSeekChat(model=...)"""
+        from aibox import EnhancedAIManager
+        mgr = EnhancedAIManager.__new__(EnhancedAIManager)  # 跳过重初始化，只测传导
+        mgr.model = "kimi"
+        mgr.logger = self._stub_logger()
+        mgr.history_manager = None
+        mgr.memory_db = None
+        mgr.memo_db = None
+        mgr.command_executor = None
+        mgr.prompt_manager = None
+        with mock.patch("aibox.DeepSeekChat") as mc:
+            mgr.add_ai()
+        assert mc.call_args.kwargs.get("model") == "kimi"
+
+    def test_manager_default_model_is_none(self):
+        """未指定 --model → model=None，DeepSeekChat 走配置默认"""
+        from aibox import EnhancedAIManager
+        mgr = EnhancedAIManager.__new__(EnhancedAIManager)
+        mgr.model = None
+        mgr.logger = self._stub_logger()
+        mgr.history_manager = None
+        mgr.memory_db = None
+        mgr.memo_db = None
+        mgr.command_executor = None
+        mgr.prompt_manager = None
+        with mock.patch("aibox.DeepSeekChat") as mc:
+            mgr.add_ai()
+        assert mc.call_args.kwargs.get("model") is None
+
+    def test_session_ai_receives_model(self):
+        """WebSocketHandler._create_session_ai → DeepSeekChat(model=...)"""
+        from aibox import WebSocketHandler
+        handler = WebSocketHandler.__new__(WebSocketHandler)
+        handler.ai_manager = types.SimpleNamespace(
+            model="kimi", memory_db=None, memo_db=None, prompt_manager=None)
+        handler.logger = self._stub_logger()
+        handler._shared_skill_manager = object()  # 非 None 即复用，不触发扫描
+        with mock.patch("aibox.DeepSeekChat") as mc, \
+             mock.patch("aibox.SubprocessCommandExecutor"):
+            handler._create_session_ai()
+        assert mc.call_args.kwargs.get("model") == "kimi"
+
+    def test_task_ai_receives_model(self):
+        """TaskScheduler._create_task_ai → DeepSeekChat(model=...)"""
+        from aibox import TaskScheduler
+        sched = TaskScheduler.__new__(TaskScheduler)
+        sched.ai_manager = types.SimpleNamespace(
+            model="kimi", memory_db=None, memo_db=None, prompt_manager=None)
+        sched.logger = self._stub_logger()
+        sched._shared_skill_manager = object()
+        with mock.patch("aibox.DeepSeekChat") as mc, \
+             mock.patch("aibox.SubprocessCommandExecutor"):
+            sched._create_task_ai()
+        assert mc.call_args.kwargs.get("model") == "kimi"
+
+    def test_task_ai_without_manager_passes_none(self):
+        """调度器未挂 manager（ai_manager=None）→ model=None 不报错"""
+        from aibox import TaskScheduler
+        sched = TaskScheduler.__new__(TaskScheduler)
+        sched.ai_manager = None
+        sched.logger = self._stub_logger()
+        sched._shared_skill_manager = object()
+        with mock.patch("aibox.DeepSeekChat") as mc, \
+             mock.patch("aibox.SubprocessCommandExecutor"):
+            sched._create_task_ai()
+        assert mc.call_args.kwargs.get("model") is None
+
+    def test_parse_args_model(self):
+        """CLI 解析：--model kimi → args.model"""
+        from aibox import parse_args
+        with mock.patch("sys.argv", ["aibox.py", "--model", "kimi"]):
+            args = parse_args()
+        assert args.model == "kimi"
+
+
 # ==================== DeepSeekChat 档案级 reasoning 读取 ====================
 
 class TestChatReasoningFlag:

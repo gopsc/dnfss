@@ -552,7 +552,7 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
 | `reasoning_enabled` | 档案级思考模式开关（缺省回退 `api.reasoning_enabled`） |
 | `timeout` | 请求超时秒数 |
 
-**选择优先级**：`--model <档案名>`（命中 `models` 节）→ `api.default_model` 指向档案 → 回退旧 `api` 扁平节。
+**选择优先级**：`--model <档案名>`（命中 `models` 节）→ `api.default_model` 指向档案 → 回退旧 `api` 扁平节。`--model` 为**进程级覆盖**：WebSocket 服务模式（主对话、每个会话实例、定时任务实例）与 `--once` 一次性模式均生效。
 
 `--model` 传**裸模型名**（未命中档案）时，沿用默认端点与 Key，仅覆盖模型名——即 "同端点换模型" 语义。
 
@@ -657,7 +657,7 @@ python aibox.py [选项]
   --show-reasoning      一次性模式输出思考流（默认静默，走 stderr）
   --no-save-memory      一次性模式禁用记忆工具（干净跳过，不进请求 schema）
   --worker-only         一次性模式纯执行面（worker profile，无人格/记忆工具）
-  --model NAME          模型档案名（models 节）或裸模型名（同端点换模型）
+  --model NAME          模型档案名（models 节）或裸模型名（同端点换模型）；服务模式与 --once 均生效（进程级覆盖）
   --temperature T       覆盖配置的对话温度
   --once-timeout SEC    一次性模式全局超时（默认 300 秒）
 ```

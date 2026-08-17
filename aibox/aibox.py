@@ -116,9 +116,11 @@ class TaskScheduler:
             # 每个任务使用独立的命令执行器，互不共享，避免 cancel() 误杀其他任务的子进程
             command_executor=SubprocessCommandExecutor(self.logger),
             prompt_manager=self.ai_manager.prompt_manager if self.ai_manager else None,
-            skill_manager=self._get_shared_skill_manager()
+            skill_manager=self._get_shared_skill_manager(),
+            # H3：CLI --model 为进程级覆盖，定时任务实例同样生效
+            model=getattr(self.ai_manager, "model", None) if self.ai_manager else None
         )
-    
+
     def set_websocket_handler(self, handler):
         """设置WebSocket处理器，用于广播任务执行状态"""
         self.ws_handler = handler
@@ -1938,7 +1940,9 @@ class WebSocketHandler:
             # 每个连接使用独立的命令执行器，互不共享，避免 cancel() 误杀其他用户/任务正在运行的子进程
             command_executor=SubprocessCommandExecutor(self.logger),
             prompt_manager=self.ai_manager.prompt_manager,
-            skill_manager=self._get_shared_skill_manager()
+            skill_manager=self._get_shared_skill_manager(),
+            # H3：CLI --model 进程级覆盖传导到每个会话实例
+            model=getattr(self.ai_manager, "model", None)
         )
     
     def _get_session(self, websocket) -> dict:
@@ -2569,18 +2573,24 @@ class WebSocketHandler:
 class EnhancedAIManager:
     """增强的AI对话管理器 - 集成任务调度器"""
     
-    def __init__(self, debug_level: int = None, load_history: bool = None, command_executor: CommandExecutor = None):
+    def __init__(self, debug_level: int = None, load_history: bool = None, command_executor: CommandExecutor = None,
+                 model: str = None):
         self.ai: Optional[DeepSeekChat] = None
         self.dialogue_history: List[Dict] = []
         self.config = ConfigManager()
         self.command_executor = command_executor or SubprocessCommandExecutor()
         self.prompt_manager = PromptManager()  # 创建提示词管理器
         self.scheduler: Optional[TaskScheduler] = None  # 任务调度器
-        
+        # H3：CLI --model 进程级覆盖（档案名或裸模型名），传导到本进程创建的所有 AI 实例
+        # （主对话 add_ai / WebSocket 会话 / 定时任务），此前服务模式该参数被静默忽略
+        self.model = model
+
         if debug_level is None:
             debug_level = self.config.get("system.debug_level", 1)
-        
+
         self.logger = Logger("Manager", debug_level)
+        if model:
+            self.logger.info(f"CLI 模型覆盖已启用: {model}")
         self.running = True
         
         # 确保 ~/.aibox 目录存在
@@ -2628,7 +2638,8 @@ class EnhancedAIManager:
             memory_db=self.memory_db,
             memo_db=self.memo_db,
             command_executor=self.command_executor,
-            prompt_manager=self.prompt_manager
+            prompt_manager=self.prompt_manager,
+            model=self.model  # H3：--model 进程级覆盖
         )
         
         self.ai = ai
@@ -2852,7 +2863,7 @@ def parse_args():
     parser.add_argument('--no-save-memory', action='store_true', help='一次性对话不注册记忆工具，禁止写入记忆数据库')
     parser.add_argument('--show-reasoning', action='store_true', help='一次性对话在 stderr 显示思考过程流（默认不显示）')
     parser.add_argument('--worker-only', action='store_true', help='一次性对话以 worker 纯执行面模式运行（7 种执行工具，无记忆/人格/派生）')
-    parser.add_argument('--model', type=str, metavar='NAME', help='覆盖配置中的模型名（如 deepseek-chat / deepseek-reasoner）')
+    parser.add_argument('--model', type=str, metavar='NAME', help='覆盖配置中的模型：档案名（models 节，如 kimi）或裸模型名（同端点换模型）。服务模式与 --once 均生效（进程级覆盖）')
     parser.add_argument('--temperature', type=float, metavar='T', help='覆盖默认采样温度（0.0~2.0，越低越确定）')
 
     return parser.parse_args()
@@ -3142,7 +3153,8 @@ def main():
     
     manager = EnhancedAIManager(
         debug_level=args.debug,
-        command_executor=command_executor
+        command_executor=command_executor,
+        model=args.model  # H3：--model 服务模式同样生效（进程级覆盖）
     )
     
     if handle_check_commands(manager):
