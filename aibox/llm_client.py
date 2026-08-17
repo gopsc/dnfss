@@ -262,6 +262,26 @@ def resolve_api_key(api_key: Optional[str], config=None,
             f"请设置环境变量 {env_name} 或在配置文件中设置 API Key")
 
 
+def _validate_profile(name: str, profile) -> None:
+    """H2：档案类型与 api_url 校验（在读取档案字段之前调用）。"""
+    if not isinstance(profile, dict):
+        raise ValueError(
+            f"模型档案 '{name}' 配置无效：应为对象（字典），"
+            f"实际为 {type(profile).__name__}，请检查 config.json 的 models.{name}")
+    if not str(profile.get("api_url") or "").strip():
+        raise ValueError(
+            f"模型档案 '{name}' 缺少 api_url 字段，"
+            f"请在 config.json 的 models.{name} 中补齐（OpenAI Chat Completions 端点 URL）")
+
+
+def _require_model(name: str, effective_model) -> None:
+    """H2：有效模型名校验——缺 model 会把档案名当模型名发给 API（或 "model": null → 400）。"""
+    if not str(effective_model or "").strip():
+        raise ValueError(
+            f"模型档案 '{name}' 缺少 model 字段（且未传入裸模型名），"
+            f"请在 config.json 的 models.{name} 中补齐，或调用时用 --model 指定模型名")
+
+
 def _resolve_model_profile(config, model: Optional[str]):
     """解析模型档案。返回 (profile_dict, effective_model_name)。
 
@@ -279,11 +299,18 @@ def _resolve_model_profile(config, model: Optional[str]):
     default_profile = models.get(default_name) if default_name else None
 
     if explicit is not None:
-        # model 是档案名 → 完整采用该档案（url/key/模型名）
-        return explicit, explicit.get("model") or model
+        # model 是档案名 → 完整采用该档案（url/key/模型名）；
+        # 档案缺 model 属配置错误，直接报错（不再把档案名当模型名发出）
+        _validate_profile(model, explicit)
+        effective = explicit.get("model")
+        _require_model(model, effective)
+        return explicit, effective
     if default_profile is not None:
         # model 是裸名或未指定 → 默认档案的 url/key，模型名被裸名覆盖
-        return default_profile, model or default_profile.get("model")
+        _validate_profile(default_name, default_profile)
+        effective = model or default_profile.get("model")
+        _require_model(default_name, effective)
+        return default_profile, effective
     return None, model
 
 

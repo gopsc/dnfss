@@ -249,6 +249,54 @@ class TestH1KeyIsolation:
             assert resolve_api_key(None, _cfg(models=None)) == "sk-deepseek-leaked"
 
 
+# ==================== H2：档案 schema 校验 ====================
+
+class TestH2SchemaValidation:
+    """H2：档案缺 api_url/model 或类型错误 → 解析期立即报清晰 ValueError。
+
+    此前：缺 api_url 延迟到 requests InvalidURL；缺 model 会把档案名当
+    模型名发出（或 "model": null → API 400），错误远离配置源头。
+    """
+
+    def test_explicit_profile_missing_model(self):
+        """显式命中档案 + 档案缺 model → 报错（不再把档案名当模型名）"""
+        models = {"nomodel": {"api_url": "https://api.example/v1/chat/completions"}}
+        with pytest.raises(ValueError, match="nomodel.*model"):
+            _resolve_model_profile(_cfg(models=models, default_model=None), "nomodel")
+
+    def test_explicit_profile_missing_api_url(self):
+        """显式命中档案 + 档案缺 api_url → 报错而非延迟到 InvalidURL"""
+        models = {"nourl": {"model": "some-model"}}
+        with pytest.raises(ValueError, match="nourl.*api_url"):
+            _resolve_model_profile(_cfg(models=models, default_model=None), "nourl")
+
+    def test_default_profile_missing_model_no_param(self):
+        """默认档案缺 model + 未传 model → 报错（此前发出 "model": null）"""
+        models = {"deepseek": {"api_url": "https://api.deepseek.com/chat/completions"}}
+        with pytest.raises(ValueError, match="deepseek.*model"):
+            _resolve_model_profile(_cfg(models=models), None)
+
+    def test_default_profile_missing_model_bare_name_ok(self):
+        """默认档案缺 model + 传裸模型名 → 裸名补位，合法"""
+        models = {"deepseek": {"api_url": "https://api.deepseek.com/chat/completions"}}
+        profile, model = _resolve_model_profile(_cfg(models=models), "deepseek-v4-lite")
+        assert profile is models["deepseek"]
+        assert model == "deepseek-v4-lite"
+
+    def test_non_dict_profile_rejected(self):
+        """档案值非字典（如写成字符串）→ 报错指出实际类型"""
+        models = {"bad": "https://api.example/v1/chat/completions"}
+        with pytest.raises(ValueError, match="bad.*str"):
+            _resolve_model_profile(_cfg(models=models, default_model=None), "bad")
+
+    def test_create_client_raises_on_invalid_profile(self):
+        """端到端：create_llm_client 对无效档案抛 ValueError（配置源头暴露）"""
+        models = {"kimi": {"api_url": "https://api.moonshot.cn/v1/chat/completions"}}
+        with mock.patch.dict(os.environ, {"MOONSHOT_API_KEY": "sk-moon"}):
+            with pytest.raises(ValueError, match="kimi.*model"):
+                create_llm_client(_cfg(models=models, default_model=None), model="kimi")
+
+
 # ==================== DeepSeekChat 档案级 reasoning 读取 ====================
 
 class TestChatReasoningFlag:
