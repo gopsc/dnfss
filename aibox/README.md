@@ -92,7 +92,7 @@ aibox/
 │   ├── prompt_tools.py     # B 批：UpdateIdentity/UpdateSoul/SaveMemoryAndEndConversation
 │   ├── proxy_tools.py      # B 批：SetProxy/GetProxy
 │   └── misc_tools.py       # B 批：AskUserTool
-├── tests/             # 单元测试套件（315 项全过）
+├── tests/             # 单元测试套件（330 项全过）
 │   ├── conftest.py                    # sys.path 配置 + websockets 桩
 │   ├── test_basic_tools.py            # A 批工具 43 项
 │   ├── test_b_tools.py                # B 批工具 58 项
@@ -553,6 +553,7 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
 | `timeout` | 请求超时秒数 |
 | `temperature` | 档案级默认采样温度（可选）。优先级：CLI/调用方显式传入 > 本字段 > 全局默认；reasoning 模型建议按厂商文档设置 |
 | `display_name` | 展示名（可选，缺省用档案名）。`client.name` 用于对话上下文中的 assistant 名，不再恒显示 "DeepSeek" |
+| `fallback` | 失败转移档案名列表（可选，如 `["kimi", "local"]`，一层不递归）。主档案瞬时故障（HTTP 429/5xx、连接失败/超时）时按序转移；认证/参数类 4xx **不转移**（配置问题响亮暴露）；失败档案进入 60s 冷却期。当前仅 `chat_completion`（对话压缩/轻量子代理）生效，流式路径 L4b 支持 |
 
 **选择优先级**：`--model <档案名>`（命中 `models` 节）→ `api.default_model` 指向档案 → 回退旧 `api` 扁平节。`--model` 为**进程级覆盖**：WebSocket 服务模式（主对话、每个会话实例、定时任务实例）与 `--once` 一次性模式均生效。
 
@@ -901,7 +902,8 @@ elif command == "/mycommand":
   - **L2（前缀逃逸）**：`--model model:NAME` 强制裸模型名语义、`--model profile:NAME` 强制档案语义（不存在时明确报错并列出可用档案），档案名与模型名歧义可逃逸
   - **L3（档案级温度）**：档案 `temperature` 字段作为默认采样温度，优先级：CLI/调用方显式传入 > 档案字段 > 全局默认（0.7/0.3），主对话/轻量子代理/compressor 全链路生效
   - **L5（思考流字段别名）**：`_parse_delta` 识别 `reasoning_content`/`reasoning`/`thinking`/`thinking_content` 四种常见思考字段（首个命中生效），其他厂商思考流不再静默丢失
-- ✅ **测试**：315 项全过（H1 隔离 4 + H2 校验 6 + H3 传导 6 + M2 提示 5 + M1 替换 2 + M3 契约 4 + L 批 16 项新增）
+- ✅ **L4a（chat_completion 跨档案失败转移）**：档案新字段 `fallback`（档案名列表，一层不递归）；`create_llm_client` 构造 `FailoverClient` 包装链（主档案 + fallback）。瞬时故障（HTTP 429/5xx 抛 `TransientLLMError`、连接失败/超时）按链转移，认证/参数类 4xx 不转移（配置问题响亮暴露）；失败档案 60s 冷却；fallback 档案缺 Key 等环境问题跳过 + warning 不阻断主档案；配置结构错误（类型/不存在/自引用）启动期硬性拦截。当前覆盖对话压缩与轻量子代理链路，流式（`stream_chat`）转移属 L4b
+- ✅ **测试**：330 项全过（H1 隔离 4 + H2 校验 6 + H3 传导 6 + M2 提示 5 + M1 替换 2 + M3 契约 4 + L 批 16 + L4a 转移 15 项新增）
 
 ### v3.3
 - ✅ **安全审计与修复**（两轮审计报告见 [docs/reports/aibox_audit_20260817.md](../docs/reports/aibox_audit_20260817.md)）：

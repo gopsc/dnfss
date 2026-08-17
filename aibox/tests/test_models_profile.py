@@ -17,6 +17,7 @@ import types
 from unittest import mock
 
 import pytest
+import requests
 
 # ---- 环境桩：保证 import aibox.py 不失败 ----
 if "websockets" not in sys.modules:
@@ -682,6 +683,190 @@ class TestLBatch:
         events = list(c._parse_delta(
             {"reasoning_content": "x", "content": "hello"}, reasoning_enabled=False))
         assert events == [{"type": "content", "text": "hello"}]
+
+
+# ==================== L4a：chat_completion 跨档案失败转移 ====================
+
+def _resp(status=200, text="", content="ok"):
+    m = mock.MagicMock()
+    m.status_code = status
+    m.text = text
+    m.json.return_value = {"choices": [{"message": {"content": content}}]}
+    return m
+
+
+class _RecordingLogger:
+    def __init__(self):
+        self.records = []
+
+    def info(self, m): self.records.append(("info", m))
+    def warning(self, m): self.records.append(("warning", m))
+    def error(self, m): self.records.append(("error", m))
+
+
+class TestL4aChatCompletionFailover:
+    """L4a：档案带 fallback 时 chat_completion 在瞬时故障（429/5xx/连接异常）按链转移。
+
+    - 转移：TransientLLMError（429/5xx）与 requests 连接类异常
+    - 不转移：4xx 认证/参数失败（底层返回 None 直接透传——配置问题响亮暴露）
+    - 失败档案进入冷却期（60s 内跳过）；链耗尽返回 None
+    - fallback 档案构造失败（缺 Key 等环境问题）→ 跳过 + warning，不阻断主档案
+    - stream_chat 转移属 L4b，本批仅验证委托主 client
+    """
+
+    FB_MODELS = None  # 延迟构造（依赖 MODELS）
+
+    def _models(self):
+        return {
+            "deepseek": dict(MODELS["deepseek"], fallback=["kimi"]),
+            "kimi": dict(MODELS["kimi"]),
+        }
+
+    def _fc(self, models=None, env=None, logger=None):
+        models = models or self._models()
+        env = env or {"DEEPSEEK_API_KEY": "sk-ds", "MOONSHOT_API_KEY": "sk-moon"}
+        with mock.patch.dict(os.environ, env):
+            return create_llm_client(_cfg(models=models), logger=logger)
+
+    def test_no_fallback_returns_plain_client(self):
+        """无 fallback 字段 → 返回普通 DeepSeekClient（零破坏）"""
+        from llm_client import DeepSeekClient, FailoverClient
+        c = self._fc(models={"deepseek": dict(MODELS["deepseek"]), "kimi": dict(MODELS["kimi"])})
+        assert isinstance(c, DeepSeekClient) and not isinstance(c, FailoverClient)
+
+    def test_fallback_returns_wrapper_with_chain(self):
+        """带 fallback → FailoverClient，链 = [主, fallback]，属性委托主档案"""
+        from llm_client import FailoverClient
+        fc = self._fc()
+        assert isinstance(fc, FailoverClient)
+        assert [c.name for c in fc._clients] == ["deepseek", "kimi"]
+        assert fc.model == "deepseek-v4-flash"   # __getattr__ 委托主 client
+        assert fc.api_key == "sk-ds"
+
+    def test_fallback_type_validated(self):
+        """fallback 非字符串列表 → ValueError（H2 风格源头校验）"""
+        models = self._models()
+        models["deepseek"] = dict(models["deepseek"], fallback="kimi")
+        with pytest.raises(ValueError, match="fallback.*无效"):
+            self._fc(models=models)
+
+    def test_fallback_unknown_profile_raises(self):
+        """fallback 指向不存在档案 → 报错并列出可用档案"""
+        models = self._models()
+        models["deepseek"] = dict(models["deepseek"], fallback=["nope"])
+        with pytest.raises(ValueError, match="nope.*可用档案"):
+            self._fc(models=models)
+
+    def test_fallback_self_reference_raises(self):
+        """fallback 包含自身 → 报错"""
+        models = self._models()
+        models["deepseek"] = dict(models["deepseek"], fallback=["deepseek"])
+        with pytest.raises(ValueError, match="不能包含自身"):
+            self._fc(models=models)
+
+    def test_failover_on_429(self):
+        """主档案 429 → 转移 kimi 成功；请求按链顺序发出"""
+        fc = self._fc()
+        with mock.patch("llm_client.requests.post",
+                        side_effect=[_resp(429, "rate limited"), _resp(200, content="from-kimi")]) as mp:
+            result = fc.chat_completion([{"role": "user", "content": "hi"}])
+        assert result == "from-kimi"
+        urls = [c.args[0] for c in mp.call_args_list]
+        assert urls[0].startswith("https://api.deepseek.com")
+        assert urls[1].startswith("https://api.moonshot.cn")
+
+    def test_failover_on_5xx(self):
+        """主档案 503 → 转移成功"""
+        fc = self._fc()
+        with mock.patch("llm_client.requests.post",
+                        side_effect=[_resp(503, "unavailable"), _resp(200, content="ok5")]):
+            assert fc.chat_completion([{"role": "user", "content": "hi"}]) == "ok5"
+
+    def test_failover_on_connection_error(self):
+        """主档案连接失败 → 转移成功"""
+        fc = self._fc()
+        with mock.patch("llm_client.requests.post",
+                        side_effect=[requests.exceptions.ConnectionError("boom"),
+                                     _resp(200, content="ok-conn")]):
+            assert fc.chat_completion([{"role": "user", "content": "hi"}]) == "ok-conn"
+
+    def test_no_failover_on_auth_failure(self):
+        """主档案 401（不可转移失败）→ 直接 None，不调 fallback"""
+        fc = self._fc()
+        with mock.patch("llm_client.requests.post",
+                        return_value=_resp(401, "unauthorized")) as mp:
+            assert fc.chat_completion([{"role": "user", "content": "hi"}]) is None
+        assert len(mp.call_args_list) == 1  # 只打了主档案
+
+    def test_chain_exhausted_returns_none(self):
+        """全链瞬时失败 → None（与 chat_completion 失败契约一致）"""
+        fc = self._fc()
+        with mock.patch("llm_client.requests.post",
+                        side_effect=[_resp(429, "x"), _resp(500, "y")]) as mp:
+            assert fc.chat_completion([{"role": "user", "content": "hi"}]) is None
+        assert len(mp.call_args_list) == 2
+
+    def test_cooldown_skips_recently_failed(self):
+        """主档案失败后进入冷却：下次调用直接走 fallback；冷却过期后恢复主档案"""
+        import time as _time
+        fc = self._fc()
+        with mock.patch("llm_client.requests.post",
+                        side_effect=[_resp(429, "x"), _resp(200, content="r1")]):
+            assert fc.chat_completion([{"role": "user", "content": "q1"}]) == "r1"
+        # 冷却中：第一次请求即打 kimi（deepseek 被跳过）
+        with mock.patch("llm_client.requests.post",
+                        return_value=_resp(200, content="r2")) as mp:
+            assert fc.chat_completion([{"role": "user", "content": "q2"}]) == "r2"
+            assert mp.call_args_list[0].args[0].startswith("https://api.moonshot.cn")
+        # 冷却过期（手动回拨失败时间戳）：恢复走主档案
+        fc._fail_at["deepseek"] = _time.monotonic() - fc.cooldown_seconds - 1
+        with mock.patch("llm_client.requests.post",
+                        return_value=_resp(200, content="r3")) as mp:
+            assert fc.chat_completion([{"role": "user", "content": "q3"}]) == "r3"
+            assert mp.call_args_list[0].args[0].startswith("https://api.deepseek.com")
+
+    def test_missing_key_fallback_skipped(self):
+        """fallback 档案缺 API Key（环境问题）→ 跳过 + warning，主档案仍可用"""
+        logger = _RecordingLogger()
+        fc = self._fc(env={"DEEPSEEK_API_KEY": "sk-ds"}, logger=logger)  # 未设 MOONSHOT_API_KEY
+        from llm_client import FailoverClient
+        assert isinstance(fc, FailoverClient)
+        assert len(fc._clients) == 1  # kimi 被跳过
+        assert any("kimi" in m for lvl, m in logger.records if lvl == "warning")
+        with mock.patch("llm_client.requests.post",
+                        return_value=_resp(200, content="solo")):
+            assert fc.chat_completion([{"role": "user", "content": "hi"}]) == "solo"
+
+    def test_transient_429_5xx_raise(self):
+        """裸 DeepSeekClient：429/502 → TransientLLMError 上抛（不被自身 catch 吞掉）"""
+        from llm_client import DeepSeekClient, TransientLLMError
+        c = DeepSeekClient(api_key="k", model="m", base_url="https://x")
+        for status in (429, 502):
+            with mock.patch("llm_client.requests.post", return_value=_resp(status, "err")):
+                with pytest.raises(TransientLLMError):
+                    c.chat_completion([{"role": "user", "content": "hi"}])
+
+    def test_auth_4xx_returns_none_no_raise(self):
+        """裸 DeepSeekClient：401/400 → 返回 None 不抛（回归，响亮暴露由消费方处理）"""
+        from llm_client import DeepSeekClient, TransientLLMError
+        c = DeepSeekClient(api_key="k", model="m", base_url="https://x")
+        for status in (401, 400):
+            with mock.patch("llm_client.requests.post", return_value=_resp(status, "err")):
+                assert c.chat_completion([{"role": "user", "content": "hi"}]) is None
+
+    def test_stream_chat_delegates_to_primary(self):
+        """L4a：stream_chat 直接委托主 client（转移属 L4b）"""
+        from llm_client import FailoverClient
+        primary = mock.MagicMock()
+        primary.name = "deepseek"
+        primary.stream_chat = mock.MagicMock(
+            return_value=iter([{"type": "content", "text": "x"}, {"type": "done"}]))
+        fc = FailoverClient([primary])
+        events = list(fc.stream_chat([{"role": "user", "content": "hi"}],
+                                     temperature=0.5, max_tokens=99))
+        assert events == [{"type": "content", "text": "x"}, {"type": "done"}]
+        kwargs = primary.stream_chat.call_args.kwargs
+        assert kwargs["temperature"] == 0.5 and kwargs["max_tokens"] == 99
 
 
 # ==================== DeepSeekChat 档案级 reasoning 读取 ====================

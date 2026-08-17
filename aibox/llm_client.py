@@ -22,6 +22,7 @@ from typing import Dict, Iterator, List, Optional
 
 import json
 import os
+import time
 import requests
 
 
@@ -151,8 +152,17 @@ class DeepSeekClient(LLMClient):
             if response.status_code == 200:
                 result = response.json()
                 return result["choices"][0]["message"]["content"].strip()
+            if response.status_code == 429 or response.status_code >= 500:
+                # L4a：瞬时故障显式抛出——FailoverClient 据此转移下一档案；
+                # 无包装器时由调用方 catch-all 接住，下游仍走失败分支（语义等价）
+                raise TransientLLMError(
+                    f"LLM 请求瞬时失败: HTTP {response.status_code}: {response.text[:200]}")
             self._log("error", f"LLM 压缩请求失败: HTTP {response.status_code}")
             return None
+        except TransientLLMError:
+            raise  # L4a：瞬时故障上抛供 FailoverClient 转移，不吞
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            raise  # L4a：连接类瞬时故障同样上抛（原被吞成 None，无法转移）
         except Exception as e:
             self._log("error", f"LLM 压缩请求异常: {e}")
             return None
@@ -249,6 +259,86 @@ class DeepSeekClient(LLMClient):
             }
 
 
+class TransientLLMError(RuntimeError):
+    """瞬时 LLM 故障（HTTP 429/5xx）——FailoverClient 据此转移下一档案（L4a）。"""
+
+
+class FailoverClient:
+    """跨档案失败转移包装器（L4a）。
+
+    持有序 client 链（主档案 + fallback 档案），对外实现与 LLMClient 相同的
+    消费面（未显式定义的属性经 __getattr__ 委托主 client）。
+
+    L4a 范围——chat_completion（非流式幂等）按链转移：
+      - 转移：HTTP 429/5xx（TransientLLMError）、连接失败/超时（requests 连接类异常）
+      - 不转移：认证/参数类 4xx（底层返回 None，直接透传——配置问题应响亮暴露）
+    失败档案进入冷却期（cooldown_seconds，默认 60s），期间直接跳过，
+    避免每次请求都撞刚失败的端点。链耗尽返回 None（与 chat_completion 失败契约一致）。
+
+    stream_chat 暂直接委托主 client（L4b 实现首 token 前转移）。
+    """
+
+    def __init__(self, clients: List, logger=None, cooldown_seconds: float = 60.0):
+        self._clients = list(clients)
+        self.logger = logger
+        self.cooldown_seconds = cooldown_seconds
+        self._fail_at = {}  # client.name → 失败时刻（time.monotonic）
+
+    def __getattr__(self, item):
+        # 未显式定义的属性/方法委托主 client（name/model/api_key/cancel 等）；
+        # 下划线属性直接报错，防 __init__ 前访问 self._clients 的无限递归
+        if item.startswith("_"):
+            raise AttributeError(item)
+        return getattr(self._clients[0], item)
+
+    def _log(self, level: str, msg: str):
+        if self.logger is not None and hasattr(self.logger, level):
+            try:
+                getattr(self.logger, level)(msg)
+            except Exception:
+                pass
+
+    def _cooling(self, client) -> bool:
+        t = self._fail_at.get(client.name)
+        return t is not None and (time.monotonic() - t) < self.cooldown_seconds
+
+    def _mark_fail(self, client):
+        self._fail_at[client.name] = time.monotonic()
+
+    def chat_completion(self, messages: List[Dict], temperature: float = None,
+                        max_tokens: int = 1024, **kwargs):
+        last_exc = None
+        tried = 0
+        for client in self._clients:
+            if self._cooling(client):
+                self._log("info", f"模型档案 {client.name} 处于失败冷却期，跳过")
+                continue
+            tried += 1
+            try:
+                result = client.chat_completion(messages, temperature=temperature,
+                                                max_tokens=max_tokens, **kwargs)
+                if result is not None:
+                    return result
+                # None：认证/参数类 4xx 或响应异常——不可转移，直接透传
+                return None
+            except (TransientLLMError, requests.exceptions.RequestException) as e:
+                last_exc = e
+                self._mark_fail(client)
+                self._log("warning", f"模型档案 {client.name} 瞬时故障（{e}），转移下一档案")
+        self._log("error", f"全部 {len(self._clients)} 个模型档案均不可用（尝试 {tried} 个）：{last_exc}")
+        return None
+
+    def stream_chat(self, messages: List[Dict], temperature: float = None,
+                    max_tokens: int = 8192, tools: Optional[List[Dict]] = None,
+                    tool_choice: Optional[str] = None,
+                    reasoning_enabled: bool = False, **extra) -> Iterator[Dict]:
+        # L4a：暂不转移（L4b 实现首 token 前转移），直接委托主 client
+        yield from self._clients[0].stream_chat(
+            messages, temperature=temperature, max_tokens=max_tokens,
+            tools=tools, tool_choice=tool_choice,
+            reasoning_enabled=reasoning_enabled, **extra)
+
+
 def resolve_api_key(api_key: Optional[str], config=None,
                     env_name: Optional[str] = None,
                     allow_missing: bool = False,
@@ -302,6 +392,12 @@ def _validate_profile(name: str, profile) -> None:
         raise ValueError(
             f"模型档案 '{name}' 缺少 api_url 字段，"
             f"请在 config.json 的 models.{name} 中补齐（OpenAI Chat Completions 端点 URL）")
+    fb = profile.get("fallback")
+    if fb is not None and (not isinstance(fb, list) or not all(isinstance(x, str) for x in fb)):
+        raise ValueError(
+            f"模型档案 '{name}' 的 fallback 字段无效：应为档案名字符串列表"
+            f"（如 [\"kimi\", \"local\"]），实际为 {type(fb).__name__}，"
+            f"请检查 config.json 的 models.{name}")
 
 
 def _require_model(name: str, effective_model) -> None:
@@ -367,6 +463,28 @@ def _resolve_model_profile(config, model: Optional[str]):
     return None, model, None
 
 
+def _construct_profile_client(config, profile: Dict, profile_name: str,
+                              effective_model: str, logger=None,
+                              api_key: Optional[str] = None) -> LLMClient:
+    """L4a：按档案构造单个 DeepSeekClient（主路径与 fallback 链复用，不处理 fallback 字段）。"""
+    env_name = profile.get("api_key_env")
+    allow_missing = (env_name == "")  # 档案显式空串 → 本地免密端点
+    resolved_key = resolve_api_key(api_key, config, env_name=env_name,
+                                   allow_missing=allow_missing, allow_key_file=False)
+    return DeepSeekClient(
+        api_key=resolved_key,
+        model=effective_model,
+        base_url=profile.get("api_url"),
+        timeout=profile.get("timeout") or config.get("api.timeout", 30),
+        config=config,
+        logger=logger,
+        reasoning_enabled=profile.get("reasoning_enabled",
+                                      config.get("api.reasoning_enabled", False)),
+        display_name=profile.get("display_name") or profile_name,
+        default_temperature=profile.get("temperature"),
+    )
+
+
 def create_llm_client(config, api_key: Optional[str] = None,
                       logger=None, model: Optional[str] = None) -> LLMClient:
     """根据配置创建对应厂商的 LLM 客户端。
@@ -388,26 +506,45 @@ def create_llm_client(config, api_key: Optional[str] = None,
     """
     profile, model, profile_name = _resolve_model_profile(config, model)
 
-    env_name = None
-    allow_missing = False
-    if profile is not None:
-        base_url = profile.get("api_url")
-        timeout = profile.get("timeout") or config.get("api.timeout", 30)
-        env_name = profile.get("api_key_env")
-        if env_name == "":
-            allow_missing = True  # 档案显式空串 → 本地免密端点
-    else:
+    if profile is None:
+        # 旧 api 扁平节（唯一允许回退 ~/.cert/deepseek.key 的路径，H1）
         provider = (config.get("api.provider", "deepseek") or "deepseek").lower()
         base_url = config.get("api.deepseek_api_url")
         model = model or config.get("api.deepseek_model", "deepseek-v4-flash")
         timeout = config.get("api.timeout", 30)
-
-    resolved_key = resolve_api_key(api_key, config, env_name=env_name,
-                                   allow_missing=allow_missing,
-                                   allow_key_file=profile is None)
-
-    if profile is not None:
+        resolved_key = resolve_api_key(api_key, config, env_name=None,
+                                       allow_missing=False, allow_key_file=True)
+    else:
         provider = "openai_compatible"
+        primary = _construct_profile_client(config, profile, profile_name,
+                                            model, logger=logger, api_key=api_key)
+        fallback_names = profile.get("fallback") or []
+        if not fallback_names:
+            return primary
+        # L4a：构造 fallback 链（一层，不递归——fallback 档案自身的 fallback 字段被忽略）
+        models = config.get("models") or {}
+        chain = [primary]
+        for fb_name in fallback_names:
+            if fb_name == profile_name:
+                raise ValueError(
+                    f"模型档案 '{profile_name}' 的 fallback 不能包含自身，"
+                    f"请检查 config.json 的 models.{profile_name}.fallback")
+            fb_profile = models.get(fb_name)
+            if fb_profile is None:
+                raise ValueError(
+                    f"模型档案 '{profile_name}' 的 fallback 指向不存在的档案 '{fb_name}'，"
+                    f"可用档案：{', '.join(models) or '（无）'}")
+            try:
+                chain.append(_construct_profile_client(
+                    config, fb_profile, fb_name, fb_profile.get("model"),
+                    logger=logger))
+            except RuntimeError as e:
+                # 环境问题（如 fallback 档案缺 API Key）：跳过该 fallback 并告警，
+                # 不阻断主档案可用性（配置结构错误在上方已硬性拦截）
+                if logger is not None and hasattr(logger, "warning"):
+                    logger.warning(f"fallback 档案 '{fb_name}' 构造失败，已忽略：{e}")
+        return FailoverClient(chain, logger=logger)
+
     if provider in ("deepseek", "deepseek-chat", "openai_compatible", "openai"):
         client = DeepSeekClient(
             api_key=resolved_key,
@@ -416,17 +553,6 @@ def create_llm_client(config, api_key: Optional[str] = None,
             timeout=timeout,
             config=config,
             logger=logger,
-            # M3：档案级思考模式作为构造参数（None=未配置，消费方回退全局），
-            # 不再构造后挂实例属性——契约显式化，杜绝外部误设属性静默覆盖全局
-            reasoning_enabled=(profile.get("reasoning_enabled",
-                                           config.get("api.reasoning_enabled", False))
-                               if profile is not None else None),
-            # L1：展示名——档案 display_name > 档案名；旧扁平节 None → "DeepSeek"
-            display_name=(profile.get("display_name") or profile_name
-                          if profile is not None else None),
-            # L3：档案级默认采样温度（档案 temperature 字段，未配置为 None）
-            default_temperature=(profile.get("temperature")
-                                 if profile is not None else None),
         )
         return client
 
