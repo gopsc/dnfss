@@ -651,8 +651,10 @@ def run_full_subagent(role, task, config, logger=None, model=None,
         )
 
         # 覆盖模型（如果指定了不同模型）
+        # M1：经 set_client 统一替换——同步刷新 compressor.llm_client 与
+        # api_key/name 快照，避免压缩链仍用默认模型发请求
         if model:
-            sub_chat.client = create_llm_client(config, api_key=None, logger=logger, model=model)
+            sub_chat.set_client(create_llm_client(config, api_key=None, logger=logger, model=model))
 
         # 轮次限制：防止工具调用无限循环
         # 注意：超限时不置 conversation_active=False——那会触发 think_and_respond
@@ -938,11 +940,23 @@ class DeepSeekChat:
         self._command_executor = command_executor  # 保存命令执行器引用，用于取消时kill子进程
         # 消息锁：保护 self.messages 免受 WebSocket 线程与调度器线程并发修改导致对话历史污染
         self._msg_lock = threading.RLock()
-        
+
         self._init_system_prompts(system_prompt)
-        
+
         self.tool_registry = ToolRegistry(self.logger)
         self._register_tools(exit_callback, command_executor)
+
+    def set_client(self, client) -> None:
+        """M1：统一替换 LLM 客户端（换模型/换档案），同步刷新派生引用。
+
+        直接赋值 self.client 会让 ConversationCompressor 等持有旧 client 的
+        组件继续用默认模型发请求（压缩链与实际对话模型不一致）。本方法
+        一并更新 compressor.llm_client 与 api_key/name 快照。
+        """
+        self.client = client
+        self.api_key = client.api_key
+        self.name = client.name
+        self.compressor.llm_client = client
     
     def cancel(self):
         """中断当前正在进行的AI思考/工具执行。线程安全，可从任意线程调用。"""

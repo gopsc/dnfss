@@ -439,6 +439,46 @@ class TestM2SubAgentModelHint:
         assert "可用模型档案" not in tool.get_description()
 
 
+# ==================== M1：set_client 统一替换 LLM 客户端 ====================
+
+class TestM1SetClient:
+    """M1：run_full_subagent 换模型后 compressor 仍持旧 client（压缩链用默认模型）。
+
+    验证 DeepSeekChat.set_client 统一替换：client/api_key/name/compressor.llm_client
+    四处同步刷新；run_full_subagent 经 set_client 而非直接赋值。
+    """
+
+    def test_set_client_refreshes_all_references(self):
+        """set_client → client/api_key/name/compressor.llm_client 同步为新 client"""
+        from test_once_mode import _make_ai, FakeLLMClient
+        ai = _make_ai()
+        assert ai.compressor.llm_client is ai.client  # 前置：初始一致
+        new_client = FakeLLMClient()
+        new_client.api_key = "sk-new"
+        new_client.name = "NewVendor"
+        ai.set_client(new_client)
+        assert ai.client is new_client
+        assert ai.api_key == "sk-new"
+        assert ai.name == "NewVendor"
+        assert ai.compressor.llm_client is new_client
+
+    def test_run_full_subagent_uses_set_client(self):
+        """run_full_subagent(model=...) → 经 set_client 替换（compressor 不再持旧 client）"""
+        from aibox import run_full_subagent
+        fake_sub_chat = mock.MagicMock()
+        fake_sub_chat.think_and_respond = mock.MagicMock(
+            return_value="任务完成报告")
+        fake_sub_chat.stats = {}
+        fake_sub_chat.messages = []
+        fake_new_client = mock.MagicMock()
+        with mock.patch("aibox.DeepSeekChat", return_value=fake_sub_chat), \
+             mock.patch("aibox.create_llm_client", return_value=fake_new_client), \
+             mock.patch("aibox.SubprocessCommandExecutor"):
+            run_full_subagent("测试角色", "测试任务", None,
+                              model="kimi", logger=None)
+        fake_sub_chat.set_client.assert_called_once_with(fake_new_client)
+
+
 # ==================== DeepSeekChat 档案级 reasoning 读取 ====================
 
 class TestChatReasoningFlag:

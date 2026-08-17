@@ -92,7 +92,7 @@ aibox/
 │   ├── prompt_tools.py     # B 批：UpdateIdentity/UpdateSoul/SaveMemoryAndEndConversation
 │   ├── proxy_tools.py      # B 批：SetProxy/GetProxy
 │   └── misc_tools.py       # B 批：AskUserTool
-├── tests/             # 单元测试套件（293 项全过）
+├── tests/             # 单元测试套件（295 项全过）
 │   ├── conftest.py                    # sys.path 配置 + websockets 桩
 │   ├── test_basic_tools.py            # A 批工具 43 项
 │   ├── test_b_tools.py                # B 批工具 58 项
@@ -885,12 +885,13 @@ elif command == "/mycommand":
 ## 📄 更新日志
 
 ### v3.4
-- ✅ **多模型档案加固（H1/H2/H3/M2 四项修复）**：
+- ✅ **多模型档案加固（H1/H2/H3/M1/M2 五项修复）**：
   - **H1（凭据隔离）**：档案端点环境变量取不到时直接报错，**绝不回退读 `~/.cert/deepseek.key`**（该文件为 DeepSeek 专属凭据，跨厂商复用属于泄漏）；key 文件回退仅对无档案的旧 `api` 扁平节生效
   - **H2（schema 校验前移）**：档案缺 `api_url`/`model` 或类型错误时，解析期即抛出指明档案名与缺失字段的 `ValueError`——不再把档案名当模型名发出、不再延迟到 `requests InvalidURL` 或 API 400
   - **H3（--model 服务模式生效）**：`--model` 升级为进程级覆盖，WebSocket 服务模式（主对话/每个会话实例/定时任务实例）与 `--once` 均生效，此前服务模式静默忽略
   - **M2（防模型名幻觉）**：`create_subagent` 工具描述与 JSON Schema 动态携带 `models` 节可用档案名列表（默认档案标注），LLM 无从编造名称；`models` 为空时描述保持原样（零破坏）
-- ✅ **测试**：293 项全过（H1 隔离 4 项 + H2 校验 6 项 + H3 传导 6 项 + M2 提示 5 项新增）
+  - **M1（换模型同步派生引用）**：新增 `DeepSeekChat.set_client()` 统一替换 LLM 客户端——同步刷新 `compressor.llm_client` 与 `api_key`/`name` 快照；`create_subagent` 子代理换模型经此入口，压缩链不再残留默认模型
+- ✅ **测试**：295 项全过（H1 隔离 4 项 + H2 校验 6 项 + H3 传导 6 项 + M2 提示 5 项 + M1 替换 2 项新增）
 
 ### v3.3
 - ✅ **安全审计与修复**（两轮审计报告见 [docs/reports/aibox_audit_20260817.md](../docs/reports/aibox_audit_20260817.md)）：
