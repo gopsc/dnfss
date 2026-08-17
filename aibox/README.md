@@ -17,7 +17,7 @@
 - 🧬 **智能体自我进化**：通过 `update_soul` / `update_identity` 工具动态更新角色定位与用户画像
 - 🤖 **子代理**：通过 `create_subagent` 工具派生出拥有独立上下文/角色设定的轻量子代理，主代理可分解长任务、隔离上下文，子代理可选用不同模型
 - 🔄 **技能热重载**：无需重启即可添加、修改或删除扩展技能
-- 🔐 **SOCKS5 代理**：通过 `set_proxy` / `get_proxy` 工具为网页访问与 API 调用配置代理，可持久化
+- 🔐 **SOCKS5 代理**：通过 `set_proxy` / `get_proxy` 工具为网页访问与 API 调用配置代理，可持久化；密码明文仅存内存不落盘，跨重启经 `password_env` 环境变量注入（对齐 `api_key_env` 惯例）
 - 💾 **对话管理**：历史对话归档、开始新对话（重置 AI 记忆并重新加载提示词）
 - 📦 **对话压缩**：消息数或 Token 数达到阈值时自动压缩，保持上下文质量
 - 🛡️ **内存安全防护**：文件读取按需加载不全载、命令输出 1MB 限制、单行超长截断、工具结果多层防护防止 OOM
@@ -200,7 +200,7 @@ py -m pytest aibox/tests -q
 | `update_soul` | 更新 AI 自我定义（`99_SOUL.md`，智能体进化） |
 | `save_memory_and_end_conversation` | 保存记忆并结束对话 |
 | `get_current_time` | 获取当前时间 |
-| `set_proxy` | 设置 SOCKS5 代理（host/port/可选账号密码，可持久化，即时生效） |
+| `set_proxy` | 设置 SOCKS5 代理（host/port/可选账号密码，可持久化，即时生效）；`password` 明文仅本次会话有效不落盘，跨重启用 `password_env` 指定存有密码的环境变量名 |
 | `get_proxy` | 查看当前 SOCKS5 代理配置 |
 
 ### 子代理（worker）工具集
@@ -614,11 +614,14 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
     "llm_max_tokens": 800
   },
   "proxy": {
-    "type": "",
-    "host": "",
-    "port": 0,
-    "username": "",
-    "password": ""
+    "socks5": {
+      "enabled": false,
+      "host": "127.0.0.1",
+      "port": 1080,
+      "username": "",
+      "password": null,
+      "password_env": "SOCKS5_PASSWORD"
+    }
   }
 }
 ```
@@ -626,6 +629,8 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
 > 默认模型为 `deepseek-v4-flash`（通过 `api.deepseek_model` 修改）。设置 `api.reasoning_enabled: true` 可启用思考模式，此时会在请求中添加 `thinking: {type: "enabled"}` 参数，模型会先进行思考再回答，实时展示思考过程（灰色斜体区域），回答质量更高且**支持工具调用**（文件操作、命令执行、记忆搜索等工具均可在思考模式下正常使用）。
 > 
 > API Key 从环境变量 `DEEPSEEK_API_KEY` 读取（亦支持 `~/.cert/deepseek.key` 文件）。
+>
+> **代理密码不落盘**：`proxy.socks5.password` 仅在运行期内存中有效，保存配置时强制置空；跨重启持久化请将密码存入环境变量（如 `SOCKS5_PASSWORD`），配置 `password_env` 指向该变量名。加载时检测到旧版明文密码会自动迁移（本会话保留可用，文件立即重写脱敏）。
 > 
 > **多厂商切换**：大模型调用已通过 `aibox/llm_client.py` 抽象层解耦，业务层不再直接依赖具体厂商。配置 `api.provider`（默认 `deepseek`）即可切换厂商，当前内置 `DeepSeekClient`（兼容 OpenAI Chat Completions 协议，Kimi / Qwen / GLM / Doubao 等绝大多数厂商均可复用）。新增厂商只需在此文件新增一个 `LLMClient` 子类并在 `create_llm_client` 工厂中注册，无需改动业务代码，为后续子代理/多模型共发预留了扩展点。
 
@@ -878,6 +883,12 @@ elif command == "/mycommand":
 3. 确认工具返回值为字符串且不含二进制/控制字符
 
 ## 📄 更新日志
+
+### v3.3
+- ✅ **安全审计与修复**（两轮审计报告见 [docs/reports/aibox_audit_20260817.md](../docs/reports/aibox_audit_20260817.md)）：
+  - **Batch E（命令执行保护链修复）**：`CommandLineTool.execute_streaming` 纯委托注入的 executor（删除绕过 1MB/超时/中断保护的 150 行重复 Popen 实现）；`SubprocessCommandExecutor` 读取循环线程化（后台 reader 线程 + 0.1s 超时轮询，静默命令超时不再失效）；两处 `Popen` 改 `stdin=DEVNULL`（等待输入的命令不再永久挂起工具线程）；write_file 指引 heredoc 定界符唯一化；registry 流式转发循环加 3600s 总超时兜底。PoC 回归 5/5 + 全量单测通过
+  - **Batch F（凭据保护）**：SOCKS5 代理密码不再明文落盘——`_save_config` 落盘前强制脱敏（纵深防御），新增 `password_env` 环境变量注入（对齐 `api_key_env` 惯例），旧版明文配置加载时自动迁移清除；`registry` debug 日志对 `password`/`api_key`/`token`/`secret`/`authorization` 参数打码
+- ✅ **测试**：267 项全过（Batch E PoC 回归 + Batch F 配置脱敏 3 项新增）
 
 ### v3.2
 - ✅ **CLI 一次性对话模式（`--once`）**（分三批落地，开发文档见 [docs/reports/aibox_cli_once_mode_dev_doc.md](../docs/reports/aibox_cli_once_mode_dev_doc.md)）：
