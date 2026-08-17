@@ -92,7 +92,7 @@ aibox/
 │   ├── prompt_tools.py     # B 批：UpdateIdentity/UpdateSoul/SaveMemoryAndEndConversation
 │   ├── proxy_tools.py      # B 批：SetProxy/GetProxy
 │   └── misc_tools.py       # B 批：AskUserTool
-├── tests/             # 单元测试套件（264 项全过）
+├── tests/             # 单元测试套件（293 项全过）
 │   ├── conftest.py                    # sys.path 配置 + websockets 桩
 │   ├── test_basic_tools.py            # A 批工具 43 项
 │   ├── test_b_tools.py                # B 批工具 58 项
@@ -190,7 +190,7 @@ py -m pytest aibox/tests -q
 | `memory` | 保存、搜索（支持分页）、删除记忆 |
 | `memo` | 创建、查看、完成、搜索任务 |
 | `express_emotion` | 表达情绪并记录当前情绪状态（anger/joy/sadness/surprise），可指定 `persona` 从 `~/.aibox/skills/` 加载人格技能（如 angry/coquettish/tsundere）派生携带该人格的情绪子代理，保证人格独立、不污染主对话上下文 |
-| `create_subagent` | 派生子代理：独立上下文/角色设定，仅拥有执行面工具（无记忆/人格/派生/提问能力），可选独立模型，用于长任务分解、上下文隔离、独立角色专注处理 |
+| `create_subagent` | 派生子代理：独立上下文/角色设定，仅拥有执行面工具（无记忆/人格/派生/提问能力），可选独立模型（工具描述动态列出 `models` 节可用档案名，防 LLM 编造名称），用于长任务分解、上下文隔离、独立角色专注处理 |
 | `search_skills` | 搜索扩展技能（支持 Markdown 和可执行技能），查到后派生子代理执行 |
 | `reload_skills` | 热重载扩展技能 |
 | `create_skill` | 创建新技能（AI 自主编写 Python 脚本，实际写入经子代理完成） |
@@ -883,6 +883,14 @@ elif command == "/mycommand":
 3. 确认工具返回值为字符串且不含二进制/控制字符
 
 ## 📄 更新日志
+
+### v3.4
+- ✅ **多模型档案加固（H1/H2/H3/M2 四项修复）**：
+  - **H1（凭据隔离）**：档案端点环境变量取不到时直接报错，**绝不回退读 `~/.cert/deepseek.key`**（该文件为 DeepSeek 专属凭据，跨厂商复用属于泄漏）；key 文件回退仅对无档案的旧 `api` 扁平节生效
+  - **H2（schema 校验前移）**：档案缺 `api_url`/`model` 或类型错误时，解析期即抛出指明档案名与缺失字段的 `ValueError`——不再把档案名当模型名发出、不再延迟到 `requests InvalidURL` 或 API 400
+  - **H3（--model 服务模式生效）**：`--model` 升级为进程级覆盖，WebSocket 服务模式（主对话/每个会话实例/定时任务实例）与 `--once` 均生效，此前服务模式静默忽略
+  - **M2（防模型名幻觉）**：`create_subagent` 工具描述与 JSON Schema 动态携带 `models` 节可用档案名列表（默认档案标注），LLM 无从编造名称；`models` 为空时描述保持原样（零破坏）
+- ✅ **测试**：293 项全过（H1 隔离 4 项 + H2 校验 6 项 + H3 传导 6 项 + M2 提示 5 项新增）
 
 ### v3.3
 - ✅ **安全审计与修复**（两轮审计报告见 [docs/reports/aibox_audit_20260817.md](../docs/reports/aibox_audit_20260817.md)）：

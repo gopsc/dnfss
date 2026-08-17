@@ -388,6 +388,57 @@ class TestH3ModelPlumbing:
         assert args.model == "kimi"
 
 
+# ==================== M2：create_subagent 工具注入档案名列表 ====================
+
+class TestM2SubAgentModelHint:
+    """M2：LLM 此前不知道合法档案名，幻觉名走裸名语义（默认端点+错误模型）→ API 400。
+
+    验证 SubAgentTool 的 description 与 model 参数 description 动态携带
+    models 节档案名列表（默认档案标注），models 为空时保持原样（零破坏）。
+    """
+
+    def _tool_with(self, models, default_model="deepseek"):
+        from aibox import SubAgentTool
+        tool = SubAgentTool(logger=None)
+        tool.config = FakeConfig({
+            "models": models or {},
+            "api": {"default_model": default_model},
+        })
+        return tool
+
+    def test_description_lists_profiles(self):
+        """工具描述包含全部档案名"""
+        tool = self._tool_with(MODELS)
+        desc = tool.get_description()
+        assert "kimi" in desc and "local" in desc and "deepseek" in desc
+        assert "可用模型档案" in desc
+
+    def test_default_profile_marked(self):
+        """默认档案带（默认）标注"""
+        tool = self._tool_with(MODELS, default_model="kimi")
+        desc = tool.get_description()
+        assert "kimi（默认）" in desc
+
+    def test_param_schema_lists_profiles(self):
+        """JSON Schema 的 model 参数 description 同样携带档案名"""
+        tool = self._tool_with(MODELS)
+        model_desc = tool.get_parameters()["properties"]["model"]["description"]
+        assert "kimi" in model_desc and "deepseek" in model_desc
+
+    def test_empty_models_keeps_original(self):
+        """models 为空 → 描述保持原文案，不含提示语（零破坏）"""
+        tool = self._tool_with({})
+        desc = tool.get_description()
+        assert "可用模型档案" not in desc
+        model_desc = tool.get_parameters()["properties"]["model"]["description"]
+        assert model_desc == "子代理使用的模型名称，默认与主代理一致"
+
+    def test_non_dict_models_tolerated(self):
+        """models 节类型异常（如字符串）→ 容错返回空提示"""
+        tool = self._tool_with("not-a-dict")
+        assert "可用模型档案" not in tool.get_description()
+
+
 # ==================== DeepSeekChat 档案级 reasoning 读取 ====================
 
 class TestChatReasoningFlag:

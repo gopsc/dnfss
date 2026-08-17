@@ -748,19 +748,44 @@ class SubAgentTool(Tool):
     def get_name(self) -> str:
         return "create_subagent"
 
+    def _model_names_hint(self) -> str:
+        """M2：从配置读取可用模型档案名，注入工具描述供 LLM 选择。
+
+        此前 LLM 不知道有哪些合法档案名，幻觉出的名字走裸名语义
+        （默认端点 + 错误模型名），运行时 API 400。models 节为空时
+        返回空串，工具描述保持原样（零破坏）。
+        """
+        try:
+            models = self.config.get("models") or {}
+            if not isinstance(models, dict) or not models:
+                return ""
+            default_name = self.config.get("api.default_model")
+            names = [f"{n}（默认）" if n == default_name else str(n) for n in models]
+            return f"可用模型档案：{', '.join(names)}"
+        except Exception:
+            return ""
+
     def get_description(self) -> str:
-        return """派生子代理执行任务。子代理拥有全部工具能力和独立的上下文窗口，不会污染主对话上下文。
+        hint = self._model_names_hint()
+        model_line = "- model：子代理使用的模型（可选，默认与主代理一致）"
+        if hint:
+            model_line += f"。{hint}，请从中选择，不要编造其他名称"
+        return f"""派生子代理执行任务。子代理拥有全部工具能力和独立的上下文窗口，不会污染主对话上下文。
 适用场景：需要多步骤操作的任务（如文件处理、命令执行、信息检索）、需要独立上下文的复杂任务。
 子代理可进行多轮工具调用，任务完成后由子代理基于完整执行过程生成最终报告（结论/关键过程/产物清单/未解决问题）返回。
 参数说明：
 - role：子代理的角色设定（作为系统提示词），如"你是一位资深代码审查专家"
 - task：要交给子代理执行的具体任务
-- model：子代理使用的模型（可选，默认与主代理一致）
+{model_line}
 - temperature：采样温度（可选，默认使用主配置）
 - max_tokens：最大输出 token 数（可选，默认 2048）
 - max_turns：最大对话轮次（可选，默认 10，防止无限循环）"""
 
     def get_parameters(self) -> Dict:
+        model_desc = "子代理使用的模型名称，默认与主代理一致"
+        hint = self._model_names_hint()
+        if hint:
+            model_desc += f"。{hint}，请从中选择"
         return {
             "type": "object",
             "properties": {
@@ -774,7 +799,7 @@ class SubAgentTool(Tool):
                 },
                 "model": {
                     "type": "string",
-                    "description": "子代理使用的模型名称，默认与主代理一致"
+                    "description": model_desc
                 },
                 "temperature": {
                     "type": "number",
