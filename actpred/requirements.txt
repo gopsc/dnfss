@@ -4,5 +4,9 @@ torchvision>=0.15,<1.0
 numpy>=1.24,<3.0
 Pillow>=9.0,<14.0  # torchvision 依赖，上限放宽避免与 torch 源安装冲突
 
+# 推理（Hailo 部署）：帧归一化+量化合并查表（hailo_infer.py cv2.LUT 快路径，
+# 无 cv2 自动回退 float 路径——本依赖缺失仅损失 3.3× 端到端加速）
+opencv-python-headless>=4.9,<6.0
+
 # Training utilities
 tqdm>=4.60,<5.0

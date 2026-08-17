@@ -35,6 +35,13 @@ import re
 import numpy as np
 from PIL import Image
 
+try:
+    import cv2                       # 可选：帧归一化+量化合并查表（加速预处理）
+    HAS_CV2 = True
+except ImportError:
+    cv2 = None
+    HAS_CV2 = False
+
 from imu_norm import normalize_imu
 from action_norm import (normalize_action, denormalize_action,
                       is_range_mode)
@@ -207,6 +214,15 @@ class HailoPredictor:
         self._normalize_frames = \
             (0 - self._frame_quant.qp_zp) * self._frame_quant.qp_scale < -0.5
 
+        # cv2.LUT 查表（归一化+量化合并一步）：仅逐帧独立输入布局且
+        # 帧边缘为 uint8 时可用；无 cv2 或旧布局回退 float 路径
+        from hailo_platform import FormatType
+        self._frame_luts = None
+        if HAS_CV2 and self._image_layout == "nhwc_frames" and \
+                all(f.format.type == FormatType.UINT8
+                    for f in self._frame_infos):
+            self._frame_luts = self._build_frame_luts()
+
         h_shape = tuple(self._history_info.shape)
         self.history_len, self.action_dim = h_shape[1], h_shape[2]
 
@@ -273,8 +289,14 @@ class HailoPredictor:
         from hailo_platform import FormatType
         bindings = self._configured.create_bindings()
 
-        frame_float = np.stack([self._frame_float(img) for img in images])
-        self._bind_frames(bindings, frame_float)
+        if self._frame_luts is not None:
+            # cv2.LUT 快路径：逐帧独立输入，直接绑定量化缓冲
+            for i, (info, img) in enumerate(zip(self._frame_infos, images)):
+                buf = self._frame_lut_quant(img, i)
+                bindings.input(info.name).set_buffer(buf)
+        else:
+            frame_float = np.stack([self._frame_float(img) for img in images])
+            self._bind_frames(bindings, frame_float)
 
         h_shape = tuple(self._history_info.shape)
         if self._history_info.format.type == FormatType.UINT8:
@@ -364,6 +386,43 @@ class HailoPredictor:
         if self._normalize_frames:
             x = (x / 255.0 - IMAGENET_MEAN) / IMAGENET_STD
         return x
+
+    def _build_frame_luts(self) -> list:
+        """按帧 quant_info 构建 256 项单通道查表（归一化+量化合并一步）
+
+        OpenCV 5.0 的 cv2.LUT 只接受单通道表，故每帧返回 [R,G,B] 三张表。
+        数学上与 float 路径（_frame_float + quantize）等价（实测 0 LSB）。
+        """
+        luts = []
+        for info in self._frame_infos:
+            q = info.quant_info
+            c = np.arange(256, dtype=np.float32)[:, None]
+            if self._normalize_frames:
+                v = (c / 255.0 - IMAGENET_MEAN[None, :]) / IMAGENET_STD[None, :]
+            else:
+                v = np.broadcast_to(c, (256, 3))
+            v = v / q.qp_scale + q.qp_zp
+            lut = np.clip(np.round(v), 0, 255).astype(np.uint8)   # (256,3)
+            luts.append([lut[:, ch] for ch in range(3)])
+        return luts
+
+    def _frame_lut_quant(self, image, frame_idx: int = 0) -> np.ndarray:
+        """cv2.LUT 直通：原始 uint8 像素 → 量化 uint8 缓冲（免 float 中间态）
+
+        非 uint8 / 非 3 通道 / 尺寸不匹配输入走与 _frame_float 相同的 PIL
+        转换，保证两条路径语义一致（RGBA 经 convert 合成、灰度转 RGB）。
+        """
+        x = np.asarray(image)
+        if x.dtype != np.uint8 or x.ndim != 3 or x.shape[2] != 3 or \
+                x.shape[:2] != (self.image_height, self.image_width):
+            img = Image.fromarray(x).convert("RGB")
+            if img.size != (self.image_width, self.image_height):
+                img = img.resize((self.image_width, self.image_height),
+                                 Image.BILINEAR)
+            x = np.asarray(img, dtype=np.uint8)
+        luts = self._frame_luts[frame_idx]
+        outs = [cv2.LUT(x[..., ch], lut) for ch, lut in enumerate(luts)]
+        return np.ascontiguousarray(cv2.merge(outs))
 
     def _bind_frames(self, bindings, frame_float: np.ndarray):
         """(F,H,W,3) float 帧 → HEF 帧输入缓冲区（按布局与量化）"""
