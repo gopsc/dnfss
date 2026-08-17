@@ -30,7 +30,8 @@ class LLMClient(ABC):
 
     def __init__(self, api_key: str, model: str, base_url: str,
                  timeout: int, config=None, logger=None,
-                 reasoning_enabled: bool = None):
+                 reasoning_enabled: bool = None,
+                 display_name: str = None, default_temperature: float = None):
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
@@ -39,13 +40,17 @@ class LLMClient(ABC):
         self.logger = logger          # 可选，用于日志输出
         # M3：档案级思考模式开关为构造契约；None = 未配置（消费方回退全局 api.reasoning_enabled）
         self.reasoning_enabled = reasoning_enabled
+        # L1：展示名（默认取档案名），业务层上下文（如 history 的 assistant 名）不再误标 "DeepSeek"
+        self._display_name = display_name
+        # L3：档案级默认采样温度；None = 未配置（方法参数未显式传入时回退硬编码默认值）
+        self.default_temperature = default_temperature
         # 当前活动的 HTTP 响应引用，供 cancel() 强制关闭底层连接以中断阻塞读取
         self._current_response = None
 
     @property
     def name(self) -> str:
         """厂商/模型展示名，业务层可用于上下文（如 history 里的 assistant 名）。"""
-        return "LLM"
+        return self._display_name or "LLM"
 
     # ---------- 工具方法 ----------
 
@@ -81,16 +86,18 @@ class LLMClient(ABC):
     # ---------- 抽象接口 ----------
 
     @abstractmethod
-    def chat_completion(self, messages: List[Dict], temperature: float = 0.3,
+    def chat_completion(self, messages: List[Dict], temperature: float = None,
                         max_tokens: int = 1024, **kwargs) -> str:
-        """非流式对话，返回完整文本。用于对话压缩等离线摘要场景。"""
+        """非流式对话，返回完整文本。用于对话压缩等离线摘要场景。
+        temperature=None 时按 default_temperature（档案级）→ 0.3 回退。"""
 
     @abstractmethod
-    def stream_chat(self, messages: List[Dict], temperature: float = 0.7,
+    def stream_chat(self, messages: List[Dict], temperature: float = None,
                     max_tokens: int = 8192, tools: Optional[List[Dict]] = None,
                     tool_choice: Optional[str] = None,
                     reasoning_enabled: bool = False, **extra) -> Iterator[Dict]:
-        """流式对话，逐条 yield 统一事件格式的 dict。业务层据此驱动输出/工具调用。"""
+        """流式对话，逐条 yield 统一事件格式的 dict。业务层据此驱动输出/工具调用。
+        temperature=None 时按 default_temperature（档案级）→ 0.7 回退。"""
 
 
 class DeepSeekClient(LLMClient):
@@ -103,13 +110,17 @@ class DeepSeekClient(LLMClient):
 
     def __init__(self, api_key: str, model: str, base_url: str,
                  timeout: int = 30, config=None, logger=None,
-                 reasoning_enabled: bool = None):
+                 reasoning_enabled: bool = None,
+                 display_name: str = None, default_temperature: float = None):
         super().__init__(api_key, model, base_url, timeout, config, logger,
-                         reasoning_enabled=reasoning_enabled)
+                         reasoning_enabled=reasoning_enabled,
+                         display_name=display_name,
+                         default_temperature=default_temperature)
 
     @property
     def name(self) -> str:
-        return "DeepSeek"
+        # L1：档案命中时展示档案名（或档案 display_name），旧扁平节保持 "DeepSeek"
+        return self._display_name or "DeepSeek"
 
     def _headers(self) -> Dict[str, str]:
         return {
@@ -117,8 +128,11 @@ class DeepSeekClient(LLMClient):
             "Content-Type": "application/json",
         }
 
-    def chat_completion(self, messages: List[Dict], temperature: float = 0.3,
+    def chat_completion(self, messages: List[Dict], temperature: float = None,
                         max_tokens: int = 1024, **kwargs) -> str:
+        # L3：None → 档案级 default_temperature → 硬编码默认（与旧版行为一致）
+        if temperature is None:
+            temperature = self.default_temperature if self.default_temperature is not None else 0.3
         payload = {
             "model": self.model,
             "messages": messages,
@@ -143,10 +157,13 @@ class DeepSeekClient(LLMClient):
             self._log("error", f"LLM 压缩请求异常: {e}")
             return None
 
-    def stream_chat(self, messages: List[Dict], temperature: float = 0.7,
+    def stream_chat(self, messages: List[Dict], temperature: float = None,
                     max_tokens: int = 8192, tools: Optional[List[Dict]] = None,
                     tool_choice: Optional[str] = None,
                     reasoning_enabled: bool = False, **extra) -> Iterator[Dict]:
+        # L3：None → 档案级 default_temperature → 硬编码默认（与旧版行为一致）
+        if temperature is None:
+            temperature = self.default_temperature if self.default_temperature is not None else 0.7
         payload = {
             "model": self.model,
             "messages": messages,
@@ -203,11 +220,19 @@ class DeepSeekClient(LLMClient):
         finally:
             self._current_response = None
 
+    # L5：思考内容的常见厂商字段别名（首个命中的非空字段生效）
+    REASONING_FIELDS = ("reasoning_content", "reasoning", "thinking", "thinking_content")
+
     def _parse_delta(self, delta: Dict, reasoning_enabled: bool) -> Iterator[Dict]:
         """将单条 delta 归一化为统一事件。子类覆写以适配不同厂商字段。"""
-        # 思考内容
-        if reasoning_enabled and delta.get("reasoning_content"):
-            yield {"type": "reasoning", "text": delta["reasoning_content"]}
+        # 思考内容：DeepSeek reasoning_content / OpenRouter reasoning /
+        # 部分 GLM thinking(_content) —— 此前仅识别 DeepSeek 字段，其他厂商思考流静默丢失
+        if reasoning_enabled:
+            for field in self.REASONING_FIELDS:
+                value = delta.get(field)
+                if value:
+                    yield {"type": "reasoning", "text": value}
+                    break
         # 正文
         if delta.get("content"):
             yield {"type": "content", "text": delta["content"]}
@@ -288,18 +313,41 @@ def _require_model(name: str, effective_model) -> None:
 
 
 def _resolve_model_profile(config, model: Optional[str]):
-    """解析模型档案。返回 (profile_dict, effective_model_name)。
+    """解析模型档案。返回 (profile_dict, effective_model_name, profile_name)。
 
     优先级：model 命中 models.<name> 档案 > api.default_model 档案 > None（回退旧 api 节）。
     model 未命中档案时视为裸模型名（同端点换模型，用默认档案的 url/key，模型名用裸名）。
+
+    L2 前缀逃逸（档案名与裸模型名歧义时使用）：
+      - "model:NAME" 强制按裸模型名解析（档案恰好叫 NAME 时仍走裸名语义）
+      - "profile:NAME" 强制按档案名解析（不存在则报错，不再静默落回裸名语义）
     """
     if config is None or not hasattr(config, "get"):
-        return None, model
+        return None, model, None
     models = config.get("models") or {}
     if not isinstance(models, dict):
-        return None, model
+        return None, model, None
 
-    explicit = models.get(model) if model else None
+    force_bare = False
+    if isinstance(model, str) and ":" in model:
+        prefix, _, rest = model.partition(":")
+        if prefix == "model":
+            if not rest.strip():
+                raise ValueError("model: 前缀后为空，请提供裸模型名，如 model:deepseek-chat")
+            model, force_bare = rest, True
+        elif prefix == "profile":
+            if not rest.strip():
+                raise ValueError("profile: 前缀后为空，请提供档案名，如 profile:kimi")
+            prof = models.get(rest)
+            if prof is None:
+                raise ValueError(
+                    f"模型档案 '{rest}' 不存在，可用档案：{', '.join(models) or '（无）'}")
+            _validate_profile(rest, prof)
+            effective = prof.get("model")
+            _require_model(rest, effective)
+            return prof, effective, rest
+
+    explicit = models.get(model) if (model and not force_bare) else None
     default_name = config.get("api.default_model")
     default_profile = models.get(default_name) if default_name else None
 
@@ -309,14 +357,14 @@ def _resolve_model_profile(config, model: Optional[str]):
         _validate_profile(model, explicit)
         effective = explicit.get("model")
         _require_model(model, effective)
-        return explicit, effective
+        return explicit, effective, model
     if default_profile is not None:
         # model 是裸名或未指定 → 默认档案的 url/key，模型名被裸名覆盖
         _validate_profile(default_name, default_profile)
         effective = model or default_profile.get("model")
         _require_model(default_name, effective)
-        return default_profile, effective
-    return None, model
+        return default_profile, effective, default_name
+    return None, model, None
 
 
 def create_llm_client(config, api_key: Optional[str] = None,
@@ -327,6 +375,7 @@ def create_llm_client(config, api_key: Optional[str] = None,
       1. model 命中 models 节档案名 → 采用该档案（api_url/model/api_key_env/timeout）
       2. api.default_model 指向的档案 → model 为裸模型名时覆盖档案内模型名
       3. 均未配置 → 回退旧 api 扁平节（deepseek_api_url/deepseek_model）
+    L2 前缀逃逸："model:NAME" 强制裸名 / "profile:NAME" 强制档案（--model 同样支持）。
 
     provider: deepseek / openai_compatible / openai 均映射到 DeepSeekClient
     （OpenAI Chat Completions 协议兼容实现，厂商差异由子类覆写 _parse_delta）。
@@ -335,9 +384,9 @@ def create_llm_client(config, api_key: Optional[str] = None,
         config: 配置对象（需提供 get 方法）。
         api_key: 显式传入的 API Key；为 None 时按 resolve_api_key 解析。
         logger: 可选日志对象。
-        model: 档案名或裸模型名。
+        model: 档案名或裸模型名（支持 model:/profile: 前缀逃逸）。
     """
-    profile, model = _resolve_model_profile(config, model)
+    profile, model, profile_name = _resolve_model_profile(config, model)
 
     env_name = None
     allow_missing = False
@@ -372,6 +421,12 @@ def create_llm_client(config, api_key: Optional[str] = None,
             reasoning_enabled=(profile.get("reasoning_enabled",
                                            config.get("api.reasoning_enabled", False))
                                if profile is not None else None),
+            # L1：展示名——档案 display_name > 档案名；旧扁平节 None → "DeepSeek"
+            display_name=(profile.get("display_name") or profile_name
+                          if profile is not None else None),
+            # L3：档案级默认采样温度（档案 temperature 字段，未配置为 None）
+            default_temperature=(profile.get("temperature")
+                                 if profile is not None else None),
         )
         return client
 

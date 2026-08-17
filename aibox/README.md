@@ -24,7 +24,7 @@
 - 🔒 **错误自动恢复**：API 请求失败自动回滚消息，工具结果安全清洗（控制字符过滤、非字符串转换）
 - 🛑 **可靠中断机制**：支持 Ctrl+C 实时中断，通过 `threading.Event` + HTTP 连接关闭 + 子进程 kill 三层取消，流式响应和长时间运行命令均可立即终止
 - 💻 **CLI 一次性对话**：`--once "问题"` 不启动 WebSocket 直接执行并退出，stdout/stderr 分流可管道组合，支持 `--quiet` / `--show-reasoning` / `--worker-only` / `--model` / `--temperature` / `--once-timeout`
-- 🔀 **多模型档案**：`config.json` 的 `models` 节可配置多个 OpenAI Chat Completions 兼容端点（DeepSeek/Kimi/Qwen/本地 Ollama 等），按名称切换，档案级 api_url/model/api_key_env/reasoning_enabled/timeout
+- 🔀 **多模型档案**：`config.json` 的 `models` 节可配置多个 OpenAI Chat Completions 兼容端点（DeepSeek/Kimi/Qwen/本地 Ollama 等），按名称切换，档案级 api_url/model/api_key_env/reasoning_enabled/timeout/temperature/display_name；`--model` 支持 `model:`/`profile:` 前缀逃逸
 
 ## 🚀 快速开始
 
@@ -92,7 +92,7 @@ aibox/
 │   ├── prompt_tools.py     # B 批：UpdateIdentity/UpdateSoul/SaveMemoryAndEndConversation
 │   ├── proxy_tools.py      # B 批：SetProxy/GetProxy
 │   └── misc_tools.py       # B 批：AskUserTool
-├── tests/             # 单元测试套件（299 项全过）
+├── tests/             # 单元测试套件（315 项全过）
 │   ├── conftest.py                    # sys.path 配置 + websockets 桩
 │   ├── test_basic_tools.py            # A 批工具 43 项
 │   ├── test_b_tools.py                # B 批工具 58 项
@@ -551,10 +551,14 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
 | `api_key_env` | API Key 环境变量名；**未配置回退 `api.api_key_env`；显式空串 `""` 为本地免密端点**（Ollama/vLLM）。档案端点环境变量取不到时**直接报错，绝不回退 `~/.cert/deepseek.key`**——该文件为 DeepSeek 专属凭据，跨厂商复用属于泄漏（key 文件回退仅对无档案的旧 `api` 扁平节生效） |
 | `reasoning_enabled` | 档案级思考模式开关（缺省回退 `api.reasoning_enabled`） |
 | `timeout` | 请求超时秒数 |
+| `temperature` | 档案级默认采样温度（可选）。优先级：CLI/调用方显式传入 > 本字段 > 全局默认；reasoning 模型建议按厂商文档设置 |
+| `display_name` | 展示名（可选，缺省用档案名）。`client.name` 用于对话上下文中的 assistant 名，不再恒显示 "DeepSeek" |
 
 **选择优先级**：`--model <档案名>`（命中 `models` 节）→ `api.default_model` 指向档案 → 回退旧 `api` 扁平节。`--model` 为**进程级覆盖**：WebSocket 服务模式（主对话、每个会话实例、定时任务实例）与 `--once` 一次性模式均生效。
 
 `--model` 传**裸模型名**（未命中档案）时，沿用默认端点与 Key，仅覆盖模型名——即 "同端点换模型" 语义。
+
+**前缀逃逸**（档案名与裸模型名歧义时）：`--model model:NAME` 强制按裸模型名解析（档案恰好叫 NAME 时仍走裸名语义）；`--model profile:NAME` 强制按档案名解析（不存在则明确报错，不再静默落回裸名语义）。
 
 **兼容性**：`models` 留空 `{}` 时行为与旧版完全一致（走 `api` 节），已有配置无需任何改动。
 
@@ -657,7 +661,7 @@ python aibox.py [选项]
   --show-reasoning      一次性模式输出思考流（默认静默，走 stderr）
   --no-save-memory      一次性模式禁用记忆工具（干净跳过，不进请求 schema）
   --worker-only         一次性模式纯执行面（worker profile，无人格/记忆工具）
-  --model NAME          模型档案名（models 节）或裸模型名（同端点换模型）；服务模式与 --once 均生效（进程级覆盖）
+  --model NAME          模型档案名（models 节）或裸模型名（同端点换模型）；歧义时 model:NAME 强制裸名 / profile:NAME 强制档案；服务模式与 --once 均生效（进程级覆盖）
   --temperature T       覆盖配置的对话温度
   --once-timeout SEC    一次性模式全局超时（默认 300 秒）
 ```
@@ -892,7 +896,12 @@ elif command == "/mycommand":
   - **M2（防模型名幻觉）**：`create_subagent` 工具描述与 JSON Schema 动态携带 `models` 节可用档案名列表（默认档案标注），LLM 无从编造名称；`models` 为空时描述保持原样（零破坏）
   - **M1（换模型同步派生引用）**：新增 `DeepSeekChat.set_client()` 统一替换 LLM 客户端——同步刷新 `compressor.llm_client` 与 `api_key`/`name` 快照；`create_subagent` 子代理换模型经此入口，压缩链不再残留默认模型
   - **M3（reasoning 契约显式化）**：档案级 `reasoning_enabled` 从"构造后挂实例属性"改为 `LLMClient` 构造参数（三态：`True`/`False` 档案级显式、`None` 未配置回退全局），外部误设属性无从静默覆盖全局开关
-- ✅ **测试**：299 项全过（H1 隔离 4 项 + H2 校验 6 项 + H3 传导 6 项 + M2 提示 5 项 + M1 替换 2 项 + M3 契约 4 项新增）
+- ✅ **L 批体验与兼容修复（L1/L2/L3/L5 四项）**：
+  - **L1（展示名按档案）**：`client.name` = 档案 `display_name` > 档案名，用 Kimi/Qwen 时对话上下文不再误标 "DeepSeek"；旧扁平节保持 "DeepSeek"（零破坏）
+  - **L2（前缀逃逸）**：`--model model:NAME` 强制裸模型名语义、`--model profile:NAME` 强制档案语义（不存在时明确报错并列出可用档案），档案名与模型名歧义可逃逸
+  - **L3（档案级温度）**：档案 `temperature` 字段作为默认采样温度，优先级：CLI/调用方显式传入 > 档案字段 > 全局默认（0.7/0.3），主对话/轻量子代理/compressor 全链路生效
+  - **L5（思考流字段别名）**：`_parse_delta` 识别 `reasoning_content`/`reasoning`/`thinking`/`thinking_content` 四种常见思考字段（首个命中生效），其他厂商思考流不再静默丢失
+- ✅ **测试**：315 项全过（H1 隔离 4 + H2 校验 6 + H3 传导 6 + M2 提示 5 + M1 替换 2 + M3 契约 4 + L 批 16 项新增）
 
 ### v3.3
 - ✅ **安全审计与修复**（两轮审计报告见 [docs/reports/aibox_audit_20260817.md](../docs/reports/aibox_audit_20260817.md)）：

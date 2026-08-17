@@ -88,33 +88,38 @@ def _cfg(models=MODELS, default_model="deepseek", **api_over):
 class TestResolveProfile:
     def test_explicit_profile_name(self):
         """model=档案名 → 完整采用该档案，模型名取档案内 model"""
-        profile, model = _resolve_model_profile(_cfg(), "kimi")
+        profile, model, pname = _resolve_model_profile(_cfg(), "kimi")
         assert profile is MODELS["kimi"]
         assert model == "kimi-k2"
+        assert pname == "kimi"
 
     def test_bare_model_name_uses_default_profile(self):
         """model=裸名 → 默认档案端点 + 裸名作为模型名"""
-        profile, model = _resolve_model_profile(_cfg(), "deepseek-v3-legacy")
+        profile, model, pname = _resolve_model_profile(_cfg(), "deepseek-v3-legacy")
         assert profile is MODELS["deepseek"]
         assert model == "deepseek-v3-legacy"
+        assert pname == "deepseek"
 
     def test_no_model_uses_default_profile(self):
         """未指定 model → 默认档案与档案内模型名"""
-        profile, model = _resolve_model_profile(_cfg(), None)
+        profile, model, pname = _resolve_model_profile(_cfg(), None)
         assert profile is MODELS["deepseek"]
         assert model == "deepseek-v4-flash"
+        assert pname == "deepseek"
 
     def test_fallback_when_no_models_section(self):
         """无 models 节 → (None, model) 回退旧 api 扁平节"""
-        profile, model = _resolve_model_profile(_cfg(models=None), "anything")
+        profile, model, pname = _resolve_model_profile(_cfg(models=None), "anything")
         assert profile is None
         assert model == "anything"
+        assert pname is None
 
     def test_fallback_when_default_model_missing(self):
         """default_model 指向不存在的档案且 model 未命中 → 回退"""
-        profile, model = _resolve_model_profile(_cfg(default_model="nope"), "whatever")
+        profile, model, pname = _resolve_model_profile(_cfg(default_model="nope"), "whatever")
         assert profile is None
         assert model == "whatever"
+        assert pname is None
 
 
 # ==================== create_llm_client 档案构造 ====================
@@ -279,7 +284,7 @@ class TestH2SchemaValidation:
     def test_default_profile_missing_model_bare_name_ok(self):
         """默认档案缺 model + 传裸模型名 → 裸名补位，合法"""
         models = {"deepseek": {"api_url": "https://api.deepseek.com/chat/completions"}}
-        profile, model = _resolve_model_profile(_cfg(models=models), "deepseek-v4-lite")
+        profile, model, _ = _resolve_model_profile(_cfg(models=models), "deepseek-v4-lite")
         assert profile is models["deepseek"]
         assert model == "deepseek-v4-lite"
 
@@ -524,6 +529,159 @@ class TestM3ReasoningConstructor:
 def constants_reasoning_default():
     from common import constants
     return constants.REASONING_ENABLED
+
+
+# ==================== L 批：展示名/前缀逃逸/档案温度/思考字段别名 ====================
+
+class TestLBatch:
+    """L1 展示名 / L2 model:-profile: 前缀逃逸 / L3 档案级 temperature / L5 思考流字段别名"""
+
+    # ---------- L1：client.name 按档案展示 ----------
+
+    def test_l1_name_is_profile_name(self):
+        """档案命中 → client.name = 档案名（不再恒为 DeepSeek）"""
+        with mock.patch.dict(os.environ, {"MOONSHOT_API_KEY": "sk-moon"}):
+            c = create_llm_client(_cfg(), model="kimi")
+        assert c.name == "kimi"
+
+    def test_l1_display_name_override(self):
+        """档案 display_name 字段 > 档案名"""
+        models = dict(MODELS)
+        models["kimi"] = dict(models["kimi"], display_name="Kimi K2")
+        with mock.patch.dict(os.environ, {"MOONSHOT_API_KEY": "sk-moon"}):
+            c = create_llm_client(_cfg(models=models), model="kimi")
+        assert c.name == "Kimi K2"
+
+    def test_l1_flat_api_keeps_deepseek(self):
+        """旧扁平节（无档案）→ name 保持 DeepSeek（零破坏）"""
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-ds"}):
+            c = create_llm_client(_cfg(models=None))
+        assert c.name == "DeepSeek"
+
+    def test_l1_bare_name_uses_default_profile_name(self):
+        """裸模型名走默认档案 → name = 默认档案名"""
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-ds"}):
+            c = create_llm_client(_cfg(), model="deepseek-v4-lite")
+        assert c.name == "deepseek"
+
+    # ---------- L2：前缀逃逸 ----------
+
+    def test_l2_model_prefix_forces_bare(self):
+        """档案恰好叫 deepseek-chat 时 model:deepseek-chat 仍走裸名语义"""
+        models = {
+            "deepseek-chat": dict(MODELS["deepseek"]),
+            "kimi": dict(MODELS["kimi"]),
+        }
+        profile, model, pname = _resolve_model_profile(
+            _cfg(models=models, default_model="kimi"), "model:deepseek-chat")
+        assert profile is models["kimi"]        # 默认档案端点
+        assert model == "deepseek-chat"          # 裸名作模型名
+        assert pname == "kimi"
+
+    def test_l2_profile_prefix_forces_profile(self):
+        """profile:kimi 强制档案语义（即便存在同名裸模型的歧义）"""
+        profile, model, pname = _resolve_model_profile(_cfg(), "profile:kimi")
+        assert profile is MODELS["kimi"]
+        assert model == "kimi-k2"
+        assert pname == "kimi"
+
+    def test_l2_profile_prefix_missing_raises(self):
+        """profile:不存在的档案 → 明确报错（不再静默落回裸名语义）"""
+        with pytest.raises(ValueError, match="不存在"):
+            _resolve_model_profile(_cfg(), "profile:nonexistent")
+
+    def test_l2_empty_prefix_raises(self):
+        """前缀后为空 → 报错"""
+        with pytest.raises(ValueError, match="前缀后为空"):
+            _resolve_model_profile(_cfg(), "model:")
+        with pytest.raises(ValueError, match="前缀后为空"):
+            _resolve_model_profile(_cfg(), "profile:")
+
+    def test_l2_prefix_via_create_client(self):
+        """端到端：--model model:NAME / profile:NAME 经 create_llm_client 生效"""
+        with mock.patch.dict(os.environ, {"MOONSHOT_API_KEY": "sk-moon",
+                                          "DEEPSEEK_API_KEY": "sk-ds"}):
+            c1 = create_llm_client(_cfg(), model="model:deepseek-v4-lite")
+            assert c1.model == "deepseek-v4-lite" and c1.name == "deepseek"
+            c2 = create_llm_client(_cfg(), model="profile:kimi")
+            assert c2.model == "kimi-k2" and c2.name == "kimi"
+
+    # ---------- L3：档案级 temperature ----------
+
+    def test_l3_profile_temperature_default(self):
+        """档案 temperature → client.default_temperature；chat_completion 未传参时生效"""
+        models = dict(MODELS)
+        models["kimi"] = dict(models["kimi"], temperature=0.15)
+        with mock.patch.dict(os.environ, {"MOONSHOT_API_KEY": "sk-moon"}):
+            c = create_llm_client(_cfg(models=models), model="kimi")
+        assert c.default_temperature == 0.15
+
+    def test_l3_no_temperature_keeps_none(self):
+        """档案未配置 temperature → default_temperature=None（旧硬编码默认）"""
+        with mock.patch.dict(os.environ, {"MOONSHOT_API_KEY": "sk-moon"}):
+            c = create_llm_client(_cfg(), model="kimi")
+        assert c.default_temperature is None
+
+    def test_l3_chat_completion_resolves_default(self):
+        """chat_completion(temperature=None) → 档案温度；显式传参仍优先"""
+        from llm_client import DeepSeekClient
+        c = DeepSeekClient(api_key="k", model="m", base_url="https://x",
+                           default_temperature=0.15)
+        captured = {}
+        with mock.patch("llm_client.requests.post",
+                        return_value=mock.MagicMock(
+                            status_code=200,
+                            json=lambda: {"choices": [{"message": {"content": "ok"}}]})) as mp:
+            c.chat_completion([{"role": "user", "content": "hi"}])
+            captured["default"] = mp.call_args.kwargs["json"]["temperature"]
+            c.chat_completion([{"role": "user", "content": "hi"}], temperature=0.9)
+            captured["explicit"] = mp.call_args.kwargs["json"]["temperature"]
+        assert captured["default"] == 0.15
+        assert captured["explicit"] == 0.9
+
+    def test_l3_chat_completion_hardcoded_default(self):
+        """无档案温度 + 未传参 → 0.3（与旧版行为一致）"""
+        from llm_client import DeepSeekClient
+        c = DeepSeekClient(api_key="k", model="m", base_url="https://x")
+        with mock.patch("llm_client.requests.post",
+                        return_value=mock.MagicMock(
+                            status_code=200,
+                            json=lambda: {"choices": [{"message": {"content": "ok"}}]})) as mp:
+            c.chat_completion([{"role": "user", "content": "hi"}])
+        assert mp.call_args.kwargs["json"]["temperature"] == 0.3
+
+    # ---------- L5：思考流字段别名 ----------
+
+    def test_l5_reasoning_field_aliases(self):
+        """reasoning/thinking/thinking_content 字段均归一化为 reasoning 事件"""
+        from llm_client import DeepSeekClient
+        c = DeepSeekClient(api_key="k", model="m", base_url="https://x")
+        cases = [
+            {"reasoning_content": "a"},
+            {"reasoning": "b"},
+            {"thinking": "c"},
+            {"thinking_content": "d"},
+        ]
+        for delta in cases:
+            events = list(c._parse_delta(delta, reasoning_enabled=True))
+            assert events == [{"type": "reasoning",
+                               "text": list(delta.values())[0]}], delta
+
+    def test_l5_first_present_field_wins(self):
+        """多字段并存 → 首个命中别名生效，不重复产出"""
+        from llm_client import DeepSeekClient
+        c = DeepSeekClient(api_key="k", model="m", base_url="https://x")
+        events = list(c._parse_delta(
+            {"reasoning_content": "x", "reasoning": "y"}, reasoning_enabled=True))
+        assert events == [{"type": "reasoning", "text": "x"}]
+
+    def test_l5_reasoning_disabled_ignores_all(self):
+        """reasoning_enabled=False → 别名字段一律不产出（正文不受影响）"""
+        from llm_client import DeepSeekClient
+        c = DeepSeekClient(api_key="k", model="m", base_url="https://x")
+        events = list(c._parse_delta(
+            {"reasoning_content": "x", "content": "hello"}, reasoning_enabled=False))
+        assert events == [{"type": "content", "text": "hello"}]
 
 
 # ==================== DeepSeekChat 档案级 reasoning 读取 ====================

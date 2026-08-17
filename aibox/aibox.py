@@ -585,9 +585,12 @@ def run_light_subagent(role, task, config, logger=None, model=None,
     try:
         # 幂等校验：限制 max_tokens 范围，防止意外超限大量消耗
         max_tokens = max(1, min(int(max_tokens or 2048), constants.DEFAULT_MAX_TOKENS))
-        temp = temperature if temperature is not None else constants.DEFAULT_TEMPERATURE
         # 子代理使用独立的 LLM 客户端（可选不同模型），独立上下文，不污染主对话
         sub_client = create_llm_client(config, api_key=None, logger=logger, model=model)
+        # L3：调用方 temperature > 档案级 default_temperature > 全局默认
+        client_temp = getattr(sub_client, "default_temperature", None)
+        temp = temperature if temperature is not None else (
+            client_temp if client_temp is not None else constants.DEFAULT_TEMPERATURE)
         messages = [
             {"role": "system", "content": role},
             {"role": "user", "content": task}
@@ -915,7 +918,11 @@ class DeepSeekChat:
         self.api_key = self.client.api_key
         self.name = self.client.name
         # temperature 显式传入时覆盖 constants 默认（一次性 CLI 可指定更确定性的采样）
-        self.temperature = temperature if temperature is not None else constants.DEFAULT_TEMPERATURE
+        # L3：CLI/调用方 temperature > 档案级 default_temperature > 全局默认
+        self.temperature = temperature if temperature is not None else (
+            self.client.default_temperature
+            if getattr(self.client, "default_temperature", None) is not None
+            else constants.DEFAULT_TEMPERATURE)
         self.history_manager = history_manager
         # enable_memory=False 时置空，注册层（_register_tools）依此跳过 MemoryTool，
         # 使记忆工具 schema 不出现在请求中，LLM 无从调用——干净禁用而非运行期拦截
@@ -2902,7 +2909,7 @@ def parse_args():
     parser.add_argument('--no-save-memory', action='store_true', help='一次性对话不注册记忆工具，禁止写入记忆数据库')
     parser.add_argument('--show-reasoning', action='store_true', help='一次性对话在 stderr 显示思考过程流（默认不显示）')
     parser.add_argument('--worker-only', action='store_true', help='一次性对话以 worker 纯执行面模式运行（7 种执行工具，无记忆/人格/派生）')
-    parser.add_argument('--model', type=str, metavar='NAME', help='覆盖配置中的模型：档案名（models 节，如 kimi）或裸模型名（同端点换模型）。服务模式与 --once 均生效（进程级覆盖）')
+    parser.add_argument('--model', type=str, metavar='NAME', help='覆盖配置中的模型：档案名（models 节，如 kimi）或裸模型名（同端点换模型）；歧义时可用 model:NAME 强制裸名 / profile:NAME 强制档案。服务模式与 --once 均生效（进程级覆盖）')
     parser.add_argument('--temperature', type=float, metavar='T', help='覆盖默认采样温度（0.0~2.0，越低越确定）')
 
     return parser.parse_args()
