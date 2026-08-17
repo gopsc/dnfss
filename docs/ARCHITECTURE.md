@@ -85,7 +85,7 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
                           └─────────────────────────────────────┘
 
   独立 / 外设（不在主链路）：
-    aibox :8765 (Python WebSocket, 独立产品; v3.2 起 --once CLI 单次对话 + models 多模型档案)
+    aibox :8765 (Python WebSocket, 独立产品; --once CLI 单次对话 + models 多模型档案含 fallback 失败转移)
     BotOps (aibox 的 TUI 前端)
     bot4cj (Cangjie + 树莓派 I2C, 硬件)
     pybot (Python, bot4cj 的迁移版: .mt 解析/录制/实时闭环)
