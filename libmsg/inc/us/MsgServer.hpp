@@ -331,10 +331,11 @@ private:
                 try {
                     task.message = pmsg_recv(task.fd, _config.recv_timeout);
                 } catch (const MsgException&) {
+                    // 不在此清除 busy：fd 保持 busy 直到 _reap_failed 关闭连接。
+                    // 旧实现提前清除 busy，EOF 可读性会让事件循环为同一 fd 重复
+                    // 投递任务，迟到的失败标记经 fd 复用可能落在新连接上误杀之。
                     std::lock_guard<std::mutex> flk(_failed_mtx);
                     _failed.insert(task.fd);
-                    std::lock_guard<std::mutex> blk(_busy_mtx);
-                    _busy.erase(task.fd);
                     continue;
                 }
             }
@@ -354,11 +355,12 @@ private:
                 failed = true;
             }
             if (failed) {
+                // 失败连接交由 _reap_failed 统一清除 busy 并关闭，
+                // 不提前恢复 select 监听（同 recv 失败路径，防 fd 复用竞态）。
                 std::lock_guard<std::mutex> flk(_failed_mtx);
                 _failed.insert(task.fd);
-            }
-            // 清除 busy 标记，恢复 select 监听
-            {
+            } else {
+                // 清除 busy 标记，恢复 select 监听
                 std::lock_guard<std::mutex> lock(_busy_mtx);
                 _busy.erase(task.fd);
             }
@@ -528,6 +530,7 @@ private:
         // 事件循环线程不阻塞接收，防 Slowloris DoS CWE-400）
         {
             std::lock_guard<std::mutex> blk(_busy_mtx);
+            if (_busy.count(fd)) return;  // 已有在途任务，防同一 fd 重复投递（fd 复用竞态）
             _busy.insert(fd);
         }
         {
