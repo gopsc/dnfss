@@ -29,13 +29,16 @@ class LLMClient(ABC):
     """大模型客户端抽象基类。子类需实现流式/非流式两种调用，并归一化为统一事件格式。"""
 
     def __init__(self, api_key: str, model: str, base_url: str,
-                 timeout: int, config=None, logger=None):
+                 timeout: int, config=None, logger=None,
+                 reasoning_enabled: bool = None):
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
         self.timeout = timeout
         self.config = config          # 可选，用于读取代理等动态配置
         self.logger = logger          # 可选，用于日志输出
+        # M3：档案级思考模式开关为构造契约；None = 未配置（消费方回退全局 api.reasoning_enabled）
+        self.reasoning_enabled = reasoning_enabled
         # 当前活动的 HTTP 响应引用，供 cancel() 强制关闭底层连接以中断阻塞读取
         self._current_response = None
 
@@ -99,8 +102,10 @@ class DeepSeekClient(LLMClient):
     """
 
     def __init__(self, api_key: str, model: str, base_url: str,
-                 timeout: int = 30, config=None, logger=None):
-        super().__init__(api_key, model, base_url, timeout, config, logger)
+                 timeout: int = 30, config=None, logger=None,
+                 reasoning_enabled: bool = None):
+        super().__init__(api_key, model, base_url, timeout, config, logger,
+                         reasoning_enabled=reasoning_enabled)
 
     @property
     def name(self) -> str:
@@ -362,11 +367,12 @@ def create_llm_client(config, api_key: Optional[str] = None,
             timeout=timeout,
             config=config,
             logger=logger,
+            # M3：档案级思考模式作为构造参数（None=未配置，消费方回退全局），
+            # 不再构造后挂实例属性——契约显式化，杜绝外部误设属性静默覆盖全局
+            reasoning_enabled=(profile.get("reasoning_enabled",
+                                           config.get("api.reasoning_enabled", False))
+                               if profile is not None else None),
         )
-        # 档案级思考模式开关（未配置时回退全局 api.reasoning_enabled）
-        if profile is not None:
-            client.reasoning_enabled = profile.get(
-                "reasoning_enabled", config.get("api.reasoning_enabled", False))
         return client
 
     # 其他 OpenAI 兼容厂商：可直接复用 DeepSeekClient（继承其协议解析），

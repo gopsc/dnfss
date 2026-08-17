@@ -161,11 +161,11 @@ class TestCreateClient:
         assert c.api_key == "sk-ark"
         assert c.base_url == "https://ark.example/v1/chat/completions"
 
-    def test_no_profile_no_reasoning_attr(self):
-        """无档案 → client 无 reasoning_enabled 属性（走全局配置）"""
+    def test_no_profile_reasoning_is_none(self):
+        """无档案 → reasoning_enabled=None（构造默认，消费方回退全局配置）"""
         with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-ds"}):
             c = create_llm_client(_cfg(models=None))
-        assert not hasattr(c, "reasoning_enabled")
+        assert c.reasoning_enabled is None
 
 
 # ==================== resolve_api_key 档案级解析 ====================
@@ -477,6 +477,53 @@ class TestM1SetClient:
             run_full_subagent("测试角色", "测试任务", None,
                               model="kimi", logger=None)
         fake_sub_chat.set_client.assert_called_once_with(fake_new_client)
+
+
+# ==================== M3：reasoning_enabled 构造参数契约 ====================
+
+class TestM3ReasoningConstructor:
+    """M3：档案级 reasoning_enabled 从"事后挂实例属性"改为构造参数。
+
+    契约：LLMClient.reasoning_enabled 三态——True/False（档案级显式，
+    含档案缺省时回退全局值的具体化）/ None（无档案，消费方回退全局）。
+    """
+
+    def test_profile_true_via_constructor(self):
+        """档案显式 reasoning_enabled=True → 构造参数传入 True"""
+        with mock.patch.dict(os.environ, {"MOONSHOT_API_KEY": "sk-moon"}):
+            c = create_llm_client(_cfg(), model="kimi")
+        assert c.reasoning_enabled is True
+
+    def test_profile_missing_falls_back_to_global_concrete(self):
+        """档案未配置该字段 → 具体化为全局 api.reasoning_enabled 的值"""
+        models = dict(MODELS)
+        models["noreason"] = {
+            "api_url": "https://ark.example/v1/chat/completions",
+            "model": "doubao-pro",
+            "api_key_env": "ARK_API_KEY",
+        }
+        with mock.patch.dict(os.environ, {"ARK_API_KEY": "sk-ark"}):
+            c = create_llm_client(_cfg(models=models), model="noreason")
+        assert c.reasoning_enabled is False  # 全局 api.reasoning_enabled=False
+
+    def test_base_client_default_is_none(self):
+        """基类构造默认 → reasoning_enabled=None（未配置语义）"""
+        from llm_client import DeepSeekClient
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-ds"}):
+            c = DeepSeekClient(api_key="k", model="m", base_url="https://x")
+        assert c.reasoning_enabled is None
+
+    def test_chat_none_falls_back_to_global(self):
+        """DeepSeekChat 消费端：client.reasoning_enabled=None → 全局配置"""
+        from test_once_mode import _make_ai
+        ai = _make_ai()
+        ai.client.reasoning_enabled = None  # 显式置 None（模拟无档案契约）
+        assert ai._reasoning_enabled() == constants_reasoning_default()
+
+
+def constants_reasoning_default():
+    from common import constants
+    return constants.REASONING_ENABLED
 
 
 # ==================== DeepSeekChat 档案级 reasoning 读取 ====================

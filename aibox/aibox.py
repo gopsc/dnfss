@@ -976,10 +976,10 @@ class DeepSeekChat:
                 pass
     
     def _reasoning_enabled(self) -> bool:
-        """思考模式开关：客户端带档案级 reasoning_enabled 属性时优先（多模型档案），否则用全局配置"""
-        return getattr(self.client, "reasoning_enabled", None) \
-            if getattr(self.client, "reasoning_enabled", None) is not None \
-            else constants.REASONING_ENABLED
+        """思考模式开关：client.reasoning_enabled 非 None 时优先（档案级构造参数），
+        否则回退全局配置；getattr 兼容未实现该契约的自定义 client"""
+        val = getattr(self.client, "reasoning_enabled", None)
+        return val if val is not None else constants.REASONING_ENABLED
 
     def _is_cancelled(self) -> bool:
         """检查是否已被取消。"""
