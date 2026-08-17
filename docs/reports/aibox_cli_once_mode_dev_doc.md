@@ -308,9 +308,38 @@ python aibox.py --once --quiet "列出当前目录 py 文件" | grep ".py" | wc 
 python aibox.py --once --timeout 5 "运行 sleep 60" ; echo "exit=$?"   # 期望 4
 ```
 
+## 7. 实施状态（2026-08-17 落地记录）
+
+> 本节为实施后回填，与第 3/4 节计划存在少量偏差，以本节为准。
+
+### 7.1 提交与批次
+
+| 批次 | 提交 | 内容 |
+|---|---|---|
+| Batch A | `ce3fb7f` | `--once` / `--quiet` / `--once-timeout`（300s 默认）+ `handle_once_mode` + SIGINT/超时复用三层取消 |
+| Batch B | `9e0d39c` | `--no-save-memory`（`enable_memory` 构造开关干净禁用 MemoryTool）、`--show-reasoning`（思考流默认静默走 stderr）、压缩提示改走 output_callback、退出码 1（orchestrator 层工具异常）+ `test_once_mode.py` 10 项 |
+| Batch C | `a5af4bb` | SQLite WAL、`--worker-only`（worker profile + 精简 system prompt 防人格污染）、`--model` / `--temperature`、子代理失败标记透传（`_SUBAGENT_TOOL_FAILED_MARKER` → orchestrator `stats.tool_failed`）+ 5 项测试 |
+| Batch D | `d03dbc7` | 多模型档案 `models` 配置节（本档案为实施中新增需求，超出原计划范围）+ `test_models_profile.py` 17 项 + README 更新 |
+
+### 7.2 与计划的偏差
+
+1. **超时参数名**：计划 `--timeout`，落地为 `--once-timeout`（避免与 `api.timeout` 语义混淆）
+2. **`models` 默认留空 `{}`**：计划未涉及；实施中发现默认档案硬编码 `DEEPSEEK_API_KEY` / 官方 URL 会覆盖用户自定义配置（本机为 `ARK_API_KEY` + 火山方舟端点，曾导致 401），故默认空 dict，未配置档案时零破坏回退旧 `api` 扁平节
+3. **`--worker-only` 需要精简 system prompt**：原计划仅切 tool_profile；实测 orchestrator 的人格/身份提示词会污染 worker 语义（自称"老板"、主动写文件、多轮不收敛），已对齐 `run_full_subagent` 的子代理语义修复
+4. **退出码 1 的边界**：仅覆盖 orchestrator 直接感知的工具异常；worker 子代理内的命令失败经 Batch C 的标记透传后同样计入。子命令失败但 AI 正常汇报时退出码为 0（AI 视角任务完成）
+
+### 7.3 验证结果
+
+- 单测 **264 项全过**（once 模式 15 + 多模型档案 17 新增）
+- 冒烟：基础问答 exit 0 / 工具调用链（子代理执行 echo）exit 0 / 超时路径 exit 4 / `--no-save-memory --quiet` stdout 干净 / `--show-reasoning` 思考流走 stderr / `--temperature` 透传 / 不存在的模型名 exit 2
+
+### 7.4 明确不做（维持原判）
+
+WebSocket 会话恢复、`--once` 结果缓存、批处理多 query——见第 4 节"明确不做"。
+
 ---
 
-## 7. 后续演进方向（不在本期）
+## 8. 后续演进方向（不在本期）
 
 1. **Worker 进程级隔离**：`run_full_subagent` 的线程内 `DeepSeekChat` → `subprocess.run(["python", "aibox.py", "--once", "--worker-only", ...])`，子代理崩溃不波及主服务，可用 OS 用户/chroot 做权限隔离
 2. **HTTP 单次接口**：`POST /chat` 无状态接口，与 `--once` 共享内核
@@ -318,7 +347,7 @@ python aibox.py --once --timeout 5 "运行 sleep 60" ; echo "exit=$?"   # 期望
 
 ---
 
-## 8. 决策记录
+## 9. 决策记录
 
 | 决策点 | 结论 | 理由 |
 |--------|------|------|
