@@ -86,16 +86,36 @@ class SubprocessCommandExecutor(CommandExecutor):
                 pass
 
     def _read_with_limit(self, process, timeout: int, start_time: float, output_queue=None) -> Tuple[str, bool, bool]:
-        """从进程读取输出，限制总大小和超时。
-        返回 (output_str, timeout_occurred, truncated)
+        """从进程读取输出，限制总大小和超时。返回 (output_str, timeout_occurred, truncated)。
+
+        H2 修复：阻塞 readline 在独立 reader 线程执行，主循环带超时轮询队列。
+        此前超时检查只在两次 readline 之间执行，无输出命令会让 readline
+        阻塞到进程自然退出，timeout 形同虚设（审计 PoC 实证）。
         """
         output_chunks = []
         total_bytes = 0
         timeout_occurred = False
         truncated = False
 
+        line_queue: queue.Queue = queue.Queue()
+        reader_done = threading.Event()
+
+        def _reader():
+            """后台 reader 线程：阻塞 readline，行入队；EOF/异常结束"""
+            try:
+                for line in iter(process.stdout.readline, ""):
+                    line_queue.put(line)
+            except Exception:
+                pass
+            finally:
+                reader_done.set()
+
+        reader = threading.Thread(target=_reader, daemon=True)
+        reader.start()
+
+        shell_dead_since = None  # shell 进程已死但 reader 未收到 EOF 的起始时刻
         while True:
-            # 检查超时
+            # 检查超时（readline 阻塞不再影响本判断）
             if timeout > 0 and time.time() - start_time > timeout:
                 process.terminate()
                 timeout_occurred = True
@@ -107,26 +127,37 @@ class SubprocessCommandExecutor(CommandExecutor):
                 process.terminate()
                 break
 
-            # 读取一行
-            line = process.stdout.readline()
-            if not line and process.poll() is not None:
-                break
-            if line:
-                line_bytes = len(line.encode('utf-8', errors='replace'))
-                if total_bytes + line_bytes > self.MAX_OUTPUT_BYTES and not truncated:
-                    allowed = self.MAX_OUTPUT_BYTES - total_bytes
-                    if allowed > 0:
-                        output_chunks.append(line.encode('utf-8', errors='replace')[:allowed].decode('utf-8', errors='replace'))
-                        total_bytes = self.MAX_OUTPUT_BYTES
-                    truncated = True
-                    process.terminate()
+            try:
+                line = line_queue.get(timeout=0.1)
+                shell_dead_since = None
+            except queue.Empty:
+                if reader_done.is_set():
                     break
+                # shell 已被 kill/退出但 reader 仍阻塞（如 Windows shell=True
+                # 下 cancel 只杀死包装进程，孙进程仍持有管道写端导致无 EOF）：
+                # 宽限 1 秒排空残留输出后放弃等待
+                if process.poll() is not None:
+                    if shell_dead_since is None:
+                        shell_dead_since = time.time()
+                    elif time.time() - shell_dead_since > 1.0:
+                        break
+                continue
 
-                output_chunks.append(line)
-                total_bytes += line_bytes
+            line_bytes = len(line.encode('utf-8', errors='replace'))
+            if total_bytes + line_bytes > self.MAX_OUTPUT_BYTES and not truncated:
+                allowed = self.MAX_OUTPUT_BYTES - total_bytes
+                if allowed > 0:
+                    output_chunks.append(line.encode('utf-8', errors='replace')[:allowed].decode('utf-8', errors='replace'))
+                    total_bytes = self.MAX_OUTPUT_BYTES
+                truncated = True
+                process.terminate()
+                break
 
-                if output_queue:
-                    output_queue.put(("line", line.rstrip('\n') + "\n"))
+            output_chunks.append(line)
+            total_bytes += line_bytes
+
+            if output_queue:
+                output_queue.put(("line", line.rstrip('\n') + "\n"))
 
         return ''.join(output_chunks), timeout_occurred, truncated
 
@@ -153,7 +184,7 @@ class SubprocessCommandExecutor(CommandExecutor):
                 shell=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                stdin=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,  # H3 修复：不挂 stdin，防等待输入命令永久挂起
                 text=True,
                 bufsize=1,
                 universal_newlines=True,
@@ -240,7 +271,7 @@ class SubprocessCommandExecutor(CommandExecutor):
                 shell=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                stdin=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,  # H3 修复：不挂 stdin，防等待输入命令永久挂起
                 text=True,
                 bufsize=1,
                 universal_newlines=True,
@@ -253,50 +284,14 @@ class SubprocessCommandExecutor(CommandExecutor):
                 self._current_process = process
 
             start_time = time.time()
-            output_lines = []
-            total_bytes = 0
-            timeout_occurred = False
-            truncated = False
+            # H2 修复：复用线程化读取（reader 线程 + 超时轮询），行经 output_queue 流式转发
+            output_str, timeout_occurred, truncated = self._read_with_limit(
+                process, timeout, start_time, output_queue=output_queue)
 
-            # 实时读取输出
-            while True:
-                # 检查超时
-                if timeout > 0 and time.time() - start_time > timeout:
-                    process.terminate()
-                    timeout_occurred = True
-                    output_queue.put(("line", f"\n⏰ 命令执行超时（{timeout}秒）\n"))
-                    break
-
-                # 检查输出大小
-                if total_bytes >= self.MAX_OUTPUT_BYTES:
-                    truncated = True
-                    process.terminate()
-                    output_queue.put(("line", f"\n📦 输出超过 {self.MAX_OUTPUT_BYTES/1024/1024:.0f}MB 限制，结果已截断\n"))
-                    break
-
-                # 读取一行输出
-                line = process.stdout.readline()
-                if not line and process.poll() is not None:
-                    break
-                if line:
-                    line_bytes = len(line.encode('utf-8', errors='replace'))
-
-                    if total_bytes + line_bytes > self.MAX_OUTPUT_BYTES and not truncated:
-                        allowed = self.MAX_OUTPUT_BYTES - total_bytes
-                        if allowed > 0:
-                            truncated_line = line.encode('utf-8', errors='replace')[:allowed].decode('utf-8', errors='replace')
-                            output_queue.put(("line", truncated_line))
-                            output_lines.append(truncated_line)
-                            total_bytes = self.MAX_OUTPUT_BYTES
-                        truncated = True
-                        process.terminate()
-                        output_queue.put(("line", f"\n📦 输出超过 {self.MAX_OUTPUT_BYTES/1024/1024:.0f}MB 限制，结果已截断\n"))
-                        break
-
-                    stripped = line.rstrip('\n')
-                    output_queue.put(("line", stripped + "\n"))
-                    output_lines.append(line)
-                    total_bytes += line_bytes
+            if timeout_occurred:
+                output_queue.put(("line", f"\n⏰ 命令执行超时（{timeout}秒）\n"))
+            elif truncated:
+                output_queue.put(("line", f"\n📦 输出超过 {self.MAX_OUTPUT_BYTES/1024/1024:.0f}MB 限制，结果已截断\n"))
 
             # 如果超时或截断，确保进程被终止
             if (timeout_occurred or truncated) and process.poll() is None:
@@ -317,10 +312,8 @@ class SubprocessCommandExecutor(CommandExecutor):
             else:
                 output_queue.put(("line", f"✅ 命令执行完成，返回码: {return_code}\n"))
 
-            # 准备完整结果
-            full_output = "".join(output_lines)
             data = {
-                "输出": full_output.strip() if full_output.strip() else "(无输出)",
+                "输出": output_str.strip() if output_str.strip() else "(无输出)",
                 "返回码": return_code
             }
 

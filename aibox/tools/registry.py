@@ -84,10 +84,19 @@ class ToolRegistry:
                 )
                 thread.daemon = True
                 thread.start()
-                
-                # 从队列收集输出并发送到当前队列
+
+                # M2 修复（审计 2026-08-17）：转发循环加总超时。
+                # 此前 while thread.is_alive() 在工具内部卡死（如子进程
+                # 等待 stdin）时永不退出；超时后放弃等待，避免本调用
+                # 线程被连带挂起。
+                tool_timeout = 3600  # 单工具总上限 1 小时（工具自身的秒级超时之外的兜底）
+                deadline = time.time() + tool_timeout
                 final_result = None
                 while thread.is_alive() or not output_queue.empty():
+                    if time.time() > deadline:
+                        self.logger.warning(
+                            f"工具 {name} 流式执行超过 {tool_timeout}s 总上限，放弃等待")
+                        return f"❌ 工具执行超时（>{tool_timeout}s，已放弃等待）"
                     try:
                         msg_type, content = output_queue.get(timeout=0.1)
                         if msg_type == "line":

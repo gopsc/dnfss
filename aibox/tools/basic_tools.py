@@ -175,8 +175,15 @@ class WriteFileTool(FileToolBase):
         dir_cmd = f"mkdir -p {shlex.quote(directory)}" if directory else ""
 
         # 内容写入使用 heredoc，避免引号/特殊字符转义问题
+        # M1 修复（审计 2026-08-17）：定界符唯一化——若 content 中含独立行
+        # 与定界符相同（如 "AIBOX_EOF"），heredoc 会提前终止，其后内容被
+        # 当作 shell 命令执行（注入）。冲突时递增后缀直到唯一。
+        delimiter = "AIBOX_EOF"
+        content_lines = {line.strip() for line in content.split("\n")}
+        while delimiter in content_lines:
+            delimiter += "_X"
         redirect = ">" if mode == "w" else ">>"
-        write_cmd = f"cat {redirect} {quoted} <<'AIBOX_EOF'\n{content}\nAIBOX_EOF"
+        write_cmd = f"cat {redirect} {quoted} <<'{delimiter}'\n{content}\n{delimiter}"
         if dir_cmd:
             write_cmd = f"{dir_cmd} && {write_cmd}"
 
