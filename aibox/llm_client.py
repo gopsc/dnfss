@@ -221,13 +221,17 @@ class DeepSeekClient(LLMClient):
 
 def resolve_api_key(api_key: Optional[str], config=None,
                     env_name: Optional[str] = None,
-                    allow_missing: bool = False) -> str:
+                    allow_missing: bool = False,
+                    allow_key_file: bool = True) -> str:
     """解析 API Key：优先显式传入，其次环境变量，最后 ~/.cert/deepseek.key。
 
     env_name: 档案级环境变量名（来自 models.<name>.api_key_env）；
               None 时回退 config 的 api.api_key_env。
     allow_missing: 本地免密端点（models.<name>.api_key_env 为空串）时，
               允许无 Key，返回空串（Bearer 空头，Ollama/vLLM 忽略）。
+    allow_key_file: 是否允许回退读取 ~/.cert/deepseek.key。该文件是 DeepSeek
+              专属凭据，模型档案端点（其他厂商）必须传 False——环境变量取不到
+              时直接报错，绝不把 A 厂商 Key 发给 B 厂商（跨厂商凭据泄漏）。
     """
     if api_key:
         return api_key
@@ -244,6 +248,10 @@ def resolve_api_key(api_key: Optional[str], config=None,
         return env_key
     if allow_missing:
         return ""
+    if not allow_key_file:
+        raise RuntimeError(
+            f"模型档案端点缺少 API Key：请设置环境变量 {env_name}，"
+            f"或将该档案的 api_key_env 配置为空串以启用本地免密端点")
     try:
         home = os.environ.get("HOME", os.environ["USERPROFILE"])
         key_path = os.path.join(home, ".cert", "deepseek.key")
@@ -314,7 +322,8 @@ def create_llm_client(config, api_key: Optional[str] = None,
         timeout = config.get("api.timeout", 30)
 
     resolved_key = resolve_api_key(api_key, config, env_name=env_name,
-                                   allow_missing=allow_missing)
+                                   allow_missing=allow_missing,
+                                   allow_key_file=profile is None)
 
     if profile is not None:
         provider = "openai_compatible"

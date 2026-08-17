@@ -193,6 +193,62 @@ class TestResolveApiKey:
         assert resolve_api_key("sk-explicit", _cfg()) == "sk-explicit"
 
 
+def _key_file_readable(path, *args, **kwargs):
+    """mock open：deepseek.key 存在且可读（返回假 key），证明泄漏路径是否被触发。"""
+    if "deepseek.key" in str(path):
+        import io
+        m = io.StringIO("sk-deepseek-leaked")
+        m.name = str(path)
+        return m
+    raise OSError(path)
+
+
+class TestH1KeyIsolation:
+    """H1：跨厂商 API Key 兜底泄漏——档案端点绝不回退读 ~/.cert/deepseek.key。
+
+    场景：deepseek.key 文件存在且可读（mock），若修复缺失，
+    档案端点会静默拿到该 DeepSeek Key 发往其他厂商。
+    """
+
+    def test_profile_env_missing_never_reads_key_file(self):
+        """档案显式 env 名 + 环境变量未设置 + key 文件存在 → 报错而非读文件"""
+        env = {k: "" for k in ("DEEPSEEK_API_KEY", "MOONSHOT_API_KEY")}
+        with mock.patch.dict(os.environ, env, clear=False), \
+             mock.patch("builtins.open", side_effect=_key_file_readable):
+            with pytest.raises(RuntimeError, match="MOONSHOT_API_KEY"):
+                resolve_api_key(None, _cfg(), env_name="MOONSHOT_API_KEY",
+                                allow_key_file=False)
+
+    def test_profile_via_create_client_never_reads_key_file(self):
+        """端到端：create_llm_client 档案命中 + env 缺失 + key 文件存在 → 报错"""
+        env = {k: "" for k in ("DEEPSEEK_API_KEY", "MOONSHOT_API_KEY")}
+        with mock.patch.dict(os.environ, env, clear=False), \
+             mock.patch("builtins.open", side_effect=_key_file_readable):
+            with pytest.raises(RuntimeError, match="MOONSHOT_API_KEY"):
+                create_llm_client(_cfg(), model="kimi")
+
+    def test_profile_no_env_fallback_missing_raises(self):
+        """档案未配 api_key_env + 回退变量也未设置 + key 文件存在 → 报错"""
+        models = dict(MODELS)
+        models["noenv"] = {
+            "api_url": "https://ark.example/v1/chat/completions",
+            "model": "doubao-pro",
+        }
+        env = {k: "" for k in ("ARK_API_KEY", "DEEPSEEK_API_KEY")}
+        with mock.patch.dict(os.environ, env, clear=False), \
+             mock.patch("builtins.open", side_effect=_key_file_readable):
+            with pytest.raises(RuntimeError, match="ARK_API_KEY"):
+                create_llm_client(_cfg(models=models, api_key_env="ARK_API_KEY"),
+                                  model="noenv")
+
+    def test_flat_api_still_reads_key_file(self):
+        """回归保证：无档案旧扁平节 + 环境变量未设置 → 仍回退读 key 文件"""
+        env = {k: "" for k in ("DEEPSEEK_API_KEY", "MOONSHOT_API_KEY")}
+        with mock.patch.dict(os.environ, env, clear=False), \
+             mock.patch("builtins.open", side_effect=_key_file_readable):
+            assert resolve_api_key(None, _cfg(models=None)) == "sk-deepseek-leaked"
+
+
 # ==================== DeepSeekChat 档案级 reasoning 读取 ====================
 
 class TestChatReasoningFlag:

@@ -548,7 +548,7 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
 |---|---|
 | `api_url` | 端点 URL（OpenAI Chat Completions 协议） |
 | `model` | 该档案使用的模型名 |
-| `api_key_env` | API Key 环境变量名；**未配置回退 `api.api_key_env`；显式空串 `""` 为本地免密端点**（Ollama/vLLM） |
+| `api_key_env` | API Key 环境变量名；**未配置回退 `api.api_key_env`；显式空串 `""` 为本地免密端点**（Ollama/vLLM）。档案端点环境变量取不到时**直接报错，绝不回退 `~/.cert/deepseek.key`**——该文件为 DeepSeek 专属凭据，跨厂商复用属于泄漏（key 文件回退仅对无档案的旧 `api` 扁平节生效） |
 | `reasoning_enabled` | 档案级思考模式开关（缺省回退 `api.reasoning_enabled`） |
 | `timeout` | 请求超时秒数 |
 
