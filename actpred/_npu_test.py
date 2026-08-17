@@ -4,7 +4,7 @@
 
 4 角测试（真实/全零帧 × 真实/全零历史）+ 与 PyTorch 参考对比。
 HEF 尺寸/布局从 vstream info 自动推导，checkpoint 用
-checkpoints/pretrain_best_inference.pt。
+checkpoints/best_inference.pt（v4 onehot，fixed_range）。
 """
 import sys
 import time
@@ -20,8 +20,8 @@ from config import parse_checkpoint_config
 from model import ActionPredictor
 from hailo_infer import HailoPredictor
 
-HEF_PATH = "checkpoints/actpred_pretrain.hef"
-CKPT = "checkpoints/pretrain_best_inference.pt"
+HEF_PATH = "checkpoints/actpred_v4.hef"
+CKPT = "checkpoints/best_inference.pt"
 IMG_DIR = "data/episode_0000/images"
 
 hef = HEF(HEF_PATH)
@@ -40,11 +40,11 @@ imgs_real = [np.array(Image.open(f"{IMG_DIR}/000{i}.jpg").convert("RGB"))
 imgs_zero = [np.zeros_like(imgs_real[0]) for _ in range(3)]
 
 hist_real = np.array([
-    [45, 0, 45, 0, 45, 0, 45, 0, 90, 90, 10, 200, 0, 0, 0, 0, 0, 0],
-    [45, 0, 45, 0, 45, 0, 45, 0, 90, 90, 0, 20, 0, 0, 0, 0, 0, 0],
-    [45, 0, 45, 0, 45, 0, 45, 0, 90, 90, 0, 0, 0, 0, 0, 0, 0, 0],
-    [45, 0, 45, 0, 45, 0, 45, 0, 90, 90, 0, 0, 0, 0, 0, 0, 0, 0],
-    [45, 0, 45, 0, 45, 0, 45, 0, 90, 90, 0, 0, 0, 0, 0, 0, 0, 0],
+    [45, 0, 45, 0, 45, 0, 45, 0, 90, 90, 0, 10, 0, 0, 0, 0, 0, 0],
+    [45, 0, 45, 0, 45, 0, 45, 0, 90, 90, 0, 10, 0, 0, 0, 0, 0, 0],
+    [45, 0, 45, 0, 45, 0, 45, 0, 90, 90, 0, 10, 0, 0, 0, 0, 0, 0],
+    [45, 0, 45, 0, 45, 0, 45, 0, 90, 90, 0, 10, 0, 0, 0, 0, 0, 0],
+    [45, 0, 45, 0, 45, 0, 45, 0, 90, 90, 0, 10, 0, 0, 0, 0, 0, 0],
 ], dtype=np.float32)
 hist_zero = np.zeros((5, 18), dtype=np.float32)
 
@@ -99,12 +99,24 @@ def torch_pred(imgs, hist, use_learned_pred=True, imu=None):
         ii = torch.from_numpy(normalize_imu(imu, imu_dim)).unsqueeze(0)
     if use_learned_pred:
         with torch.no_grad():
-            return model(x, h, ii).squeeze(0).numpy()
-    saved = model.pred_token.data.clone()
-    model.pred_token.data.zero_()
-    with torch.no_grad():
-        out = model(x, h, ii).squeeze(0).numpy()
-    model.pred_token.data.copy_(saved)
+            out = model(x, h, ii).squeeze(0).numpy()
+    else:
+        saved = model.pred_token.data.clone()
+        model.pred_token.data.zero_()
+        with torch.no_grad():
+            out = model(x, h, ii).squeeze(0).numpy()
+        model.pred_token.data.copy_(saved)
+    if cfg.data.onehot:
+        # 多头 logits → 期望值解码 → 原始量纲（与 predict.py 同语义，
+        # 含权重 0 列固定常量），对比前无需反归一化
+        from bins import decode as bin_decode, fixed_zero_columns
+        from action_norm import default_column_weights
+        out = bin_decode(out, cfg.data.action_dim).astype(np.float32)
+        w = (np.asarray(cfg.data.column_weights, dtype=np.float32)
+             if cfg.data.column_weights is not None
+             else default_column_weights(cfg.data.action_dim))
+        fixed = fixed_zero_columns(w, cfg.data.action_dim)
+        out[w <= 0] = fixed[w <= 0]
     return out
 
 
@@ -141,15 +153,18 @@ with HailoPredictor(HEF_PATH, stats_path=stats_path,
     ref = torch_pred(imgs_real, hist_real, True, imu_real)
     ref_zero_pred = torch_pred(imgs_real, hist_real, False, imu_real)
     # torch 参考是模型原始归一化空间输出；HailoPredictor 已反归一化
-    # 到原始动作空间，比较前须同空间对齐，否则归一化模型下 max_diff 无意义
-    if norm_mode == "fixed_range":
-        from action_norm import denormalize_action
-        ref = denormalize_action(ref, cfg.data.action_dim)
-        ref_zero_pred = denormalize_action(ref_zero_pred, cfg.data.action_dim)
-    elif stats_path is not None:
-        s = np.load(stats_path)
-        ref = ref * s[1] + s[0]
-        ref_zero_pred = ref_zero_pred * s[1] + s[0]
+    # 到原始动作空间，比较前须同空间对齐，否则归一化模型下 max_diff
+    # 无意义（onehot 模型 torch_pred 已 decode 为原始量纲，无需再处理）
+    if not cfg.data.onehot:
+        if norm_mode == "fixed_range":
+            from action_norm import denormalize_action
+            ref = denormalize_action(ref, cfg.data.action_dim)
+            ref_zero_pred = denormalize_action(ref_zero_pred,
+                                               cfg.data.action_dim)
+        elif stats_path is not None:
+            s = np.load(stats_path)
+            ref = ref * s[1] + s[0]
+            ref_zero_pred = ref_zero_pred * s[1] + s[0]
     print(f"torch learned_pred  : {np.round(ref[:6], 3)}...")
     print(f"torch zero_pred     : {np.round(ref_zero_pred[:6], 3)}...")
     print(f"HEF vs torch(learned) max_diff={np.abs(a - ref).max():.4f}"

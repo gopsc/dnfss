@@ -39,6 +39,7 @@ from imu_norm import normalize_imu
 from action_norm import (normalize_action, denormalize_action,
                       is_range_mode)
 from utils import parse_action_history
+from bins import TOTAL_BINS, decode as bin_decode, fixed_zero_columns
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -62,7 +63,7 @@ class HailoPredictor:
 
     def __init__(self, hef_path: str, stats_path: str = None, vdevice=None,
                  predict_delta: bool = False, pred_token=None,
-                 normalize_mode: str = "zscore"):
+                 normalize_mode: str = "zscore", column_weights=None):
         """HEF 推理器。
 
         predict_delta: 模型用 --predict-delta 训练时须置 True，推理输出
@@ -72,12 +73,19 @@ class HailoPredictor:
         normalize_mode: 与训练时 DataConfig.normalize_mode 一致。
             "zscore"（默认）需传 stats_path；"fixed_range" / "log_range"
             免 stats 文件，按固定物理范围归一化（action_norm.py）。
+        column_weights: 逐列损失权重（onehot HEF 的权重 0 列按
+            bins.FIXED_OUTPUT 固定，防闭环垃圾回写）；None 时用
+            action_norm.default_column_weights。
         """
         from hailo_platform import HEF, VDevice
 
         self._predict_delta = predict_delta
         self._range_mode = (normalize_mode
                             if is_range_mode(normalize_mode) else None)
+        self._column_weights = None
+        if column_weights is not None:
+            self._column_weights = np.asarray(column_weights,
+                                              dtype=np.float32)
         self._default_pred_token = None
         if pred_token is not None:
             if isinstance(pred_token, str):
@@ -132,7 +140,6 @@ class HailoPredictor:
         imu 为 R2 方案一新增输入（1,1,1,imu_dim），旧 HEF 无此输入。
         """
         ins = list(self._in_infos)
-        out_dim = tuple(self._out_info.shape)[-1]
         # 新版：每帧独立 (H,W,3) 输入
         frames = [i for i in ins if len(i.shape) == 3
                   and i.shape[2] == 3 and i.shape[0] > 3]
@@ -145,10 +152,10 @@ class HailoPredictor:
         history, pred, imu = None, None, None
         for i in rest:
             s = tuple(i.shape)
-            if len(s) == 3 and s[-1] == out_dim:
-                history = i
-            elif len(s) == 3 and s[1] == 1:
-                pred = i
+            if len(s) == 3 and s[1] == 1:
+                pred = i                     # pred_token (1,1,d)
+            elif len(s) == 3:
+                history = i                  # 动作历史 (1,H_len,D)
             elif len(s) == 4 and s[0] == 1 and s[1] == 1 and s[2] == 1:
                 imu = i                     # R2：imu (1,1,1,imu_dim)
             else:
@@ -159,7 +166,8 @@ class HailoPredictor:
             raise ValueError("HEF 输入中未找到图像输入")
         if history is None:
             raise ValueError(
-                f"HEF 输入中未找到动作历史输入（输出维度 {out_dim}），"
+                f"HEF 输入中未找到动作历史输入（输出维度 "
+                f"{tuple(self._out_info.shape)}），"
                 f"实际: {[(i.name, tuple(i.shape)) for i in ins]}")
         return frames, history, pred, imu
 
@@ -209,9 +217,16 @@ class HailoPredictor:
 
         out_shape = tuple(self._out_info.shape)
         out_dim = out_shape[-1]
-        if out_dim != self.action_dim:
-            raise ValueError(
-                f"输出动作维度 {out_dim} 与动作历史维度 {self.action_dim} 不一致")
+        if out_dim == TOTAL_BINS:
+            # onehot 模型：输出为多头 logits，predict 时经 bins.decode
+            # 解码为 action_dim 原始量纲（无需反归一化）
+            self._onehot = True
+        else:
+            self._onehot = False
+            if out_dim != self.action_dim:
+                raise ValueError(
+                    f"输出动作维度 {out_dim} 与动作历史维度 "
+                    f"{self.action_dim} 不一致")
 
     # ---------------- 生命周期 ----------------
 
@@ -310,6 +325,23 @@ class HailoPredictor:
             q = self._out_info.quant_info
             result = (result - q.qp_zp) * q.qp_scale
         result = result.reshape(-1)
+        if self._onehot:
+            # 多头 logits → 期望值解码 → 原始量纲（箱生活在原始空间，
+            # 无需反归一化）；权重 0 列固定为常量（与 predict.py 对齐），
+            # 防闭环垃圾回写
+            result = bin_decode(result, self.action_dim).reshape(-1)
+            if self._column_weights is None:
+                from action_norm import default_column_weights
+                self._column_weights = default_column_weights(
+                    self.action_dim)
+            w = np.asarray(self._column_weights, dtype=np.float32)
+            fixed = fixed_zero_columns(w, self.action_dim)
+            result[w[:self.action_dim] <= 0.0] = (
+                fixed[w[:self.action_dim] <= 0.0])
+            if not np.all(np.isfinite(result)):
+                print("WARNING: HEF output contains NaN/Inf, replacing with zeros")
+                result = np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
+            return result
         if self._predict_delta:
             # 残差模式：Δ̂ + a_{t-1}（归一化空间），与 predict.py 对齐
             result = result + action_history[-1]
