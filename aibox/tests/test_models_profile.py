@@ -687,11 +687,12 @@ class TestLBatch:
 
 # ==================== L4a：chat_completion 跨档案失败转移 ====================
 
-def _resp(status=200, text="", content="ok"):
+def _resp(status=200, text="", content="ok", headers=None):
     m = mock.MagicMock()
     m.status_code = status
     m.text = text
     m.json.return_value = {"choices": [{"message": {"content": content}}]}
+    m.headers = headers or {}
     return m
 
 
@@ -819,7 +820,8 @@ class TestL4aChatCompletionFailover:
             assert fc.chat_completion([{"role": "user", "content": "q2"}]) == "r2"
             assert mp.call_args_list[0].args[0].startswith("https://api.moonshot.cn")
         # 冷却过期（手动回拨失败时间戳）：恢复走主档案
-        fc._fail_at["deepseek"] = _time.monotonic() - fc.cooldown_seconds - 1
+        fc._fail_at["deepseek"] = (_time.monotonic() - fc.cooldown_seconds - 1,
+                                   fc.cooldown_seconds)
         with mock.patch("llm_client.requests.post",
                         return_value=_resp(200, content="r3")) as mp:
             assert fc.chat_completion([{"role": "user", "content": "q3"}]) == "r3"
@@ -996,7 +998,8 @@ class TestL4bStreamFailover:
         primary = self._client("deepseek", stream=_fake_stream(events=self.EVENTS))
         fallback = self._client("kimi", stream=_fake_stream(events=self.EVENTS))
         fc = self._fc(primary, fallback)
-        fc._fail_at = {"deepseek": _time.monotonic(), "kimi": _time.monotonic()}
+        fc._fail_at = {"deepseek": (_time.monotonic(), fc.cooldown_seconds),
+                       "kimi": (_time.monotonic(), fc.cooldown_seconds)}
         with pytest.raises(RuntimeError, match="冷却期"):
             list(fc.stream_chat([{"role": "user", "content": "q"}]))
         primary.stream_chat.assert_not_called()
@@ -1007,7 +1010,7 @@ class TestL4bStreamFailover:
         primary = self._client("deepseek", stream=_fake_stream(events=self.EVENTS))
         fallback = self._client("kimi", stream=_fake_stream(events=self.EVENTS))
         fc = self._fc(primary, fallback)
-        fc._fail_at["deepseek"] = _time.monotonic()
+        fc._fail_at["deepseek"] = (_time.monotonic(), fc.cooldown_seconds)
         assert list(fc.stream_chat([{"role": "user", "content": "q"}])) == self.EVENTS
         primary.stream_chat.assert_not_called()
 
@@ -1037,6 +1040,206 @@ class TestL4bStreamFailover:
         with mock.patch("llm_client.requests.post", return_value=resp):
             with pytest.raises(RuntimeError, match="401"):
                 list(c.stream_chat([{"role": "user", "content": "hi"}]))
+
+
+# ==================== L4c：可观测性（stats/hook）+ 预算 + Retry-After ====================
+
+class TestL4cObservabilityAndBudget:
+    """L4c：转移可观测性与预算控制。
+
+    - get_stats：requests/failovers/cooldown_skips/exhausted 聚合计数
+    - on_failover(from, to, reason) 回调，to=None 表示链耗尽；回调异常不影响主流程
+    - failover_timeout_budget：整链总预算（秒），耗尽停止尝试剩余档案（缺省不限）
+    - Retry-After（数字秒）经 TransientLLMError.retry_after 延长档案冷却期
+    """
+
+    EVENTS = [{"type": "content", "text": "hi"}, {"type": "done"}]
+
+    def _mk_client(self, name, stream=None, completion=None):
+        c = mock.MagicMock()
+        c.name = name
+        if stream is not None:
+            c.stream_chat = mock.MagicMock(side_effect=stream)
+        if completion is not None:
+            c.chat_completion = mock.MagicMock(side_effect=completion)
+        return c
+
+    def _fc(self, primary, fallback=None, **kwargs):
+        from llm_client import FailoverClient
+        clients = [primary] + ([fallback] if fallback is not None else [])
+        return FailoverClient(clients, **kwargs)
+
+    # ---------- stats ----------
+
+    def test_stats_failover_success(self):
+        """主 429 → fallback 成功：requests=1, failovers=1, exhausted=0"""
+        from llm_client import TransientLLMError
+        primary = self._mk_client("deepseek",
+                                  completion=mock.MagicMock(side_effect=TransientLLMError("429")))
+        fallback = self._mk_client("kimi",
+                                   completion=mock.MagicMock(return_value="ok"))
+        fc = self._fc(primary, fallback)
+        assert fc.chat_completion([{"role": "user", "content": "q"}]) == "ok"
+        s = fc.get_stats()
+        assert s == {"requests": 1, "failovers": 1, "cooldown_skips": 0, "exhausted": 0}
+
+    def test_stats_chain_exhausted(self):
+        """全链失败：failovers=2（两次转移决策），exhausted=1"""
+        from llm_client import TransientLLMError
+        primary = self._mk_client("deepseek",
+                                  completion=mock.MagicMock(side_effect=TransientLLMError("429")))
+        fallback = self._mk_client("kimi",
+                                   completion=mock.MagicMock(side_effect=TransientLLMError("500")))
+        fc = self._fc(primary, fallback)
+        assert fc.chat_completion([{"role": "user", "content": "q"}]) is None
+        s = fc.get_stats()
+        assert s["failovers"] == 2 and s["exhausted"] == 1
+
+    def test_stats_cooldown_skips_and_stream(self):
+        """冷却跳过计数 + 流式成功路径 requests 计数"""
+        import time as _time
+        primary = self._mk_client("deepseek",
+                                  stream=_fake_stream(events=self.EVENTS))
+        fallback = self._mk_client("kimi", stream=_fake_stream(events=self.EVENTS))
+        fc = self._fc(primary, fallback)
+        fc._fail_at["deepseek"] = (_time.monotonic(), fc.cooldown_seconds)
+        assert list(fc.stream_chat([{"role": "user", "content": "q"}])) == self.EVENTS
+        s = fc.get_stats()
+        assert s == {"requests": 1, "failovers": 0, "cooldown_skips": 1, "exhausted": 0}
+
+    def test_get_stats_returns_copy(self):
+        """get_stats 返回快照副本，外部修改不影响内部计数"""
+        fc = self._fc(self._mk_client("deepseek"))
+        snap = fc.get_stats()
+        snap["requests"] = 999
+        assert fc.get_stats()["requests"] == 0
+
+    # ---------- on_failover hook ----------
+
+    def test_on_failover_hook_called(self):
+        """转移时回调 (from, to, reason)；链耗尽时 to=None"""
+        from llm_client import TransientLLMError
+        calls = []
+        primary = self._mk_client("deepseek",
+                                  completion=mock.MagicMock(side_effect=TransientLLMError("HTTP 429")))
+        fallback = self._mk_client("kimi",
+                                   completion=mock.MagicMock(side_effect=TransientLLMError("HTTP 500")))
+        fc = self._fc(primary, fallback, on_failover=lambda f, t, r: calls.append((f, t, r)))
+        assert fc.chat_completion([{"role": "user", "content": "q"}]) is None
+        assert len(calls) == 2
+        assert calls[0][0] == "deepseek" and calls[0][1] == "kimi"
+        assert calls[1][0] == "kimi" and calls[1][1] is None  # 链尾
+        assert "429" in calls[0][2] and "500" in calls[1][2]
+
+    def test_on_failover_hook_exception_safe(self):
+        """回调抛异常不影响主流程（仍完成转移）"""
+        from llm_client import TransientLLMError
+
+        def bad_hook(f, t, r):
+            raise RuntimeError("hook boom")
+
+        primary = self._mk_client("deepseek",
+                                  completion=mock.MagicMock(side_effect=TransientLLMError("429")))
+        fallback = self._mk_client("kimi",
+                                   completion=mock.MagicMock(return_value="ok"))
+        fc = self._fc(primary, fallback, on_failover=bad_hook)
+        assert fc.chat_completion([{"role": "user", "content": "q"}]) == "ok"
+
+    # ---------- timeout_budget ----------
+
+    def test_timeout_budget_stops_chain(self):
+        """预算耗尽 → 不再尝试 fallback（chat_completion 返回 None）"""
+        from llm_client import TransientLLMError
+        primary = self._mk_client("deepseek",
+                                  completion=mock.MagicMock(side_effect=TransientLLMError("429")))
+        fallback = self._mk_client("kimi",
+                                   completion=mock.MagicMock(return_value="ok"))
+        fc = self._fc(primary, fallback, timeout_budget=50.0)
+        # monotonic 序列：_call_started=0 → 主档案预算检查=0 → _mark_fail=0 → fallback 预算检查=100
+        with mock.patch("llm_client.time.monotonic",
+                        side_effect=[0.0, 0.0, 0.0, 100.0]):
+            assert fc.chat_completion([{"role": "user", "content": "q"}]) is None
+        fallback.chat_completion.assert_not_called()
+        assert fc.get_stats()["exhausted"] == 1
+
+    def test_timeout_budget_invalid_treated_as_none(self):
+        """timeout_budget<=0 → warning + 视为未配置（全链仍可尝试）"""
+        from llm_client import TransientLLMError
+        primary = self._mk_client("deepseek",
+                                  completion=mock.MagicMock(side_effect=TransientLLMError("429")))
+        fallback = self._mk_client("kimi",
+                                   completion=mock.MagicMock(return_value="ok"))
+        fc = self._fc(primary, fallback, timeout_budget=-5)
+        assert fc.timeout_budget is None
+        assert fc.chat_completion([{"role": "user", "content": "q"}]) == "ok"
+
+    def test_timeout_budget_config_field(self):
+        """档案 failover_timeout_budget 字段 → wrapper.timeout_budget 生效"""
+        models = {
+            "deepseek": dict(MODELS["deepseek"],
+                             fallback=["kimi"], failover_timeout_budget=30),
+            "kimi": dict(MODELS["kimi"]),
+        }
+        with mock.patch.dict(os.environ,
+                             {"DEEPSEEK_API_KEY": "sk-ds", "MOONSHOT_API_KEY": "sk-moon"}):
+            c = create_llm_client(_cfg(models=models))
+        assert c.timeout_budget == 30
+
+    def test_no_budget_by_default(self):
+        """缺省无预算（None）——现有全链行为不变（回归）"""
+        from llm_client import TransientLLMError
+        primary = self._mk_client("deepseek",
+                                  completion=mock.MagicMock(side_effect=TransientLLMError("429")))
+        fallback = self._mk_client("kimi",
+                                   completion=mock.MagicMock(return_value="ok"))
+        fc = self._fc(primary, fallback)
+        assert fc.timeout_budget is None
+        assert fc.chat_completion([{"role": "user", "content": "q"}]) == "ok"
+
+    # ---------- Retry-After ----------
+
+    def test_retry_after_header_parsed(self):
+        """429 响应 Retry-After: 120 → TransientLLMError.retry_after=120"""
+        from llm_client import DeepSeekClient, TransientLLMError
+        c = DeepSeekClient(api_key="k", model="m", base_url="https://x")
+        resp = _resp(429, "limited", headers={"Retry-After": "120"})
+        with mock.patch("llm_client.requests.post", return_value=resp):
+            with pytest.raises(TransientLLMError) as ei:
+                c.chat_completion([{"role": "user", "content": "hi"}])
+        assert ei.value.retry_after == 120
+
+    def test_retry_after_invalid_ignored(self):
+        """Retry-After 非 数字（HTTP-date/垃圾值）→ None（默认冷却）"""
+        from llm_client import DeepSeekClient, TransientLLMError
+        c = DeepSeekClient(api_key="k", model="m", base_url="https://x")
+        resp = _resp(429, "limited", headers={"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"})
+        with mock.patch("llm_client.requests.post", return_value=resp):
+            with pytest.raises(TransientLLMError) as ei:
+                c.chat_completion([{"role": "user", "content": "hi"}])
+        assert ei.value.retry_after is None
+
+    def test_retry_after_extends_cooldown(self):
+        """retry_after=300 → 主档案冷却 300s：下次请求仍走 fallback；过期后恢复"""
+        import time as _time
+        from llm_client import TransientLLMError
+        primary = self._mk_client("deepseek",
+                                  completion=mock.MagicMock(
+                                      side_effect=TransientLLMError("429", retry_after=300)))
+        primary_ok = mock.MagicMock(return_value="from-ds")
+        fallback = self._mk_client("kimi", completion=mock.MagicMock(return_value="from-kimi"))
+        fc = self._fc(primary, fallback)
+        # 第一次：主失败（retry_after=300）→ fallback
+        assert fc.chat_completion([{"role": "user", "content": "q1"}]) == "from-kimi"
+        # 冷却中（默认 60s 已过但 300s 未到）：仍走 fallback
+        t, _ = fc._fail_at["deepseek"]
+        fc._fail_at["deepseek"] = (t - 100, 300)
+        primary.chat_completion = primary_ok
+        assert fc.chat_completion([{"role": "user", "content": "q2"}]) == "from-kimi"
+        primary_ok.assert_not_called()
+        # 300s 冷却过期：恢复主档案
+        fc._fail_at["deepseek"] = (t - 301, 300)
+        assert fc.chat_completion([{"role": "user", "content": "q3"}]) == "from-ds"
+        primary_ok.assert_called_once()
 
 
 # ==================== DeepSeekChat 档案级 reasoning 读取 ====================

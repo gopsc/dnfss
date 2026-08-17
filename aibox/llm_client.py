@@ -160,7 +160,8 @@ class DeepSeekClient(LLMClient):
                 # L4a：瞬时故障显式抛出——FailoverClient 据此转移下一档案；
                 # 无包装器时由调用方 catch-all 接住，下游仍走失败分支（语义等价）
                 raise TransientLLMError(
-                    f"LLM 请求瞬时失败: HTTP {response.status_code}: {response.text[:200]}")
+                    f"LLM 请求瞬时失败: HTTP {response.status_code}: {response.text[:200]}",
+                    retry_after=_retry_after_of(response))
             self._log("error", f"LLM 压缩请求失败: HTTP {response.status_code}")
             return None
         except TransientLLMError:
@@ -209,7 +210,8 @@ class DeepSeekClient(LLMClient):
             if response.status_code == 429 or response.status_code >= 500:
                 # L4b：瞬时故障显式分类（此时尚未产出任何事件，可安全转移重放）
                 raise TransientLLMError(
-                    f"LLM 流式请求瞬时失败: HTTP {response.status_code}: {response.text[:200]}")
+                    f"LLM 流式请求瞬时失败: HTTP {response.status_code}: {response.text[:200]}",
+                    retry_after=_retry_after_of(response))
             raise RuntimeError(
                 f"HTTP {response.status_code}: {response.text}")
 
@@ -268,7 +270,26 @@ class DeepSeekClient(LLMClient):
 
 
 class TransientLLMError(RuntimeError):
-    """瞬时 LLM 故障（HTTP 429/5xx）——FailoverClient 据此转移下一档案（L4a）。"""
+    """瞬时 LLM 故障（HTTP 429/5xx）——FailoverClient 据此转移下一档案（L4a）。
+
+    L4c：retry_after 携带服务端 Retry-After 响应头（数字秒）建议冷却时长，
+    FailoverClient 以其替代默认冷却期（429 限流时尊重服务端节奏）。
+    """
+
+    def __init__(self, message: str, retry_after: Optional[float] = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def _retry_after_of(response) -> Optional[float]:
+    """从 Retry-After 响应头解析冷却秒数（仅支持数字秒格式，其余忽略返回 None）。"""
+    try:
+        v = response.headers.get("Retry-After")
+        if v is None:
+            return None
+        return max(1.0, float(v))
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 class FailoverClient:
@@ -287,14 +308,30 @@ class FailoverClient:
     尚未产出任何 reasoning/content/tool_call 事件，重放对用户不可见）；
     已产出事件后失败直接上抛（重放会导致前端重复输出/工具增量错乱）；
     用户中断（cancel() 置位）引发的连接异常绝不转移。
+
+    L4c 范围——可观测性与预算控制：
+      - get_stats() 暴露 requests/failovers/cooldown_skips/exhausted 聚合计数
+      - on_failover(from_name, to_name, reason) 回调（to_name=None 表示链耗尽），
+        供管理面/前端通知接入，回调异常不影响主流程
+      - timeout_budget 限制整条链尝试的总秒数（缺省不限），耗尽即停止尝试剩余档案，
+        防止长链故障时超时叠加（3 档案最坏 3×timeout）
+      - 429 响应带 Retry-After（数字秒）时按其延长该档案冷却期
     """
 
-    def __init__(self, clients: List, logger=None, cooldown_seconds: float = 60.0):
+    def __init__(self, clients: List, logger=None, cooldown_seconds: float = 60.0,
+                 timeout_budget: Optional[float] = None, on_failover=None):
         self._clients = list(clients)
         self.logger = logger
         self.cooldown_seconds = cooldown_seconds
-        self._fail_at = {}  # client.name → 失败时刻（time.monotonic）
+        self._fail_at = {}  # client.name → (失败时刻, 冷却秒数)
         self._cancelled = False
+        self._stats = {"requests": 0, "failovers": 0, "cooldown_skips": 0, "exhausted": 0}
+        if timeout_budget is not None and timeout_budget <= 0:
+            self._log("warning", f"timeout_budget 非法（{timeout_budget} <= 0），按未配置处理")
+            timeout_budget = None
+        self.timeout_budget = timeout_budget
+        self.on_failover = on_failover
+        self._call_started = None
 
     def __getattr__(self, item):
         # 未显式定义的属性/方法委托主 client（name/model/api_key/cancel 等）；
@@ -311,11 +348,34 @@ class FailoverClient:
                 pass
 
     def _cooling(self, client) -> bool:
-        t = self._fail_at.get(client.name)
-        return t is not None and (time.monotonic() - t) < self.cooldown_seconds
+        entry = self._fail_at.get(client.name)
+        if entry is None:
+            return False
+        t, cd = entry
+        return (time.monotonic() - t) < cd
 
-    def _mark_fail(self, client):
-        self._fail_at[client.name] = time.monotonic()
+    def _mark_fail(self, client, cooldown: Optional[float] = None):
+        # L4c：429 Retry-After（经 TransientLLMError.retry_after）覆盖默认冷却时长
+        self._fail_at[client.name] = (time.monotonic(),
+                                      cooldown if cooldown and cooldown > 0
+                                      else self.cooldown_seconds)
+
+    def _budget_exhausted(self) -> bool:
+        if self.timeout_budget is None or self._call_started is None:
+            return False
+        return (time.monotonic() - self._call_started) >= self.timeout_budget
+
+    def get_stats(self) -> Dict:
+        """L4c：转移统计快照（requests/failovers/cooldown_skips/exhausted）。"""
+        return dict(self._stats)
+
+    def _notify_failover(self, from_name: str, to_name, reason: str):
+        self._stats["failovers"] += 1
+        try:
+            if self.on_failover is not None:
+                self.on_failover(from_name, to_name, reason)
+        except Exception as e:
+            self._log("warning", f"on_failover 回调异常（忽略）: {e}")
 
     def cancel(self):
         """L4b：中断链上全部 client（任一可能正在流式中）并置自身中断标志。
@@ -332,12 +392,19 @@ class FailoverClient:
     def chat_completion(self, messages: List[Dict], temperature: float = None,
                         max_tokens: int = 1024, **kwargs):
         self._cancelled = False  # 新一轮请求，清除上一轮中断标志
+        self._call_started = time.monotonic()
+        self._stats["requests"] += 1
         last_exc = None
         tried = 0
-        for client in self._clients:
+        for idx, client in enumerate(self._clients):
             if self._cooling(client):
+                self._stats["cooldown_skips"] += 1
                 self._log("info", f"模型档案 {client.name} 处于失败冷却期，跳过")
                 continue
+            if self._budget_exhausted():
+                self._log("warning",
+                          f"失败转移时间预算（{self.timeout_budget}s）已耗尽，停止尝试剩余档案")
+                break
             tried += 1
             try:
                 result = client.chat_completion(messages, temperature=temperature,
@@ -350,8 +417,12 @@ class FailoverClient:
                 if self._cancelled:
                     return None  # 用户中断引发的异常：不转移
                 last_exc = e
-                self._mark_fail(client)
+                self._mark_fail(client, cooldown=getattr(e, "retry_after", None))
+                to_name = (self._clients[idx + 1].name
+                           if idx + 1 < len(self._clients) else None)
+                self._notify_failover(client.name, to_name, str(e))
                 self._log("warning", f"模型档案 {client.name} 瞬时故障（{e}），转移下一档案")
+        self._stats["exhausted"] += 1  # 末尾统一计数（链耗尽/预算耗尽/全冷却）
         self._log("error", f"全部 {len(self._clients)} 个模型档案均不可用（尝试 {tried} 个）：{last_exc}")
         return None
 
@@ -361,11 +432,18 @@ class FailoverClient:
                     reasoning_enabled: bool = False, **extra) -> Iterator[Dict]:
         """L4b：流式转移——仅首事件前故障可安全重放（对用户不可见）。"""
         self._cancelled = False  # 新一轮请求，清除上一轮中断标志
+        self._call_started = time.monotonic()
+        self._stats["requests"] += 1
         last_exc = None
-        for client in self._clients:
+        for idx, client in enumerate(self._clients):
             if self._cooling(client):
+                self._stats["cooldown_skips"] += 1
                 self._log("info", f"模型档案 {client.name} 处于失败冷却期，跳过")
                 continue
+            if self._budget_exhausted():
+                self._log("warning",
+                          f"失败转移时间预算（{self.timeout_budget}s）已耗尽，停止尝试剩余档案")
+                break
             produced_any = False
             try:
                 for event in client.stream_chat(
@@ -381,13 +459,17 @@ class FailoverClient:
                 if produced_any:
                     raise  # 已向消费方产出事件，重放会重复输出/工具增量错乱
                 last_exc = e
-                self._mark_fail(client)
+                self._mark_fail(client, cooldown=getattr(e, "retry_after", None))
+                to_name = (self._clients[idx + 1].name
+                           if idx + 1 < len(self._clients) else None)
+                self._notify_failover(client.name, to_name, str(e))
                 self._log("warning",
                           f"模型档案 {client.name} 流式瞬时故障（首事件前，{e}），转移下一档案")
+        self._stats["exhausted"] += 1
         if last_exc is not None:
             raise last_exc  # 链耗尽：抛最后异常，由既有错误处理（回滚/报错）接住
         raise RuntimeError(
-            f"全部 {len(self._clients)} 个模型档案处于失败冷却期，暂不可用")
+            f"全部 {len(self._clients)} 个模型档案不可用（冷却期或转移时间预算耗尽）")
 
 
 def resolve_api_key(api_key: Optional[str], config=None,
@@ -594,7 +676,8 @@ def create_llm_client(config, api_key: Optional[str] = None,
                 # 不阻断主档案可用性（配置结构错误在上方已硬性拦截）
                 if logger is not None and hasattr(logger, "warning"):
                     logger.warning(f"fallback 档案 '{fb_name}' 构造失败，已忽略：{e}")
-        return FailoverClient(chain, logger=logger)
+        return FailoverClient(chain, logger=logger,
+                              timeout_budget=profile.get("failover_timeout_budget"))
 
     if provider in ("deepseek", "deepseek-chat", "openai_compatible", "openai"):
         client = DeepSeekClient(
