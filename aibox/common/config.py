@@ -8,6 +8,7 @@ common.config - aibox 配置管理器
 
 import os
 import json
+import copy
 from typing import Dict, Optional
 
 from .i18n import i18n
@@ -187,6 +188,7 @@ class ConfigManager:
             print(i18n.get('config_not_found', config_path))
             self._config = self._get_default_config()
             self._save_default_config(config_path)
+        self._migrate_legacy_proxy_password()
     
     def _merge_configs(self, default: Dict, user: Dict) -> Dict:
         result = default.copy()
@@ -220,6 +222,28 @@ class ConfigManager:
         self._load_config()
 
 
+    def _resolve_proxy_password(self, proxy_conf: Dict) -> Optional[str]:
+        """解析代理密码：内存明文优先，否则按 password_env 查环境变量。
+
+        对齐 api_key_env 惯例：配置文件只持久化环境变量名，明文密码不落盘。
+        """
+        password = proxy_conf.get("password")
+        if password:
+            return password
+        env_name = proxy_conf.get("password_env")
+        if env_name:
+            return os.environ.get(env_name) or None
+        return None
+
+    def _migrate_legacy_proxy_password(self):
+        """一次性迁移：旧版把代理密码明文落盘。加载后明文保留在内存供本会话
+        使用，同时立即重写脱敏配置文件，清除盘上存量明文。"""
+        socks = (self._config or {}).get("proxy", {}).get("socks5")
+        if socks and socks.get("password"):
+            print("⚠️ 检测到配置文件中的代理明文密码：已保留供本次会话使用，不再落盘。"
+                  "跨重启请将密码存入环境变量，并把 proxy.socks5.password_env 指向该变量名")
+            self._save_config()
+
     def get_proxy(self) -> Optional[Dict[str, str]]:
         """获取当前代理配置（返回 requests 可用的 proxies 字典）"""
         proxy_conf = self.get("proxy.socks5")
@@ -228,15 +252,20 @@ class ConfigManager:
         host = proxy_conf.get("host", "127.0.0.1")
         port = proxy_conf.get("port", 1080)
         username = proxy_conf.get("username")
-        password = proxy_conf.get("password")
+        password = self._resolve_proxy_password(proxy_conf)
         if username and password:
             proxy_url = f"socks5://{username}:{password}@{host}:{port}"
         else:
             proxy_url = f"socks5://{host}:{port}"
         return {"http": proxy_url, "https": proxy_url}
 
-    def set_proxy(self, host: str, port: int, username: str = None, password: str = None, enabled: bool = True, save: bool = True):
-        """动态设置代理配置（内存中更新，并可选择写入配置文件）"""
+    def set_proxy(self, host: str, port: int, username: str = None, password: str = None,
+                  password_env: str = None, enabled: bool = True, save: bool = True):
+        """动态设置代理配置（内存中更新，并可选择写入配置文件）。
+
+        password 明文仅存内存（_save_config 落盘时强制脱敏）；
+        跨重启持久化请用 password_env 指向存有密码的环境变量名。
+        """
         # 确保 proxy 节点存在
         if "proxy" not in self._config:
             self._config["proxy"] = {}
@@ -245,31 +274,40 @@ class ConfigManager:
             "host": host,
             "port": port,
             "username": username,
-            "password": password
+            "password": password,
+            "password_env": password_env
         }
         if save:
             self._save_config()
         return True
 
     def _save_config(self):
-        """将当前配置保存到配置文件（覆盖）"""
+        """将当前配置保存到配置文件（覆盖）。
+
+        落盘前对代理密码做纵深防御脱敏：无论调用路径如何，明文密码一律不写入文件。
+        """
         config_path = self._config_path
         if config_path:
             try:
+                safe_config = copy.deepcopy(self._config)
+                socks = safe_config.get("proxy", {}).get("socks5")
+                if socks and socks.get("password"):
+                    socks["password"] = None
                 os.makedirs(os.path.dirname(config_path), exist_ok=True)
                 with open(config_path, 'w', encoding='utf-8') as f:
-                    json.dump(self._config, f, ensure_ascii=False, indent=2)
+                    json.dump(safe_config, f, ensure_ascii=False, indent=2)
                 print(f"✅ 配置已保存到 {config_path}")
             except Exception as e:
                 print(f"⚠️ 保存配置失败: {e}")
 
     def get_proxy_info(self) -> Dict:
-        """获取代理配置的详细信息（用于显示）"""
+        """获取代理配置的详细信息（用于显示，不回传任何密码值）"""
         proxy_conf = self.get("proxy.socks5", {})
         return {
             "enabled": proxy_conf.get("enabled", False),
             "host": proxy_conf.get("host", ""),
             "port": proxy_conf.get("port", 0),
             "username": proxy_conf.get("username"),
-            "password": proxy_conf.get("password") is not None  # 只显示是否存在
+            "password": self._resolve_proxy_password(proxy_conf) is not None,  # 只显示是否存在
+            "password_env": proxy_conf.get("password_env") or ""
         }

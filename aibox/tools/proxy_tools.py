@@ -34,7 +34,8 @@ class SetProxyTool(Tool):
                 "host": {"type": "string", "description": "代理服务器地址，如 127.0.0.1"},
                 "port": {"type": "integer", "description": "代理端口，如 1080"},
                 "username": {"type": "string", "description": "用户名（可选）"},
-                "password": {"type": "string", "description": "密码（可选）"},
+                "password": {"type": "string", "description": "密码（可选，明文仅本次会话有效，不落盘）"},
+                "password_env": {"type": "string", "description": "存有密码的环境变量名（可选，跨重启持久的推荐方式）"},
                 "enabled": {"type": "boolean", "description": "是否启用代理，默认 true"},
                 "save": {"type": "boolean", "description": "是否保存到配置文件（持久化），默认 true"}
             },
@@ -42,14 +43,21 @@ class SetProxyTool(Tool):
         }
 
     def execute(self, host: str, port: int, username: str = None, password: str = None,
-                enabled: bool = True, save: bool = True, **kwargs) -> str:
+                password_env: str = None, enabled: bool = True, save: bool = True, **kwargs) -> str:
         config = ConfigManager()
-        config.set_proxy(host, port, username, password, enabled, save)
+        config.set_proxy(host, port, username, password, password_env, enabled, save)
         proxy_info = config.get_proxy_info()
+        if proxy_info.get("password_env"):
+            pw_source = "环境变量 " + proxy_info["password_env"]
+        elif proxy_info.get("password"):
+            pw_source = "仅本次会话（不落盘）"
+        else:
+            pw_source = "无"
         data = {
             "代理状态": "启用" if proxy_info["enabled"] else "禁用",
             "服务器": f"{proxy_info['host']}:{proxy_info['port']}",
             "认证": "有" if proxy_info.get("username") else "无",
+            "密码来源": pw_source,
             "持久化": "已保存" if save else "仅内存"
         }
         return self.format_result(True, "代理设置成功", data)

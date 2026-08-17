@@ -15,6 +15,17 @@ from common import Logger, i18n
 
 from .base import Tool
 
+# 工具参数名命中这些关键词时，debug 日志里打码（防密码/密钥进日志文件）
+_SENSITIVE_PARAM_KEYS = {"password", "api_key", "token", "secret", "authorization"}
+
+
+def _sanitize_kwargs(kwargs: Dict) -> Dict:
+    """复制一份参数并把敏感键的值替换为 ***（仅用于日志输出）"""
+    return {
+        k: ("***" if str(k).lower() in _SENSITIVE_PARAM_KEYS else v)
+        for k, v in kwargs.items()
+    }
+
 
 class ToolRegistry:
     """工具注册器 - 支持技能热重载"""
@@ -63,7 +74,7 @@ class ToolRegistry:
         if not tool:
             return f"❌ 错误：找不到工具 '{name}'"
         
-        self.logger.debug(f"工具调用: {name}({kwargs})")
+        self.logger.debug(f"工具调用: {name}({_sanitize_kwargs(kwargs)})")
         start_time = time.time()
         
         try:
