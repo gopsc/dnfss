@@ -21,7 +21,7 @@ Memdb<std::string, std::string>        (libmemdb 模板：LRU 链表 + 哈希索
 | `update` | `key`, `value`, `refresh_ttl?` | `true/false` | 更新值，可选刷新 TTL |
 | `exists` | `key` | `true/false` | 键是否存在 |
 | `size` | — | `int` | 当前条目数 |
-| `expire` | `key`, `value` | `true/false` | 更新值并重置 TTL（del + set） |
+| `expire` | `key`, `value` | `true/false` | 更新已有键的值并重置 TTL（键不存在返回 false） |
 | `show` | — | `[{key,value},...]` | 导出所有条目 |
 
 ## 配置
@@ -34,6 +34,7 @@ Memdb<std::string, std::string>        (libmemdb 模板：LRU 链表 + 哈希索
 | `listen_port` | `8011` | 监听端口 |
 | `workers` | `4` | 线程池大小 |
 | `max_time` | `600` | 默认 TTL（秒），10 分钟 |
+| `backlog` | `128` | listen() backlog（libmsg 默认 10，短连接突刺易丢连接） |
 
 ## 构建与运行
 

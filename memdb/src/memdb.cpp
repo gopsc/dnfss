@@ -20,6 +20,7 @@ struct ServerConfig {
     int         listen_port = 8011;
     int         workers     = 4;
     int         max_time    = 600;   // 默认 TTL 10 分钟
+    int         backlog     = 128;   // 短连接并发突刺时防丢连接（libmsg 默认仅 10）
 };
 
 static std::atomic<bool> g_running{true};
@@ -35,7 +36,7 @@ private:
     pmc::net::RpcServer __rpc;
     std::mutex __mtx;
 
-    static const std::string& _require_string(const json::object& req, const std::string& field) {
+    static std::string _require_string(const json::object& req, const std::string& field) {
         auto it = req.find(field);
         if (it == req.end()) {
             throw std::runtime_error("missing required field: " + field);
@@ -43,7 +44,8 @@ private:
         if (!it->value().is_string()) {
             throw std::runtime_error("field '" + field + "' must be a string");
         }
-        return it->value().as_string();
+        const auto& s = it->value().as_string();
+        return std::string(s.data(), s.size());
     }
 
 public:
@@ -51,7 +53,7 @@ public:
         : __cfg(cfg)
         , __db(cfg.max_time)
         , __rpc(cfg.listen_host, cfg.listen_port,
-                {.workers = cfg.workers})
+                {.workers = cfg.workers, .listen_backlog = cfg.backlog})
     {
         _register_routes();
     }
@@ -130,13 +132,12 @@ private:
             return result;
         });
 
-        // ---- expire: 更新值并重置 TTL（等价于 del + set）----
+        // ---- expire: 更新值并重置 TTL（仅已有键；等价于 update + refresh_ttl）----
         __rpc.add_route("expire", [this](const json::object& req) -> json::value {
             const auto& key = _require_string(req, "key");
             const auto& val = _require_string(req, "value");
             std::lock_guard<std::mutex> lock(__mtx);
-            __db.remove(key);
-            return __db.insert(key, val);
+            return __db.update(key, val, true);
         });
     }
 };
@@ -156,7 +157,8 @@ int main(int argc, char** argv) {
         ("host",      po::value<std::string>()->default_value("127.0.0.1"), "listen host")
         ("port",      po::value<int>()->default_value(8011), "listen port")
         ("workers",   po::value<int>()->default_value(4),    "worker threads")
-        ("max-time",  po::value<int>()->default_value(600),  "default TTL (seconds)");
+        ("max-time",  po::value<int>()->default_value(600),  "default TTL (seconds)")
+        ("backlog",   po::value<int>()->default_value(128),  "listen() backlog");
 
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -171,6 +173,7 @@ int main(int argc, char** argv) {
     cfg.listen_port = vm["port"].as<int>();
     cfg.workers     = vm["workers"].as<int>();
     cfg.max_time    = vm["max-time"].as<int>();
+    cfg.backlog     = vm["backlog"].as<int>();
 
     auto instance  = vm["instance"].as<std::string>();
     auto log_level = vm["log-level"].as<std::string>();

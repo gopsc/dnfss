@@ -70,3 +70,6 @@ Testing/
 
 # Databases
 *.db*
+# unit test binary
+test_libmemdb
+.memdb.pid

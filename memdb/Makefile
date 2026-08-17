@@ -8,6 +8,9 @@ BUILD    = build
 TARGET   = $(BUILD)/memdb
 SRC      = src/memdb.cpp
 
+HOST    ?= 127.0.0.1
+PORT    ?= 8011
+
 all: $(TARGET)
 
 $(BUILD):
@@ -37,13 +40,12 @@ test-libmemdb: $(TEST_LIBMEMDB)
 
 test-memdb: $(TARGET)
 	@echo "Starting memdb server..."
-	./$(TARGET) --host $(HOST) --port $(PORT) --workers 2 --max-time 10 &
+	@./$(TARGET) --host $(HOST) --port $(PORT) --workers 2 --max-time 10 >/dev/null 2>&1 & echo $$! > .memdb.pid
 	@sleep 1
-	-python3 test_memdb.py $(HOST) $(PORT); EXIT=$$?
-	@kill %1 2>/dev/null; wait %1 2>/dev/null
-	@exit $$EXIT
+	@python3 test_memdb.py $(HOST) $(PORT); EXIT=$$?; \
+	kill $$(cat .memdb.pid) 2>/dev/null; rm -f .memdb.pid; exit $$EXIT
 
 clean:
-	rm -f $(TARGET) $(TEST_LIBMEMDB)
+	rm -f $(TARGET) $(TEST_LIBMEMDB) .memdb.pid
 
 .PHONY: all clean test test-libmemdb test-memdb

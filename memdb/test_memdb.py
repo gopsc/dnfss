@@ -197,6 +197,12 @@ def test_expire(c, cnt):
     ok, data = c.call("get", key="test:exp")
     cnt.check(ok and data == "new", "value after expire", f"got {data}")
 
+    ok, data = c.call("expire", key="test:exp:nonexistent", value="x")
+    cnt.check(ok and data is False, "expire nonexistent key returns false", f"got {data}")
+
+    ok, data = c.call("get", key="test:exp:nonexistent")
+    cnt.check(ok and data is None, "expire nonexistent does not insert", f"got {data}")
+
 
 def test_missing_params(c, cnt):
     ok, data = c.call("set", key="only_key")

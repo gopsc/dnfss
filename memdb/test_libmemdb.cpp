@@ -10,6 +10,7 @@
 #include <cassert>
 #include <chrono>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -266,19 +267,57 @@ static void test_get_time_touch() {
     PASS();
 }
 
-// ── copy assignment ─────────────────────────────────────────────────────
+// ── copy semantics ──────────────────────────────────────────────────────
 
 static void test_copy_assignment() {
     TEST("copy assignment");
-    Memdb<std::string, std::string> db1;
-    db1.insert("a", "1");
     Memdb<std::string, std::string> db2;
-    db2 = db1;
-    CHECK(db2.search("a").value() == "1", "copied db should have same data");
-    // verify independence
-    db2.insert("b", "2");
-    CHECK(db1.size() == 1, "original should be unchanged");
-    CHECK(db2.size() == 2, "copy should be independent");
+    {
+        Memdb<std::string, std::string> db1;
+        db1.insert("a", "1");
+        db2 = db1;
+        CHECK(db2.search("a").value() == "1", "copied db should have same data");
+        // verify independence
+        db2.insert("b", "2");
+        CHECK(db1.size() == 1, "original should be unchanged");
+        CHECK(db2.size() == 2, "copy should be independent");
+    }
+    // db1 destroyed — db2 must still work (indices must not dangle)
+    CHECK(db2.search("a").value() == "1", "copy must survive source destruction");
+    CHECK(db2.remove("a"), "copy remove should work after source destroyed");
+    CHECK(db2.size() == 1, "copy size after remove");
+    PASS();
+}
+
+static void test_copy_constructor() {
+    TEST("copy constructor");
+    std::optional<Memdb<std::string, std::string>> cpy;
+    {
+        Memdb<std::string, std::string> src;
+        src.insert("a", "1");
+        src.insert("b", "2");
+        cpy.emplace(src);  // copy constructor
+        CHECK(cpy->size() == 2, "copy should have 2 entries");
+        CHECK(src.size() == 2, "source unchanged");
+    }
+    CHECK(cpy->search("a").value() == "1", "copy value a after source destroyed");
+    CHECK(cpy->search("b").value() == "2", "copy value b after source destroyed");
+    cpy->remove("a");
+    CHECK(cpy->size() == 1, "copy mutation after source destroyed");
+    // flush on copy must not touch freed memory
+    CHECK(cpy->search("b").value() == "2", "flush path safe on copy");
+    PASS();
+}
+
+static void test_update_refresh_extends_ttl() {
+    TEST("update with refresh extends TTL");
+    Memdb<std::string, std::string> db(1);
+    db.insert("a", "1");
+    std::this_thread::sleep_for(std::chrono::milliseconds(700));
+    CHECK(db.update("a", "2", true), "update with refresh should succeed");
+    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+    CHECK(db.search("a").value() == "2",
+          "entry alive past original TTL thanks to refresh");
     PASS();
 }
 
@@ -344,6 +383,8 @@ int main() {
     test_get_keys();
     test_get_time_touch();
     test_copy_assignment();
+    test_copy_constructor();
+    test_update_refresh_extends_ttl();
     test_large_number_of_keys();
     test_reinsert_after_remove();
     test_update_without_refresh_keeps_old_ttl();
