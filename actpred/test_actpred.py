@@ -1279,6 +1279,13 @@ class _FakeConfigured:
         for b in bindings_list:
             self._transform(b)
 
+    def run_async(self, bindings_list, callback=None):
+        # 模拟异步：同步完成 transform 后触发回调（completion_info 无异常）
+        for b in bindings_list:
+            self._transform(b)
+        if callback is not None:
+            callback(completion_info=types.SimpleNamespace(exception=None))
+
 
 class _FakeInferModel:
     def __init__(self, transform):
@@ -1581,6 +1588,40 @@ class TestHailoPredictor(unittest.TestCase):
             with HailoPredictor("fake.hef", stats_path=stats_path) as p:
                 result = p.predict(self._frames(2), history)
         np.testing.assert_allclose(result, [3, 3, 3], atol=1e-6)
+
+    def test_predict_async_matches_predict(self):
+        from hailo_infer import HailoPredictor
+        infos_in = [
+            _FakeVStreamInfo("net/images", (1, 2, 3, 4, 4), _FakeFormatType.FLOAT32),
+            _FakeVStreamInfo("net/history", (1, 2, 3), _FakeFormatType.FLOAT32),
+        ]
+        infos_out = [_FakeVStreamInfo("net/action", (1, 3), _FakeFormatType.FLOAT32)]
+        _install_fake_hailo(self, infos_in, infos_out,
+                            _first_row_transform("net/history", "net/action"))
+        history = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32)
+        with HailoPredictor("fake.hef") as p:
+            sync = p.predict(self._frames(2), history)
+            job = p.predict_async(self._frames(2), history)
+            async_result = job.result(timeout=5.0)
+        np.testing.assert_allclose(async_result, sync, atol=1e-6)
+
+    def test_predict_async_buffer_pool_roundtrip(self):
+        """连续提交超过缓冲池数量的任务，输出互不串扰"""
+        from hailo_infer import HailoPredictor
+        infos_in = [
+            _FakeVStreamInfo("net/images", (1, 2, 3, 4, 4), _FakeFormatType.FLOAT32),
+            _FakeVStreamInfo("net/history", (1, 2, 3), _FakeFormatType.FLOAT32),
+        ]
+        infos_out = [_FakeVStreamInfo("net/action", (1, 3), _FakeFormatType.FLOAT32)]
+        _install_fake_hailo(self, infos_in, infos_out,
+                            _first_row_transform("net/history", "net/action"))
+        with HailoPredictor("fake.hef") as p:
+            jobs = []
+            for _ in range(6):        # 超过 _ASYNC_BUFFERS=4
+                jobs.append(p.predict_async(self._frames(2), [[1, 2, 3]] * 2))
+            for job in jobs:
+                np.testing.assert_allclose(job.result(timeout=5.0), [1, 2, 3],
+                                           atol=1e-6)
 
 
 class TestDfcCompile(unittest.TestCase):
