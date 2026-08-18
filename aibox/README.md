@@ -57,7 +57,7 @@ python aibox.py
 
 启动后，WebSocket 服务器将运行在 `ws://localhost:8765`（地址与端口可在 `config.json` 的 `system.websocket_host` / `system.websocket_port` 中修改）。
 
-> 注意：本模块入口文件为 `aibox.py`（当前约 3018 行，集成 WebSocket 服务器、AI 引擎、工具/技能系统、任务调度器于一体；自 v3.0 起工具类与子系统已抽离至 `tools/`、`subsystems/`、`common/`、`tests/` 包，aibox.py 仅保留核心类与编排逻辑）。`client.py` 为示例 WebSocket 客户端，`voice_client.py` 为语音客户端，`llm_client.py` 为多厂商大模型客户端抽象层，`_run.sh` 为被 `core` 拉起的启动脚本。
+> 注意：本模块入口文件为 `aibox.py`（当前约 3408 行，集成 WebSocket 服务器、AI 引擎、工具/技能系统、任务调度器于一体；自 v3.0 起工具类与子系统已抽离至 `tools/`、`subsystems/`、`common/`、`tests/` 包，aibox.py 仅保留核心类与编排逻辑）。`client.py` 为示例 WebSocket 客户端，`voice_client.py` 为语音客户端，`llm_client.py` 为多厂商大模型客户端抽象层，`_run.sh` 为被 `core` 拉起的启动脚本。
 
 ## 📁 目录结构
 
@@ -92,7 +92,7 @@ aibox/
 │   ├── prompt_tools.py     # B 批：UpdateIdentity/UpdateSoul/SaveMemoryAndEndConversation
 │   ├── proxy_tools.py      # B 批：SetProxy/GetProxy
 │   └── misc_tools.py       # B 批：AskUserTool
-├── tests/             # 单元测试套件（355 项全过）
+├── tests/             # 单元测试套件（424 项全过）
 │   ├── conftest.py                    # sys.path 配置 + websockets 桩
 │   ├── test_basic_tools.py            # A 批工具 43 项
 │   ├── test_b_tools.py                # B 批工具 58 项
@@ -103,7 +103,12 @@ aibox/
 │   ├── test_conversation_compressor.py # 对话压缩器
 │   ├── test_skill_manager.py          # 技能管理器
 │   ├── test_once_mode.py              # CLI 一次性对话模式（Batch A/B/C 15 项）
-│   └── test_models_profile.py         # 多模型档案（Batch D 17 项）
+│   ├── test_models_profile.py         # 多模型档案（Batch D 17 项）
+│   ├── test_config.py                 # 配置脱敏（F1 3 项）
+│   ├── test_f2_fixes.py               # 超时清理/线程收尾（F2 5 项）
+│   ├── test_g_fixes.py                # 第三轮审计 Batch G（20 项）
+│   ├── test_h_fixes.py                # 第四轮审计 Batch H（26 项）
+│   └── test_i_fixes.py                # 遗留收尾 Batch I（16 项）
 ├── skills/            # 内置扩展技能（*.py 可执行脚本 / *.md Markdown 技能）
 │   ├── hello-world.py
 │   ├── aes-crypto.py
@@ -889,6 +894,29 @@ elif command == "/mycommand":
 3. 确认工具返回值为字符串且不含二进制/控制字符
 
 ## 📄 更新日志
+
+### v3.5
+- ✅ **安全审计与修复（第三轮 Batch G + 第四轮 Batch H + 遗留收尾 Batch I）**（完整记录见 [docs/reports/aibox_audit_20260817.md](../docs/reports/aibox_audit_20260817.md)）：
+  - **Batch G（llm 加固 + 线程生命周期 + 取消传播 + DB 事务）**：
+    - llm_client：非瞬时 HTTP 错误体截断 `[:200]`（密钥/错误页不进异常栈）、Retry-After 上限 cap 3600s、fallback 档案缺 model 跳过并告警、fallback 去重、删除 `LLMClient._cancelled` 死状态、FailoverClient 并发契约文档化
+    - 子代理取消传播：`run_full_subagent` 共享父 `_cancel_event` + 0.2s 观察者线程转发深度中断（强关在途 HTTP、kill 子进程）；`SubAgentTool` 构造注入父事件
+    - drain 线程重构：批次级单线程 + stop 事件 + try/finally 统一回收（消除每次工具调用泄漏一个常驻线程）；`/new` 的 `reset_conversation` 移入线程池（不再同步获取 `_msg_lock` 冻结事件循环）；broadcast 收窄 except + unregister 改 discard；`_processing_tasks` 改按连接的任务集合登记（关闭时取消全部在途任务）
+    - DB：FTS5 关键词双引号翻倍转义（`"` → `""`）、两处 `LIMIT` f-string 参数化、`mark_as_triggered` 读写收进单连接 `BEGIN IMMEDIATE` 事务（消灭并发触发竞态）；历史索引裸 except 收窄 + 归档文件名同秒加序号
+  - **Batch H（第四轮审计，3 路并行审读 + Linux PoC 6/6 实证）**：
+    - **H1（高危）**：修复 N5 回归——子代理共享父取消事件后首轮 think 无条件 `clear()` 会吞掉父级已置位的取消信号（用户中断 / --once 超时被绕过），共享事件时跳过 clear + 父已取消直接早退
+    - `/reload_prompts` 移入线程池（N3 同类遗漏）；技能扫描（串行 `--help` 子进程）启动前预热，不再在首条消息/首个任务时冻结事件循环
+    - 调度器任务级超时（`scheduler.task_timeout`，默认 600s）——AI think 卡死不再停摆整个调度循环
+    - `get_recent_memories(limit=None)` 默认上限（不再全表加载）；`memo delete` 改物理删除（此前只标记完成）；`PromptManager.reload` 本地构建后原子替换（并发读者不再读到空/半截系统提示词）
+    - read_file 的 sed 参数强转 int（防引号注入）；`set_proxy` 落盘失败如实报告；SSE 非 UTF-8 行容错；persona 路径 realpath 校验（软链越界拒绝）；1MB 截断无半个字符；compressor 除零防护；InstallSkillTool 指引命令路径引用；ask_user 缺参明确报错
+    - **POSIX 进程组终止**：executor 的 `Popen` 加 `start_new_session` + 组信号 kill（组 ID 在 Popen 后立即捕获）——`(sleep 300 &)` 形态的孙进程持管道不再悬挂 reader 线程/泄漏 fd（实证修复前孙进程残留）
+    - web 工具 scheme 白名单（http/https，`file://` 等拒绝）；registry 日志打码改包含匹配（apiKey/passwd 变体）；FailoverClient 日志 Bearer 令牌正则脱敏（网关回显 Authorization 头不再进日志）
+  - **Batch I（遗留收尾）**：
+    - **N9**：prompt 写入内容长度上限（`MAX_CONTENT_LENGTH=10000`，identity/soul/status 超长拒绝）——约束持久化注入面
+    - **F5**：情绪子代理取消传播——`run_light_subagent` 改走 stream_chat + 观察者线程，用户中断可即时终止（此前阻塞至请求超时）
+    - 提醒时间格式异常任务按"到期"返回（此前被 SQL 层字符串比较静默丢弃，任务永不执行）；`mark_as_triggered` 加 `busy_timeout=10000`（多进程同库写竞争等待而非立即报 locked）
+    - 对话文件原子写（tmp + os.replace，崩溃不留半截 JSON）；`load_conversation` realpath 越界防护；WS 命令专用线程池（`/new`、`/reload_prompts` 不再占用默认池）；--once 硬超时兜底（软超时后宽限一个周期强杀进程）
+    - PromptManager 单例加锁；`limit=0` 语义修正（None 才不加 LIMIT）
+- ✅ **测试**：424 项全过（Linux 环境；Batch G 20 + Batch H 26 + Batch I 16 项新增；`test_execute_timeout`/`test_flat_api_still_reads_key_file` 为 Windows 向用例，Linux 预存失败与本轮无关）
 
 ### v3.4
 - ✅ **多模型档案加固（H1/H2/H3/M1/M2/M3 六项修复）**：

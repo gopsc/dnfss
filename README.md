@@ -236,6 +236,7 @@
 - 一套相对独立的单智能体产品，基于 DeepSeek + WebSocket（:8765），由 `core` 拉起但与 waf / gateway / dnfs2 等主干微服务无调用关系。
 - 自带技能系统（`skills/`）、任务调度器、记忆管理、前端页面与语音客户端（`voice_client.py`）。
 - 默认模型 `deepseek-v4-flash`，配置在 `config.json`；`models` 配置节可挂多个 OpenAI 兼容端点按档案名切换（档案级 reasoning/温度/展示名/`fallback` 失败转移），`--once` 支持无 WebSocket 的 CLI 一次性对话；详见 [aibox/README.md](aibox/README.md)。
+- **四轮安全审计修复（2026-08，Batch E/F/G/H/I 共 60+ 项）**：命令执行保护链（1MB/超时/中断）、凭据脱敏（代理密码不落盘、日志打码、Bearer 脱敏）、取消传播（子代理/情绪子代理/调度器超时）、DB 事务与 FTS5 转义、POSIX 进程组终止等；审计报告见 [docs/reports/aibox_audit_20260817.md](docs/reports/aibox_audit_20260817.md)。
 
 ### BotOps（aibox 智能体 TUI 前端）
 
