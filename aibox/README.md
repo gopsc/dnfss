@@ -57,6 +57,20 @@ python aibox.py
 
 启动后，WebSocket 服务器将运行在 `ws://localhost:8765`（地址与端口可在 `config.json` 的 `system.websocket_host` / `system.websocket_port` 中修改）。
 
+### 管理大模型接入点（不用手写配置）
+
+不想手写 `config.json` 的 `models` 节？用交互式菜单工具：
+
+```bash
+python model_config.py          # 交互式菜单：列出 / 添加 / 删除 / 连通性验证
+python model_config.py --list   # 非交互：列出当前接入点
+```
+
+- **添加接入点**：按提示填写档案名、API 地址（附常见厂商端点参考）、模型名；Key 两种方式——环境变量名（推荐，Key 不落盘）或免密本地端点（Ollama 等）；可选显示名/温度/超时/思考模式/失败转移（从已有接入点多选）/设为默认
+- **删除接入点**：编号选择 + 确认，自动清理其他档案的失败转移引用
+- **连通性验证**：对选中接入点发一次最小请求，直接给出成败原因
+- 添加后可立即使用：`python aibox.py --model <档案名>` 指定，或设为默认后无需 `--model`
+
 > 注意：本模块入口文件为 `aibox.py`（当前约 3408 行，集成 WebSocket 服务器、AI 引擎、工具/技能系统、任务调度器于一体；自 v3.0 起工具类与子系统已抽离至 `tools/`、`subsystems/`、`common/`、`tests/` 包，aibox.py 仅保留核心类与编排逻辑）。`client.py` 为示例 WebSocket 客户端，`voice_client.py` 为语音客户端，`llm_client.py` 为多厂商大模型客户端抽象层，`_run.sh` 为被 `core` 拉起的启动脚本。
 
 ## 📁 目录结构
@@ -64,6 +78,7 @@ python aibox.py
 ```
 aibox/
 ├── aibox.py           # 服务主程序（WebSocket 服务器 + AI 引擎 + 任务调度器 + 核心类 DeepSeekChat/WebSocketHandler/EnhancedAIManager）
+├── model_config.py    # 大模型接入点交互式管理工具（列表/添加/删除/连通性验证，不用手写配置）
 ├── client.py          # 示例 WebSocket 客户端
 ├── voice_client.py    # 语音客户端
 ├── llm_client.py      # 大模型客户端抽象层（多厂商切换，DeepSeekClient 兼容 OpenAI 协议）
@@ -92,7 +107,7 @@ aibox/
 │   ├── prompt_tools.py     # B 批：UpdateIdentity/UpdateSoul/SaveMemoryAndEndConversation
 │   ├── proxy_tools.py      # B 批：SetProxy/GetProxy
 │   └── misc_tools.py       # B 批：AskUserTool
-├── tests/             # 单元测试套件（424 项全过）
+├── tests/             # 单元测试套件（441 项全过）
 │   ├── conftest.py                    # sys.path 配置 + websockets 桩
 │   ├── test_basic_tools.py            # A 批工具 43 项
 │   ├── test_b_tools.py                # B 批工具 58 项
@@ -108,7 +123,8 @@ aibox/
 │   ├── test_f2_fixes.py               # 超时清理/线程收尾（F2 5 项）
 │   ├── test_g_fixes.py                # 第三轮审计 Batch G（20 项）
 │   ├── test_h_fixes.py                # 第四轮审计 Batch H（26 项）
-│   └── test_i_fixes.py                # 遗留收尾 Batch I（16 项）
+│   ├── test_i_fixes.py                # 遗留收尾 Batch I（16 项）
+│   └── test_model_config.py           # 模型接入点管理工具（17 项）
 ├── skills/            # 内置扩展技能（*.py 可执行脚本 / *.md Markdown 技能）
 │   ├── hello-world.py
 │   ├── aes-crypto.py
