@@ -1,9 +1,9 @@
 # aibox 模块安全与质量审计报告
 
-- **日期**：2026-08-17（第一轮）/ 2026-08-18（第二轮复审）/ 2026-08-18（第三轮：遗留复核 + v3.4 专审）
-- **审计基线**：第一轮 HEAD `ce142fe`（Batch A–D 后）→ 第二轮 HEAD `177a9ac`（Batch E 修复后）→ 第三轮 HEAD `aa15841`（L4a/b/c 落地后）
-- **审计范围**：`aibox.py`（~3026 行）+ `llm_client.py` + `tools/`（7 文件）+ `subsystems/`（6 文件）+ `common/`（5 文件）
-- **方法**：第一轮逐文件代码审读 + PoC 动态验证；第二轮 Batch E 修复复审 + 全量重审 + 6 处关键发现实证抽查
+- **日期**：2026-08-17（第一轮）/ 2026-08-18（第二轮复审）/ 2026-08-18（第三轮：遗留复核 + v3.4 专审）/ 2026-08-18（第四轮：3 路并行审读 + Batch H 修复）
+- **审计基线**：第一轮 HEAD `ce142fe`（Batch A–D 后）→ 第二轮 HEAD `177a9ac`（Batch E 修复后）→ 第三轮 HEAD `aa15841`（L4a/b/c 落地后）→ 第四轮 HEAD `d1f780e`（Batch G + SOCKS5 验证后）
+- **审计范围**：`aibox.py`（~3310 行）+ `llm_client.py` + `tools/`（7 文件）+ `subsystems/`（6 文件）+ `common/`（5 文件）
+- **方法**：第一轮逐文件代码审读 + PoC 动态验证；第二轮 Batch E 修复复审 + 全量重审 + 6 处关键发现实证抽查；第三轮遗留项复核 + v3.4 专审；第四轮 3 路并行审读 + 主审逐条复核 + Linux PoC 实证（6/6）
 
 ---
 
@@ -344,3 +344,57 @@ N3/N13/N14 为 async WebSocket 路径，依赖事件循环与真实连接对象�
 ### 10.3 测试基线
 
 全量 **375 passed**（22.5s，Windows 开发机 `py -3`）= 原 355 + Batch G 新增 20。零回归。
+
+---
+
+## 十一、第四轮审计（2026-08-18，HEAD `d1f780e`）
+
+方法：3 路并行审读（aibox.py 全文 / llm_client+common+tools / subsystems+tests）+ 主审对全部候选发现逐条代码复核，关键项 Linux 动态实证（PoC 6/6）。
+
+### 11.1 新发现与修复（Batch H，13 项全落地）
+
+| # | 级别 | 问题 | 位置 | 修复 |
+|---|---|---|---|---|
+| H1 | **高危** | **N5 修复引入回归**：子代理共享父取消事件后，首轮 `_think_and_respond_impl` 无条件 `clear()` 吞掉父级已置位的取消信号（用户中断 / --once 超时恰落在子代理生成窗口时被清，观察者线程随之失效）——取消传播被绕过，子代理跑完全程 | `aibox.py:675, 1470` | 共享事件时置 `_shared_cancel_event` 跳过 clear；赋事件后立即检查 is_set 直接返回取消 |
+| M1 | 中 | `/reload_prompts` 在事件循环线程同步获取 `_msg_lock` 冻结整个事件循环（N3 同类遗漏，只修了 `/new`） | `aibox.py:2492` | 移入 `run_in_executor`（与 /new 一致） |
+| M2 | 中 | SkillManager 懒加载在事件循环线程串行执行 `--help` 子进程（每技能 ≤10s），首条消息/首个任务触发时冻结服务 | `aibox.py:2885-2891` | 启动前预热 WS 与调度器两个共享实例 |
+| M3 | 中 | 调度器任务无超时：AI think 卡死 → `await ai_future` 永久阻塞 → 调度循环停摆、后续任务全部丢失（已 mark_as_triggered 不重试） | `aibox.py:333` | `call_later` 任务级超时（`scheduler.task_timeout`，默认 600s）→ `ai.cancel()`，循环继续 |
+| M4 | 中 | `get_recent_memories(limit=None)` 无 LIMIT 全表加载（db_tools 分页传 None），记忆库增长后单次调用全量入内存 | `db.py:234` | None → 默认上限（对齐 search_memories 语义） |
+| M5 | 中 | `memo delete` 实为 `complete_memo(force)`——只标记完成不删行，重复任务被推进而非移除，stats 计数失真 | `db_tools.py:747` | db 层新增 `delete_memo` 物理删除，工具改调 |
+| M6 | 中 | `PromptManager.reload()` 先清空 `_prompts` 再逐文件重读：并发连接构建 system 消息时读到空/半截列表（N3 移线程池后放大） | `prompt_manager.py:298` | 本地构建新列表后原子替换 |
+| L1 | 低 | read_file 的 `start_line/end_line` 未强转直拼 sed 单引号模板——LLM 传含引号字符串可闭合引号注入生成的指引命令 | `basic_tools.py:97` | int() 强转 + 范围夹取 |
+| L2 | 低 | `_save_config` 吞异常仅 print：磁盘只读时 set_proxy 仍报"已保存"，重启后配置丢失无感知 | `config.py:284` | `_save_config` 返回落盘结果，set_proxy 透传，工具如实报告 |
+| L3 | 低 | SSE 行 `decode("utf-8")` 遇非 UTF-8 字节抛 UnicodeDecodeError，整条流中断且不触发 failover | `llm_client.py:222` | `errors="replace"` |
+| L4 | 低 | persona 路径校验用 abspath 未解析符号链接：skills 目录内软链指向任意文件可绕过前缀检查被读取注入 | `aibox.py:536` | realpath 后再做前缀校验 |
+| L5 | 低 | 1MB 截断按字节切后 `errors='replace'` 解码，行尾出现半个字符 � | `executors.py:150` | 改 `errors='ignore'` |
+| L6 | 低 | compressor 压缩块全空内容时 `original_tokens=0` → 除零崩溃 | `conversation_compressor.py:517` | `max(original_tokens, 1)` |
+| L7 | 低 | InstallSkillTool 指引命令 `ls -l {src}`/`cp {src} {dst}` 未引用：LLM 可控路径含空格/元字符时 shell 拆词/注入 | `skill_tools.py:269-285` | shlex.quote 源与目标路径 |
+| L8 | 低 | ask_user 的 required 为空，LLM 不传 question 时 `str + None` 抛 TypeError | `misc_tools.py:42` | required 补 question + 缺参明确报错 |
+| L9 | 低 | Linux 孙进程持管道泄漏（N4 残余变体）：`(sleep 300 &)` 形态 shell 已死但孙进程持写端，reader 阻塞无 EOF；**实证修复前孙进程残留** | `executors.py` | POSIX `start_new_session` + 进程组信号（组 ID 在 Popen 后立即捕获，shell 死亡后 getpgid 不可用）；宽限窗口到期强杀进程组 |
+| L10 | 低 | web 工具 url 无 scheme 校验（M3 遗留）：`file://` 等经 curl 指引可达（SSRF） | `basic_tools.py:319` | http/https 白名单 |
+| L11 | 低 | registry 日志打码精确匹配：apiKey/passwd 等变体漏网 | `registry.py:19` | 子串包含匹配（含 apiKey/passwd/credential） |
+| L12 | 低 | FailoverClient 异常消息经 `_log` 落 ai.log：网关错误页若在 200 字符内回显 Authorization 头则密钥进日志 | `llm_client.py` | `_log`/on_failover 前 Bearer 令牌正则脱敏 |
+
+### 11.2 修复实证（Linux PoC 6/6 PASS）
+
+```
+[PASS] L-1 无输出命令超时: 3.0s 返回，含超时（原 PoC-1 为 Windows powershell 命令）
+[PASS] L-3 1MB截断: 结果 1.00MB（Linux 等价命令）
+[PASS] L-4 cancel中断: cancel 后 2.0s 结束
+[PASS] L-5 工具层1MB贯通: 结果 1.00MB
+[PASS] L-9 孙进程持管道不悬挂: 1.1s 返回，reader 正常收尾
+[PASS] L-9 孙进程已被清理: 残留无（修复前 `(sleep 300 &)` 孙进程残留至自然退出）
+```
+
+L-9 实证过程说明：首版实现按"break 后 killpg"处理，但 shell 已死时 `os.getpgid(pid)` 抛 ProcessLookupError，组 ID 无法反查，孙进程仍残留（实证 FAIL 抓出）。修正为 **Popen 成功后立即捕获组 ID 并保存**，killpg 用保存值——6/6 通过。
+
+### 11.3 遗留项（维持原判 / 择机）
+
+- **N9**（prompt 注入存储）：confirm 默认 True、100_STATUS 直写无门槛——涉及交互设计（用户确认门槛），维持 G6 择机项
+- **M4/M3（旧编号）**：shlex Windows 转义（Linux 部署不受影响）、Q9 代理认证 curl 指引（修复需把密码嵌入命令串，反而引入密码进日志/会话史的新泄漏，维持现状）
+- **F5** express_emotion 不可中断、**F6** /new 占用默认线程池、**F8** WS 限速/空闲回收、**F9** --once 软超时（H1 修复后取消可传播，残余窗口受 timeout 有界）、**Q7a** stream_chat 取消空窗（受 timeout 有界）、Q4 busy_timeout 重试、Q5 提醒格式异常静默、Q7b load_conversation 无调用面、Q8 对话文件原子写、compressor 裸 print / token 双计、单例 __new__ 无锁、db.py `if limit:` limit=0 边界——均为低危/信息级，下批处理
+- **测试环境注记**：`test_executors.py::test_execute_timeout` 与 `test_models_profile.py::test_flat_api_still_reads_key_file` 为 Windows 向用例（ping -n 语法 / 依赖 ~/.cert/deepseek.key），Linux 环境预存失败，与本轮改动无关（git stash 实证）
+
+### 11.4 测试基线（Linux，`aibox/venv`）
+
+全量 **408 passed** = 原 382（Linux 环境）+ Batch H 新增 26。零回归；2 个预存环境性失败同前。PoC 回归脚本为 Windows 命令集，Linux 用等价命令实证（见 11.2）。
