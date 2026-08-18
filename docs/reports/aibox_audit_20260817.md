@@ -1,7 +1,7 @@
 # aibox 模块安全与质量审计报告
 
-- **日期**：2026-08-17（第一轮）/ 2026-08-18（第二轮复审）/ 2026-08-18（第三轮：遗留复核 + v3.4 专审）/ 2026-08-18（第四轮：3 路并行审读 + Batch H 修复）
-- **审计基线**：第一轮 HEAD `ce142fe`（Batch A–D 后）→ 第二轮 HEAD `177a9ac`（Batch E 修复后）→ 第三轮 HEAD `aa15841`（L4a/b/c 落地后）→ 第四轮 HEAD `d1f780e`（Batch G + SOCKS5 验证后）
+- **日期**：2026-08-17（第一轮）/ 2026-08-18（第二轮复审）/ 2026-08-18（第三轮：遗留复核 + v3.4 专审）/ 2026-08-18（第四轮：3 路并行审读 + Batch H 修复）/ 2026-08-19（第五轮：4 路并行审读，聚焦历届未覆盖区域）
+- **审计基线**：第一轮 HEAD `ce142fe`（Batch A–D 后）→ 第二轮 HEAD `177a9ac`（Batch E 修复后）→ 第三轮 HEAD `aa15841`（L4a/b/c 落地后）→ 第四轮 HEAD `d1f780e`（Batch G + SOCKS5 验证后）→ 第五轮 HEAD `d513c5f`（Batch I + model_config.py 后，含工作区未提交的 max_turns 钳制）
 - **审计范围**：`aibox.py`（~3310 行）+ `llm_client.py` + `tools/`（7 文件）+ `subsystems/`（6 文件）+ `common/`（5 文件）
 - **方法**：第一轮逐文件代码审读 + PoC 动态验证；第二轮 Batch E 修复复审 + 全量重审 + 6 处关键发现实证抽查；第三轮遗留项复核 + v3.4 专审；第四轮 3 路并行审读 + 主审逐条复核 + Linux PoC 实证（6/6）
 
@@ -435,3 +435,171 @@ N9 ×5（manager 兜底/身份/灵魂/状态超长拒绝 + 正常写入）、Q7b
 ### 12.4 测试基线（Linux，`aibox/venv`）
 
 全量 **424 passed** = 原 408 + Batch I 新增 16。零回归；2 个预存环境性失败同前。
+
+---
+
+## 十三、第五轮审计（2026-08-19，HEAD `d513c5f`）
+
+方法：4 路并行审读（① aibox.py 的 WS/调度器 async 区域 ② model_config.py + client.py + voice_client.py ③ subsystems/ + tools/ 回归与残留面 ④ 前端 HTML + skills 脚本）+ 主审逐条复核关键候选 + Linux PoC 实证（2/2）。审计焦点为历届未覆盖区域：`WebSocketHandler`（前四轮仅点修、从未逐行深审）、`model_config.py`（新文件）、前端与技能脚本（首次覆盖）。
+
+### 13.1 新发现——高危（2 项）
+
+#### J1：畸形时间/数字字段打穿任务系统——调度器失败热循环 + 每个新连接握手即崩（系统性）
+
+三个入库路径对时间与数字字段**零校验**：CLI `--memo-add`（`aibox.py:3157-3181`，reminder 段原样入库）、WS `task add`（`aibox.py:2366-2394`，`repeat_interval`/`repeat_end_time` 原样入库，未认证单条消息即可复现）、memo 工具（`tools/db_tools.py:518`）。而 I 批 Q5 修复让格式异常的 `reminder_time` 按"到期"返回（`db.py:447-452`），使这类行进入下游多个**无防护解析点**：
+
+| 解析点 | 后果 |
+|---|---|
+| 调度器执行前验证 `datetime.strptime`（`aibox.py:186`） | ValueError 在 `mark_as_triggered` 之前抛出 → 任务既不触发也不完成，每个 `check_interval`（默认 1s）重复 pick→异常→向全体客户端广播 failed，**永久热循环** |
+| `repeat_end_time` strptime（`db.py:611/657`） | `mark_as_triggered` 事务 rollback+raise（`db.py:602-604`）→ 未标记触发 → 同一热循环 |
+| `repeat_interval` 比较（`db.py:641`） | WS 传 `null` → None `> 0` 抛 TypeError → 同上 |
+| `get_pending_tasks_for_user` strptime（`db.py:767`） | 该方法经 `send_welcome_info` 在 `register` 内调用（`aibox.py:2165→2237`），而 `register` 位于 `handle_connection` 的 try 块**之外**（`aibox.py:2944`）→ **每个新连接在握手阶段即抛 ValueError**，且 finally 不执行，`connected_clients`/`client_sessions` 登记永久泄漏 |
+
+一条畸形任务行即可同时触发调度器热循环与全部新连接握手失败（服务事实不可用，需手动清库）。修复建议：① 入库端校验（`add_memo`/WS add 对时间串 strptime 预检、`repeat_interval` 强制 int 化，非法即拒绝并报错）；② 下游解析点 try/except 兜底（调度器验证失败 → 强制完成或挂起该任务并告警，`db.py:767` 解析失败按 `is_overdue=True`）；③ `register` 调用移入 try/finally。
+
+#### J2：前端 XSS——AI 输出与命令执行结果全链路 innerHTML 渲染（提示注入 → 浏览器代码执行）
+
+三个前端页面均用 marked 9.1.6（该版本起**移除内置 sanitize**）且全程无 DOMPurify：
+
+- `frontend.html:1051/1339`、`entry.html:1127/1422`、`entry1.html:548/593/616`：`textDiv.innerHTML = marked.parse(content)` 直渲 AI 流式输出（chunk/task_process）
+- `entry1.html:536`：`addSystemMessage` 将 **command_result（任意命令执行结果）**/task_status/error 模板拼接进 innerHTML，连 markdown 开关都绕不过
+- frontend/entry 的未知消息类型兜底分支同样送入该渲染（`frontend.html:1493`、`entry.html:1583`）
+
+攻击链成立：被网页内容/用户消息诱导的 AI 输出（或命令输出）含 `<img src=x onerror=...>` 即在前端执行脚本，可窃取会话、代发指令。修复：marked 输出统一经 DOMPurify（或本地化 marked + 禁用原始 HTML），`addSystemMessage` 改 textContent/转义。
+
+### 13.2 新发现——中危（5 项）
+
+| # | 问题 | 位置 | 说明 |
+|---|---|---|---|
+| J3 | FTS 外部内容表删除顺序错误，索引条目永久残留（**PoC 实证**） | `db.py:144-148`、`:277-281` | `delete_memory` 先 `DELETE FROM memories` 再删 `memories_fts`——外部内容表（content=memories）删除需从内容表回读旧值才能摘除索引项，内容行先删导致摘除无效。PoC（SQLite 3.46）：现序删除后 MATCH 仍命中已删 rowid；反序则干净。后果：索引随删除次数膨胀。搜索经 inner JOIN（`db.py:188`）不返回脏结果，故影响限于膨胀/卫生。修复：调换两条 DELETE 顺序 |
+| J4 | model_config 连通性验证异常回显响应体，Bearer 令牌可进终端 | `model_config.py:197-198` | `test_profile` 直接 `str(e)` 回显；429/5xx 的 `TransientLLMError` 消息含 `response.text[:200]`，网关/WAF 错误页可能回显 Authorization 头（`llm_client.py:29-31` 注释自认）；`_sanitize_log_msg` 只护 logger 路径不护异常文本。修复：异常消息复用脱敏函数 |
+| J5 | 配置文件非原子写 + 损坏静默回退默认 → 整文件洗掉链 | `common/config.py:300-301`、`prompt_manager.py:175/198/221` | `open('w')+json.dump` 直写，崩溃留半截 JSON；`_load_config` 解析失败静默改用全默认（`config.py:184-186`），此时任一 save 用"默认+本次改动"整体覆盖——proxy/api/context 等所有手工配置丢失。Q8 原子写只覆盖了 conversation_history。修复：tmp+os.replace 推广至 config/prompt 写路径，损坏时备份并拒绝覆盖 |
+| J6 | PromptManager/ConfigManager 单例初始化竞态 → 系统提示词翻倍 | `prompt_manager.py:62-64`、`common/config.py:22-29` | `__new__` 有锁但 `__init__` 的 `if not self._prompts: self._load_prompts()` 无锁，`_prompts` 为类属性——多线程首例并发双重加载，整份系统提示词翻倍（token 浪费 + 行为异常）；ConfigManager 单例完全无锁同型。修复：初始化纳入同一把锁 |
+| J7 | broadcast 串行 await + send_message 吞异常 → 僵死客户端可卡死全局广播 | `aibox.py:2274-2281`、`:2269-2272` | `send_message` 吞掉全部异常，broadcast 的 except→unregister 为死代码（发送失败永不回收）；`ping_interval=None`（`:3000`，有意禁用）下半开 TCP 无法探测，backpressure 下 `websocket.send` 无超时可无限期阻塞，卡住广播与调度器循环。修复：每发送 `asyncio.wait_for` 超时，超时即 unregister |
+
+### 13.3 新发现——低危与信息级
+
+| # | 级别 | 问题 | 位置 |
+|---|---|---|---|
+| J8 | 低 | model_config 交互输入 `float()`/`int()` 在容错逻辑之前执行，非数字输入 traceback 退出 | `model_config.py:330-331` |
+| J9 | 低 | MemoDatabase 初始化不设 WAL（依赖与 MemoryDatabase 的创建顺序）；`busy_timeout=10000` 仅 `mark_as_triggered` 一条路径，add/complete/delete 仍默认 5s | `db.py:303-343, :542` |
+| J10 | 低 | memo 批量删除未实现：schema 声明 `memo_ids`，实现只处理 `memo_id`，批量请求静默忽略 | `db_tools.py:375-379, :753-762` |
+| J11 | 低 | `/new` 取消-重置竞态：cancel 后仅轮询 2s `is_busy()`，新回合与 reset 无序抢 `_msg_lock`（RLock 无公平性），消息可能"消失" | `aibox.py:2466-2484` |
+| J12 | 低 | skills 注入面：nmapskills.py 的 `-n` 参数直入 python-nmap（内部拼 shell）；screenshot.py 的 `--filename/--output-dir` 拼进 PowerShell 脚本串（仅 Windows 分支）；ssh-exec/sftp-transfer `AutoAddPolicy` + 密码经命令行参数（ps 可见） | `skills/` |
+| J13 | 低 | CDN 脚本（marked/hljs/socket.io）无 SRI integrity 属性 | 三个前端页 |
+| J14 | 信息 | voice_client：接收循环异常后成僵尸连接（无重连）、录音 tmp 文件（`delete=False`）异常路径滞留 /tmp、`add_chunk` 先置 active 致聊天前缀永不打印（死代码） | `voice_client.py:183, 440-484, 268-273` |
+| J15 | 信息 | aibox.py：`full_response_queue` 收集后从未消费（`:289-296`）；未知 task action 无 else 静默吞掉；批量/任务级广播门控不一致（禁用广播后任务级仍发）；流式热路径每 chunk 两条 INFO 日志；once 模式 `except KeyboardInterrupt` 死代码（SIGINT handler 已替换） | `aibox.py` 多处 |
+| J16 | 信息 | executors `timeout<=0` 完全禁用超时，registry 兜底超时只放弃等待不 kill → 孤儿进程；skill_manager 同名技能（foo 与 foo.md）键互覆盖、`--help` 输出无长度上限 | `executors.py:147`、`registry.py:124`、`skill_manager.py:134, :50-53` |
+
+### 13.4 Batch E~I 修复回归检查（21 项全部在位）
+
+N7 FTS 引号翻倍、L1 LIMIT 参数化、N10 BEGIN IMMEDIATE、N8 流式预算、M1 heredoc 定界符、read_file sed 强转、web scheme 白名单、_save_config 透传、compressor 除零、InstallSkill shlex.quote、ask_user required、Q5 异常按到期（引出 J1）、Q8 对话原子写、Q7b realpath、N9 万字符上限、get_recent_memories limit 上限、memo 物理删除、PromptManager.reload 原子替换、limit=0 语义、日志打码包含匹配、F5/F6/F9——均在位无回归。唯一"单例加锁"项部分在位（PromptManager `__new__` 有锁、`__init__` 无锁，见 J6）。
+
+### 13.5 实证记录
+
+```
+[PASS] J3-a 现序删除（先 memories 后 fts）：MATCH 仍命中已删 rowid → 索引残留确认
+[PASS] J3-b 反序删除（先 fts 后 memories）：MATCH 干净 → 修复方向确认
+（J1 链路各环节经代码级核验：入库零校验 ×3 路径 + 下游无防护解析 ×4 点位）
+```
+
+### 13.6 修复建议（按优先级）
+
+1. **K1（高，J1）**：任务字段入口校验（`add_memo` strptime 预检 + `repeat_interval` int 化，WS add/CLI/memo 工具三入口统一经 db 层拒绝非法值）+ 调度器预检与 `db.py:767` try/except 兜底 + `register` 移入 try/finally
+2. **K2（高，J2）**：三个前端页接入 DOMPurify（本地化部署避免新增 CDN 依赖，顺带解 J13）；entry1 `addSystemMessage` 改转义/textContent
+3. **K3（中，J3/J5/J6）**：FTS 删除换序（两行改动）；config/prompt 写路径推广 `_atomic_write_json` + 损坏备份拒绝覆盖；PromptManager/ConfigManager 初始化纳入锁
+4. **K4（中，J4/J7）**：test_profile 异常消息脱敏；broadcast 每发送 wait_for 超时回收
+5. **K5（低，择机）**：J8~J12、J14~J16 随批处理；skills 注入面（J12）建议文档化"技能为可信代码"边界并对 nmap/screenshot 参数加 shlex.quote
+
+### 13.7 测试基线（Linux）
+
+全量 **455 passed** = 424 + 子代理 max_turns 回归 14（本轮审计前落地的钳制修复）+ 期间环境修复。零回归；2 个预存 Windows 向失败同前。
+
+---
+
+## 十四、Batch K 波次 1 修复落地（2026-08-19，快赢批）
+
+按 §13.6 波次 1 实施四项快赢修复（J3/J4/J6/J8）。
+
+### 14.1 修复清单
+
+| # | 修复内容 | 文件/位置 |
+|---|---|---|
+| J3 | FTS 外部内容表删除换序：先删 `memories_fts` 再删 `memories`（索引摘除需从内容表回读旧值，原顺序致索引条目永久残留）——单条与批量删除两处 | `subsystems/db.py:140-153, :277-289` |
+| J4 | 连通性验证异常消息脱敏：`test_profile` 回显前经 `_sanitize_log_msg` 抹掉 Bearer 令牌（网关/WAF 错误页回显 Authorization 头不再进终端） | `model_config.py:197-200` |
+| J6 | 单例初始化竞态：PromptManager `__init__` 的检查+加载收进 `_instance_lock`（此前 `__new__` 锁只防双实例，并发首例 `__init__` 双重加载致系统提示词整份翻倍）；ConfigManager 补 `_instance_lock`，`__new__`/`__init__` 均加锁 | `subsystems/prompt_manager.py:62-68`、`common/config.py:22-37` |
+| J8 | 交互输入容错：温度/超时原始字符串直传 `add_profile`（此前交互层抢先 `float()`/`int()`，非数字输入 traceback 退出，内部容错为死代码） | `model_config.py:328-336` |
+
+### 14.2 新增测试（`tests/test_k_fixes.py` 10 例，全部通过）
+
+J3 ×3（单条/批量删除无 FTS 残留 + 删后搜索不命中）、J4 ×2（令牌脱敏 + 普通错误不误伤）、J6 ×2（PromptManager/ConfigManager 8 线程 barrier 并发首例：单实例且仅加载一次）、J8 ×3（非法温度/超时友好报错 + 数字字符串接受并钳制）。
+
+### 14.3 测试基线（Linux）
+
+全量 **465 passed** = 455 + Batch K 波次 1 新增 10。零回归；2 个预存 Windows 向失败同前。
+
+### 14.4 波次 2 落地（2026-08-19，K1 任务系统投毒）
+
+按 §13.6 建议 ①②③ 实施，另顺带修复一个审计未覆盖的存量 bug。
+
+| # | 修复内容 | 文件/位置 |
+|---|---|---|
+| ① 入库校验 | `add_memo` 开头校验并抛 ValueError：`reminder_time`/`repeat_end_time` strptime 预检、`repeat_interval` 强转 int（数字字符串接受）、`repeat_type` 白名单、custom 必须 interval>0——CLI/WS/memo 工具三入口（`add_user_task` 为薄包装）一处覆盖 | `subsystems/db.py:349-380` |
+| ① WS 提示 | `handle_task_message` 的 add 分支捕获 ValueError → 发送"任务添加失败: …"友好错误（此前落入顶层笼统"处理失败"） | `aibox.py:2392-2406` |
+| ② 调度器预检 | `aibox.py:186` strptime 包 try/except：格式异常按到期执行（Q5 语义，走 mark_as_triggered 完成/续算），不再抛 ValueError 致任务永不触发、每秒重试热循环 | `aibox.py:184-199` |
+| ② 触发事务防御 | `_should_end_repeat`/`_calculate_next_reminder` 的 `repeat_end_time` strptime 解析失败视为无结束时间；`custom` 分支 `repeat_interval` int() 失败按 0 处理（不再 TypeError 打崩 BEGIN IMMEDIATE 事务） | `subsystems/db.py:590-680` |
+| ② 展示路径防御 | 新增 `_is_overdue_time` 静态方法，`get_pending_tasks_for_user` 解析失败按到期展示——不再抛 ValueError 打崩新连接握手（aibox.py:2944 register 的崩溃源之一） | `subsystems/db.py:760-780` |
+| ③ register 移入 try | `handle_connection` 的 `register` 移入 try 块：握手期异常（展示路径崩溃等）不再绕过 finally，会话登记由 unregister（discard 幂等）正常回收 | `aibox.py:2941-2947` |
+| **附带修复** | `add_user_task` 签名缺失 `repeat_end_time` 参数：WS task add 传该字段必 TypeError（落入顶层"处理失败"，任务静默失败且用户困惑）——补参数转发 | `subsystems/db.py:738-760` |
+
+### 14.5 波次 2 新增测试（`tests/test_k_fixes.py` 追加 13 例，文件共 23 例全过）
+
+- add_memo 校验 ×7：畸形 reminder_time / repeat_end_time / repeat_type / repeat_interval / custom+0 拒绝且零行入库、数字字符串 "30" 强转接受、add_user_task 透传
+- 存量脏数据防御 ×4：mark_as_triggered 完成畸形一次性任务 / 处理文本 repeat_interval / 畸形 repeat_end_time 视为无结束、展示路径 is_overdue=True
+- WS + 调度器 ×2：畸形 repeat_end_time 友好错误不入库；调度器预检按到期执行并标记触发（stub execute_task_as_conversation）
+- Q5 旧用例适配：`test_malformed_time_task_returned_as_due` 改用 SQL 直插构造存量脏数据（add_memo 已拒绝畸形时间）
+
+### 14.6 测试基线（Linux）
+
+全量 **478 passed** = 465 + 波次 2 新增 13。零回归；2 个预存 Windows 向失败同前。
+
+### 14.7 波次 3 落地（2026-08-19，K2 前端 XSS + J13 SRI）
+
+| # | 修复内容 | 文件/位置 |
+|---|---|---|
+| J2 渲染净化 | 三页面新增 `renderMarkdown()` helper：`DOMPurify.sanitize(marked.parse(content))`；DOMPurify 缺失时退化为转义文本（只显示不执行，防 XSS 兜底）——替换全部 7 处 `marked.parse` 直渲（AI 流式输出/历史重渲染/任务流输出） | `frontend.html`、`entry.html`、`entry1.html` |
+| J2 系统消息 | `entry1.addSystemMessage` 由 innerHTML 模板拼接改为 DOM 构建 + textContent（command_result/error 等任意命令输出不再可注入 HTML） | `entry1.html:532-547` |
+| J2 任务分隔条 | 任务标题（服务端可控）改 createTextNode 插入 | `entry1.html:573-584` |
+| J13 SRI | 全部 CDN 脚本（marked 9.1.6 / hljs 11.8.0 / socket.io 4.5.0 / DOMPurify 3.2.4 新增）补 `integrity` + `crossorigin="anonymous"`，哈希由实际下载文件计算 | 三页面 `<head>` |
+
+**验证记录**：HTML 结构解析全部 OK；`marked.parse` 仅存于 helper 内部；残留 innerHTML 均为静态字面量（空壳 div/复制按钮）；SRI 哈希与实际 CDN 下载文件一致。**本机无浏览器/node 运行时，未做实机页面验证**——DOMPurify 行为为业界标准，建议部署后人工开一次页面确认渲染正常。
+
+### 14.8 波次 4 落地（2026-08-19，J5 原子写推广 + J7 broadcast 超时）
+
+| # | 修复内容 | 文件/位置 |
+|---|---|---|
+| J5 | 新增 `common/atomic.py`：`atomic_write_text`（mkstemp 随机名 + fsync + os.replace，失败清理临时文件）；config 的 `_save_config`/`_save_default_config`、prompt_manager 三处写路径（identity/soul/status）、conversation_history 的 `_atomic_write_json` 全部接入（顺带修复旧固定 .tmp 名多进程互踩） | `common/atomic.py`（新）、`common/config.py`、`subsystems/prompt_manager.py`、`subsystems/conversation_history.py` |
+| J5 | `_load_config` 损坏备份：JSON 解析失败先复制 `config.json.corrupt.<时间戳>` 再回退默认——杜绝"半截文件 → 静默默认 → 下次保存整体覆盖"链 | `common/config.py:190-200` |
+| J7 | `broadcast` 改每客户端并发发送 + `asyncio.wait_for` 超时（`broadcast_send_timeout`，默认 5s，测试可调），超时即 `unregister` 回收——此前 `send_message` 吞异常使 except→unregister 为死代码，半开 TCP（ping 禁用）卡死广播与调度器循环 | `aibox.py:2276-2302` |
+
+**测试**：`tests/test_k_fixes.py` 追加 5 例（原子写无残留 / 损坏备份 / prompt 原子写 / 僵死客户端超时回收 / 正常客户端不误伤），文件共 28 例全过。3 个既有保存失败用例（L2/test_model_config）改用 patch 原子写函数模拟磁盘失败（写路径不再经过 builtins.open）。
+
+全量 **483 passed** = 478 + 波次 4 新增 5。零回归；2 个预存 Windows 向失败同前。
+
+### 14.9 波次 5 落地（2026-08-19，K5 低危随批）
+
+| # | 修复内容 | 文件/位置 |
+|---|---|---|
+| J9 | MemoDatabase 新增 `_connect()` 统一连接工厂（busy_timeout=10000 覆盖全部写路径，仅剩 mark_as_triggered 一条路径的旧状消除）；`_init_database` 显式 `PRAGMA journal_mode=WAL`（不再依赖与 MemoryDatabase 的创建顺序） | `subsystems/db.py` |
+| J10 | memo 批量删除补实现：`_delete_memo` 支持 `memo_ids` 列表（schema 早已声明却从未实现，批量请求此前静默忽略），返回删除计数 | `tools/db_tools.py:747-770` |
+| J11 | `/new` 取消-重置竞态：排队 reset 前等待该连接 `is_processing` 清零（≤2s）——避免新回合在旧上下文执行后被 reset 抹掉（消息"消失"） | `aibox.py:2510-2518` |
+| J12 | skills 注入面：nmapskills 的 hosts 参数 `shlex.quote`（python-nmap 内部拼 shell）；screenshot.py PowerShell 分支路径单引号转义（`'` → `''`）；SKILLS_FORMAT.md 新增"安全边界"节（技能即可信代码：参数引号转义、凭据禁入命令行、AutoAddPolicy MITM 风险） | `skills/nmapskills.py`、`skills/screenshot.py`、`SKILLS_FORMAT.md` |
+| J14 | voice_client：`add_chunk` 死代码修复（前缀判断前移，此前"AI助手:"前缀永不打印）；录音临时文件任何异常路径清理（wave.open/whisper 失败、arecord 超时滞留含语音 wav）；接收循环异常退出标记断开（此前成僵尸连接） | `voice_client.py` |
+| J15 | `full_response_queue` 死代码移除（收集后从未消费）；未知 task action 明确报错（此前静默吞掉）；任务级广播门控对齐 `broadcast_enabled`（6 处）；流式热路径每 chunk INFO 日志降为 debug；once 模式死代码 `except KeyboardInterrupt` 移除（SIGINT 由自定义 handler 接管） | `aibox.py` 多处 |
+| J16 | `SkillManager.MAX_HELP_LENGTH=2000`（--help 输出进系统提示词，防撑爆上下文）；同名键冲突确定性解决（可执行优先，Markdown 跳过并告警，此前由 listdir 顺序决定）；executors `timeout<=0` 语义注释（有意禁用，registry 3600s 兜底仍在） | `subsystems/skill_manager.py`、`subsystems/executors.py` |
+
+**测试**：`tests/test_k_fixes.py` 追加 7 例（WAL/busy_timeout、批量删除 ×2、未知 action、同名键 ×1、--help 截断），文件共 35 例全过。
+
+全量 **490 passed** = 483 + 波次 5 新增 7。零回归；2 个预存 Windows 向失败同前。
+
+**第五轮审计（Batch K）至此全部落地**：J1~J16 高危/中危/低危全部修复（J14 的 voice_client 重连设计、J15 的 once 模式 SIGINT 二次 Ctrl+C 升级退出等未采纳项已在报告记录）。

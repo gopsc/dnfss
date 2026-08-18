@@ -107,7 +107,7 @@ aibox/
 │   ├── prompt_tools.py     # B 批：UpdateIdentity/UpdateSoul/SaveMemoryAndEndConversation
 │   ├── proxy_tools.py      # B 批：SetProxy/GetProxy
 │   └── misc_tools.py       # B 批：AskUserTool
-├── tests/             # 单元测试套件（441 项全过）
+├── tests/             # 单元测试套件（490 项全过）
 │   ├── conftest.py                    # sys.path 配置 + websockets 桩
 │   ├── test_basic_tools.py            # A 批工具 43 项
 │   ├── test_b_tools.py                # B 批工具 58 项
@@ -124,6 +124,8 @@ aibox/
 │   ├── test_g_fixes.py                # 第三轮审计 Batch G（20 项）
 │   ├── test_h_fixes.py                # 第四轮审计 Batch H（26 项）
 │   ├── test_i_fixes.py                # 遗留收尾 Batch I（16 项）
+│   ├── test_subagent_max_turns.py     # 子代理最大轮次行为回归（14 项）
+│   ├── test_k_fixes.py                # 第五轮审计 Batch K（35 项）
 │   └── test_model_config.py           # 模型接入点管理工具（17 项）
 ├── skills/            # 内置扩展技能（*.py 可执行脚本 / *.md Markdown 技能）
 │   ├── hello-world.py
@@ -159,7 +161,7 @@ common  ←  subsystems  ←  tools  ←  aibox.py
 ```bash
 # 从仓库根目录运行
 py -m pytest aibox/tests -q
-# 当前：264 项全过
+# 当前：490 项全过（Linux；test_execute_timeout / test_flat_api_still_reads_key_file 为 Windows 向用例，Linux 预存失败）
 ```
 
 运行期数据存放于 `~/.aibox/`：
