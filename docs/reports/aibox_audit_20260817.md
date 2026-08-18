@@ -398,3 +398,40 @@ L-9 实证过程说明：首版实现按"break 后 killpg"处理，但 shell 已
 ### 11.4 测试基线（Linux，`aibox/venv`）
 
 全量 **408 passed** = 原 382（Linux 环境）+ Batch H 新增 26。零回归；2 个预存环境性失败同前。PoC 回归脚本为 Windows 命令集，Linux 用等价命令实证（见 11.2）。
+
+---
+
+## 十二、Batch I 修复落地（2026-08-18，遗留项收尾）
+
+按 §11.3 遗留清单分 3 波实施：安全项 → 稳定性项 → 信息级顺手项。
+
+### 12.1 修复清单
+
+| # | 级别 | 修复内容 | 文件/位置 |
+|---|---|---|---|
+| N9 | 中 | prompt 写入内容长度上限（持久化注入面约束）：`PromptManager.MAX_CONTENT_LENGTH=10000`，update_identity/update_soul/update_status 超长拒绝（manager 兜底 + 工具友好提示）；save_memory_and_end_conversation 状态内容超长拒绝 | `prompt_manager.py`、`prompt_tools.py` |
+| Q7b | 低 | `load_conversation` realpath 前缀校验，`../` 越界/软链逃逸返回 None（当前无 LLM 调用面，防御性加固） | `conversation_history.py:348` |
+| F5 | 低 | 情绪子代理取消传播：`run_light_subagent` 新增 `cancel_event`，改走 stream_chat（可被 cancel 强关在途 HTTP）+ 观察者线程；父已取消早退；`ExpressEmotionTool` 构造注入父 `_cancel_event` | `aibox.py:513, 608-660, 1177` |
+| Q4 | 低 | `mark_as_triggered` BEGIN IMMEDIATE 前 `PRAGMA busy_timeout = 10000`——多进程同库（CLI+服务）写竞争等待锁释放而非 5s 后直接报 locked | `db.py:527` |
+| Q5 | 低 | 提醒时间格式异常任务不再静默丢弃：去掉 SQL 层 `reminder_time <= ?` 预过滤（字符串比较会静默排除格式异常行），时间过滤改由 Python 二次验证权威判断；格式异常按"到期"返回并告警 | `db.py:405-411, 442-444` |
+| Q8 | 低 | 对话文件原子写：`_atomic_write_json`（tmp + os.replace）覆盖历史索引/当前对话/归档三处写路径，崩溃不留半截 JSON | `conversation_history.py` |
+| F6 | 低 | WS 命令专用线程池：`WebSocketHandler._cmd_executor`（max_workers=2），`/new`、`/reload_prompts` 不再占用默认池（繁忙 AI 时多连接并发 /new 不再耗尽线程池）；服务退出时 shutdown | `aibox.py` |
+| F9 | 低 | --once 硬超时兜底：软超时 cancel 后若 AI 卡死在不可中断路径（HTTP 空窗、忽略信号的子进程），宽限一个超时周期后 `os._exit(4)` 强杀，保证硬性结束语义 | `aibox.py:3283-3299` |
+| — | 信息 | PromptManager 单例 `__new__` 加锁（并发首例化竞态防护） | `prompt_manager.py:49-53` |
+| — | 信息 | `get_pending_memos`/`get_immediate_memos` 的 `if limit:` → `if limit is not None`（limit=0 语义修正，None 才不加 LIMIT） | `db.py:420, 464` |
+
+### 12.2 维持原判（未改动）
+
+- **Q7a**（stream_chat 取消空窗）：POST 返回前 `_current_response` 未赋值，cancel 无法中断——受 timeout 有界；根治需线程化 POST + 轮询取消，复杂度高，维持记录
+- **M4（旧编号）**（shlex Windows 转义）：Linux 部署不受影响
+- **Q9（代理认证 curl 指引）**：修复会把密码嵌入命令串（进日志/会话史），反而引入新泄漏，维持现状
+- **F8**（WS 限速/空闲回收）：本地单用户产品设计项
+- compressor 裸 print（终端过程展示，保留）、`estimate_tokens` 英文双计（测试锚定既有算法，仅影响压缩阈值）
+
+### 12.3 新增测试（`tests/test_i_fixes.py` 16 例，全部通过）
+
+N9 ×5（manager 兜底/身份/灵魂/状态超长拒绝 + 正常写入）、Q7b ×2（越界拒绝 + 正常加载）、F5 ×3（父已取消早退/流式中断/注册注入链路）、Q5 ×2（格式异常按到期返回 + 正常过滤不回归）、Q8 ×1（无 .tmp 残留 + JSON 合法）、F6 ×1（专用线程池存在与释放）、limit=0 ×2。
+
+### 12.4 测试基线（Linux，`aibox/venv`）
+
+全量 **424 passed** = 原 408 + Batch I 新增 16。零回归；2 个预存环境性失败同前。
