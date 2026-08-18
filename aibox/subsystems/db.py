@@ -402,11 +402,14 @@ class MemoDatabase:
             # 如果传入了 before_time，使用它，否则使用当前时间
             compare_time = before_time if before_time else now
 
+            # I 批（审计 2026-08-18）：去掉 SQL 层 reminder_time <= ? 预过滤——
+            # 字符串比较会把格式异常的时间（如 "不是时间"）静默排除在 SQL 层，
+            # Python 二次验证永远看不到它们（Q5：格式异常任务按到期返回）。
+            # 时间过滤改由下方 Python 解析做权威判断（本地小库全扫描可忽略）。
             query = '''
                 SELECT * FROM memos
                 WHERE is_completed = 0
                 AND reminder_time IS NOT NULL
-                AND reminder_time <= ?  -- 严格小于等于比较时间
                 AND (repeat_end_time IS NULL OR repeat_end_time >= ?)
             '''
 
@@ -415,11 +418,13 @@ class MemoDatabase:
 
             query += ' ORDER BY reminder_time ASC, priority DESC'
 
-            params = [compare_time, compare_time]
+            params = [compare_time]
 
-            if limit:
+            # I 批：limit=0 语义修正——此前 `if limit:` 使 0 等同"不限"，
+            # 与 None=不限的惯例冲突；改为 None 才不加 LIMIT
+            if limit is not None:
                 query += ' LIMIT ?'
-                params.append(int(limit))
+                params.append(max(0, int(limit)))
 
             cursor.execute(query, params)
 
@@ -440,7 +445,11 @@ class MemoDatabase:
                             # 调试日志
                             self.logger.debug(f"过滤掉未到期任务 #{memo['id']}: {memo['reminder_time']} > {compare_time}")
                     except (ValueError, TypeError) as e:
-                        self.logger.warning(f"解析任务 #{memo['id']} 的提醒时间失败: {e}")
+                        # I 批（审计 2026-08-18）：格式异常此前被静默丢弃——
+                        # 任务永不执行且用户无感知。改为按"到期"返回并告警，
+                        # 至少保证任务被处理而非永久丢失
+                        self.logger.warning(f"解析任务 #{memo['id']} 的提醒时间失败，按到期处理: {e}")
+                        results.append(memo)
                 else:
                     # 没有提醒时间的任务不应该在待执行列表中
                     self.logger.warning(f"任务 #{memo['id']} 没有提醒时间，但被返回为待执行")
@@ -461,9 +470,11 @@ class MemoDatabase:
             '''
 
             params = []
-            if limit:
+            # I 批：limit=0 语义修正——此前 `if limit:` 使 0 等同"不限"，
+            # 与 None=不限的惯例冲突；改为 None 才不加 LIMIT
+            if limit is not None:
                 query += ' LIMIT ?'
-                params.append(int(limit))
+                params.append(max(0, int(limit)))
 
             cursor.execute(query, params)
 
@@ -525,6 +536,10 @@ class MemoDatabase:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
+            # I 批（审计 2026-08-18）：多进程同库（CLI --memo-add + 服务调度）
+            # 写竞争时默认 5s 后直接报 database is locked——busy_timeout 让
+            # SQLite 等待锁释放（最长 10s）而不是立即失败
+            cursor.execute("PRAGMA busy_timeout = 10000")
             cursor.execute("BEGIN IMMEDIATE")
             try:
                 cursor.execute('SELECT * FROM memos WHERE id = ?', (memo_id,))

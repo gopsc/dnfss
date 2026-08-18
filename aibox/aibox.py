@@ -26,6 +26,7 @@ import locale
 import asyncio
 import websockets
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any, Tuple, Callable, Union, Set
 import argparse
@@ -511,6 +512,12 @@ class TaskScheduler:
 
 
 class ExpressEmotionTool(Tool):
+    def __init__(self, logger=None, cancel_event: threading.Event = None):
+        super().__init__(logger)
+        # I 批（审计 2026-08-18）：父代理取消事件注入——情绪子代理此前
+        # 用独立 client 且不可中断，父级 cancel 后仍阻塞至请求自然结束
+        self.cancel_event = cancel_event
+
     def get_name(self) -> str:
         return "express_emotion"
 
@@ -594,7 +601,8 @@ class ExpressEmotionTool(Tool):
             task = "\n".join(task_lines)
 
             # 情绪子代理：独立上下文/人格，生成情绪化回应
-            return run_light_subagent(role, task, self.config, logger=self.logger, max_tokens=2048)
+            return run_light_subagent(role, task, self.config, logger=self.logger,
+                                      max_tokens=2048, cancel_event=self.cancel_event)
         except Exception as e:
             self.logger.error(f"情绪子代理执行异常: {e}")
             return f"❌ 情绪子代理执行失败: {str(e)}"
@@ -606,12 +614,20 @@ class ExpressEmotionTool(Tool):
 
 
 def run_light_subagent(role, task, config, logger=None, model=None,
-                       temperature=None, max_tokens=2048) -> str:
+                       temperature=None, max_tokens=2048,
+                       cancel_event: threading.Event = None) -> str:
     """轻量子代理执行：独立上下文/角色，无工具，一次 LLM 补全返回结果。
 
     供 express_emotion 情绪子代理使用。
     返回子代理生成的完整文本；失败时返回带 ❌ 的错误信息。
+
+    cancel_event（I 批，审计 2026-08-18）：父代理取消事件。此前本函数用
+    非流式 chat_completion，父级 cancel 只能等请求自然结束（最长 timeout，
+    期间持锁阻塞）；改走 stream_chat 后由观察者线程转发 sub_client.cancel()
+    强关在途 HTTP 流，用户中断可即时终止。
     """
+    if cancel_event is not None and cancel_event.is_set():
+        return "❌ 子代理已因父级取消而终止"
     try:
         # 幂等校验：限制 max_tokens 范围，防止意外超限大量消耗
         max_tokens = max(1, min(int(max_tokens or 2048), constants.DEFAULT_MAX_TOKENS))
@@ -627,8 +643,33 @@ def run_light_subagent(role, task, config, logger=None, model=None,
         ]
         if logger is not None:
             logger.info(f"子代理执行: model={model or sub_client.model}, role={str(role)[:40]}...")
-        result = sub_client.chat_completion(messages, temperature=temp, max_tokens=max_tokens)
-        if result is None or not str(result).strip():
+
+        _watch_done = threading.Event()
+        if cancel_event is not None:
+            def _watch_parent_cancel():
+                while not _watch_done.wait(timeout=0.2):
+                    if cancel_event.is_set():
+                        try:
+                            sub_client.cancel()
+                        except Exception:
+                            pass
+                        return
+
+            threading.Thread(target=_watch_parent_cancel, daemon=True,
+                             name="light-subagent-cancel-watch").start()
+
+        # I 批：改走流式（可被 cancel 强关在途 HTTP），拼接 content 事件
+        parts = []
+        try:
+            for event in sub_client.stream_chat(messages, temperature=temp,
+                                                max_tokens=max_tokens):
+                if event.get("type") == "content":
+                    parts.append(event.get("text") or "")
+        finally:
+            _watch_done.set()
+
+        result = "".join(parts)
+        if not str(result).strip():
             return "❌ 子代理执行失败：未获得有效响应"
         return str(result).strip()
     except Exception as e:
@@ -1161,8 +1202,9 @@ class DeepSeekChat:
             builtin_tools.append(SaveMemoryAndEndConversationTool(exit_callback, self.memory_db, self.prompt_manager, self.logger))
 
         # 添加询问用户的工具
+        # I 批：ExpressEmotionTool 注入父取消事件（情绪子代理可被中断）
         builtin_tools.append(AskUserTool(self.logger))
-        builtin_tools.append(ExpressEmotionTool(self.logger))
+        builtin_tools.append(ExpressEmotionTool(self.logger, cancel_event=self._cancel_event))
         
         # 添加技能热重载工具 & 技能安装指引工具 & 创建技能工具
         builtin_tools.append(ReloadSkillsTool(self.tool_registry, self.logger))
@@ -2052,6 +2094,17 @@ class WebSocketHandler:
         self.client_sessions = {}
         self._processing_tasks = {}  # websocket -> {asyncio.Task}（N14：集合登记，支持并发多任务）
         self._shared_skill_manager = None  # 共享技能管理器（懒加载，供所有连接复用）
+        # I 批（审计 2026-08-18）：/new、/reload_prompts 等命令专用线程池——
+        # 此前 run_in_executor(None) 与 AI think 共用默认池，繁忙时 reset 任务
+        # 排队等锁，多连接并发 /new 可耗尽默认池（阻塞新消息处理）
+        self._cmd_executor = ThreadPoolExecutor(max_workers=2,
+                                                thread_name_prefix="ws-cmd")
+
+    def shutdown(self):
+        """I 批：释放命令专用线程池（服务退出时调用）"""
+        if self._cmd_executor is not None:
+            self._cmd_executor.shutdown(wait=False)
+            self._cmd_executor = None
     
     def _get_shared_skill_manager(self):
         """获取共享技能管理器（懒加载一次，供所有连接实例复用，避免重复扫描技能）"""
@@ -2425,7 +2478,7 @@ class WebSocketHandler:
                     # 重新初始化提示词管理器（确保最新）
                     self.ai_manager.prompt_manager.reload()
 
-                await loop.run_in_executor(None, _do_reset)
+                await loop.run_in_executor(self._cmd_executor, _do_reset)
                 # 重置该连接对话进行中标记
                 if session:
                     session["dialogue_in_progress"] = False
@@ -2533,7 +2586,7 @@ class WebSocketHandler:
                     return ai.reload_prompts()
                 return self.ai_manager.prompt_manager.reload()
 
-            new_count = await loop.run_in_executor(None, _do_reload_prompts)
+            new_count = await loop.run_in_executor(self._cmd_executor, _do_reload_prompts)
             await self.send_message(websocket, {
                 "type": "command_result",
                 "content": i18n.get('prompts_reloaded', new_count)
@@ -2957,6 +3010,8 @@ class EnhancedAIManager:
         finally:
             if self.scheduler:
                 self.scheduler.stop()
+            # I 批：释放命令专用线程池
+            self.ws_handler.shutdown()
     
     def run(self):
         """运行WebSocket服务器"""
@@ -3229,6 +3284,19 @@ def handle_once_mode(manager, args) -> bool:
     def _on_timeout():
         state["timed_out"] = True
         manager.cancel()
+        # I 批（F9，审计 2026-08-18）：软超时兜底——cancel 后若 AI 卡死在
+        # 不可中断路径（HTTP 请求空窗、忽略信号的子进程），think 可能永不
+        # 返回、进程挂起（退出码 4 永远到不了）。宽限一个超时周期后强杀进程，
+        # 保证 --once 有硬性结束语义
+        def _hard_exit():
+            print(f"\n⏰ 一次性对话强制超时（{args.once_timeout * 2} 秒），已终止",
+                  file=sys.stderr)
+            sys.stderr.flush()
+            os._exit(4)
+
+        hard_timer = threading.Timer(max(1, args.once_timeout), _hard_exit)
+        hard_timer.daemon = True
+        hard_timer.start()
     timer = threading.Timer(max(1, args.once_timeout), _on_timeout)
     timer.daemon = True
     timer.start()

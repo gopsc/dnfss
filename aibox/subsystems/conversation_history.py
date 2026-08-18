@@ -15,6 +15,7 @@ subsystems.conversation_history - 对话历史管理器
 """
 
 import json
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -68,10 +69,19 @@ class ConversationHistory:
                 return {"conversations": [], "last_id": 0}
         return {"conversations": [], "last_id": 0}
 
+    @staticmethod
+    def _atomic_write_json(path: Path, data) -> None:
+        """原子写 JSON（I 批，审计 2026-08-18）：先写同目录临时文件再
+        os.replace——此前 'w' 直写，进程中断/崩溃留半截 JSON（current 损坏
+        后仅静默置 None，历史内容丢失）"""
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+
     def _save_history_index(self):
         """保存历史索引"""
-        with open(self.history_file, 'w', encoding='utf-8') as f:
-            json.dump(self.history_index, f, ensure_ascii=False, indent=2)
+        self._atomic_write_json(self.history_file, self.history_index)
 
     def _load_current_conversation(self):
         """加载当前的对话（如果有）"""
@@ -86,8 +96,7 @@ class ConversationHistory:
     def save_current_conversation(self):
         """保存当前对话"""
         if self.current_conversation:
-            with open(self.current_file, 'w', encoding='utf-8') as f:
-                json.dump(self.current_conversation, f, ensure_ascii=False, indent=2)
+            self._atomic_write_json(self.current_file, self.current_conversation)
 
     def start_new_conversation(self, topic: str = None) -> Dict:
         """开始新对话"""
@@ -145,8 +154,7 @@ class ConversationHistory:
             counter += 1
         archive_path = self.archive_dir / archive_filename
 
-        with open(archive_path, 'w', encoding='utf-8') as f:
-            json.dump(self.current_conversation, f, ensure_ascii=False, indent=2)
+        self._atomic_write_json(archive_path, self.current_conversation)
 
         self.history_index["conversations"].append({
             "id": self.current_conversation["id"],
@@ -350,7 +358,13 @@ class ConversationHistory:
         if file_name == constants.CURRENT_CONVERSATION_FILE and self.current_conversation:
             return self.current_conversation
 
-        file_path = self.archive_dir / file_name
+        # I 批（审计 2026-08-18）：file_name 目前无 LLM 可控调用面，但一旦
+        # 接入即成为任意 .json 读取通道——realpath 解析软链后再做目录前缀校验
+        archive_root = os.path.normcase(os.path.realpath(str(self.archive_dir)))
+        target = os.path.normcase(os.path.realpath(str(self.archive_dir / file_name)))
+        if not target.startswith(archive_root + os.sep):
+            return None
+        file_path = Path(target)
         if file_path.exists():
             with open(file_path, 'r', encoding='utf-8') as f:
                 return json.load(f)

@@ -56,6 +56,11 @@ class UpdateIdentityTool(Tool):
         if not content:
             return "❌ 需要提供身份信息内容"
 
+        # N9：持久化注入面约束——内容超限拒绝写入（管理端另有兜底）
+        if len(content) > PromptManager.MAX_CONTENT_LENGTH:
+            return (f"❌ 内容过长（{len(content)} > {PromptManager.MAX_CONTENT_LENGTH} 字符），"
+                    f"身份文件作为系统提示词加载，请精简后重试")
+
         if not confirm:
             return "❌ 身份更新已取消，如需更新请设置 confirm=true"
 
@@ -118,6 +123,11 @@ class UpdateSoulTool(Tool):
     def execute(self, content: str = None, confirm: bool = True, **kwargs) -> str:
         if not content:
             return "❌ 需要提供智能体自我认识定义内容"
+
+        # N9：持久化注入面约束——内容超限拒绝写入（管理端另有兜底）
+        if len(content) > PromptManager.MAX_CONTENT_LENGTH:
+            return (f"❌ 内容过长（{len(content)} > {PromptManager.MAX_CONTENT_LENGTH} 字符），"
+                    f"灵魂文件作为系统提示词加载，请精简后重试")
 
         if not confirm:
             return "❌ 自我认识更新已取消，如需更新请设置 confirm=true"
@@ -222,6 +232,11 @@ class SaveMemoryAndEndConversationTool(Tool):
         if next_goals:
             status_content += f"【下一步计划】\n{next_goals}\n\n"
         status_content += f"【对话总结】\n{summary}"
+
+        # N9：状态文件作为系统提示词加载，超长拒绝写入（约束注入规模）
+        if len(status_content) > PromptManager.MAX_CONTENT_LENGTH:
+            return (f"❌ 状态内容过长（{len(status_content)} > "
+                    f"{PromptManager.MAX_CONTENT_LENGTH} 字符），请精简 current_status/summary 后重试")
 
         # 更新状态文件
         status_updated = self.prompt_manager.update_status(status_content)

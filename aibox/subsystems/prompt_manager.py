@@ -18,6 +18,7 @@ subsystems.prompt_manager - 提示词管理器
 import os
 import re
 import shutil
+import threading
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -35,6 +36,7 @@ class PromptManager:
     """
 
     _instance = None
+    _instance_lock = threading.Lock()  # I 批：并发首例化竞态防护
     _prompts = []
     _prompts_dir = None
 
@@ -43,12 +45,18 @@ class PromptManager:
     STATUS_FILE = "100_STATUS.md"
     SOUL_FILE = "99_SOUL.md"  # 智能体灵魂文件 - 所有角色定位内容
 
+    # N9（审计 2026-08-18）：Agent 可控内容直写 00/99/100 文件并作为后续
+    # 会话系统提示词加载（持久化注入面）。内容长度上限约束注入规模，
+    # 超长内容拒绝写入（工具层有更友好的提示）。
+    MAX_CONTENT_LENGTH = 10000
+
     # 基础技能文件名模式：N_xxx.md（N 为数字，如 1_memory_search.md、10_task_handling.md）
     _SKILL_FILE_RE = re.compile(r'^(\d+)_')
 
     def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
+        with cls._instance_lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self):
@@ -151,6 +159,9 @@ class PromptManager:
 
     def update_identity(self, content: str) -> bool:
         """更新用户身份信息"""
+        if len(content or "") > self.MAX_CONTENT_LENGTH:
+            print(f"⚠️ 身份内容超长（{len(content)} > {self.MAX_CONTENT_LENGTH} 字符），拒绝写入")
+            return False
         identity_path = os.path.join(self._prompts_dir, self.IDENTITY_FILE)
         try:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -171,6 +182,9 @@ class PromptManager:
 
     def update_status(self, content: str) -> bool:
         """更新智能体状态"""
+        if len(content or "") > self.MAX_CONTENT_LENGTH:
+            print(f"⚠️ 状态内容超长（{len(content)} > {self.MAX_CONTENT_LENGTH} 字符），拒绝写入")
+            return False
         status_path = os.path.join(self._prompts_dir, self.STATUS_FILE)
         try:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -191,6 +205,9 @@ class PromptManager:
 
     def update_soul(self, content: str) -> bool:
         """更新智能体灵魂定义 - 所有角色定位内容"""
+        if len(content or "") > self.MAX_CONTENT_LENGTH:
+            print(f"⚠️ 灵魂内容超长（{len(content)} > {self.MAX_CONTENT_LENGTH} 字符），拒绝写入")
+            return False
         soul_path = os.path.join(self._prompts_dir, self.SOUL_FILE)
         try:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
