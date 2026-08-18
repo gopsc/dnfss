@@ -25,6 +25,7 @@ from typing import Dict, List, Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from common import ConfigManager  # noqa: E402
+from llm_client import _sanitize_log_msg  # noqa: E402
 
 PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -195,7 +196,9 @@ def test_profile(config: ConfigManager, name: str, logger=None) -> str:
             return f"❌ 档案 '{name}' 验证失败：端点返回空响应（多为 4xx 认证/参数错误）"
         return f"✅ 档案 '{name}' 连通正常：{str(result).strip()[:60]}"
     except Exception as e:
-        return f"❌ 档案 '{name}' 验证失败：{str(e)}"
+        # J4（审计 2026-08-19）：异常消息可能含 response.text 片段，网关/WAF
+        # 错误页会回显 Authorization 头——脱敏 Bearer 令牌后再回显终端
+        return f"❌ 档案 '{name}' 验证失败：{_sanitize_log_msg(str(e))}"
 
 
 # ==================== 交互式菜单 ====================
@@ -325,10 +328,12 @@ def _add_flow(config: ConfigManager):
         print("已取消")
         return
 
+    # J8（审计 2026-08-19）：原始字符串直传——此前交互层先 float()/int()，
+    # 非数字输入直接 traceback 退出，add_profile 内部的容错成为死代码
     msgs = add_profile(config, name, api_url, model,
                        api_key_env=api_key_env, display_name=display_name,
-                       temperature=float(temperature_raw) if temperature_raw else None,
-                       timeout=int(timeout_raw) if timeout_raw else None,
+                       temperature=temperature_raw or None,
+                       timeout=timeout_raw or None,
                        reasoning_enabled=reasoning, fallback=fallback,
                        set_default=set_default)
     for m in msgs:

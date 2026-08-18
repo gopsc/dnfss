@@ -41,6 +41,10 @@ def take_screenshot_windows(output_path, delay=0):
     if delay > 0:
         time.sleep(delay)
     
+    # J12（审计 2026-08-19）：output_path 经 PowerShell 单引号转义——
+    # 路径中的单引号翻倍（PS 字符串转义），AI/用户可控文件名无法闭合
+    # 字符串注入脚本（此前 `${output_path}` 直拼，`");calc;#` 即注入）
+    ps_path = str(output_path).replace("'", "''")
     try:
         ps_script = f'''
 Add-Type -AssemblyName System.Windows.Forms
@@ -53,11 +57,11 @@ $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
 $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
 $graphics.CopyFromScreen($bounds.X, $bounds.Y, 0, 0, $bounds.Size)
 
-$bitmap.Save("{output_path}", [System.Drawing.Imaging.ImageFormat]::Png)
+$bitmap.Save('{ps_path}', [System.Drawing.Imaging.ImageFormat]::Png)
 $graphics.Dispose()
 $bitmap.Dispose()
 
-Write-Output "截图已保存: {output_path}"
+Write-Output "截图已保存: {ps_path}"
 '''
         
         result = subprocess.run(

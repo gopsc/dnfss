@@ -231,14 +231,19 @@ class TestL2ProxySaveFailure:
         from common import ConfigManager
         cm = ConfigManager()
         cm._config_path = str(tmp_path / "config.json")
-        with mock.patch("builtins.open", side_effect=PermissionError("disk ro")):
+        # J5（审计 2026-08-19）：写路径改为原子写（mkstemp+os.replace），
+        # 磁盘失败改由 patch 原子写函数模拟（builtins.open 已不在路径上）
+        with mock.patch("common.config.atomic_write_text",
+                        side_effect=PermissionError("disk ro")):
             ok = cm.set_proxy("127.0.0.1", 1080, save=True)
         assert ok is False
 
     def test_proxy_tool_reports_save_failure(self, tmp_path):
         from tools import SetProxyTool
         tool = SetProxyTool(None)
-        with mock.patch("builtins.open", side_effect=PermissionError("disk ro")):
+        # J5：磁盘失败经原子写函数模拟
+        with mock.patch("common.config.atomic_write_text",
+                        side_effect=PermissionError("disk ro")):
             r = tool.execute(host="127.0.0.1", port=1080, save=True,
                              skip_check=True, enabled=True)
         assert "保存失败" in r

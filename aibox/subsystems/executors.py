@@ -144,6 +144,8 @@ class SubprocessCommandExecutor(CommandExecutor):
         shell_dead_since = None  # shell 进程已死但 reader 未收到 EOF 的起始时刻
         while True:
             # 检查超时（readline 阻塞不再影响本判断）
+            # J16（审计 2026-08-19）：timeout<=0 语义为"不设超时"（有意为之，
+            # 调用方显式传 0 禁用）；registry 层 3600s 流式兜底仍生效
             if timeout > 0 and time.time() - start_time > timeout:
                 self._terminate_tree(process)
                 timeout_occurred = True

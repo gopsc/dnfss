@@ -174,7 +174,17 @@ class TestF5LightSubagentCancel:
 class TestQ5MalformedReminderTime:
     def test_malformed_time_task_returned_as_due(self, tmp_path):
         db = MemoDatabase(db_path=str(tmp_path / "m.db"))
-        mid = db.add_memo(title="格式异常", content="c", reminder_time="不是时间")
+        # J1（审计 2026-08-19）：add_memo 已拒绝畸形时间（入库校验），
+        # 模拟校验落地前的存量脏数据需绕过 add_memo 直接 SQL 插入
+        import sqlite3
+        with sqlite3.connect(str(tmp_path / "m.db")) as conn:
+            cur = conn.cursor()
+            cur.execute('''INSERT INTO memos
+                (title, content, created_at, reminder_time, is_completed, source,
+                 repeat_type, repeat_interval, repeat_interval_unit, is_immediate)
+                VALUES (?, ?, ?, ?, 0, 'test', 'none', 0, 'days', 0)''',
+                ("格式异常", "c", "2026-08-18 00:00:00", "不是时间"))
+            mid = cur.lastrowid
         pending = db.get_pending_memos(before_time="2026-08-18 00:00:00")
         assert any(m["id"] == mid for m in pending)
 

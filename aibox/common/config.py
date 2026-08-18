@@ -9,8 +9,12 @@ common.config - aibox 配置管理器
 import os
 import json
 import copy
+import shutil
+import threading
+from datetime import datetime
 from typing import Dict, Optional
 
+from .atomic import atomic_write_text
 from .i18n import i18n
 class ConfigManager:
     """配置管理器 - 单例模式，负责加载和保存配置"""
@@ -18,15 +22,20 @@ class ConfigManager:
     _instance = None
     _config = None
     _config_path = None
+    _instance_lock = threading.Lock()
     
     def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
+        # J6（审计 2026-08-19）：此前单例创建与初始化均无锁——多线程首例
+        # 并发可双实例、双重加载配置
+        with cls._instance_lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
         return cls._instance
     
     def __init__(self):
-        if self._config is None:
-            self._load_config()
+        with self._instance_lock:
+            if self._config is None:
+                self._load_config()
     
     def _get_default_config_path(self) -> str:
         env_config = os.environ.get("AI_CONFIG_PATH")
@@ -183,6 +192,10 @@ class ConfigManager:
                 print(i18n.get('config_loaded', config_path))
             except Exception as e:
                 print(f"⚠️ {i18n.get('error_prefix')}{e}，使用默认配置")
+                # J5（审计 2026-08-19）：损坏文件先备份再继续——此前直接改用
+                # 默认配置，任一后续保存会用"默认+本次改动"整体覆盖原文件，
+                # proxy/api/context 等全部手工配置永久丢失
+                self._backup_corrupted_config(config_path)
                 self._config = self._get_default_config()
         else:
             print(i18n.get('config_not_found', config_path))
@@ -190,6 +203,15 @@ class ConfigManager:
             self._save_default_config(config_path)
         self._migrate_legacy_proxy_password()
     
+    def _backup_corrupted_config(self, config_path: str):
+        """J5：损坏配置先复制备份（带时间戳），防止后续保存整体覆盖丢失"""
+        try:
+            backup = f"{config_path}.corrupt.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            shutil.copy2(config_path, backup)
+            print(f"⚠️ 已备份损坏的配置文件到 {backup}")
+        except Exception as e:
+            print(f"⚠️ 备份损坏配置文件失败: {e}")
+
     def _merge_configs(self, default: Dict, user: Dict) -> Dict:
         result = default.copy()
         for key, value in user.items():
@@ -201,9 +223,9 @@ class ConfigManager:
     
     def _save_default_config(self, config_path: str):
         try:
-            os.makedirs(os.path.dirname(config_path), exist_ok=True)
-            with open(config_path, 'w', encoding='utf-8') as f:
-                json.dump(self._get_default_config(), f, ensure_ascii=False, indent=2)
+            atomic_write_text(
+                config_path,
+                json.dumps(self._get_default_config(), ensure_ascii=False, indent=2))
             print(i18n.get('config_created', config_path))
         except:
             pass
@@ -296,9 +318,10 @@ class ConfigManager:
             socks = safe_config.get("proxy", {}).get("socks5")
             if socks and socks.get("password"):
                 socks["password"] = None
-            os.makedirs(os.path.dirname(config_path), exist_ok=True)
-            with open(config_path, 'w', encoding='utf-8') as f:
-                json.dump(safe_config, f, ensure_ascii=False, indent=2)
+            # J5：原子写（mkstemp + fsync + os.replace），崩溃不留半截 JSON
+            atomic_write_text(
+                config_path,
+                json.dumps(safe_config, ensure_ascii=False, indent=2))
             print(f"✅ 配置已保存到 {config_path}")
             return True
         except Exception as e:

@@ -192,7 +192,9 @@ class TestTestProfile:
 class TestSaveFailure:
     def test_add_reports_save_failure(self, tmp_path):
         cm = _cfg(tmp_path, {})
-        with mock.patch("builtins.open", side_effect=PermissionError("disk ro")):
+        # J5：写路径改为原子写，磁盘失败经原子写函数模拟
+        with mock.patch("common.config.atomic_write_text",
+                        side_effect=PermissionError("disk ro")):
             msgs = model_config.add_profile(
                 cm, "a", "https://x/v1", "m1", api_key_env="K")
         assert any("保存失败" in m for m in msgs)

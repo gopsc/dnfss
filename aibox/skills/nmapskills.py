@@ -3,6 +3,7 @@
 一个基于python-nmap的局域网Ping扫描工具
 """
 import argparse
+import shlex
 import sys
 import socket
 
@@ -25,7 +26,9 @@ def scan_network(network="192.168.1.0/24", timeout=3, verbose=False):
     print("-" * 50)
 
     try:
-        result = nm.scan(hosts=network, arguments=arguments)
+        # J12（审计 2026-08-19）：python-nmap 内部把 hosts 拼进 shell 命令
+        # 执行——LLM/AI 可控的 network 参数需 shlex.quote，防参数/命令注入
+        result = nm.scan(hosts=shlex.quote(network), arguments=arguments)
     except Exception as e:
         print(f"❌ 扫描失败: {e}")
         print("💡 提示：请确保已安装 nmap (sudo apt install nmap) 并有足够权限")

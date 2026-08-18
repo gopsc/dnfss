@@ -23,6 +23,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from common import ConfigManager
+from common.atomic import atomic_write_text
 
 
 class PromptManager:
@@ -60,8 +61,12 @@ class PromptManager:
         return cls._instance
 
     def __init__(self):
-        if not self._prompts:
-            self._load_prompts()
+        # J6（审计 2026-08-19）：__new__ 的锁只防双实例，多线程首例并发
+        # 同时进入 __init__ 会使 _load_prompts 双重执行，_prompts（类属性）
+        # 整份翻倍——初始化检查与加载收进同一把锁
+        with self._instance_lock:
+            if not self._prompts:
+                self._load_prompts()
 
     def _get_prompts_dir(self) -> str:
         config = ConfigManager()
@@ -172,8 +177,8 @@ class PromptManager:
 【更新记录】
 - 上次更新：{timestamp}
 """
-            with open(identity_path, 'w', encoding='utf-8') as f:
-                f.write(updated_content)
+            # J5：原子写，崩溃不留半截提示词文件
+            atomic_write_text(identity_path, updated_content)
             self.reload()
             return True
         except Exception as e:
@@ -195,8 +200,8 @@ class PromptManager:
 【更新记录】
 - 上次更新：{timestamp}
 """
-            with open(status_path, 'w', encoding='utf-8') as f:
-                f.write(updated_content)
+            # J5：原子写，崩溃不留半截提示词文件
+            atomic_write_text(status_path, updated_content)
             self.reload()
             return True
         except Exception as e:
@@ -218,8 +223,8 @@ class PromptManager:
 【更新记录】
 - 上次更新：{timestamp}
 """
-            with open(soul_path, 'w', encoding='utf-8') as f:
-                f.write(updated_content)
+            # J5：原子写，崩溃不留半截提示词文件
+            atomic_write_text(soul_path, updated_content)
             self.reload()
             return True
         except Exception as e:

@@ -181,6 +181,9 @@ class WebSocketClient:
             self.connected = False
             print(f"\n{Colors.ERROR}❌ 连接已断开{Colors.RESET}")
         except Exception as e:
+            # J14：异常退出同样标记断开（此前 connected 恒 True，用户继续
+            # "成功"发送但永远收不到回复，成僵尸连接）
+            self.connected = False
             print(f"\n{Colors.ERROR}❌ 接收消息错误: {e}{Colors.RESET}")
     
     async def handle_message(self, data: dict, tts: TextToSpeech):
@@ -266,12 +269,13 @@ class WebSocketClient:
                                    tts: TextToSpeech = None, task_info: dict = None):
         if msg_type == 'chat':
             stream = self.streaming_messages['chat']
-            stream.add_chunk(content)
-            
+            # J14（审计 2026-08-19）：前缀判断必须在 add_chunk 之前——
+            # add_chunk 会置 is_active=True，原顺序使 "AI助手:" 前缀永不打印
             if not stream.is_active:
                 print(f"\n{Colors.AI}🤖 AI助手: ", end='', flush=True)
                 stream.is_active = True
-            
+
+            stream.add_chunk(content)
             print(content, end='', flush=True)
         
         elif msg_type == 'task' and task_info:
@@ -428,6 +432,7 @@ class VoiceInterface:
             return None
         
         print(f"{Colors.INFO}🎤 正在听... (按 Ctrl+C 取消){Colors.RESET}")
+        temp_file = None  # J14：录音临时文件，任何异常路径统一清理
         
         try:
             if self.use_arecord:
@@ -506,6 +511,13 @@ class VoiceInterface:
             return None
         except Exception as e:
             print(f"{Colors.ERROR}❌ 语音输入错误: {e}{Colors.RESET}")
+            # J14：录音临时文件（含用户语音）任何异常路径都清理——
+            # 此前 wave.open/whisper 解析失败、arecord 超时等滞留 /tmp
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.unlink(temp_file)
+                except OSError:
+                    pass
             return None
     
     async def handle_command(self, command: str):

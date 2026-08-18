@@ -27,6 +27,9 @@ class SkillManager:
     2. Markdown 文件 (.md)：第一行为简介（# 标题或普通文本），其余为技能内容
     """
 
+    # J16（审计 2026-08-19）：--help 输出上限——内容会进系统提示词
+    MAX_HELP_LENGTH = 2000
+
     def __init__(self, logger: Optional[Logger] = None):
         self.logger = logger or Logger("SkillManager")
         # name -> {path, file, summary, content, is_markdown}
@@ -38,7 +41,11 @@ class SkillManager:
     # ------------------------------------------------------------------
 
     def _run_help(self, skill_path: str) -> str:
-        """执行 skill_path --help 并返回完整输出（stdout 优先，否则 stderr）。"""
+        """执行 skill_path --help 并返回完整输出（stdout 优先，否则 stderr）。
+
+        J16（审计 2026-08-19）：输出截断到 MAX_HELP_LENGTH——技能 --help
+        输出会进系统提示词，异常/恶意脚本可撑爆上下文。
+        """
         try:
             result = subprocess.run(
                 [skill_path, "--help"],
@@ -50,6 +57,8 @@ class SkillManager:
             output = result.stdout.strip()
             if not output:
                 output = result.stderr.strip()
+            if len(output) > self.MAX_HELP_LENGTH:
+                output = output[:self.MAX_HELP_LENGTH] + "\n…（已截断）"
             return output
         except Exception as e:
             self.logger.warning(f"运行 {skill_path} --help 失败: {e}")
@@ -129,12 +138,26 @@ class SkillManager:
             and not f.startswith('.')
         ]
 
-        for skill_file in skill_files:
+        # J16（审计 2026-08-19）：同名键冲突（foo 可执行文件与 foo.md）此前
+        # 由 listdir 顺序决定谁覆盖谁，行为不确定。改为可执行优先 + 确定性：
+        # 先加载可执行技能，Markdown 遇到已占用的同名键时跳过并告警
+        executable_files = [
+            f for f in skill_files
+            if not self._is_markdown_file(f)
+        ]
+        markdown_files = [f for f in skill_files if self._is_markdown_file(f)]
+
+        for skill_file in executable_files + markdown_files:
             skill_path = os.path.join(skills_dir, skill_file)
             skill_name = os.path.splitext(skill_file)[0]
             is_markdown = self._is_markdown_file(skill_file)
 
             if is_markdown:
+                if skill_name in self.skills:
+                    self.logger.warning(
+                        f"Markdown 技能 '{skill_file}' 与同名可执行技能冲突，已跳过"
+                        f"（可执行技能优先）")
+                    continue
                 # Markdown 格式技能：直接读取内容
                 summary, content = self._read_markdown_skill(skill_path)
                 if content:

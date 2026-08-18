@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 from common import ConfigManager, Logger, constants
+from common.atomic import atomic_write_text
 
 if TYPE_CHECKING:
     # 仅用于类型注解，避免运行时循环导入；MemoryDatabase 来自同包 subsystems.db
@@ -73,11 +74,9 @@ class ConversationHistory:
     def _atomic_write_json(path: Path, data) -> None:
         """原子写 JSON（I 批，审计 2026-08-18）：先写同目录临时文件再
         os.replace——此前 'w' 直写，进程中断/崩溃留半截 JSON（current 损坏
-        后仅静默置 None，历史内容丢失）"""
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
+        后仅静默置 None，历史内容丢失）。J5（2026-08-19）：委托 common.atomic
+        （mkstemp 随机名），修复旧实现固定 .tmp 名在多进程并发写同路径互踩。"""
+        atomic_write_text(str(path), json.dumps(data, ensure_ascii=False, indent=2))
 
     def _save_history_index(self):
         """保存历史索引"""

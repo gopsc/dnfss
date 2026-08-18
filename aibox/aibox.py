@@ -178,13 +178,20 @@ class TaskScheduler:
             for memo in pending:
                 try:
                     # 广播任务开始执行
-                    if self.ws_handler:
+                    if self.ws_handler and self.broadcast_enabled:
                         await self.ws_handler.broadcast_task_status(memo, "executing", i18n.get('task_executing', memo['title'], memo['id']))
                     
                     # 【关键修复】执行前最后一次验证
+                    # J1（审计 2026-08-19）：格式异常按到期执行（Q5 语义），
+                    # 不再抛 ValueError 致任务既不触发也不完成、每秒重试热循环
                     if memo.get('reminder_time'):
-                        reminder_time = datetime.strptime(memo['reminder_time'], constants.DATETIME_FORMAT)
-                        if reminder_time > now:
+                        try:
+                            reminder_time = datetime.strptime(memo['reminder_time'], constants.DATETIME_FORMAT)
+                        except (ValueError, TypeError) as e:
+                            self.logger.warning(
+                                f"任务 #{memo['id']} 提醒时间格式异常，按到期执行: {e}")
+                            reminder_time = None
+                        if reminder_time is not None and reminder_time > now:
                             self.logger.warning(f"任务 #{memo['id']} 的提醒时间 ({memo['reminder_time']}) 大于当前时间 ({now_str})，跳过执行")
                             continue
                     
@@ -196,7 +203,7 @@ class TaskScheduler:
                     result = await self.execute_task_as_conversation(memo, memo_db)
                     
                     # 广播任务完成
-                    if self.ws_handler:
+                    if self.ws_handler and self.broadcast_enabled:
                         await self.ws_handler.broadcast_task_status(memo, "complete", result)
                     
                     executed_tasks.append({
@@ -211,7 +218,7 @@ class TaskScheduler:
                     self.logger.error(i18n.get('task_failed', memo['title'], str(e)))
                     
                     # 广播任务失败
-                    if self.ws_handler:
+                    if self.ws_handler and self.broadcast_enabled:
                         await self.ws_handler.broadcast_task_status(memo, "failed", str(e))
                     
                     executed_tasks.append({
@@ -285,17 +292,11 @@ class TaskScheduler:
             # 获取当前事件循环
             loop = asyncio.get_running_loop()
             
-            # 创建一个队列来收集完整的响应
-            full_response_queue = queue.Queue()
-            
-            # 定义输出回调函数 - 直接广播，同时收集
+            # 定义输出回调函数 - 直接广播
             def output_callback(msg_type, content):
-                """AI输出的回调函数 - 直接广播，同时收集"""
-                # 收集完整响应
-                if msg_type == "complete":
-                    full_response_queue.put(content)
-                
-                # 直接广播给所有客户端 - 必须带上 task_id 和 execution_id
+                """AI输出的回调函数 - 直接广播"""
+                # J15（审计 2026-08-19）：full_response_queue 收集后从未被消费，
+                # 属死代码，已移除；广播路径保留
                 if self.ws_handler and self.broadcast_enabled:
                     # 使用 run_coroutine_threadsafe 在正确的循环中运行异步函数
                     asyncio.run_coroutine_threadsafe(
@@ -420,7 +421,7 @@ class TaskScheduler:
             executed_tasks = []
             for memo in immediate:
                 try:
-                    if self.ws_handler:
+                    if self.ws_handler and self.broadcast_enabled:
                         await self.ws_handler.broadcast_task_status(memo, "executing", i18n.get('immediate_memo_executing', memo['title']))
                     
                     self.logger.info(f"标记即时任务 #{memo['id']} 为已触发")
@@ -428,7 +429,7 @@ class TaskScheduler:
                     
                     result = await self.execute_task_as_conversation(memo, memo_db)
                     
-                    if self.ws_handler:
+                    if self.ws_handler and self.broadcast_enabled:
                         await self.ws_handler.broadcast_task_status(memo, "complete", result)
                     
                     executed_tasks.append({
@@ -442,7 +443,7 @@ class TaskScheduler:
                 except Exception as e:
                     self.logger.error(i18n.get('task_failed', memo['title'], str(e)))
                     
-                    if self.ws_handler:
+                    if self.ws_handler and self.broadcast_enabled:
                         await self.ws_handler.broadcast_task_status(memo, "failed", str(e))
                     
                     executed_tasks.append({
@@ -703,6 +704,9 @@ def run_full_subagent(role, task, config, logger=None, model=None,
     _watch_done = threading.Event()  # N5：取消观察者线程退出信号（finally 置位）
     try:
         max_tokens = max(1, min(int(max_tokens or 2048), constants.DEFAULT_MAX_TOKENS))
+        # max_turns 钳制：0/负数此前致首轮即拦截（只剩收尾报告、无任何执行）；
+        # 0/空回退默认值的惯例对齐 max_tokens，下限 1 保证至少执行一个任务轮
+        max_turns = max(1, int(max_turns or 10))
         temp = temperature if temperature is not None else constants.DEFAULT_TEMPERATURE
 
         # 创建子代理：完整 DeepSeekChat 实例，role 作为 system_prompt
@@ -2099,6 +2103,8 @@ class WebSocketHandler:
         # 排队等锁，多连接并发 /new 可耗尽默认池（阻塞新消息处理）
         self._cmd_executor = ThreadPoolExecutor(max_workers=2,
                                                 thread_name_prefix="ws-cmd")
+        # J7（审计 2026-08-19）：broadcast 单客户端发送超时（半开 TCP 防卡死）
+        self.broadcast_send_timeout = 5.0
 
     def shutdown(self):
         """I 批：释放命令专用线程池（服务退出时调用）"""
@@ -2269,13 +2275,30 @@ class WebSocketHandler:
             self.logger.error(f"发送消息失败: {e}")
     
     async def broadcast(self, message):
-        """广播消息到所有客户端"""
-        for websocket in self.connected_clients.copy():
+        """广播消息到所有客户端。
+
+        J7（审计 2026-08-19）：此前串行 await 且 send_message 吞掉全部异常，
+        broadcast 的 except→unregister 为死代码——ping 禁用（ping_interval=None）
+        下半开 TCP 无法探测，backpressure 下 websocket.send 可无限期阻塞，
+        卡死广播与调度器循环。现改为每客户端并发发送 + wait_for 超时，
+        超时即 unregister 回收（discard 幂等）。
+        """
+        clients = list(self.connected_clients)
+        if not clients:
+            return
+
+        async def _send_one(websocket):
             try:
-                await self.send_message(websocket, message)
+                await asyncio.wait_for(
+                    self.send_message(websocket, message),
+                    timeout=self.broadcast_send_timeout)
             except Exception:
-                # N13：不再裸 except——吞掉 CancelledError 会破坏任务取消语义
+                # 超时/发送异常：回收该连接（取消事件被 wait_for 传播，
+                # CancelledError 为 BaseException 不在此列，不影响任务取消语义）
                 await self.unregister(websocket)
+
+        await asyncio.gather(*(_send_one(ws) for ws in clients),
+                             return_exceptions=True)
     
     async def broadcast_task_status(self, task: Dict, status: str, message: str = None):
         """广播任务状态"""
@@ -2379,16 +2402,26 @@ class WebSocketHandler:
             else:
                 reminder_time = (datetime.now() + timedelta(seconds=delay)).strftime(constants.DATETIME_FORMAT)
             
-            memo_id = self.ai_manager.memo_db.add_user_task(
-                title=title,
-                content=content,
-                reminder_time=reminder_time,
-                repeat_type=repeat_type,
-                repeat_interval=repeat_interval,
-                repeat_interval_unit=repeat_interval_unit,
-                repeat_end_time=repeat_end_time,
-                is_immediate=is_immediate
-            )
+            # J1（审计 2026-08-19）：add_memo 入库校验抛 ValueError（畸形时间/
+            # 重复间隔等），此处转为友好错误消息，不让 handle_message 顶层
+            # 兜底以笼统的"处理失败"收场
+            try:
+                memo_id = self.ai_manager.memo_db.add_user_task(
+                    title=title,
+                    content=content,
+                    reminder_time=reminder_time,
+                    repeat_type=repeat_type,
+                    repeat_interval=repeat_interval,
+                    repeat_interval_unit=repeat_interval_unit,
+                    repeat_end_time=repeat_end_time,
+                    is_immediate=is_immediate
+                )
+            except ValueError as e:
+                await self.send_message(websocket, {
+                    "type": "error",
+                    "content": f"任务添加失败: {e}"
+                })
+                return
             
             immediate_msg = i18n.get('immediate_memo_added') if is_immediate else ""
             repeat_msg = ""
@@ -2437,6 +2470,12 @@ class WebSocketHandler:
                         "type": "error",
                         "content": i18n.get('memo_complete_failed', memo_id)
                     })
+        else:
+            # J15（审计 2026-08-19）：未知 action 此前静默吞掉，客户端无任何反馈
+            await self.send_message(websocket, {
+                "type": "error",
+                "content": f"未知的任务操作: {action}"
+            })
     
     async def handle_command(self, websocket, data):
         """处理命令消息"""
@@ -2467,6 +2506,14 @@ class WebSocketHandler:
                         await asyncio.sleep(0.1)
                         if not ai.is_busy():
                             break
+                # J11（审计 2026-08-19）：取消后旧回合可能仍在收尾（回发内容），
+                # 且新消息的 think 线程可能与 reset 无序抢 _msg_lock（RLock 无
+                # 公平性）——等待该连接处理标志清零后再排队 reset，避免新回合
+                # 在旧上下文上执行后被 reset 抹掉（消息"消失"）
+                for _ in range(20):
+                    if not session or not session.get("is_processing"):
+                        break
+                    await asyncio.sleep(0.1)
                 # 重置对话状态，重新加载系统提示词
                 # N3：reset_conversation 内部同步获取 _msg_lock（繁忙对话持锁
                 # 可达数十秒），直接调用会冻结整个事件循环（所有连接的心跳/
@@ -2716,7 +2763,7 @@ class WebSocketHandler:
         # 定义输出回调函数 - 实时发送
         def output_callback(msg_type, content):
             """AI输出的回调函数 - 实时发送每个chunk"""
-            self.logger.info(f"输出回调被调用: {msg_type}, 内容长度: {len(content)}")
+            self.logger.debug(f"输出回调被调用: {msg_type}, 内容长度: {len(content)}")
             
             # 创建发送消息的协程
             async def send_msg():
@@ -2938,8 +2985,11 @@ class EnhancedAIManager:
     async def handle_connection(self, websocket, path):
         """处理WebSocket连接 - 消息接收与处理解耦，确保中断信号能被即时处理"""
         self.logger.info(f"新连接: {websocket.remote_address}, path: {path}")
-        await self.ws_handler.register(websocket)
         try:
+            # J1（审计 2026-08-19）：register 移入 try——此前在 try 外，握手期
+            # 异常（如任务展示路径解析失败）逃逸时 finally 不执行，会话登记
+            # 永久泄漏；unregister 为 discard 幂等，提前失败也会被正常清理
+            await self.ws_handler.register(websocket)
             async for message in websocket:
                 # 【关键修复】用create_task异步处理消息，不await阻塞接收循环
                 # 这样当AI在后台生成响应时，interrupt消息仍能被立即接收和处理
@@ -3307,9 +3357,9 @@ def handle_once_mode(manager, args) -> bool:
         if state["exit_code"] == 0 and not state["interrupted"] and not state["timed_out"]:
             if response is None or (isinstance(response, str) and not response.strip()):
                 state["exit_code"] = 2
-    except KeyboardInterrupt:
-        state["interrupted"] = True
     except Exception as e:
+        # J15（审计 2026-08-19）：except KeyboardInterrupt 为死代码——SIGINT
+        # 已由自定义 handler 接管（_sigint_handler），KeyboardInterrupt 永不抛出
         print(f"{i18n.get('error_prefix')}{e}", file=sys.stderr)
         state["exit_code"] = 2
     finally:

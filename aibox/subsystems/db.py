@@ -141,11 +141,14 @@ class MemoryDatabase:
         """删除记忆"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
+            # J3（审计 2026-08-19）：必须先删 fts 再删内容表——外部内容表
+            # （content=memories）删除索引条目需从内容表回读旧值，内容行
+            # 先删会导致索引条目永久残留（MATCH 仍可命中已删 rowid）
+            cursor.execute('DELETE FROM memories_fts WHERE rowid = ?', (memory_id,))
             cursor.execute('DELETE FROM memories WHERE id = ?', (memory_id,))
             deleted = cursor.rowcount > 0
 
             if deleted:
-                cursor.execute('DELETE FROM memories_fts WHERE rowid = ?', (memory_id,))
                 conn.commit()
                 self.logger.info(f"已删除记忆 ID: {memory_id}")
 
@@ -274,11 +277,12 @@ class MemoryDatabase:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             placeholders = ','.join(['?'] * len(memory_ids))
+            # J3：同 delete_memory——先删 fts 再删内容表，防索引条目残留
+            cursor.execute(f'DELETE FROM memories_fts WHERE rowid IN ({placeholders})', memory_ids)
             cursor.execute(f'DELETE FROM memories WHERE id IN ({placeholders})', memory_ids)
             deleted_count = cursor.rowcount
 
             if deleted_count > 0:
-                cursor.execute(f'DELETE FROM memories_fts WHERE rowid IN ({placeholders})', memory_ids)
                 conn.commit()
                 self.logger.info(f"已批量删除 {deleted_count} 条记忆")
 
@@ -300,10 +304,19 @@ class MemoDatabase:
         self.logger = Logger("MemoDB")
         self._init_database()
 
+    def _connect(self) -> sqlite3.Connection:
+        """统一连接工厂（J9，审计 2026-08-19）：busy_timeout 覆盖全部写路径，
+        不再只有 mark_as_triggered 一条路径等待锁释放"""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA busy_timeout = 10000")
+        return conn
+
     def _init_database(self):
         """初始化备忘录表"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
+            # J9：WAL 显式设置——与 MemoryDatabase 同库文件时不再依赖创建顺序
+            cursor.execute("PRAGMA journal_mode=WAL")
 
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS memos (
@@ -349,10 +362,34 @@ class MemoDatabase:
                  repeat_interval_unit: str = 'days', repeat_end_time: str = None,
                  is_immediate: bool = False) -> int:
         """添加任务 - 所有任务都是对话任务，不再需要metadata和任务类型"""
+        # J1（审计 2026-08-19）：入库校验——畸形时间/数字字段此前原样入库，
+        # 下游无防护解析点引发调度器失败热循环与新连接握手崩溃（审计报告
+        # §13.1 J1）。CLI/WS/memo 工具三入口均经本方法，校验一处覆盖。
+        if reminder_time:
+            try:
+                datetime.strptime(reminder_time, constants.DATETIME_FORMAT)
+            except (ValueError, TypeError):
+                raise ValueError(
+                    f"提醒时间格式非法: {reminder_time!r}（应为 {constants.DATETIME_FORMAT}）")
+        if repeat_end_time:
+            try:
+                datetime.strptime(repeat_end_time, constants.DATETIME_FORMAT)
+            except (ValueError, TypeError):
+                raise ValueError(
+                    f"重复结束时间格式非法: {repeat_end_time!r}（应为 {constants.DATETIME_FORMAT}）")
+        if repeat_type not in ("none", "daily", "weekly", "monthly", "custom"):
+            raise ValueError(f"无效的重复类型: {repeat_type!r}")
+        try:
+            repeat_interval = int(repeat_interval)
+        except (ValueError, TypeError):
+            raise ValueError(f"重复间隔必须是整数: {repeat_interval!r}")
+        if repeat_type == "custom" and repeat_interval <= 0:
+            raise ValueError("自定义重复需要设置有效的 repeat_interval (>0)")
+
         created_at = datetime.now().strftime(constants.DATETIME_FORMAT)
         tags_str = ",".join(tags) if tags else ""
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO memos
@@ -377,7 +414,7 @@ class MemoDatabase:
 
     def get_memo(self, memo_id: int) -> Optional[Dict]:
         """获取单个任务"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM memos WHERE id = ?', (memo_id,))
@@ -392,7 +429,7 @@ class MemoDatabase:
 
     def get_pending_memos(self, limit: int = None, before_time: str = None, include_immediate: bool = False) -> List[Dict]:
         """获取待执行的任务 - 严格使用当前时间比较"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -458,7 +495,7 @@ class MemoDatabase:
 
     def get_immediate_memos(self, limit: int = None) -> List[Dict]:
         """获取待执行的即时任务"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -494,7 +531,7 @@ class MemoDatabase:
 
     def get_all_memos(self, include_completed: bool = False, limit: int = 50) -> List[Dict]:
         """获取所有任务"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -533,13 +570,11 @@ class MemoDatabase:
         now = datetime.now()
         next_reminder = None
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            # I 批（审计 2026-08-18）：多进程同库（CLI --memo-add + 服务调度）
-            # 写竞争时默认 5s 后直接报 database is locked——busy_timeout 让
-            # SQLite 等待锁释放（最长 10s）而不是立即失败
-            cursor.execute("PRAGMA busy_timeout = 10000")
+            # J9：busy_timeout 已由 _connect() 工厂统一设置（全部写路径一致），
+            # 多进程同库（CLI --memo-add + 服务调度）写竞争等待锁释放而非立即失败
             cursor.execute("BEGIN IMMEDIATE")
             try:
                 cursor.execute('SELECT * FROM memos WHERE id = ?', (memo_id,))
@@ -608,7 +643,11 @@ class MemoDatabase:
     def _should_end_repeat(self, memo: Dict, current_time: datetime) -> bool:
         """检查是否应该结束重复"""
         if memo['repeat_end_time']:
-            end_time = datetime.strptime(memo['repeat_end_time'], constants.DATETIME_FORMAT)
+            try:
+                end_time = datetime.strptime(memo['repeat_end_time'], constants.DATETIME_FORMAT)
+            except (ValueError, TypeError):
+                # J1：存量脏数据防御——解析失败视为无结束时间，不打断触发事务
+                return False
             if current_time > end_time:
                 return True
         return False
@@ -638,24 +677,37 @@ class MemoDatabase:
                     next_time = current_time.replace(year=current_time.year + 1, month=1, day=1) - timedelta(days=1)
                 else:
                     next_time = current_time.replace(month=current_time.month + 1, day=1) - timedelta(days=1)
-        elif memo['repeat_type'] == 'custom' and memo['repeat_interval'] > 0:
-            unit = memo.get('repeat_interval_unit', 'days')
-            if unit == 'minutes':
-                # 每N分钟重复：当前时间 + N分钟
-                next_time = current_time + timedelta(minutes=memo['repeat_interval'])
-            elif unit == 'hours':
-                # 每N小时重复：当前时间 + N小时
-                next_time = current_time + timedelta(hours=memo['repeat_interval'])
-            else:  # days
-                # 每N天重复：当前时间 + N天
-                next_time = current_time + timedelta(days=memo['repeat_interval'])
+        elif memo['repeat_type'] == 'custom':
+            # J1：repeat_interval 类型异常（存量脏数据）按 0 处理，
+            # 不再抛 TypeError 打崩触发事务引发热循环
+            try:
+                repeat_interval = int(memo.get('repeat_interval') or 0)
+            except (ValueError, TypeError):
+                repeat_interval = 0
+            if repeat_interval > 0:
+                unit = memo.get('repeat_interval_unit', 'days')
+                if unit == 'minutes':
+                    # 每N分钟重复：当前时间 + N分钟
+                    next_time = current_time + timedelta(minutes=repeat_interval)
+                elif unit == 'hours':
+                    # 每N小时重复：当前时间 + N小时
+                    next_time = current_time + timedelta(hours=repeat_interval)
+                else:  # days
+                    # 每N天重复：当前时间 + N天
+                    next_time = current_time + timedelta(days=repeat_interval)
+            else:
+                return None
         else:
             return None
 
         # 检查是否超过重复结束时间
         if memo['repeat_end_time']:
-            end_time = datetime.strptime(memo['repeat_end_time'], constants.DATETIME_FORMAT)
-            if next_time > end_time:
+            try:
+                end_time = datetime.strptime(memo['repeat_end_time'], constants.DATETIME_FORMAT)
+            except (ValueError, TypeError):
+                # J1：存量脏数据防御——解析失败视为无结束时间
+                end_time = None
+            if end_time and next_time > end_time:
                 return None
 
         return next_time
@@ -672,7 +724,7 @@ class MemoDatabase:
 
         completed_at = datetime.now().strftime(constants.DATETIME_FORMAT)
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 UPDATE memos
@@ -691,7 +743,7 @@ class MemoDatabase:
     def delete_memo(self, memo_id: int) -> bool:
         """物理删除任务（M5：delete 语义此前被 complete_memo 顶替——只标记
         完成不删行，重复任务还会被推进而非移除，stats 计数失真）"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM memos WHERE id = ?", (memo_id,))
             conn.commit()
@@ -699,7 +751,7 @@ class MemoDatabase:
 
     def get_memo_stats(self) -> Dict:
         """获取任务统计信息"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
 
             cursor.execute('SELECT COUNT(*) FROM memos')
@@ -732,8 +784,9 @@ class MemoDatabase:
             }
 
     def add_user_task(self, title: str, content: str = None, reminder_time: str = None,
-                     repeat_type: str = 'none', repeat_interval: int = 0,
-                     repeat_interval_unit: str = 'days', is_immediate: bool = False) -> int:
+                      repeat_type: str = 'none', repeat_interval: int = 0,
+                      repeat_interval_unit: str = 'days', repeat_end_time: str = None,
+                      is_immediate: bool = False) -> int:
         """添加用户任务（前端直接调用的任务）- 所有任务都是对话任务"""
         if not constants.MEMO_ALLOW_USER_TASKS:
             raise Exception("用户任务功能已禁用")
@@ -745,10 +798,22 @@ class MemoDatabase:
             repeat_type=repeat_type,
             repeat_interval=repeat_interval,
             repeat_interval_unit=repeat_interval_unit,
+            repeat_end_time=repeat_end_time,
             created_by="user",
             source="websocket",
             is_immediate=is_immediate
         )
+
+    @staticmethod
+    def _is_overdue_time(reminder_time: str, now: datetime) -> bool:
+        """J1：展示路径时间解析防御——格式异常按到期处理（对齐 Q5 语义），
+        不再抛 ValueError 打崩新连接握手流程"""
+        if not reminder_time:
+            return False
+        try:
+            return datetime.strptime(reminder_time, constants.DATETIME_FORMAT) < now
+        except (ValueError, TypeError):
+            return True
 
     def get_pending_tasks_for_user(self) -> List[Dict]:
         """获取待执行任务列表（用于前端显示）"""
@@ -764,7 +829,7 @@ class MemoDatabase:
                 "content": memo['content'],
                 "reminder_time": memo['reminder_time'],
                 "priority": memo['priority'],
-                "is_overdue": datetime.strptime(memo['reminder_time'], constants.DATETIME_FORMAT) < now if memo['reminder_time'] else False,
+                "is_overdue": self._is_overdue_time(memo['reminder_time'], now),
                 "repeat_type": memo['repeat_type'],
                 "repeat_interval": memo.get('repeat_interval', 0),
                 "repeat_interval_unit": memo.get('repeat_interval_unit', 'days'),

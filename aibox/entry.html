@@ -6,10 +6,12 @@
     <title>AI智能助手 - Socket.IO客户端</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+    <!-- J13（审计 2026-08-19）：CDN 脚本补 SRI integrity，防供应链劫持 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js" integrity="sha384-odPBjvtXVM/5hOYIr3A1dB+flh0c3wAT3bSesIOqEGmyUA4JoKf/YTWy0XKOYAY7" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js" integrity="sha384-g4mRvs7AO0/Ol5LxcGyz4Doe21pVhGNnC3EQw5shw+z+aXDN86HqUdwXWO+Gz2zI" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.4/purify.min.js" integrity="sha384-eEu5CTj3qGvu9PdJuS+YlkNi7d2XxQROAFYOr59zgObtlcux1ae1Il3u7jvdCSWu" crossorigin="anonymous"></script>
     <!-- Socket.IO 客户端库 -->
-    <script src="https://cdn.socket.io/4.5.0/socket.io.min.js"></script>
+    <script src="https://cdn.socket.io/4.5.0/socket.io.min.js" integrity="sha384-7EyYLQZgWBi67fBtVxw60/OWl1kjsfrPFcaU0pp0nAh+i8FD068QogUvg85Ewy1k" crossorigin="anonymous"></script>
     <style>
         /* 样式保持不变，完全使用原有的样式 */
         * {
@@ -982,6 +984,15 @@
     </template>
     
     <script>
+        // J2（审计 2026-08-19）：marked 输出经 DOMPurify 净化——AI 输出/命令
+        // 执行结果是不可信输入，含原始 HTML 即可注入脚本；DOMPurify 缺失时
+        // 退化为转义文本（只显示不执行，防 XSS 兜底）
+        function renderMarkdown(content) {
+            const html = marked.parse(content);
+            if (window.DOMPurify) return DOMPurify.sanitize(html);
+            return html.replace(/</g, '&lt;');
+        }
+
         document.addEventListener('DOMContentLoaded', function() {
             // 配置marked
             marked.setOptions({
@@ -1124,7 +1135,7 @@
                 textDiv.setAttribute('data-raw-content', streamData.content);
                 
                 if (markdownEnabled) {
-                    textDiv.innerHTML = marked.parse(streamData.content);
+                    textDiv.innerHTML = renderMarkdown(streamData.content);
                     textDiv.querySelectorAll('pre code').forEach((block) => {
                         hljs.highlightElement(block);
                     });
@@ -1419,7 +1430,7 @@
                         const rawContent = msgDiv.getAttribute('data-raw-content');
                         if (rawContent) {
                             if (markdownEnabled) {
-                                msgDiv.innerHTML = marked.parse(rawContent);
+                                msgDiv.innerHTML = renderMarkdown(rawContent);
                                 msgDiv.classList.add('markdown-body');
                                 addCopyButtonsToCodeBlocks(msgDiv);
                             } else {

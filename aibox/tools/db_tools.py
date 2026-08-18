@@ -745,10 +745,19 @@ class MemoTool(Tool):
             return f"❌ 无法完成任务 #{memo_id}"
 
     def _delete_memo(self, kwargs: Dict) -> str:
-        """删除任务"""
+        """删除任务（单条 memo_id 或批量 memo_ids）"""
         confirm = kwargs.get("confirm", False)
         if not confirm:
             return "❌ 需要设置 confirm=True 来确认删除操作"
+
+        memo_ids = kwargs.get("memo_ids")
+        if memo_ids:
+            # J10（审计 2026-08-19）：schema 声明了 memo_ids 参数却从未实现，
+            # 批量请求此前被静默忽略
+            if not isinstance(memo_ids, (list, tuple)):
+                return "❌ memo_ids 必须是列表"
+            deleted = sum(1 for mid in memo_ids if self.memo_db.delete_memo(mid))
+            return self.format_result(True, f"已删除 {deleted}/{len(memo_ids)} 条任务")
 
         memo_id = kwargs.get("memo_id")
         if memo_id:
@@ -759,7 +768,7 @@ class MemoTool(Tool):
             else:
                 return f"❌ 无法删除任务 #{memo_id}"
         else:
-            return "❌ 需要提供 memo_id"
+            return "❌ 需要提供 memo_id 或 memo_ids"
 
     def _search_memos(self, kwargs: Dict) -> str:
         """搜索任务"""
