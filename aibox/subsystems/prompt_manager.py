@@ -60,10 +60,16 @@ class PromptManager:
         prompts_dir = config.get("system.prompts_dir", "~/.aibox/prompts")
         return os.path.expanduser(prompts_dir)
 
-    def _load_prompts(self):
+    def _load_prompts(self, target: Optional[List[Dict]] = None):
+        """加载提示词到 target 列表（缺省 self._prompts）。
+
+        M6：reload 传入新列表本地构建，完成后由 reload 原子替换——
+        此前先清空 self._prompts 再逐文件重读，并发读者（其他连接构建
+        system 消息）会读到空/半截提示词列表。
+        """
+        prompts = target if target is not None else self._prompts
         self._prompts_dir = self._get_prompts_dir()
         os.makedirs(self._prompts_dir, exist_ok=True)
-        self._prompts = []
 
         # 确保核心文件存在
         self._ensure_identity_file()
@@ -86,17 +92,14 @@ class PromptManager:
                     with open(filepath, 'r', encoding='utf-8') as f:
                         content = f.read().strip()
                         if content:
-                            self._prompts.append({
+                            prompts.append({
                                 'file': filename,
                                 'content': content
                             })
                 except Exception as e:
                     print(f"⚠️ 读取提示词文件 {filename} 失败: {e}")
 
-        essential_files = [self.IDENTITY_FILE, self.STATUS_FILE, self.SOUL_FILE]
-        other_files = [f for f in prompt_files if f not in essential_files] if prompt_files else []
-
-        if not self._prompts:
+        if not prompts:
             self._create_default_prompts()
 
     def _get_template_dir(self) -> str:
@@ -240,10 +243,6 @@ class PromptManager:
         return """我是DeepSeek，一个智能AI助手。
 请创建 99_SOUL.md 文件来定义我的完整身份、角色、性格和能力边界。"""
 
-    def get_skill_prompts(self) -> List[Dict]:
-        """获取所有基础技能提示词（以1_开头的文件）"""
-        return [p for p in self._prompts if p['file'].startswith(self.SKILL_PREFIX)]
-
     def get_soul_prompt(self) -> Optional[Dict]:
         """获取灵魂提示词（99_SOUL.md）"""
         for p in self._prompts:
@@ -296,9 +295,10 @@ class PromptManager:
         return [p for p in self._prompts if self._skill_sort_key(p['file']) is not None]
 
     def reload(self):
-        """重新加载所有提示词"""
-        self._prompts = []
-        self._load_prompts()
+        """重新加载所有提示词（M6：构建新列表后原子替换，并发读者始终读到完整列表）"""
+        new_prompts: List[Dict] = []
+        self._load_prompts(new_prompts)
+        self._prompts = new_prompts
         return len(self._prompts)
 
     def get_prompt_count(self) -> int:

@@ -22,8 +22,20 @@ from typing import Dict, Iterator, List, Optional
 
 import json
 import os
+import re
 import time
 import requests
+
+# L12（审计 2026-08-18）：瞬时错误体可能回显网关/WAF 错误页中的
+# Authorization 头，抹掉 Bearer 令牌后再进日志，防密钥落盘
+_AUTH_HEADER_RE = re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+")
+
+
+def _sanitize_log_msg(msg: str) -> str:
+    """日志脱敏：替换错误消息中的 Bearer 令牌。"""
+    if not msg:
+        return msg
+    return _AUTH_HEADER_RE.sub("Bearer ***", msg)
 
 
 class LLMClient(ABC):
@@ -64,7 +76,7 @@ class LLMClient(ABC):
     def _log(self, level: str, msg: str):
         if self.logger is not None and hasattr(self.logger, level):
             try:
-                getattr(self.logger, level)(msg)
+                getattr(self.logger, level)(_sanitize_log_msg(msg))
             except Exception:
                 pass
 
@@ -219,7 +231,7 @@ class DeepSeekClient(LLMClient):
             for line in response.iter_lines():
                 if not line:
                     continue
-                line_text = line.decode("utf-8")
+                line_text = line.decode("utf-8", errors="replace")  # L3：非 UTF-8 行不中断流
                 if not line_text.startswith("data: "):
                     continue
                 data = line_text[6:]
@@ -352,7 +364,7 @@ class FailoverClient:
     def _log(self, level: str, msg: str):
         if self.logger is not None and hasattr(self.logger, level):
             try:
-                getattr(self.logger, level)(msg)
+                getattr(self.logger, level)(_sanitize_log_msg(msg))
             except Exception:
                 pass
 
@@ -382,7 +394,7 @@ class FailoverClient:
         self._stats["failovers"] += 1
         try:
             if self.on_failover is not None:
-                self.on_failover(from_name, to_name, reason)
+                self.on_failover(from_name, to_name, _sanitize_log_msg(reason))
         except Exception as e:
             self._log("warning", f"on_failover 回调异常（忽略）: {e}")
 

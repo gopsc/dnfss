@@ -13,6 +13,7 @@ subsystems.executors - 命令执行器
 
 import os
 import queue
+import signal
 import subprocess
 import threading
 import time
@@ -71,17 +72,44 @@ class SubprocessCommandExecutor(CommandExecutor):
     def __init__(self, logger=None):
         super().__init__(logger)
         self._current_process = None
+        self._current_pgid = None  # L9：Popen 后立即捕获，shell 死亡后 getpgid 会失败
         self._process_lock = threading.Lock()
 
+    def _terminate_tree(self, proc, force: bool = False):
+        """终止整个进程组（L9：POSIX 下 shell=True 只杀 shell 时，孙进程
+        （`(x &)` 等）仍持管道写端——reader 阻塞无 EOF、fd/线程悬挂至孙
+        进程退出，写满 64KB 管道缓冲后孙进程也卡死。start_new_session 使
+        shell 成为会话首进程，按组信号可一次覆盖整棵进程树）。
+        组 ID 在 Popen 后立即保存：shell 死亡后 os.getpgid(pid) 会抛
+        ProcessLookupError，届时无法再从进程反查组。
+        Windows 无进程组概念，退回单进程 terminate/kill。"""
+        try:
+            if os.name == "posix":
+                sig = signal.SIGKILL if force else signal.SIGTERM
+                with self._process_lock:
+                    pgid = self._current_pgid
+                if pgid is None:
+                    pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, sig)
+            elif force:
+                proc.kill()
+            else:
+                proc.terminate()
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
     def cancel(self):
-        """取消当前正在运行的命令（kill子进程）。线程安全。"""
+        """取消当前正在运行的命令（kill子进程组）。线程安全。"""
         with self._process_lock:
             proc = self._current_process
         if proc is not None:
             try:
                 if proc.poll() is None:
-                    proc.kill()
-                    self.logger.info("已终止正在运行的子进程")
+                    self._terminate_tree(proc, force=True)
+                    self.logger.info("已终止正在运行的子进程组")
             except Exception:
                 pass
 
@@ -117,14 +145,14 @@ class SubprocessCommandExecutor(CommandExecutor):
         while True:
             # 检查超时（readline 阻塞不再影响本判断）
             if timeout > 0 and time.time() - start_time > timeout:
-                process.terminate()
+                self._terminate_tree(process)
                 timeout_occurred = True
                 break
 
             # 检查输出大小
             if total_bytes >= self.MAX_OUTPUT_BYTES:
                 truncated = True
-                process.terminate()
+                self._terminate_tree(process)
                 break
 
             try:
@@ -140,6 +168,12 @@ class SubprocessCommandExecutor(CommandExecutor):
                     if shell_dead_since is None:
                         shell_dead_since = time.time()
                     elif time.time() - shell_dead_since > 1.0:
+                        # L9：shell 已死但孙进程仍持管道写端（`(sleep 300 &) ;
+                        # echo done` 形态）。只靠 daemon reader 兜底会悬挂线程
+                        # 与管道 fd 至孙进程退出，写满 64KB 缓冲后孙进程自身
+                        # 也卡死。此处强杀进程组收尾（nohup 重定向输出的
+                        # 真正脱离场景不持管道，不会走到这里）。
+                        self._terminate_tree(process, force=True)
                         break
                 continue
 
@@ -147,10 +181,12 @@ class SubprocessCommandExecutor(CommandExecutor):
             if total_bytes + line_bytes > self.MAX_OUTPUT_BYTES and not truncated:
                 allowed = self.MAX_OUTPUT_BYTES - total_bytes
                 if allowed > 0:
-                    output_chunks.append(line.encode('utf-8', errors='replace')[:allowed].decode('utf-8', errors='replace'))
+                    # L5：decode 用 errors='ignore'——按字节截断可能落在多字节
+                    # 字符中间，errors='replace' 会在行尾留下半个字符（�）
+                    output_chunks.append(line.encode('utf-8', errors='replace')[:allowed].decode('utf-8', errors='ignore'))
                     total_bytes = self.MAX_OUTPUT_BYTES
                 truncated = True
-                process.terminate()
+                self._terminate_tree(process)
                 break
 
             output_chunks.append(line)
@@ -209,25 +245,30 @@ class SubprocessCommandExecutor(CommandExecutor):
                 bufsize=1,
                 universal_newlines=True,
                 env=exec_env,
-                cwd=os.path.expanduser(work_dir)
+                cwd=os.path.expanduser(work_dir),
+                # L9：POSIX 下 shell 成为会话首进程，超时/取消可按进程组
+                # 一次终止整棵进程树（含 & 后台孙进程），消除管道悬挂
+                start_new_session=(os.name == "posix")
             )
             # 保存进程引用以便cancel()可以kill它
             with self._process_lock:
                 self._current_process = process
+                if os.name == "posix":
+                    try:
+                        self._current_pgid = os.getpgid(process.pid)
+                    except Exception:
+                        self._current_pgid = None
 
             start_time = time.time()
             output_str, timeout_occurred, truncated = self._read_with_limit(process, timeout, start_time)
 
             # 确保进程终止
             if process.poll() is None:
-                if timeout_occurred or truncated:
-                    process.kill()
-                else:
-                    process.terminate()
+                self._terminate_tree(process, force=timeout_occurred or truncated)
                 try:
                     process.wait(timeout=2)
                 except:
-                    process.kill()
+                    self._terminate_tree(process, force=True)
 
             return_code = process.returncode if process.returncode is not None else -1
 
@@ -255,10 +296,11 @@ class SubprocessCommandExecutor(CommandExecutor):
             return f"❌ 执行错误: {str(e)}"
         finally:
             if process and process.poll() is None:
-                process.kill()
+                self._terminate_tree(process, force=True)
             # 清除当前进程引用
             with self._process_lock:
                 self._current_process = None
+                self._current_pgid = None
 
     def execute_streaming(self, command: str, output_queue: queue.Queue, timeout: int = 30,
                           work_dir: str = None, env: Dict = None, **kwargs):
@@ -296,12 +338,20 @@ class SubprocessCommandExecutor(CommandExecutor):
                 bufsize=1,
                 universal_newlines=True,
                 env=exec_env,
-                cwd=os.path.expanduser(work_dir)
+                cwd=os.path.expanduser(work_dir),
+                # L9：POSIX 下 shell 成为会话首进程，超时/取消可按进程组
+                # 一次终止整棵进程树（含 & 后台孙进程），消除管道悬挂
+                start_new_session=(os.name == "posix")
             )
             self.process = process
             # 保存进程引用以便cancel()可以kill它
             with self._process_lock:
                 self._current_process = process
+                if os.name == "posix":
+                    try:
+                        self._current_pgid = os.getpgid(process.pid)
+                    except Exception:
+                        self._current_pgid = None
 
             start_time = time.time()
             # H2 修复：复用线程化读取（reader 线程 + 超时轮询），行经 output_queue 流式转发
@@ -315,7 +365,7 @@ class SubprocessCommandExecutor(CommandExecutor):
 
             # 如果超时或截断，确保进程被终止
             if (timeout_occurred or truncated) and process.poll() is None:
-                process.kill()
+                self._terminate_tree(process, force=True)
                 try:
                     process.wait(timeout=2)
                 except:
@@ -352,11 +402,12 @@ class SubprocessCommandExecutor(CommandExecutor):
             output_queue.put(("complete", f"❌ 执行错误: {str(e)}"))
         finally:
             if process and process.poll() is None:
-                process.terminate()
+                self._terminate_tree(process)
                 try:
                     process.wait(timeout=2)
                 except:
-                    process.kill()
+                    self._terminate_tree(process, force=True)
             self.process = None
             with self._process_lock:
                 self._current_process = None
+                self._current_pgid = None

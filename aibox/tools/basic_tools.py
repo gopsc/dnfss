@@ -96,6 +96,16 @@ class ReadFileTool(FileToolBase):
 
         # 限制max_lines上限，防止请求超大范围
         max_lines = min(max_lines, 500)
+        # L1（审计 2026-08-18）：start/end_line 为 LLM 可控参数，此前未强转
+        # 直拼 sed 单引号模板——LLM 传含引号的字符串可闭合引号注入命令。
+        # 强转 int（非法输入在此拦截）并夹取合理范围。
+        try:
+            start_line = int(start_line)
+            end_line = int(end_line)
+        except (TypeError, ValueError):
+            return "❌ 参数错误: start_line/end_line 必须为整数"
+        start_line = max(1, start_line)
+        end_line = max(0, min(end_line, 10_000_000))
         quoted = shlex.quote(abs_path)
 
         # 构造等价的命令行读取命令
@@ -319,6 +329,12 @@ class SimpleWebCrawlerTool(Tool):
     def execute(self, action: str, url: str, **kwargs) -> str:
         if action not in ("get", "text", "title", "links", "search"):
             return f"❌ 未知操作: {action}"
+
+        # L10（审计 2026-08-18）：url 为 LLM 可控输入（可被网页内容诱导），
+        # 此前不限 scheme——file:// 可经生成的 curl 指引读取本地文件（SSRF）。
+        # 白名单 http/https 后其余协议直接拒绝。
+        if not url or not str(url).strip().lower().startswith(("http://", "https://")):
+            return "❌ 仅支持 http/https 协议地址（已拦截 file:// 等非网络协议）"
 
         quoted_url = shlex.quote(url)
         timeout = constants.WEB_TIMEOUT

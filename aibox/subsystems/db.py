@@ -232,14 +232,15 @@ class MemoryDatabase:
         return results
 
     def get_recent_memories(self, limit: int = 10) -> List[Dict]:
-        """获取最近的记忆。limit=None 时不限制返回条数（供分页使用）。"""
+        """获取最近的记忆。limit=None 时使用默认上限（M4：此前 None 无 LIMIT
+        全表加载，记忆库增长后单次调用 fetchall 全量入内存；与 search_memories
+        的 None→默认上限语义对齐）。"""
+        if limit is None:
+            limit = constants.MEMORY_MAX_SEARCH_RESULTS
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            if limit is None:
-                cursor.execute('SELECT * FROM memories ORDER BY end_time DESC')
-            else:
-                cursor.execute('SELECT * FROM memories ORDER BY end_time DESC LIMIT ?', (limit,))
+            cursor.execute('SELECT * FROM memories ORDER BY end_time DESC LIMIT ?', (limit,))
 
             results = []
             for row in cursor.fetchall():
@@ -671,6 +672,15 @@ class MemoDatabase:
             self.logger.info(i18n.get('memo_completed', memo_id))
             return True
         return False
+
+    def delete_memo(self, memo_id: int) -> bool:
+        """物理删除任务（M5：delete 语义此前被 complete_memo 顶替——只标记
+        完成不删行，重复任务还会被推进而非移除，stats 计数失真）"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM memos WHERE id = ?", (memo_id,))
+            conn.commit()
+            return cursor.rowcount > 0
 
     def get_memo_stats(self) -> Dict:
         """获取任务统计信息"""

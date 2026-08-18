@@ -146,7 +146,7 @@ class SetProxyTool(Tool):
             check_detail = detail
 
         config = ConfigManager()
-        config.set_proxy(host, port, username, password, password_env, enabled, save)
+        saved = config.set_proxy(host, port, username, password, password_env, enabled, save)
         proxy_info = config.get_proxy_info()
         if proxy_info.get("password_env"):
             pw_source = "环境变量 " + proxy_info["password_env"]
@@ -159,10 +159,13 @@ class SetProxyTool(Tool):
             "服务器": f"{proxy_info['host']}:{proxy_info['port']}",
             "认证": "有" if proxy_info.get("username") else "无",
             "密码来源": pw_source,
-            "持久化": "已保存" if save else "仅内存"
+            "持久化": "已保存" if saved else "保存失败（仅本次会话有效，重启后丢失）"
         }
         if check_detail:
             data["连通性"] = check_detail
+        # L2：落盘失败（磁盘只读等）如实报告，不再静默报"已保存"
+        if save and not saved:
+            return self.format_result(False, "代理已配置但保存失败（仅本次会话有效，重启后丢失）", data)
         return self.format_result(True, "代理设置成功", data)
 
 

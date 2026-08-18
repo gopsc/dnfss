@@ -39,10 +39,13 @@ class AskUserTool(Tool):
                     )
                 }
             },
-            "required": []
+            # L8：此前 required 为空，LLM 不传 question 时 str + None 抛 TypeError
+            "required": ["question"]
         }
 
-    def execute(self, question: str, **kwargs) -> str:
+    def execute(self, question: str = None, **kwargs) -> str:
+        if not question:
+            return "❌ 需要提供问题内容（question 参数）"
         return (
                 "你遇到了想搞清楚的事情: " + question + "\n你现在可以询问用户。"
         )

@@ -16,13 +16,18 @@ from common import Logger, constants, i18n
 from .base import Tool
 
 # 工具参数名命中这些关键词时，debug 日志里打码（防密码/密钥进日志文件）
-_SENSITIVE_PARAM_KEYS = {"password", "api_key", "token", "secret", "authorization"}
+# L11（审计 2026-08-18）：精确匹配漏掉 apiKey/access_token/passwd 等变体，
+# 改包含匹配——日志场景下过度打码可接受，漏打码才是问题。
+_SENSITIVE_PARAM_KEYS = (
+    "password", "passwd", "api_key", "apikey", "token", "secret",
+    "authorization", "credential",
+)
 
 
 def _sanitize_kwargs(kwargs: Dict) -> Dict:
     """复制一份参数并把敏感键的值替换为 ***（仅用于日志输出）"""
     return {
-        k: ("***" if str(k).lower() in _SENSITIVE_PARAM_KEYS else v)
+        k: ("***" if any(s in str(k).lower() for s in _SENSITIVE_PARAM_KEYS) else v)
         for k, v in kwargs.items()
     }
 

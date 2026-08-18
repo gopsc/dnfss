@@ -16,6 +16,7 @@ tools.skill_tools - 技能相关工具
 import os
 import queue
 import re
+import shlex
 from typing import Dict, Optional
 
 from common import constants, i18n, Logger
@@ -253,10 +254,14 @@ class InstallSkillTool(Tool):
         skills_dir = constants.SKILLS_DIR
 
         # 如果给了具体路径，在说明里带入，否则用占位符
-        src = skill_path.strip() if skill_path else "/path/to/your_skill.md"
+        raw_src = skill_path.strip() if skill_path else ""
         # 去掉扩展名作为技能名称，再统一补 .md 作为目标文件名
-        base = os.path.splitext(os.path.basename(src))[0] if src else "your_skill"
+        base = os.path.splitext(os.path.basename(raw_src))[0] if raw_src else "your_skill"
         dst = os.path.join(skills_dir, base + ".md")
+        # L7（审计 2026-08-18）：src 为 LLM 可控输入，含空格/元字符时
+        # 未经引用的命令会被 shell 拆词/注入（指引由子代理经 run_command 执行）
+        src = shlex.quote(raw_src) if raw_src else "/path/to/your_skill.md"
+        dst_q = shlex.quote(dst)
 
         guide = f"""📦 扩展技能安装指引
 {"=" * 55}
@@ -282,7 +287,7 @@ class InstallSkillTool(Tool):
 
 调用 create_subagent 派生子代理执行复制命令（目标文件名统一补 .md 扩展名）：
 
-  cp {src} {dst}
+  cp {src} {dst_q}
 
 ⚠️  注意：目标文件名必须带 .md 扩展名，
     系统以 .md 文件作为技能加载，且技能名称取文件名（不含 .md）。

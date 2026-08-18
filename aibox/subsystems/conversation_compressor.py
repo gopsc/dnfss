@@ -514,7 +514,8 @@ class ConversationCompressor:
         final_tokens = self.estimate_tokens([m for m in final_messages if m.get("role") != "system"])
 
         print(f"\n✅ {i18n.get('conversation_compressed', original_count, final_count)}")
-        print(f"   Token: {original_tokens} -> {final_tokens} (压缩率: {final_tokens/original_tokens:.1%})")
+        # L6：压缩块全空时 original_tokens 可能为 0，除零防护
+        print(f"   Token: {original_tokens} -> {final_tokens} (压缩率: {final_tokens / max(original_tokens, 1):.1%})")
 
         # 检查是否压缩到阈值以下
         if final_count >= threshold:

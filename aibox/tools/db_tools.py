@@ -752,7 +752,9 @@ class MemoTool(Tool):
 
         memo_id = kwargs.get("memo_id")
         if memo_id:
-            if self.memo_db.complete_memo(memo_id, force_complete=True):
+            # M5：真实物理删除（此前调 complete_memo 只标记完成，行不删除，
+            # 重复任务被推进而非移除，stats 计数失真）
+            if self.memo_db.delete_memo(memo_id):
                 return self.format_result(True, f"任务 #{memo_id} 已删除")
             else:
                 return f"❌ 无法删除任务 #{memo_id}"

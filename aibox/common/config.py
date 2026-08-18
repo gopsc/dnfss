@@ -278,27 +278,32 @@ class ConfigManager:
             "password_env": password_env
         }
         if save:
-            self._save_config()
+            return self._save_config()
         return True
 
-    def _save_config(self):
-        """将当前配置保存到配置文件（覆盖）。
+    def _save_config(self) -> bool:
+        """将当前配置保存到配置文件（覆盖）。返回是否成功落盘。
 
         落盘前对代理密码做纵深防御脱敏：无论调用路径如何，明文密码一律不写入文件。
+        L2（审计 2026-08-18）：此前异常仅 print，set_proxy 无条件报"已保存"，
+        磁盘只读等场景下用户以为已持久化，重启后配置丢失。
         """
         config_path = self._config_path
-        if config_path:
-            try:
-                safe_config = copy.deepcopy(self._config)
-                socks = safe_config.get("proxy", {}).get("socks5")
-                if socks and socks.get("password"):
-                    socks["password"] = None
-                os.makedirs(os.path.dirname(config_path), exist_ok=True)
-                with open(config_path, 'w', encoding='utf-8') as f:
-                    json.dump(safe_config, f, ensure_ascii=False, indent=2)
-                print(f"✅ 配置已保存到 {config_path}")
-            except Exception as e:
-                print(f"⚠️ 保存配置失败: {e}")
+        if not config_path:
+            return False
+        try:
+            safe_config = copy.deepcopy(self._config)
+            socks = safe_config.get("proxy", {}).get("socks5")
+            if socks and socks.get("password"):
+                socks["password"] = None
+            os.makedirs(os.path.dirname(config_path), exist_ok=True)
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(safe_config, f, ensure_ascii=False, indent=2)
+            print(f"✅ 配置已保存到 {config_path}")
+            return True
+        except Exception as e:
+            print(f"⚠️ 保存配置失败: {e}")
+            return False
 
     def get_proxy_info(self) -> Dict:
         """获取代理配置的详细信息（用于显示，不回传任何密码值）"""

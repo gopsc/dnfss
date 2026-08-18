@@ -328,14 +328,35 @@ class TaskScheduler:
             ai_thread.daemon = True
             ai_thread.start()
             
-            # 等待 AI 完成，同时处理可能的取消
+            # M3（审计 2026-08-18）：任务级超时兜底。此前 await ai_future
+            # 无任何超时/取消路径——AI think 卡死（LLM 挂起、子进程不可杀）
+            # 时该任务永不返回，调度器 run 循环顺序 await 被阻塞，后续全部
+            # 定时/即时任务不再执行且任务已 mark_as_triggered 不会重试。
+            # 到点 call_later 触发 ai.cancel()（置取消事件 + 关在途 HTTP 流），
+            # worker 线程自然收尾，调度循环继续。
+            task_timeout = float(ConfigManager().get("scheduler.task_timeout", 600))
+            timed_out = threading.Event()
+
+            def _timeout_cancel():
+                timed_out.set()
+                try:
+                    ai.cancel()
+                except Exception:
+                    pass
+
+            timeout_handle = loop.call_later(task_timeout, _timeout_cancel)
             try:
                 response = await ai_future
                 result = response or "AI无响应"
             except Exception as e:
-                self.logger.error(f"AI对话失败: {e}")
-                result = f"任务执行但AI对话失败: {str(e)}"
+                if timed_out.is_set():
+                    self.logger.error(f"任务执行超时（{task_timeout}秒），AI 已取消")
+                    result = f"任务执行超时（{task_timeout}秒），AI 已取消"
+                else:
+                    self.logger.error(f"AI对话失败: {e}")
+                    result = f"任务执行但AI对话失败: {str(e)}"
             finally:
+                timeout_handle.cancel()
                 # 确保线程结束
                 ai_thread.join(timeout=1.0)
             
@@ -534,10 +555,11 @@ class ExpressEmotionTool(Tool):
         if not name:
             return ""
         path = os.path.join(constants.SKILLS_DIR, name + ".md")
-        # N12：persona 为 LLM 可控输入，做路径边界校验——normcase 统一大小写与
-        # 分隔符后要求解析结果仍在 SKILLS_DIR 内，防止 ../../ 越界读取并注入
+        # N12 + L4（审计 2026-08-18）：persona 为 LLM 可控输入。abspath 前缀
+        # 检查拦截 ../ 越界，但符号链接可绕过（skills 目录内软链指向任意文件
+        # 即被读取注入）；realpath 解析软链后再做前缀校验。
         skills_root = os.path.normcase(os.path.abspath(constants.SKILLS_DIR))
-        resolved = os.path.normcase(os.path.abspath(path))
+        resolved = os.path.normcase(os.path.realpath(path))
         if not resolved.startswith(skills_root + os.sep):
             self.logger.warning(f"人格技能名非法（越界路径）: {name}")
             return ""
@@ -673,6 +695,14 @@ def run_full_subagent(role, task, config, logger=None, model=None,
         # 深度中断（sub_chat.cancel() 强关在途 HTTP 流并 kill 其子进程）。
         if cancel_event is not None:
             sub_chat._cancel_event = cancel_event
+            # H1（审计 2026-08-18）：共享父事件后禁止子代理首轮 clear——
+            # _think_and_respond_impl 首轮无条件 clear() 会吞掉父级已置位的
+            # 取消信号（用户中断 / --once 超时恰落在子代理生成窗口时被清掉，
+            # 观察者线程随之失效，子代理跑完全程）。置位后立即检查一次，
+            # 父级已取消则不再启动子代理。
+            sub_chat._shared_cancel_event = True
+            if cancel_event.is_set():
+                return "❌ 子代理已因父级取消而终止"
 
             def _watch_parent_cancel():
                 while not _watch_done.wait(timeout=0.2):
@@ -1456,8 +1486,9 @@ class DeepSeekChat:
     
     def _think_and_respond_impl(self, input_text: str, output_callback: Callable = None, is_continuation: bool = False) -> Optional[str]:
         """think_and_respond 的实际实现，在 _msg_lock 保护下执行。"""
-        # 首轮开始时清除取消标志
-        if not is_continuation:
+        # 首轮开始时清除取消标志（H1：共享父事件的子代理不清除——清除会
+        # 吞掉父级已置位的取消信号，使中断/--once 超时失效）
+        if not is_continuation and not getattr(self, "_shared_cancel_event", False):
             self._cancel_event.clear()
         
         # 立即检查是否已被取消
@@ -2492,10 +2523,17 @@ class WebSocketHandler:
         elif command == "/reload_prompts":
             session = self._get_session(websocket)
             ai = session.get("ai") if session else None
-            if ai:
-                new_count = ai.reload_prompts()
-            else:
-                new_count = self.ai_manager.prompt_manager.reload()
+            # M1（审计 2026-08-18）：reload_prompts 内部同步获取 _msg_lock
+            # （繁忙对话持锁可达数十秒），直接调用会冻结整个事件循环——
+            # N3 只修了 /new，这里同类遗漏。移入线程池执行。
+            loop = asyncio.get_running_loop()
+
+            def _do_reload_prompts():
+                if ai:
+                    return ai.reload_prompts()
+                return self.ai_manager.prompt_manager.reload()
+
+            new_count = await loop.run_in_executor(None, _do_reload_prompts)
             await self.send_message(websocket, {
                 "type": "command_result",
                 "content": i18n.get('prompts_reloaded', new_count)
@@ -2883,12 +2921,17 @@ class EnhancedAIManager:
         port = constants.WEBSOCKET_PORT
         
         self.ws_handler = WebSocketHandler(self)
+        # M2（审计 2026-08-18）：技能扫描对每个可执行技能串行跑 --help
+        # 子进程（各 ≤10s），懒加载于首条消息/首个任务时在事件循环线程
+        # 执行会冻结整个服务。启动前预热，把扫描成本移到连接建立之前。
+        self.ws_handler._get_shared_skill_manager()
         
         # 如果启用了任务调度器，创建并启动
         if constants.SCHEDULER_ENABLED:
             self.scheduler = TaskScheduler(asyncio.get_running_loop(), self.logger)
             self.scheduler.set_websocket_handler(self.ws_handler)
             self.scheduler.set_ai_manager(self)  # 设置AI管理器引用
+            self.scheduler._get_shared_skill_manager()
         
         async def handler(websocket):
             await self.handle_connection(websocket, None)
