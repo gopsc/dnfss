@@ -1075,6 +1075,8 @@ function load_notes(main_node) {
 	renderCards(current_children);
 	inheritThemeStyle();
 	updateDeleteBtnVisibility();
+	/* 层级切换后回到页面顶部，避免滚动条停留在上一层的深度 */
+	window.scrollTo(0, 0);
 };
 
 /* 对 __ 隐藏节点应用特效（注入 CSS / 运行 js），卡片不渲染 */
