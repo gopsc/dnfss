@@ -930,3 +930,26 @@ Linux 基线（`aibox/venv`）维持 **490 passed** 不受影响。
 - 全量测试 **493 passed / 4 failed（既有平台环境项）/ 1 skipped**，与波次 1/2 基线完全一致，零回归（前端无 pytest 覆盖，语法级验证兜底）
 
 **波次 4~5 待落地**：命令面规整（W1~W8/W11/W12 + W5 择优）、客户端收尾（M1~M5/M7/M8）。
+
+## 二十一、Batch M 修复记录（波次 4：命令面输入规整，2026-08-20）
+
+范围：§17.6 波次 4——W1~W8/W11/W12 + W5 择优，全部落在 `aibox.py`（W12 含 `subsystems/db.py`）+ `common/i18n.py` 三个新键（zh/en）。W9/W10（WS payload 体积上限、data 非 dict 归一）按审计口径"可不做/产品决策"跳过。
+
+| # | 修复内容 | 关键变更 |
+|---|---|---|
+| W1 | WS 三入口字段类型规整 | `handle_task_message`/`handle_command`/`handle_user_message` 的 action/command/content 非 str 时规整为 `""`/直接 return（此前 `.strip()` AttributeError 落顶层"处理失败"）；task add 的 `title` 必须非空 str、`content` 必须 str 或 None（此前 dict 直达 sqlite InterfaceError，J1 except 拦不住） |
+| W2 | task add `delay` 校验 | float 转换失败回友好 error；钳制 `[0, 10年]`（此前负数立即执行、`1e18` OverflowError） |
+| W3 | task complete 缺 task_id | 新增 else 回 error（i18n `memo_complete_missing_id`），此前静默无响应 |
+| W4 | `/search ` 空关键词 | 空 query 回用法提示（i18n `search_usage`），此前 LIKE `%%` 全表兜底刷屏 |
+| W5 | `/reload` 丢弃 CLI 进程级覆盖 | `main()` 暂存 `_cli_overrides`（debug/host/port/scheduler 等），`/reload` 后重放并在回包注明"命令行进程级覆盖已保留" |
+| W6 | 启动失败退出码 + `--port` 校验 | `run()` 异常分支补 `sys.exit(1)`（此前堆栈后退出码 0）；argparse 自定义 `_port_number` 限制 1~65535 |
+| W7 | `--scheduler-interval` 钳制 | 统一 `max(0.1, v)`（此前 `-1` 空转热循环、`0` 被 falsy 静默忽略） |
+| W8 | `--temperature` 入口钳制 | `main()` 内钳制 `[0.0, 2.0]`（此前 99/-1 直达 API 400） |
+| W11 | config 节非 dict 回退 | `main()` CLI 覆盖赋值前 isinstance 检查 `system`/`scheduler` 节，非 dict 回退默认节（此前启动即 TypeError） |
+| W12 | `--memo-add` 边界 | CLI：`title` strip、尾段空串 `""`→`None`（此前绕过 J1 时间校验）；`db.add_memo` 标题非空 ValueError（`"|x"` 空标题入库拦截） |
+
+**验证**：
+- 冒烟测试 12/12 通过：`--port` 五例（8765 放行 / 0/65536/-1/abc 拒绝）、`add_memo` 空/纯空格标题拒绝、正常标题入库、i18n 三新键解析、`"a|b|"` 尾段规整 None
+- 全量测试 **493 passed / 4 failed（既有平台环境项）/ 1 skipped**，与波次 1~3 基线完全一致，零回归
+
+**波次 5 待落地**：客户端收尾（M1~M5/M7/M8，model_config/voice_client/client + aibox.py scheduler 超时/记忆上限，~25 行）。

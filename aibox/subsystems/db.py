@@ -365,6 +365,9 @@ class MemoDatabase:
         # J1（审计 2026-08-19）：入库校验——畸形时间/数字字段此前原样入库，
         # 下游无防护解析点引发调度器失败热循环与新连接握手崩溃（审计报告
         # §13.1 J1）。CLI/WS/memo 工具三入口均经本方法，校验一处覆盖。
+        # W12（审计 2026-08-20）：空标题任务此前可入库（CLI "|x" / 调用方疏忽）
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError("任务标题不能为空")
         if reminder_time:
             try:
                 datetime.strptime(reminder_time, constants.DATETIME_FORMAT)

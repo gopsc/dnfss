@@ -98,6 +98,7 @@ class I18n:
                 'memo_overdue': "⚠️",
                 'memo_pending': "⏰",
                 'search_results': "🔍 搜索 '{}' 找到 {} 条记忆:",
+                'search_usage': "用法: /search 关键词",
                 'current_config': "⚙️  当前配置:",
                 'config_debug': "  调试级别: {}",
                 'config_data_dir': "  数据目录: {}",
@@ -110,6 +111,7 @@ class I18n:
                 'enabled': "启用",
                 'disabled': "禁用",
                 'config_reloaded': "✅ 配置已重新加载",
+                'config_reloaded_cli_kept': "（命令行进程级覆盖已保留）",
                 'prompts_reloaded': "✅ 提示词已重新加载 ({} 个)",
                 'checking_memos': "🔍 检查任务...",
                 'overdue_found': "发现 {} 个到期任务:",
@@ -157,6 +159,7 @@ class I18n:
                 'memo_add_failed': "❌ 添加失败: {}",
                 'memo_completed': "✅ 任务 #{} 已完成",
                 'memo_complete_failed': "❌ 无法完成任务 #{}",
+                'memo_complete_missing_id': "❌ 缺少 task_id，无法完成任务",
                 
                 # 即时任务相关
                 'immediate_memo_added': "⚡ 已添加为即时任务并立即检查",
@@ -258,6 +261,7 @@ class I18n:
                 'memo_overdue': "⚠️",
                 'memo_pending': "⏰",
                 'search_results': "🔍 Searching '{}' found {} memories:",
+                'search_usage': "Usage: /search <keyword>",
                 'current_config': "⚙️  Current configuration:",
                 'config_debug': "  Debug level: {}",
                 'config_data_dir': "  Data directory: {}",
@@ -270,6 +274,7 @@ class I18n:
                 'enabled': "enabled",
                 'disabled': "disabled",
                 'config_reloaded': "✅ Configuration reloaded",
+                'config_reloaded_cli_kept': " (CLI process-level overrides preserved)",
                 'prompts_reloaded': "✅ Prompts reloaded ({})",
                 'checking_memos': "🔍 Checking tasks...",
                 'overdue_found': "Found {} overdue tasks:",
@@ -317,6 +322,7 @@ class I18n:
                 'memo_add_failed': "❌ Failed to add: {}",
                 'memo_completed': "✅ Task #{} completed",
                 'memo_complete_failed': "❌ Cannot complete task #{}",
+                'memo_complete_missing_id': "❌ Missing task_id, cannot complete task",
                 
                 # Immediate task related
                 'immediate_memo_added': "⚡ Added as immediate task and checked now",

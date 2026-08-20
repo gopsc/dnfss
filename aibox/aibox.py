@@ -2385,7 +2385,12 @@ class WebSocketHandler:
     
     async def handle_task_message(self, websocket, data):
         """处理任务相关消息 - 简化版，所有任务都是对话任务"""
-        action = data.get("action", "").strip()
+        # W1（审计 2026-08-20）：字段类型规整——非 str 此前在 .strip() 抛
+        # AttributeError，落顶层兜底以笼统"处理失败"收场
+        action = data.get("action", "")
+        if not isinstance(action, str):
+            action = ""
+        action = action.strip()
         
         if action == "add":
             # 添加任务
@@ -2400,13 +2405,33 @@ class WebSocketHandler:
             repeat_interval_unit = data.get("repeat_interval_unit", "days")
             repeat_end_time = data.get("repeat_end_time")
             
-            if not title:
+            # W1（审计 2026-08-20）：title 传 dict 等类型此前直达 sqlite 抛
+            # InterfaceError（J1 except ValueError 拦不住）
+            if not isinstance(title, str) or not title.strip():
                 await self.send_message(websocket, {
                     "type": "error",
                     "content": "需要提供任务标题"
                 })
                 return
-            
+            if content is not None and not isinstance(content, str):
+                await self.send_message(websocket, {
+                    "type": "error",
+                    "content": "任务内容必须是字符串"
+                })
+                return
+
+            # W2（审计 2026-08-20）：delay 无校验——非数字 TypeError、负数立即
+            # 执行、10^18 OverflowError。float 转换 + 钳制 [0, 10 年]
+            try:
+                delay = float(delay)
+            except (TypeError, ValueError):
+                await self.send_message(websocket, {
+                    "type": "error",
+                    "content": f"任务延迟必须是数字（秒）: {delay!r}"
+                })
+                return
+            delay = min(max(delay, 0.0), 10 * 365 * 86400)
+
             reminder_time = None
             if is_immediate:
                 reminder_time = datetime.now().strftime(constants.DATETIME_FORMAT)
@@ -2481,6 +2506,12 @@ class WebSocketHandler:
                         "type": "error",
                         "content": i18n.get('memo_complete_failed', memo_id)
                     })
+            else:
+                # W3（审计 2026-08-20）：缺 task_id 此前静默无响应
+                await self.send_message(websocket, {
+                    "type": "error",
+                    "content": i18n.get('memo_complete_missing_id')
+                })
         else:
             # J15（审计 2026-08-19）：未知 action 此前静默吞掉，客户端无任何反馈
             await self.send_message(websocket, {
@@ -2490,7 +2521,10 @@ class WebSocketHandler:
     
     async def handle_command(self, websocket, data):
         """处理命令消息"""
-        command = data.get("command", "").strip()
+        command = data.get("command", "")
+        if not isinstance(command, str):  # W1（审计 2026-08-20）：非 str 字段规整
+            return
+        command = command.strip()
         
         if not command:
             return
@@ -2609,6 +2643,13 @@ class WebSocketHandler:
             
         elif command.startswith("/search "):
             query = command[8:].strip()
+            # W4（审计 2026-08-20）：空关键词此前 LIKE %% 全表兜底刷屏，回用法提示
+            if not query:
+                await self.send_message(websocket, {
+                    "type": "command_result",
+                    "content": i18n.get('search_usage')
+                })
+                return
             results = self.ai_manager.memory_db.search_memories([query])
             result = i18n.get('search_results', query, len(results)) + "\n"
             for mem in results:
@@ -2635,9 +2676,20 @@ class WebSocketHandler:
             
         elif command == "/reload":
             self.ai_manager.config.reload()
+            # W5（审计 2026-08-20）：reload 经 _load_config 重建 _config，会静默
+            # 丢弃 CLI 进程级覆盖（--debug/--port/--no-scheduler 等）——此处重放
+            # main() 暂存在 config._cli_overrides 的覆盖
+            overrides = getattr(self.ai_manager.config, "_cli_overrides", None)
+            note = ""
+            if overrides:
+                for section, kv in overrides.items():
+                    target = self.ai_manager.config._config.get(section)
+                    if isinstance(target, dict):
+                        target.update(kv)
+                note = i18n.get('config_reloaded_cli_kept')
             await self.send_message(websocket, {
                 "type": "command_result",
-                "content": i18n.get('config_reloaded')
+                "content": i18n.get('config_reloaded') + note
             })
             
         elif command == "/reload_prompts":
@@ -2737,7 +2789,10 @@ class WebSocketHandler:
 
     async def handle_user_message(self, websocket, data):
         """处理用户消息 - 实时流式输出（每个连接使用独立的AI实例，支持多用户并发）"""
-        content = data.get("content", "").strip()
+        content = data.get("content", "")
+        if not isinstance(content, str):  # W1（审计 2026-08-20）：非 str 字段规整
+            return
+        content = content.strip()
         
         if not content:
             return
@@ -3116,9 +3171,23 @@ class EnhancedAIManager:
             print(f"\n{i18n.get('error_prefix')}{e}")
             import traceback
             traceback.print_exc()
+            # W6（审计 2026-08-20）：启动/运行失败此前打印堆栈后以退出码 0
+            # 收场，supervisor/脚本误判成功
+            sys.exit(1)
 
 
 # ==================== 命令行参数处理 ====================
+
+def _port_number(value):
+    """W6（审计 2026-08-20）：--port argparse 类型校验，非法值启动前即报错"""
+    try:
+        iv = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"端口必须是整数: {value!r}")
+    if not (1 <= iv <= 65535):
+        raise argparse.ArgumentTypeError(f"端口必须在 1~65535 之间: {iv}")
+    return iv
+
 
 def parse_args():
     """解析命令行参数"""
@@ -3140,7 +3209,7 @@ def parse_args():
     
     # WebSocket选项
     parser.add_argument('--host', type=str, help='WebSocket服务器主机')
-    parser.add_argument('--port', type=int, help='WebSocket服务器端口')
+    parser.add_argument('--port', type=_port_number, help='WebSocket服务器端口')
     
     # 调度器选项
     parser.add_argument('--no-scheduler', action='store_true', help='禁用任务调度器')
@@ -3224,9 +3293,11 @@ def handle_memo_commands(manager):
     if args.memo_add:
         try:
             parts = args.memo_add.split('|')
-            title = parts[0]
+            # W12（审计 2026-08-20）："|x" 空标题此前直接入库；"a|b|" 尾部空段
+            # 以 "" 传入绕过 J1 时间校验——空串规整为 None，空标题由 db 层拦
+            title = parts[0].strip()
             content = parts[1] if len(parts) > 1 else ""
-            reminder = parts[2] if len(parts) > 2 else None
+            reminder = (parts[2].strip() or None) if len(parts) > 2 else None
             
             # 解析重复参数
             repeat_type = parts[3] if len(parts) > 3 else "none"
@@ -3418,24 +3489,52 @@ def main():
         os.environ["AI_CONFIG_PATH"] = args.config
     
     config = ConfigManager()
-    
+
+    # W8（审计 2026-08-20）：--temperature 入口钳制，防 99/-1 直达 API 400
+    if args.temperature is not None:
+        args.temperature = min(2.0, max(0.0, args.temperature))
+
+    # W11（审计 2026-08-20）：config.json 的 system/scheduler 节被写成非 dict
+    # 时，下方 CLI 覆盖赋值 TypeError 崩启动——回退默认节
+    _section_defaults = config._get_default_config()
+    for _section in ("system", "scheduler"):
+        if not isinstance(config._config.get(_section), dict):
+            config._config[_section] = _section_defaults.get(_section, {})
+
     if args.debug is not None:
         config._config["system"]["debug_level"] = args.debug
-    
+
     if args.verbose:
         config._config["system"]["debug_level"] = 3
-    
+
     # 覆盖WebSocket主机和端口
     if args.host:
         config._config["system"]["websocket_host"] = args.host
     if args.port:
         config._config["system"]["websocket_port"] = args.port
-    
+
     # 调度器设置
     if args.no_scheduler:
         config._config["scheduler"]["enabled"] = False
-    if args.scheduler_interval:
-        config._config["scheduler"]["check_interval"] = args.scheduler_interval
+    # W7（审计 2026-08-20）：负值直达 asyncio.sleep(负) 空转热循环，0 被 falsy
+    # 静默忽略——统一钳制下限 0.1s
+    config._config["scheduler"]["check_interval"] = max(0.1, args.scheduler_interval)
+
+    # W5（审计 2026-08-20）：暂存 CLI 进程级覆盖，WS /reload 后重放（否则
+    # config.reload() 重建 _config 会静默丢弃）
+    _cli_overrides = {"system": {}, "scheduler": {}}
+    if args.debug is not None:
+        _cli_overrides["system"]["debug_level"] = args.debug
+    if args.verbose:
+        _cli_overrides["system"]["debug_level"] = 3
+    if args.host:
+        _cli_overrides["system"]["websocket_host"] = args.host
+    if args.port:
+        _cli_overrides["system"]["websocket_port"] = args.port
+    if args.no_scheduler:
+        _cli_overrides["scheduler"]["enabled"] = False
+    _cli_overrides["scheduler"]["check_interval"] = config._config["scheduler"]["check_interval"]
+    config._cli_overrides = {k: v for k, v in _cli_overrides.items() if v}
     
     # 确保 ~/.aibox 目录存在
     os.makedirs(constants.SAVE_DIR, exist_ok=True)
