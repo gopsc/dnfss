@@ -4,8 +4,7 @@
 > 模块：actpred
 > 作者：自动生成
 > 日期：2026-08-15
-> 前置：`actpred_zscore_baseline_20260815.md`（模型 B 基线）、
-> `actpred_onehot_multihead_dev_plan_20260814.md`（one-hot 方案）
+> 前置：`actpred_zscore_baseline_20260815.md`（模型 B 基线）
 
 ---
 

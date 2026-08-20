@@ -5,7 +5,6 @@
 > 作者：自动生成
 > 日期：2026-08-14
 > 前置实验：`pybot_actpred_dataset_training_eval_20260814.md`（模型 A/B）
-> 开发方案：`actpred_action_norm_weighting_plan_20260814.md`（本实验为其步骤 4）
 > 后续实验：模型 D（fixed_range + 加权 + R1-B rollout），训练中
 
 ---

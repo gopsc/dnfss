@@ -5,8 +5,7 @@
 > 作者：自动生成
 > 日期：2026-08-15
 > 相关实验：`pybot_actpred_dataset_training_eval_20260814.md`（A/B 对照）、
-> `actpred_fixed_range_weighted_experiment_20260814.md`（C/D/E 失败系列）、
-> `actpred_onehot_multihead_dev_plan_20260814.md`（F 系列结构性方案）
+> `actpred_fixed_range_weighted_experiment_20260814.md`（C/D/E 失败系列）
 
 ---
 
