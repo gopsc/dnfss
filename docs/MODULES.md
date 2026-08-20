@@ -44,7 +44,7 @@
 
 | 模块 | 语言 | 端口 | 职责 |
 |------|------|------|------|
-| aibox | Python | 8765 | 独立 AI 智能体系统（DeepSeek + WebSocket），自带技能系统/记忆/任务调度/前端与语音客户端；`--once` CLI 单次对话（stdout/stderr 分流），`models` 配置节支持多 OpenAI 兼容端点按档案名切换 |
+| aibox | Python | 8765 | 独立 AI 智能体系统（DeepSeek + WebSocket），自带技能系统/记忆/任务调度/前端与语音客户端；`--once` CLI 单次对话（stdout/stderr 分流），`models` 配置节支持多 OpenAI 兼容端点按档案名切换，`model_config.py` 交互式接入点管理（列表/添加/删除/连通性验证，Key 仅记环境变量名不落盘） |
 | BotOps | Python/Textual | — | aibox 的终端 TUI 前端，WebSocket 连接 aibox，Markdown 增量流式渲染、思考模式、任务侧栏、自动重连 |
 | actpred | Python/PyTorch | — | 动作预测（图像 + 动作历史 → 预测下一个动作），bot4cj 的「大脑」配套；支持从 `.mt` 脚本预训练 |
 
@@ -77,7 +77,7 @@
 | 模块 | 说明 |
 |------|------|
 | tests | 黑盒测试套件（`test_db.py`/`test_gateway.py`/`test_waf.py`/`test_dnfs.py`/`test_captcha.py`/`test_smtp.py`/`test_ai_review.py`/`test_static.py`/`test_core_confs.py`），纯标准库 HTTP/TCP 用户旅程模拟，经 `test_runner.py` 统一调度（详见 [tests/blackbox/README.md](../tests/blackbox/README.md)） |
-| docs | 文档聚合（security/ 审计、reviews/ 审查、reports/ 分析），76 篇 md |
+| docs | 文档聚合（security/ 审计、reviews/ 审查、reports/ 分析），77 篇 md + 1 篇 html |
 
 ## 九、根级构建与部署脚本
 

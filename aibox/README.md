@@ -913,6 +913,16 @@ elif command == "/mycommand":
 
 ## 📄 更新日志
 
+### v3.6
+- ✅ **交互式大模型接入点管理（[model_config.py](model_config.py)）**：菜单式 列表 / 添加 / 删除 / 连通性验证，不用手写 `config.json`；Key 仅记录环境变量名不落盘（空 = 免密本地端点）；删除自动清理其他档案的 fallback 引用；默认档案经 `api.default_model` 生效（详见 [模型接入点管理](#管理大模型接入点不用手写配置)）
+- ✅ **第五轮安全审计（2026-08-19，4 路并行审读 + Linux PoC 2/2 实证，发现 J1~J16：高危 2 / 中危 5 / 低危 6 / 信息 3）**（完整记录见 [docs/reports/aibox_audit_20260817.md](../docs/reports/aibox_audit_20260817.md) §13~§14）：
+  - **K1（J1 高危·任务系统投毒）**：畸形时间/数字字段经 CLI/WS/memo 工具三入口零校验入库 → 调度器失败热循环 + 每个新连接握手即崩——入库端统一校验（`reminder_time`/`repeat_end_time` strptime 预检、`repeat_interval` 强转 int、`repeat_type` 白名单）、调度器预检失败按到期执行（Q5 语义）、`get_pending_tasks_for_user` 解析失败按到期展示、`register` 移入 try/finally（会话登记不再泄漏）；附带修复 `add_user_task` 缺失 `repeat_end_time` 参数透传
+  - **K2（J2 高危·前端 XSS）**：三页面 7 处 `marked.parse` 直渲（AI 输出/命令结果全链路 innerHTML）统一改经 `renderMarkdown()` + DOMPurify（缺失时退化为转义文本防 XSS 兜底）；`entry1.addSystemMessage` 改 DOM 构建 + textContent；任务标题改 createTextNode；CDN 脚本（marked/hljs/socket.io/DOMPurify）补 SRI integrity（J13）
+  - **K3（中危）**：FTS 外部内容表删除换序——先删 `memories_fts` 再删 `memories`，索引残留消除（J3，PoC 实证）；config/prompt/对话写路径统一原子写（`common/atomic.py`，mkstemp + fsync + os.replace）+ 损坏备份 `config.json.corrupt.<时间戳>` 拒绝覆盖（J5）；PromptManager/ConfigManager 单例初始化纳入锁（J6，并发首例不再双重加载系统提示词）
+  - **K4（中危）**：`model_config.py` 连通性验证异常消息复用 `_sanitize_log_msg` 脱敏（J4，Bearer 令牌不再进终端）；`broadcast` 改每客户端并发发送 + `asyncio.wait_for` 超时（`broadcast_send_timeout` 默认 5s），超时即 unregister——僵死客户端（半开 TCP）不再卡死广播与调度器循环（J7）
+  - **K5（低危随批）**：J8 交互输入容错（非法温度/超时友好报错）；J9 MemoDatabase WAL + busy_timeout=10000 覆盖全部写路径；J10 memo 批量删除补实现（`memo_ids`）；J11 `/new` 取消-重置竞态（排队 reset 等待 is_processing 清零）；J12 skills 注入面（nmap hosts `shlex.quote`、screenshot PowerShell 单引号转义、SKILLS_FORMAT.md 新增"安全边界"节）；J14 voice_client 死代码/僵尸连接/录音残留清理；J15 死代码移除（`full_response_queue` 等）+ 未知 task action 明确报错 + 广播门控对齐 + 热路径日志降级；J16 `--help` 输出 2000 上限 + 同名技能键确定性解决
+- ✅ **测试**：490 项全过（Linux 环境；第五轮新增 Batch K 35 项 + 子代理 max_turns 回归 14 项；`test_execute_timeout`/`test_flat_api_still_reads_key_file` 为 Windows 向用例，Linux 预存失败与本轮无关）
+
 ### v3.5
 - ✅ **安全审计与修复（第三轮 Batch G + 第四轮 Batch H + 遗留收尾 Batch I）**（完整记录见 [docs/reports/aibox_audit_20260817.md](../docs/reports/aibox_audit_20260817.md)）：
   - **Batch G（llm 加固 + 线程生命周期 + 取消传播 + DB 事务）**：

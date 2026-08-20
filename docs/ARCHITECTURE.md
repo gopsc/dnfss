@@ -2,7 +2,7 @@
 
 > 权威架构参考。本文以 `core/services.yaml`（实际运行清单）与 `git HEAD` 为事实来源。
 > 与根目录 `README.md` 的偏差见文末「§10 与 README 的偏差」。
-> 最后核对于：2026-08-17。
+> 最后核对于：2026-08-20。
 
 ---
 
@@ -85,7 +85,7 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
                           └─────────────────────────────────────┘
 
   独立 / 外设（不在主链路）：
-    aibox :8765 (Python WebSocket, 独立产品; --once CLI 单次对话 + models 多模型档案含 fallback 失败转移)
+    aibox :8765 (Python WebSocket, 独立产品; --once CLI 单次对话 + models 多模型档案含 fallback 失败转移 + model_config.py 交互式接入点管理)
     BotOps (aibox 的 TUI 前端)
     bot4cj (Cangjie + 树莓派 I2C, 硬件)
     pybot (Python, bot4cj 的迁移版: .mt 解析/录制/实时闭环)
@@ -252,6 +252,7 @@ Blackbird 是一套 **进程托管式轻量微服务** 系统（自研 UniServe 
 6. **工作记忆偏差**：✅ 已同步。`ca:8443 → gateway:8445`、`dnfs2`、confs 内嵌 core 均已写入各文档。
 7. **dnfs2 README 图示滞后**：✅ 已修正（2026-08-10）。`dnfs2/README.md` 架构图与验签描述已更新为 ca:8443（CLI 参数 `--gateway-url` 指向 ca）。
 8. **memdb / pybot / mtc 未进根 README**：✅ 已回填（2026-08-15）。`memdb:8011`、`pybot`（bot4cj Python 迁移版）、`mtc`（Python DSL → .mt 编译器，2026-08-15 落地）连同 `actpred` 已入根 `README.md` 模块表与端口一览；本文件与 MODULES.md 已同步。
+9. **aibox 第五轮审计（Batch K）与 model_config.py**：✅ 已同步（2026-08-20）。根 README aibox 小节审计轮次更新为五轮（E/F/G/H/I/K，单测 490 项全过）并增补 `model_config.py` 交互式接入点管理；MODULES.md 同步 aibox 行与文档计数；aibox/README.md 更新日志补 v3.6 条目（J1~J16 + Batch K 波次 1~5 落地）。
 
 ---
 
