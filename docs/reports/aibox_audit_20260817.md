@@ -890,3 +890,25 @@ Linux 基线（`aibox/venv`）维持 **490 passed** 不受影响。
 - 全量测试 **493 passed / 4 failed（平台环境项）/ 1 skipped**，与审计基线完全一致，零回归
 
 **波次 2~5 待落地**：路径边界（S2/S9/S11/S12+低危同类）、前端功能（F1/F2 等）、命令面规整（W 系列）、客户端收尾（M1 等）。
+
+## 十九、Batch M 修复记录（波次 2：路径边界，2026-08-20）
+
+范围：§17.6 波次 2——用户/AI 可控文件名与人名校验，统一拦截"经 `os.path.join` 逃逸目标目录"类问题（S2/S3/S9/S11/S12 + S6/S10/S13）。
+
+| # | 修复内容 | 关键变更 |
+|---|---|---|
+| S2 | `gitclient.py` `delete` 限工作区 | `os.path.realpath` 双重校验：必须在 `WORKSPACE_DIR` 内且含 `.git` 目录，否则拒绝 |
+| S3 | `gitclient.py` 分支名白名单 | `_REF_RE=^[A-Za-z0-9][A-Za-z0-9._/@+-]{0,127}$`（首字符禁 `-` 防 git 选项注入），clone/pull/push 三入口统一 `_valid_ref` 拦截 |
+| S9 | `camera.py` `--filename` 校验 | 新增 `validate_filename`：拒绝 `/`、`\`、绝对路径、`.`/`..`；capture 分支接入，非法即 exit 1 |
+| S10 | `screenshot.py` `--filename` 校验 | 同款 `validate_filename`，`take_screenshot` 内拦截返回失败（此前 J12 只挡了 PS 注入，路径逃逸未挡） |
+| S11 | `facerec.py` person_name 白名单 | `_PERSON_NAME_RE=^(?!\.+$)[\w.-]{1,64}$`（`\w` UNICODE 兼容中文人名），add/remove/get-info 三方法统一拦截 |
+| S12 | `vision.py` 图片魔数校验 | 新增 `detect_image_mime`（JPEG/PNG/GIF/WebP/BMP 魔数白名单），非图片文件拒绝读取外发；data URL MIME 由硬编码 `image/jpeg` 改为按魔数实测 |
+| S6 | `sftp-transfer.py` 目录成员名校验 | 新增 `safe_member_name`，`download_dir`/`upload_dir` 双向过滤 listdir 条目——防恶意服务端构造 `../../x` 条目在递归下载时逃逸本地目录 |
+| S13 | `test-auto-appimage.sh` sed 注入 | `create_apprun` 对 `$exec_name` 白名单 `^[A-Za-z0-9._+-]+$`，非法即退出（此前含 `/`/`&` 可破坏/注入 `sed -i "s/EXEC_NAME/.../g"`） |
+
+**验证**：
+- 六文件 `py_compile` 通过（Windows 无 bash，`test-auto-appimage.sh` 变更为单条正则守卫，低风险）
+- 校验器功能实测：camera 放行 `ok.jpg`/拦截 `../evil.jpg`、`a/b`、`a\b`；facerec 放行 `张三`/`Li-Si_2.0`/拦截 `../etc`、`..`、空串；vision PNG 魔数识别正确/文本文件拒绝；sftp 放行正常名/拦截 `..`、`a/b`、`a\b`、空串
+- 全量测试 **493 passed / 4 failed（既有平台环境项：symlink 权限、`python3` 缺 PATH、Windows 可执行位语义）/ 1 skipped**，与波次 1 基线完全一致，零回归
+
+**波次 3~5 待落地**：前端功能（F1/F2 等）、命令面规整（W 系列）、客户端收尾（M1 等）。

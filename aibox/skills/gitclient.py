@@ -3,6 +3,7 @@
 
 import sys
 import os
+import re
 import argparse
 import requests
 from datetime import datetime
@@ -34,6 +35,13 @@ MAX_PER_PAGE = 10
 MAX_CONTENT_PREVIEW = 1000
 MAX_LIST_PREVIEW = 20
 MAX_STRING_LENGTH = 200
+
+# S3：分支/ref 白名单——首字符必须为字母或数字，防止以 '-' 开头的值被 git 解析为选项（选项注入）
+_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@+-]{0,127}$")
+
+
+def _valid_ref(name: str) -> bool:
+    return bool(name) and bool(_REF_RE.match(name))
 
 
 # ==================== GitHub工具类 ====================
@@ -165,6 +173,8 @@ class GitHubTool:
         if os.path.exists(target_dir):
             return f"⚠️ 仓库已存在: {target_dir}\n💡 使用 pull 命令拉取更新"
         
+        if branch and not _valid_ref(branch):
+            return f"❌ 非法分支名: {branch}"
         clone_url = f"https://github.com/{repo}.git"
         cmd = ["clone"]
         if depth > 0:
@@ -186,6 +196,8 @@ class GitHubTool:
             br = self._run_git(repo_path, ["branch", "--show-current"])
             branch = br["stdout"] if br["success"] else None
         
+        if branch and not _valid_ref(branch):
+            return f"❌ 非法分支名: {branch}"
         result = self._run_git(repo_path, ["pull", "origin", branch] if branch else ["pull"])
         if result["success"]:
             return f"✅ 拉取成功\n   {result['stdout'] or '已是最新'}"
@@ -199,6 +211,8 @@ class GitHubTool:
             br = self._run_git(repo_path, ["branch", "--show-current"])
             branch = br["stdout"] if br["success"] else None
         
+        if branch and not _valid_ref(branch):
+            return f"❌ 非法分支名: {branch}"
         cmd = ["push"]
         if force:
             cmd.append("--force")
@@ -284,9 +298,15 @@ class GitHubTool:
             return "⚠️ 需要确认删除，请添加 --confirm 参数"
         if not os.path.exists(repo_path):
             return f"❌ 路径不存在: {repo_path}"
+        # S2：仅允许删除 WORKSPACE 内的 git 仓库，防止任意目录递归删除
+        workspace = os.path.realpath(WORKSPACE_DIR)
+        real_path = os.path.realpath(repo_path)
+        if not real_path.startswith(workspace + os.sep) \
+                or not os.path.isdir(os.path.join(real_path, ".git")):
+            return f"❌ 仅允许删除工作区（{workspace}）内的 git 仓库目录"
         try:
-            shutil.rmtree(repo_path)
-            return f"✅ 已删除: {repo_path}"
+            shutil.rmtree(real_path)
+            return f"✅ 已删除: {real_path}"
         except Exception as e:
             return f"❌ 删除失败: {e}"
 

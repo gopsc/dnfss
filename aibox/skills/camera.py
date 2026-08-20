@@ -18,6 +18,16 @@ def ensure_camera_dir():
     return CAMERA_DIR
 
 
+def validate_filename(filename):
+    """S9（审计 2026-08-20）：--filename 仅允许纯文件名——
+    拒绝路径分隔符/父目录引用/绝对路径，防止经 os.path.join 逃逸 CAMERA_DIR"""
+    if not filename:
+        return "文件名不能为空"
+    if filename in (".", "..") or "/" in filename or "\\" in filename or os.path.isabs(filename):
+        return f"非法文件名（不允许路径分隔符或父目录引用）: {filename}"
+    return None
+
+
 def list_cameras(max_test=10):
     """列出可用的摄像头设备"""
     available_cameras = []
@@ -341,6 +351,10 @@ def main():
             ensure_camera_dir()
             
             if args.filename:
+                filename_error = validate_filename(args.filename)
+                if filename_error:
+                    print(f"❌ {filename_error}")
+                    sys.exit(1)
                 save_path = os.path.join(CAMERA_DIR, args.filename)
             else:
                 timestamp = time.strftime("%Y%m%d_%H%M%S")

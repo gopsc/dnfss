@@ -51,7 +51,14 @@ create_apprun() {
     local app_dir="$1"
     local exec_name="$2"
     local terminal="$3"
-    
+
+    # S13（审计 2026-08-20）：exec_name 进入 sed 替换串，含 / & 等字符会注入或破坏
+    # 替换表达式（如 "a/x" 使 s///g 错位、"&" 展开为匹配串）。白名单拦截，拒绝即退出。
+    if [[ ! "$exec_name" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+        echo -e "${RED}错误: 可执行文件名含非法字符（仅允许 A-Za-z0-9._+-）: $exec_name${NC}"
+        exit 1
+    fi
+
     cat > "$app_dir/AppRun" << 'EOF'
 #!/bin/bash
 HERE="$(dirname "$(readlink -f "$0")")"

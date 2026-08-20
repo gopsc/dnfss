@@ -2,6 +2,7 @@
 """人脸检测和识别工具 - 检测图像中的人脸并保存裁剪的人脸图像。"""
 
 import os
+import re
 import sys
 import argparse
 import cv2
@@ -13,6 +14,16 @@ try:
 except ImportError:
     print("❌ 缺少依赖库: face_recognition。请运行: pip install face_recognition")
     sys.exit(1)
+
+
+# S11（审计 2026-08-20）：person_name 白名单——仅允许文字/数字/._-，
+# 拒绝路径分隔符与纯点名（"."/".."），防止经 f"{name}.jpg" 拼接逃逸 known_faces 目录。
+# \w 在 py3 默认 UNICODE，兼容中文人名（如 "张三"）。
+_PERSON_NAME_RE = re.compile(r"^(?!\.+$)[\w.-]{1,64}$")
+
+
+def _valid_person_name(name):
+    return bool(name) and bool(_PERSON_NAME_RE.match(name))
 
 
 class FaceDetector:
@@ -198,6 +209,8 @@ class FaceDetector:
     def add_known_face(self, image_path: str, person_name: str) -> str:
         """添加已知人脸到数据库"""
         try:
+            if not _valid_person_name(person_name):
+                return f"❌ 非法人名标识: {person_name}（仅允许文字/数字/._-，≤64字符）"
             if not os.path.exists(image_path):
                 return f"❌ 文件不存在: {image_path}"
             
@@ -237,6 +250,8 @@ class FaceDetector:
     def remove_known_face(self, person_name: str) -> str:
         """从已知人脸库中删除人脸"""
         try:
+            if not _valid_person_name(person_name):
+                return f"❌ 非法人名标识: {person_name}（仅允许文字/数字/._-，≤64字符）"
             filepath = os.path.join(self.known_faces_dir, f"{person_name}.jpg")
             
             if not os.path.exists(filepath):
@@ -260,6 +275,8 @@ class FaceDetector:
     def get_face_info(self, person_name: str) -> str:
         """获取已知人脸信息"""
         try:
+            if not _valid_person_name(person_name):
+                return f"❌ 非法人名标识: {person_name}（仅允许文字/数字/._-，≤64字符）"
             filepath = os.path.join(self.known_faces_dir, f"{person_name}.jpg")
             
             if not os.path.exists(filepath):

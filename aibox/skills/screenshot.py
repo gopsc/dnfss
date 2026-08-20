@@ -29,6 +29,14 @@ def get_timestamp_filename(prefix="screenshot", extension="png"):
     return f"{prefix}_{timestamp}.{extension}"
 
 
+def validate_filename(filename):
+    """S10（审计 2026-08-20）：--filename 仅允许纯文件名——
+    拒绝路径分隔符/父目录引用/绝对路径，防止经 os.path.join 逃逸保存目录"""
+    if filename in (".", "..") or "/" in filename or "\\" in filename or os.path.isabs(filename):
+        return f"非法文件名（不允许路径分隔符或父目录引用）: {filename}"
+    return None
+
+
 def get_system():
     """获取当前操作系统"""
     return platform.system()
@@ -154,6 +162,9 @@ def take_screenshot(output_dir=None, filename=None, delay=0):
     os.makedirs(save_dir, exist_ok=True)
     
     if filename:
+        filename_error = validate_filename(filename)
+        if filename_error:
+            return False, filename_error, None
         filepath = os.path.join(save_dir, filename)
     else:
         filepath = os.path.join(save_dir, get_timestamp_filename())

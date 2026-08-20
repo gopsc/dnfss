@@ -23,6 +23,27 @@ def get_api_key():
         return None
 
 
+def detect_image_mime(image_path):
+    """S12（审计 2026-08-20）：按魔数识别真实图片类型——
+    拒绝非图片文件（防任意文件读取外泄），并返回正确 MIME（此前硬编码 image/jpeg）"""
+    try:
+        with open(image_path, 'rb') as f:
+            head = f.read(16)
+    except Exception:
+        return None
+    if head.startswith(b'\xff\xd8\xff'):
+        return 'image/jpeg'
+    if head.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'image/png'
+    if head[:6] in (b'GIF87a', b'GIF89a'):
+        return 'image/gif'
+    if head.startswith(b'RIFF') and head[8:12] == b'WEBP':
+        return 'image/webp'
+    if head.startswith(b'BM'):
+        return 'image/bmp'
+    return None
+
+
 def encode_image_to_base64(image_path):
     """将图片编码为base64"""
     with open(image_path, 'rb') as f:
@@ -37,7 +58,11 @@ def analyze_image(image_path, prompt, stream=False):
     
     if not os.path.exists(image_path):
         return f"❌ 错误：图片文件不存在 - {image_path}"
-    
+
+    mime = detect_image_mime(image_path)
+    if not mime:
+        return f"❌ 错误：文件不是有效图片（仅支持 JPEG/PNG/GIF/WebP/BMP） - {image_path}"
+
     try:
         base64_image = encode_image_to_base64(image_path)
     except Exception as e:
@@ -55,7 +80,7 @@ def analyze_image(image_path, prompt, stream=False):
                 {
                     "type": "image_url",
                     "image_url": {
-                        "url": f"data:image/jpeg;base64,{base64_image}"
+                        "url": f"data:{mime};base64,{base64_image}"
                     }
                 },
                 {

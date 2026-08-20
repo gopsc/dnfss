@@ -83,6 +83,12 @@ def log(verbose, msg):
         print(f"[SFTP] {msg}")
 
 
+def safe_member_name(name):
+    """S6（审计 2026-08-20）：目录成员名校验——拒绝路径分隔符与 . / ..，
+    防止恶意 SFTP 服务端构造 listdir 条目（如 ../../etc/cron.d/x）在递归下载时逃逸本地目录"""
+    return name not in ('', '.', '..') and '/' not in name and '\\' not in name
+
+
 def get_password(args):
     """获取密码：环境变量 AIBOX_SFTP_PASS 优先，否则交互式输入（S5：凭据不走命令行）"""
     env_pass = os.environ.get("AIBOX_SFTP_PASS")
@@ -149,6 +155,9 @@ def upload_dir(sftp, local_dir, remote_dir, verbose):
     """递归上传目录"""
     ensure_remote_dir(sftp, remote_dir, verbose)
     for item in os.listdir(local_dir):
+        if not safe_member_name(item):
+            print(f"  警告: 跳过非法本地条目名: {item!r}", file=sys.stderr)
+            continue
         local_item = os.path.join(local_dir, item)
         remote_item = os.path.join(remote_dir, item)
         if os.path.isdir(local_item):
@@ -174,6 +183,9 @@ def download_dir(sftp, remote_dir, local_dir, verbose):
         log(verbose, f"  创建本地目录: {local_dir}")
 
     for item in sftp.listdir(remote_dir):
+        if not safe_member_name(item):
+            print(f"  警告: 跳过非法远端条目名: {item!r}", file=sys.stderr)
+            continue
         remote_item = os.path.join(remote_dir, item).replace('\\', '/')
         local_item = os.path.join(local_dir, item)
         try:
