@@ -162,6 +162,7 @@ common  ←  subsystems  ←  tools  ←  aibox.py
 # 从仓库根目录运行
 py -m pytest aibox/tests -q
 # 当前：490 项全过（Linux；test_execute_timeout / test_flat_api_still_reads_key_file 为 Windows 向用例，Linux 预存失败）
+# Windows 开发机：493 passed / 4 failed（平台环境项：symlink 权限、python3 缺失、POSIX 可执行位语义 ×2）/ 1 skipped
 ```
 
 运行期数据存放于 `~/.aibox/`：
@@ -912,6 +913,12 @@ elif command == "/mycommand":
 3. 确认工具返回值为字符串且不含二进制/控制字符
 
 ## 📄 更新日志
+
+### v3.7
+- ✅ **第六轮安全审计 + Batch L 修复（2026-08-20，交叉验证轮：Batch K 回归验证 / 并发与生命周期 / 降级路径 / 修复间相互作用，4 路并行审读 + 主审逐条复核）**（完整记录见 [docs/reports/aibox_audit_20260817.md](../docs/reports/aibox_audit_20260817.md) §16）：
+  - **Batch K 回归验证**：J1~J16 逐项在位、零回归，无修复引入的缺陷；历届 Batch E~I 修复抽查（executors reader 收尾、1MB 输出上限、registry 流式预算、broadcast 快照等）均在位
+  - **Batch L（R1~R3 低危全落地）**：R1 `/memos` WS 命令 strptime 容错（畸形 reminder_time 按"待执行"展示，不再整体"处理失败"）；R2 移除 `handle_interrupt` 对全局 `ai_manager.command_executor` 的取消（WS 中断不再误杀 CLI 主 AI 子进程）；R3 `unregister` 补齐回收（关闭 websocket + 取消在途处理任务，broadcast 超时路径与连接关闭路径行为对齐，半开连接不再泄漏）
+  - **测试**：新增 `tests/test_l_fixes.py` 6 例（R1 容错与语义不回归 ×2 / R2 范围收窄与中断能力不回归 ×2 / R3 回收与幂等 ×2）；Linux 维持 490 passed，Windows 开发机 493 passed / 4 failed（均为平台环境项，与代码无关）
 
 ### v3.6
 - ✅ **交互式大模型接入点管理（[model_config.py](model_config.py)）**：菜单式 列表 / 添加 / 删除 / 连通性验证，不用手写 `config.json`；Key 仅记录环境变量名不落盘（空 = 免密本地端点）；删除自动清理其他档案的 fallback 引用；默认档案经 `api.default_model` 生效（详见 [模型接入点管理](#管理大模型接入点不用手写配置)）

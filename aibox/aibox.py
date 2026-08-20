@@ -2172,6 +2172,14 @@ class WebSocketHandler:
         # N13：discard 替代 remove——并发注销/重复注销时 remove 抛 KeyError
         # 会逃逸到调用方（如 broadcast 的 except 分支），discard 幂等
         self.connected_clients.discard(websocket)
+        # R3（审计 2026-08-20）：取消该连接仍在进行的处理任务并主动关闭
+        # websocket。broadcast 超时路径（J7）也会走到这里——ping 禁用下
+        # 半开 TCP 的接收循环对断开无感知，不 close 的话连接对象/协程/
+        # 任务登记泄漏直至进程重启；与 handle_connection finally 对齐
+        pending = self._processing_tasks.pop(websocket, set())
+        for t in pending:
+            if not t.done():
+                t.cancel()
         if websocket in self.client_sessions:
             session = self.client_sessions.pop(websocket)
             # 释放该连接独立的AI实例资源
@@ -2181,6 +2189,11 @@ class WebSocketHandler:
                     ai.cancel()
                 except Exception:
                     pass
+        # close 幂等（已关闭连接重复调用无副作用）；mock/异常对象兜底
+        try:
+            await websocket.close()
+        except Exception:
+            pass
         self.logger.info(i18n.get('client_disconnected', websocket.remote_address))
     
     async def send_welcome_info(self, websocket):
@@ -2360,17 +2373,15 @@ class WebSocketHandler:
             "type": "interrupt_ack",
             "content": "已收到中断信号，正在停止..."
         })
-        # 取消当前连接独立AI实例的对话（线程安全，只set Event + close连接 + kill进程）
+        # 取消当前连接独立AI实例的对话（线程安全，只set Event + close连接 + kill进程）；
+        # ai.cancel() 已同时终止该会话自身 executor 中的子进程。
+        # R2（审计 2026-08-20）：移除对 ai_manager.command_executor（CLI 主 AI
+        # 执行器）的全局取消——会话隔离架构下单实例时代的遗留，WS 用户中断
+        # 会误杀终端用户正在执行的命令；对会话自身亦冗余
         session = self._get_session(websocket)
         ai = session.get("ai") if session else None
         if ai:
             ai.cancel()
-        # 同时确保命令执行器中的进程也被终止
-        if self.ai_manager.command_executor and hasattr(self.ai_manager.command_executor, 'cancel'):
-            try:
-                self.ai_manager.command_executor.cancel()
-            except Exception:
-                pass
     
     async def handle_task_message(self, websocket, data):
         """处理任务相关消息 - 简化版，所有任务都是对话任务"""
@@ -2572,7 +2583,16 @@ class WebSocketHandler:
             memos = self.ai_manager.memo_db.get_all_memos(include_completed=False)
             result = f"\n{i18n.get('pending_memos_title')}\n"
             for memo in memos:
-                status = i18n.get('memo_overdue') if memo['reminder_time'] and datetime.strptime(memo['reminder_time'], constants.DATETIME_FORMAT) < datetime.now() else i18n.get('memo_pending')
+                # R1（审计 2026-08-20）：畸形 reminder_time 此前裸 strptime 抛
+                # ValueError → /memos 整体落入顶层兜底"处理失败"（J1 加固漏点）。
+                # 解析失败按"待执行"展示，对齐 CLI --memo-list 的既有模式
+                status = i18n.get('memo_pending')
+                if memo['reminder_time']:
+                    try:
+                        if datetime.strptime(memo['reminder_time'], constants.DATETIME_FORMAT) < datetime.now():
+                            status = i18n.get('memo_overdue')
+                    except (ValueError, TypeError):
+                        pass
                 immediate_tag = "⚡" if memo.get('is_immediate') else ""
                 repeat_info = ""
                 if memo['repeat_type'] != 'none':

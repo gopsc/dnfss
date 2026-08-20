@@ -1,9 +1,9 @@
 # aibox 模块安全与质量审计报告
 
-- **日期**：2026-08-17（第一轮）/ 2026-08-18（第二轮复审）/ 2026-08-18（第三轮：遗留复核 + v3.4 专审）/ 2026-08-18（第四轮：3 路并行审读 + Batch H 修复）/ 2026-08-19（第五轮：4 路并行审读，聚焦历届未覆盖区域）
-- **审计基线**：第一轮 HEAD `ce142fe`（Batch A–D 后）→ 第二轮 HEAD `177a9ac`（Batch E 修复后）→ 第三轮 HEAD `aa15841`（L4a/b/c 落地后）→ 第四轮 HEAD `d1f780e`（Batch G + SOCKS5 验证后）→ 第五轮 HEAD `d513c5f`（Batch I + model_config.py 后，含工作区未提交的 max_turns 钳制）
+- **日期**：2026-08-17（第一轮）/ 2026-08-18（第二轮复审）/ 2026-08-18（第三轮：遗留复核 + v3.4 专审）/ 2026-08-18（第四轮：3 路并行审读 + Batch H 修复）/ 2026-08-19（第五轮：4 路并行审读，聚焦历届未覆盖区域）/ 2026-08-20（第六轮：交叉视角——修复回归验证 / 并发与生命周期 / 降级路径 / 修复间相互作用）
+- **审计基线**：第一轮 HEAD `ce142fe`（Batch A–D 后）→ 第二轮 HEAD `177a9ac`（Batch E 修复后）→ 第三轮 HEAD `aa15841`（L4a/b/c 落地后）→ 第四轮 HEAD `d1f780e`（Batch G + SOCKS5 验证后）→ 第五轮 HEAD `d513c5f`（Batch I + model_config.py 后，含工作区未提交的 max_turns 钳制）→ 第六轮 HEAD `7dc6796`（Batch K 全落地 + 五轮收束文档同步后）
 - **审计范围**：`aibox.py`（~3458 行）+ `llm_client.py` + `model_config.py` + `tools/`（7 文件）+ `subsystems/`（6 文件）+ `common/`（5 文件）+ 前端 HTML（frontend.html / entry.html / entry1.html）+ `skills/` 脚本 + `client.py` / `voice_client.py`（前端与技能脚本为第五轮首次覆盖）
-- **方法**：第一轮逐文件代码审读 + PoC 动态验证；第二轮 Batch E 修复复审 + 全量重审 + 6 处关键发现实证抽查；第三轮遗留项复核 + v3.4 专审；第四轮 3 路并行审读 + 主审逐条复核 + Linux PoC 实证（6/6）；第五轮 4 路并行审读（聚焦历届未覆盖区域）+ 主审逐条复核 + Linux PoC 实证（2/2）
+- **方法**：第一轮逐文件代码审读 + PoC 动态验证；第二轮 Batch E 修复复审 + 全量重审 + 6 处关键发现实证抽查；第三轮遗留项复核 + v3.4 专审；第四轮 3 路并行审读 + 主审逐条复核 + Linux PoC 实证（6/6）；第五轮 4 路并行审读（聚焦历届未覆盖区域）+ 主审逐条复核 + Linux PoC 实证（2/2）；第六轮 4 路并行审读（Batch K 修复回归验证与修复自身缺陷面 / 并发与资源生命周期交叉 / 数据边界与故障降级 / 工具链与修复间相互作用）+ 主审逐条代码复核（Windows 开发机，无 Linux PoC，动态行为以代码级核验 + Windows 测试基线代替）
 
 ### 轮次总览
 
@@ -14,6 +14,7 @@
 | 第三轮 | 2026-08-18 | `aa15841` | P1~P7 | Batch G（G1~G5：P1~P6 + N2/N3/N5/N7/N8/N10/N12~N16/L1） | 375 passed |
 | 第四轮 | 2026-08-18 | `d1f780e` | Batch H 全项（含 N5 取消传播回归，高危） | Batch H + Batch I 遗留收尾 | 424 passed |
 | 第五轮 | 2026-08-19 | `d513c5f` | J1~J16（高危 2 / 中危 5 / 低危与信息 9） | Batch K（波次 1~5 全落地） | 490 passed |
+| 第六轮 | 2026-08-20 | `7dc6796` | R1~R3（均低危；Batch K 回归验证零回归） | Batch L（R1~R3 全落地） | 490 passed（Linux）/ 493 passed（Windows） |
 
 ---
 
@@ -29,7 +30,9 @@
 
 **第五轮**（基线 d513c5f）：聚焦历届未覆盖区域（WS 深审、model_config.py、前端与 skills 脚本首覆盖），发现 J1~J16——含 **J1 任务系统投毒**（畸形时间/数字字段致调度器失败热循环 + 新连接握手即崩）与 **J2 前端 XSS**（AI 输出/命令结果全链路 innerHTML 渲染）两项高危；Batch K 波次 1~5 全落地，J1~J16 全数修复，490 passed 零回归。
 
-**最终状态**：五轮累计发现 69 项（高危 7 / 中危 26 / 低危与信息 36）**全部修复落地**，无未修复安全发现；维持原判仅限设计决策项，见"十五、最终状态与遗留清单"。
+**第六轮**（基线 7dc6796）：交叉验证轮——Batch K 修复回归验证（J1~J16 逐项在位）、并发与生命周期、降级路径、修复间相互作用四路审读。**零回归、无修复引入的缺陷**；新发现 R1~R3 均为低危（`/memos` 裸 strptime 加固漏点 / handle_interrupt 全局 executor 取消的架构残留 / broadcast 超时后半开连接有界泄漏），已随 **Batch L 全部修复落地**。见"十六、第六轮审计"。
+
+**最终状态**：六轮累计发现 72 项（高危 7 / 中危 26 / 低危与信息 39），**全部修复落地**（Batch E/F/G/H/I/K/L），无未修复安全发现；维持原判仅限设计决策项，见"十五、最终状态与遗留清单"与"十六、第六轮审计"。
 
 ---
 
@@ -655,3 +658,76 @@ J3 ×3（单条/批量删除无 FTS 残留 + 删后搜索不命中）、J4 ×2�
 ### 15.3 最终测试基线
 
 全量 **490 passed**（Linux，`aibox/venv`），零回归；`test_execute_timeout` / `test_flat_api_still_reads_key_file` 为 Windows 向用例（ping 语法 / 依赖 `~/.cert/deepseek.key`），Linux 预存失败与历轮改动无关。
+
+---
+
+## 十六、第六轮审计（2026-08-20，HEAD `7dc6796`）
+
+方法：4 路并行审读（① Batch K 修复回归验证与修复自身缺陷面 ② 并发与资源生命周期交叉 ③ 数据边界与故障降级 ④ 工具链与修复间相互作用）+ 主审逐条代码复核。审计环境为 Windows 开发机（无 Linux PoC），动态行为以代码级核验 + Windows 测试基线代替。
+
+### 16.1 Batch K 修复回归验证（J1~J16 全部在位，零回归）
+
+| # | 核验结论 | 关键证据 |
+|---|---|---|
+| J1 | **五重防御链闭环** | 入库校验（`db.py:365-387`，空串/None 正确跳过 falsy 分支）→ WS 友好错误（`aibox.py:2405-2424`）→ 调度器预检（`aibox.py:184-196`）→ 触发事务防御（`db.py:590-680`）→ 展示防御 `_is_overdue_time`（`db.py:814`）→ register 入 try（`aibox.py:2989-2992`）。全库 strptime 调用点排查（19 处）：CLI `--memo-list`、get_pending_memos（Q5）、memo 工具三处均已防护，唯一漏点见 R1 |
+| J2 | **净化链完整** | 三页面 `marked.parse` 全部收敛于 `renderMarkdown()` helper 内（8 处调用点逐一核验）；残留 innerHTML 均为静态字面量（复制按钮/空容器）；DOMPurify 缺失退化分支仅转义 `<`——在 innerHTML 文本节点上下文中足以阻断标签注入（无法开口标签即无法创建元素），判定安全 |
+| J5 | **原子写闭环** | `atomic.py` mkstemp 随机名 + fsync + os.replace，BaseException 路径清理临时文件；config 损坏备份（`config.py:193-199, 206-213`）与 `_save_default_config` 原子写均在位 |
+| J7 | **语义正确** | `aibox.py:2277-2301` 每客户端并发 + wait_for 超时 + unregister（discard 幂等）；CancelledError 为 BaseException 不被 `except Exception` 捕获，任务取消语义保留——实现与注释一致。残留面见 R3 |
+| J9/J10/J11/J16 | 抽查在位 | `_connect()` 统一 busy_timeout；批量删除非事务但计数诚实（`deleted/n`）；/new 等待 2s 为尽力而为（超时继续 reset，行为已注释）；`MAX_HELP_LENGTH` 按 str 码点切片无半个多字节字符风险（第五轮 L5 顾虑在此消解）、同名键可执行优先在位 |
+| FailoverClient | 契约清晰 | P4 并发契约（单线程串行 + 跨线程 cancel）文档化；非流式 None 透传（认证类 4xx 响亮暴露）、流式仅首事件前转移、链耗尽抛最后异常——均与 §9.2 设计一致 |
+
+历届修复抽查（Batch E~I 的 H2/L5/L9/N4/N6/N8/M2/N13/N14）：executors reader 线程收尾、输出 1MB 上限（流式/非流式两路）、registry 流式预算与统一清理、broadcast 快照——均在位。
+
+### 16.2 新发现（3 项，均为低危）
+
+#### R1：`/memos` WS 命令裸 strptime——J1 加固漏点
+
+`aibox.py:2575`：`/memos` 命令对每条 memo 的 `reminder_time` 直接 `datetime.strptime(...)` 无 try/except。J1 加固了 `get_pending_tasks_for_user` 展示路径与调度器路径，但 `/memos` 列表路径漏防：存量脏数据（J1 落库前入库、或直接 SQL 写入的畸形时间）→ ValueError → 落入 handle_message 顶层兜底，用户收到笼统"处理失败"，`/memos` 功能不可用。同功能的 CLI 路径（`aibox.py:3187-3192`）与 memo 工具三处（`db_tools.py:623/697/801`）均已防护，唯独此点遗漏。**影响**：单命令报错，无崩溃/热循环（顶层 except 接住），仅脏数据库场景触发。
+
+#### R2：handle_interrupt 取消全局 command_executor——会话隔离架构残留
+
+`aibox.py:2369-2371`：任一 WS 客户端发送 interrupt，除取消本会话 AI（`ai.cancel()` 已覆盖会话自身 executor，见 `DeepSeekChat.cancel` `aibox.py:1094-1096`）外，还取消 `ai_manager.command_executor`——这是 **CLI 主 AI 实例**的执行器（`aibox.py:2835/2894`）。单实例时代的遗留代码：CLI 交互对话与 WS 服务并发运行时，WS 用户的一次中断会误杀终端用户正在执行的命令（跨上下文干扰）。**影响**：可用性问题，无安全面扩大；对会话自身冗余（其 executor 已被 ai.cancel 终止）。
+
+#### R3：broadcast 超时 unregister 后半开连接残留——J7 修复的残留面
+
+`aibox.py:2290-2298`：broadcast 超时路径调用 `unregister`（回收 `connected_clients`/`client_sessions` 并 cancel 会话 AI），但①不关闭 websocket、②不取消 `_processing_tasks`。`ping_interval=None`（有意禁用）下 `handle_connection` 的 `async for` 接收循环对半开 TCP 永不退出——连接对象、协程与任务登记泄漏直至进程重启（**有界**：每半开连接一份，J7 已消除其对广播/调度器主循环的阻塞，主要危害已解）。次级场景：慢客户端（发送超 5s 但 TCP 存活）被 unregister 后恢复，后续消息在 `handle_user_message:2727-2728` 被**静默丢弃**（无提示，无崩溃）。**影响**：有界资源泄漏 + 边缘场景静默丢消息。
+
+### 16.3 修复建议（Batch L，已全落地）
+
+| # | 建议 | 规模 |
+|---|---|---|
+| R1 | `/memos` 的 strptime 包 try/except，解析失败按"待执行"展示（对齐 CLI `:3187-3192` 模式） | ~4 行 |
+| R2 | 移除 `handle_interrupt` 中全局 executor 取消（`:2369-2371`）——会话隔离下全局取消无正当受益方，CLI AI 的中断由其自身入口处理 | -3 行 |
+| R3 | unregister 内 `await websocket.close()` + 取消该连接 `_processing_tasks`（与 `handle_connection` finally 对齐）；或维持现状记录为设计项（有界泄漏，进程重启即清） | ~8 行 |
+
+三项均为低危，不构成阻塞；建议与下次功能迭代随批处理。
+
+### 16.3a Batch L 修复落地（2026-08-20，随批当日完成）
+
+| # | 修复内容 | 文件/位置 |
+|---|---|---|
+| R1 | `/memos` 的 strptime 包 try/except（ValueError/TypeError 按待执行展示），对齐 CLI `--memo-list` 模式 | `aibox.py`（/memos 分支） |
+| R2 | 移除 `handle_interrupt` 对 `ai_manager.command_executor` 的全局取消——WS 中断不再误杀 CLI 主 AI 的子进程；注释说明 ai.cancel() 已覆盖会话自身 executor | `aibox.py` handle_interrupt |
+| R3 | `unregister` 补齐回收：取消该连接 `_processing_tasks` 在途任务（pop + cancel，幂等）+ `await websocket.close()`（try/except 兜底，幂等）——broadcast 超时路径（J7）与连接正常关闭路径（finally）行为对齐，半开连接对象/协程/任务登记不再泄漏 | `aibox.py` unregister |
+
+**新增测试**（`tests/test_l_fixes.py` 6 例，全部通过）：
+
+- R1 ×2：畸形 reminder_time 不抛错按待执行展示（command_result 而非 error）、合法过期仍标 overdue（语义不回归）
+- R2 ×2：interrupt 不触碰全局 executor、本会话 AI 仍被取消（中断能力不回归）
+- R3 ×2：unregister 关闭 websocket + 取消在途任务 + 三处登记清空、重复注销幂等且 close 异常被兜底
+
+**测试基线（Windows 开发机）**：全量 **493 passed / 4 failed / 1 skipped**（26s）= 487 + Batch L 新增 6。4 失败与审计基线完全相同（平台环境项），零回归。
+
+### 16.4 测试基线（Windows 开发机）
+
+审计时全量 487 passed / 4 failed / 1 skipped；Batch L 落地后 **493 passed / 4 failed / 1 skipped**（+6 新增）。4 失败均为平台环境项，与代码质量无关：
+
+- `test_symlink_outside_skills_dir_rejected`：Windows 符号链接创建需管理员权限（WinError 87）
+- `test_truncated_output_has_no_replacement_char`：`python3` 不在 Windows PATH
+- `test_markdown_skipped_when_executable_same_name` / `test_help_output_truncated`：J16 两例依赖 POSIX 可执行位语义（Windows 下 chmod 不产生执行位，"可执行"技能被跳过加载）
+
+Linux 基线（`aibox/venv`）维持 **490 passed** 不受影响。
+
+### 16.5 第六轮结论
+
+交叉验证轮：**Batch K 修复零回归**（J1~J16 逐项在位，历届 E~I 修复抽查均在位），**无修复引入的回归**；新发现 R1~R3 均为低危边界项（加固漏点/架构残留/J7 残留面），无高危、无中危，**已随 Batch L 全部修复落地**。六轮累计发现 **72 项**（高危 7 / 中危 26 / 低危与信息 39），**全部修复落地**，无未修复安全发现。

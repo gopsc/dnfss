@@ -236,7 +236,7 @@
 - 一套相对独立的单智能体产品，基于 DeepSeek + WebSocket（:8765），由 `core` 拉起但与 waf / gateway / dnfs2 等主干微服务无调用关系。
 - 自带技能系统（`skills/`）、任务调度器、记忆管理、前端页面与语音客户端（`voice_client.py`）。
 - 默认模型 `deepseek-v4-flash`，配置在 `config.json`；`models` 配置节可挂多个 OpenAI 兼容端点按档案名切换（档案级 reasoning/温度/展示名/`fallback` 失败转移），`model_config.py` 提供交互式接入点管理（列表/添加/删除/连通性验证，Key 仅记环境变量名不落盘），`--once` 支持无 WebSocket 的 CLI 一次性对话；详见 [aibox/README.md](aibox/README.md)。
-- **五轮安全审计修复（2026-08，Batch E/F/G/H/I/K）**：命令执行保护链（1MB/超时/中断）、凭据脱敏（代理密码不落盘、日志打码、Bearer 脱敏）、取消传播（子代理/情绪子代理/调度器超时）、DB 事务与 FTS5 转义、POSIX 进程组终止、任务系统入参校验（畸形时间/数字字段防调度器热循环）、前端 XSS 净化（DOMPurify + SRI）等；单测 490 项全过；审计报告见 [docs/reports/aibox_audit_20260817.md](docs/reports/aibox_audit_20260817.md)。
+- **六轮安全审计（2026-08，Batch E/F/G/H/I/K/L）**：命令执行保护链（1MB/超时/中断）、凭据脱敏（代理密码不落盘、日志打码、Bearer 脱敏）、取消传播（子代理/情绪子代理/调度器超时）、DB 事务与 FTS5 转义、POSIX 进程组终止、任务系统入参校验（畸形时间/数字字段防调度器热循环）、前端 XSS 净化（DOMPurify + SRI）等；第六轮交叉验证 Batch K 零回归，R1~R3 低危已随 Batch L 落地（72 项发现全部修复）；单测 490 项全过（Linux）；审计报告见 [docs/reports/aibox_audit_20260817.md](docs/reports/aibox_audit_20260817.md)。
 
 ### BotOps（aibox 智能体 TUI 前端）
 
