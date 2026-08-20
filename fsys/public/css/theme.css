@@ -527,6 +527,7 @@ input[type="button"]:disabled {
 }
 .minimap .tag, .userpanel .tag {
     display: inline-block;
+    flex-shrink: 0;
     max-width: 140px;
     overflow: hidden;
     text-overflow: ellipsis;
