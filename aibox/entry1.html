@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>小猫AI · 智能喵语伙伴</title>
     <!-- Font Awesome 6 (免费图标库) -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" integrity="sha384-3B6NwesSXE7YJlcLI9RpRqGf2p/EgVH8BgoKTaUrmKNDkHPStTQ3EyoYjCGXaOTS" crossorigin="anonymous">
     <!-- highlight.js 代码高亮 + marked markdown解析 -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css" integrity="sha384-wH75j6z1lH97ZOpMOInqhgKzFkAInZPPSPlZpYKYTOqsaizPvhQZmAtLcPKXpLyH" crossorigin="anonymous">
     <!-- J13（审计 2026-08-19）：CDN 脚本补 SRI integrity，防供应链劫持 -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js" integrity="sha384-odPBjvtXVM/5hOYIr3A1dB+flh0c3wAT3bSesIOqEGmyUA4JoKf/YTWy0XKOYAY7" crossorigin="anonymous"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js" integrity="sha384-g4mRvs7AO0/Ol5LxcGyz4Doe21pVhGNnC3EQw5shw+z+aXDN86HqUdwXWO+Gz2zI" crossorigin="anonymous"></script>
@@ -673,7 +673,8 @@
         }
         
         function connectWebSocket() {
-            if(socket && socket.connected) {
+            // F3（审计 2026-08-20）：CONNECTING 中的旧连接也要断开，否则重复点击产生孤儿连接/双后端会话
+            if(socket) {
                 socket.disconnect();
             }
             
@@ -752,6 +753,8 @@
         
         function disconnectWebSocket() {
             manualDisconnect = true;
+            // F2（审计 2026-08-20）：清除已排程的重连定时器，防止倒计时到期把连接"复活"
+            if(reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
             if(socket) {
                 socket.disconnect();
                 socket = null;

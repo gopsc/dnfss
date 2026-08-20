@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI智能助手 - Socket.IO客户端</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" integrity="sha384-3B6NwesSXE7YJlcLI9RpRqGf2p/EgVH8BgoKTaUrmKNDkHPStTQ3EyoYjCGXaOTS" crossorigin="anonymous">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css" integrity="sha384-wH75j6z1lH97ZOpMOInqhgKzFkAInZPPSPlZpYKYTOqsaizPvhQZmAtLcPKXpLyH" crossorigin="anonymous">
     <!-- J13（审计 2026-08-19）：CDN 脚本补 SRI integrity，防供应链劫持 -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js" integrity="sha384-odPBjvtXVM/5hOYIr3A1dB+flh0c3wAT3bSesIOqEGmyUA4JoKf/YTWy0XKOYAY7" crossorigin="anonymous"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js" integrity="sha384-g4mRvs7AO0/Ol5LxcGyz4Doe21pVhGNnC3EQw5shw+z+aXDN86HqUdwXWO+Gz2zI" crossorigin="anonymous"></script>
@@ -1449,6 +1449,7 @@
             let reconnectAttempts = 0;
             const MAX_RECONNECT_ATTEMPTS = 5;
             let targetWsUrl = null;
+            let reconnectTimer = null;  // F2（审计 2026-08-20）：重连定时器句柄，手动断开时清除
             
             function createSocketConnection() {
                 targetWsUrl = document.getElementById('ws-url').value.trim();
@@ -1514,7 +1515,8 @@
                     if (reason !== 'io client disconnect' && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
                         reconnectAttempts++;
                         showSystemMessage(`⚠️ 连接断开，${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} 次重试...`);
-                        setTimeout(() => {
+                        reconnectTimer = setTimeout(() => {
+                            reconnectTimer = null;
                             if (!socket || !socket.connected) {
                                 console.log('尝试重连...');
                                 socket = createSocketConnection();
@@ -1687,7 +1689,8 @@
             
             // 事件绑定
             document.getElementById('connect-btn').addEventListener('click', function() {
-                if (socket && socket.connected) {
+                // F3（审计 2026-08-20）：CONNECTING 中的旧连接也要断开，否则重复点击产生孤儿连接/双后端会话
+                if (socket) {
                     socket.disconnect();
                 }
                 reconnectAttempts = 0;
@@ -1695,6 +1698,8 @@
             });
             
             document.getElementById('disconnect-btn').addEventListener('click', function() {
+                // F2：清除已排程的重连定时器，防止倒计时到期把连接"复活"
+                if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
                 if (socket) {
                     socket.disconnect();
                     socket = null;
@@ -1728,11 +1733,13 @@
             
             document.getElementById('clear-chat-btn').addEventListener('click', function() {
                 const container = document.getElementById('messages-container');
+                // F1（审计 2026-08-20）：welcome-message 在 container 内，
+                // 必须先 cloneNode 缓存再清空，否则 querySelector 返回 null 抛 TypeError
+                const welcomeEl = document.querySelector('.welcome-message');
+                const welcomeHtml = welcomeEl ? welcomeEl.cloneNode(true) : null;
                 container.innerHTML = '';
-                
-                const welcomeHtml = document.querySelector('.welcome-message').cloneNode(true);
-                container.appendChild(welcomeHtml);
-                
+                if (welcomeHtml) container.appendChild(welcomeHtml);
+
                 clearAllStreamingMessages();
             });
             

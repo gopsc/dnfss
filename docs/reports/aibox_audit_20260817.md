@@ -912,3 +912,21 @@ Linux 基线（`aibox/venv`）维持 **490 passed** 不受影响。
 - 全量测试 **493 passed / 4 failed（既有平台环境项：symlink 权限、`python3` 缺 PATH、Windows 可执行位语义）/ 1 skipped**，与波次 1 基线完全一致，零回归
 
 **波次 3~5 待落地**：前端功能（F1/F2 等）、命令面规整（W 系列）、客户端收尾（M1 等）。
+
+## 二十、Batch M 修复记录（波次 3：前端功能，2026-08-20）
+
+范围：§17.6 波次 3——前端三页面功能缺陷（F1/F2 + F3/F4/F6）。F5（消息无限追加内存增长）按审计口径"可不做"跳过。
+
+| # | 修复内容 | 关键变更 |
+|---|---|---|
+| F1 | 清空聊天按钮 TypeError（entry/frontend 同源） | `.welcome-message` 在 `#messages-container` 内，`innerHTML=''` 后 querySelector 必为 null——两页面统一改为"先 cloneNode 缓存 → 清空 → 回插"，frontend 后续的计数清零不再被中断 |
+| F2 | 手动断开后重连定时器"复活"连接（三页面） | `entry.html` 新增 `reconnectTimer` 句柄，disconnect-btn 处 `clearTimeout`；`frontend.html` 重连闭包到期时再判 `manualDisconnect`；`entry1.html` `disconnectWebSocket` 补 `clearTimeout(reconnectTimer)` |
+| F3 | CONNECTING 中重复点击产生孤儿连接（三页面） | `entry.html`/`entry1.html` 连接前无条件 `disconnect()` 旧 socket（原仅 `connected` 才断开）；`frontend.html` 关闭条件放宽为 `readyState !== CLOSED` |
+| F4 | 三页面 6 个 CSS `<link>` 无 SRI | font-awesome 6.0.0 与 highlight.js github-dark 11.8.0 补 `integrity`+`crossorigin`（sha384 哈希经 curl 拉取实测计算，与 J13 脚本 SRI 口径对齐） |
+| F6 | frontend 重连文案与实际行为不符 | "N/5 秒后重试" → "`3*N` 秒后重试（N/5）"，与 `3000*reconnectAttempts` 实际延迟对齐 |
+
+**验证**：
+- 三页面全部内联脚本 `node --check` 通过
+- 全量测试 **493 passed / 4 failed（既有平台环境项）/ 1 skipped**，与波次 1/2 基线完全一致，零回归（前端无 pytest 覆盖，语法级验证兜底）
+
+**波次 4~5 待落地**：命令面规整（W1~W8/W11/W12 + W5 择优）、客户端收尾（M1~M5/M7/M8）。
