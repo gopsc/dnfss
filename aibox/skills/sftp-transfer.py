@@ -27,8 +27,11 @@ def build_parser():
     --host          SSH服务器主机名或IP地址 (必填)
     --port          SSH服务器端口号，默认 22
     -u, --username  SSH登录用户名 (必填)
-    -p, --password  SSH登录密码 (如不提供则交互式输入)
     --key            SSH私钥文件路径 (用于密钥认证)
+
+  密码认证:
+    密码经环境变量 AIBOX_SFTP_PASS 提供；未设置且未用 --key 时
+    交互式输入。不走命令行参数，避免凭据进入进程列表与会话日志（J12 条例）。
 
   操作参数:
     --upload  LOCAL REMOTE   上传：本地文件/目录 -> 远程服务器路径
@@ -37,19 +40,19 @@ def build_parser():
     -v, --verbose           显示详细信息
 
 使用示例:
-  1. 上传文件（密码认证）:
-     sftp-transfer --host 192.168.1.100 -u root -p mypass --upload /tmp/test.txt /root/
+  1. 上传文件（密码认证，环境变量提供密码）:
+     AIBOX_SFTP_PASS=mypass sftp-transfer --host 192.168.1.100 -u root --upload /tmp/test.txt /root/
 
   2. 下载文件（密钥认证）:
      sftp-transfer --host 192.168.1.100 -u root --key ~/.ssh/id_rsa \\
          --download /root/test.txt /tmp/
 
   3. 递归上传目录:
-     sftp-transfer --host 192.168.1.100 -u user -p pass -r \\
+     AIBOX_SFTP_PASS=pass sftp-transfer --host 192.168.1.100 -u user -r \\
          --upload ./mydir /home/user/mydir
 
   4. 下载目录:
-     sftp-transfer --host 192.168.1.100 -u user -p pass -r \\
+     AIBOX_SFTP_PASS=pass sftp-transfer --host 192.168.1.100 -u user -r \\
          --download /home/user/backup ./backup
 
   5. 交互式输入密码:
@@ -61,7 +64,6 @@ def build_parser():
     parser.add_argument('--host', required=True, help='SSH服务器主机名或IP地址')
     parser.add_argument('--port', type=int, default=22, help='SSH服务器端口号，默认22')
     parser.add_argument('-u', '--username', required=True, help='SSH登录用户名')
-    parser.add_argument('-p', '--password', help='SSH登录密码（如不提供则交互式输入）')
     parser.add_argument('--key', help='SSH私钥文件路径（用于密钥认证）')
 
     # 操作参数
@@ -82,9 +84,13 @@ def log(verbose, msg):
 
 
 def get_password(args):
-    """获取密码：优先从命令行参数获取，否则交互式输入"""
-    if args.password:
-        return args.password
+    """获取密码：环境变量 AIBOX_SFTP_PASS 优先，否则交互式输入（S5：凭据不走命令行）"""
+    env_pass = os.environ.get("AIBOX_SFTP_PASS")
+    if env_pass:
+        return env_pass
+    if args.key:
+        # 密钥认证时不强制索要密码（仅在私钥有口令时经交互输入）
+        return None
     return getpass.getpass(f"请输入 {args.username}@{args.host} 的密码: ")
 
 

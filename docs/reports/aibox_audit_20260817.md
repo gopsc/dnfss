@@ -1,9 +1,9 @@
 # aibox 模块安全与质量审计报告
 
-- **日期**：2026-08-17（第一轮）/ 2026-08-18（第二轮复审）/ 2026-08-18（第三轮：遗留复核 + v3.4 专审）/ 2026-08-18（第四轮：3 路并行审读 + Batch H 修复）/ 2026-08-19（第五轮：4 路并行审读，聚焦历届未覆盖区域）/ 2026-08-20（第六轮：交叉视角——修复回归验证 / 并发与生命周期 / 降级路径 / 修复间相互作用）
-- **审计基线**：第一轮 HEAD `ce142fe`（Batch A–D 后）→ 第二轮 HEAD `177a9ac`（Batch E 修复后）→ 第三轮 HEAD `aa15841`（L4a/b/c 落地后）→ 第四轮 HEAD `d1f780e`（Batch G + SOCKS5 验证后）→ 第五轮 HEAD `d513c5f`（Batch I + model_config.py 后，含工作区未提交的 max_turns 钳制）→ 第六轮 HEAD `7dc6796`（Batch K 全落地 + 五轮收束文档同步后）
-- **审计范围**：`aibox.py`（~3458 行）+ `llm_client.py` + `model_config.py` + `tools/`（7 文件）+ `subsystems/`（6 文件）+ `common/`（5 文件）+ 前端 HTML（frontend.html / entry.html / entry1.html）+ `skills/` 脚本 + `client.py` / `voice_client.py`（前端与技能脚本为第五轮首次覆盖）
-- **方法**：第一轮逐文件代码审读 + PoC 动态验证；第二轮 Batch E 修复复审 + 全量重审 + 6 处关键发现实证抽查；第三轮遗留项复核 + v3.4 专审；第四轮 3 路并行审读 + 主审逐条复核 + Linux PoC 实证（6/6）；第五轮 4 路并行审读（聚焦历届未覆盖区域）+ 主审逐条复核 + Linux PoC 实证（2/2）；第六轮 4 路并行审读（Batch K 修复回归验证与修复自身缺陷面 / 并发与资源生命周期交叉 / 数据边界与故障降级 / 工具链与修复间相互作用）+ 主审逐条代码复核（Windows 开发机，无 Linux PoC，动态行为以代码级核验 + Windows 测试基线代替）
+- **日期**：2026-08-17（第一轮）/ 2026-08-18（第二轮复审）/ 2026-08-18（第三轮：遗留复核 + v3.4 专审）/ 2026-08-18（第四轮：3 路并行审读 + Batch H 修复）/ 2026-08-19（第五轮：4 路并行审读，聚焦历届未覆盖区域）/ 2026-08-20（第六轮：交叉视角——修复回归验证 / 并发与生命周期 / 降级路径 / 修复间相互作用）/ 2026-08-20（第七轮：skills 全量脚本 / 前端深维度 / 客户端三文件 / WS+CLI 命令面全量校验）
+- **审计基线**：第一轮 HEAD `ce142fe`（Batch A–D 后）→ 第二轮 HEAD `177a9ac`（Batch E 修复后）→ 第三轮 HEAD `aa15841`（L4a/b/c 落地后）→ 第四轮 HEAD `d1f780e`（Batch G + SOCKS5 验证后）→ 第五轮 HEAD `d513c5f`（Batch I + model_config.py 后，含工作区未提交的 max_turns 钳制）→ 第六轮 HEAD `7dc6796`（Batch K 全落地 + 五轮收束文档同步后）→ 第七轮 HEAD `e43aeea`（Batch L 落地后）
+- **审计范围**：`aibox.py`（~3458 行）+ `llm_client.py` + `model_config.py` + `tools/`（7 文件）+ `subsystems/`（6 文件）+ `common/`（5 文件）+ 前端 HTML（frontend.html / entry.html / entry1.html）+ `skills/` 脚本 + `client.py` / `voice_client.py`（前端与技能脚本为第五轮首次覆盖；第七轮完成 skills 全量逐文件与命令面逐条覆盖）
+- **方法**：第一轮逐文件代码审读 + PoC 动态验证；第二轮 Batch E 修复复审 + 全量重审 + 6 处关键发现实证抽查；第三轮遗留项复核 + v3.4 专审；第四轮 3 路并行审读 + 主审逐条复核 + Linux PoC 实证（6/6）；第五轮 4 路并行审读（聚焦历届未覆盖区域）+ 主审逐条复核 + Linux PoC 实证（2/2）；第六轮 4 路并行审读（Batch K 修复回归验证与修复自身缺陷面 / 并发与资源生命周期交叉 / 数据边界与故障降级 / 工具链与修复间相互作用）+ 主审逐条代码复核（Windows 开发机，无 Linux PoC，动态行为以代码级核验 + Windows 测试基线代替）；第七轮 4 路并行审读（skills 全量安全面 / 前端深维度 / model_config+voice_client+client 深审 / WS+CLI 命令面全量逐条校验）+ 主审对全部中危项逐条代码实证（Windows 开发机）
 
 ### 轮次总览
 
@@ -15,6 +15,7 @@
 | 第四轮 | 2026-08-18 | `d1f780e` | Batch H 全项（含 N5 取消传播回归，高危） | Batch H + Batch I 遗留收尾 | 424 passed |
 | 第五轮 | 2026-08-19 | `d513c5f` | J1~J16（高危 2 / 中危 5 / 低危与信息 9） | Batch K（波次 1~5 全落地） | 490 passed |
 | 第六轮 | 2026-08-20 | `7dc6796` | R1~R3（均低危；Batch K 回归验证零回归） | Batch L（R1~R3 全落地） | 490 passed（Linux）/ 493 passed（Windows） |
+| 第七轮 | 2026-08-20 | `e43aeea` | 46 项（高危 0 / 中危 11 / 低危 26 / 信息 9；Batch L 回归验证零回归） | Batch M 波次 1 已落地（S1/S4/S5/S7/S8），波次 2~5 待落地 | 493 passed / 4 failed（平台环境项）/ 1 skipped（Windows） |
 
 ---
 
@@ -32,7 +33,9 @@
 
 **第六轮**（基线 7dc6796）：交叉验证轮——Batch K 修复回归验证（J1~J16 逐项在位）、并发与生命周期、降级路径、修复间相互作用四路审读。**零回归、无修复引入的缺陷**；新发现 R1~R3 均为低危（`/memos` 裸 strptime 加固漏点 / handle_interrupt 全局 executor 取消的架构残留 / broadcast 超时后半开连接有界泄漏），已随 **Batch L 全部修复落地**。见"十六、第六轮审计"。
 
-**最终状态**：六轮累计发现 72 项（高危 7 / 中危 26 / 低危与信息 39），**全部修复落地**（Batch E/F/G/H/I/K/L），无未修复安全发现；维持原判仅限设计决策项，见"十五、最终状态与遗留清单"与"十六、第六轮审计"。
+**第七轮**（基线 e43aeea）：四路新维度——skills 全量 29 脚本逐文件（继 J12 点修后首次）、前端三页面深维度、model_config/voice_client/client 深审、WS+CLI 命令面逐条校验；主审对全部中危项逐条代码实证。Batch L 零回归；新发现 **46 项**（高危 0 / 中危 11 / 低危 26 / 信息 9），集中于 skills 凭据进命令行（S1/S4/S5/S7，违反项目自定 J12 条例）、skills 路径边界（S2/S9/S11/S12，含 vision.py 任意文件经云 API 渗出的提示注入通道）、前端功能缺陷（F1 清空按钮必抛 TypeError / F2 手动断开被重连复活）、voice_client input 线程泄漏（M1）与命令面输入规整（W 系列）。Batch M 修复建议（5 波次）已给出，待落地。见"十七、第七轮审计"。
+
+**最终状态**：七轮累计发现 118 项（高危 7 / 中危 37 / 低危与信息 74）；前六轮 72 项**全部修复落地**（Batch E/F/G/H/I/K/L），第七轮 **Batch M 波次 1 已落地**（S1/S4/S5/S7/S8 凭据收口，见"十八"），波次 2~5（41 项，中危 6 / 低危与信息 35）待落地；维持原判仅限设计决策项，见"十五、最终状态与遗留清单"与"十六、第六轮审计"。
 
 ---
 
@@ -731,3 +734,159 @@ Linux 基线（`aibox/venv`）维持 **490 passed** 不受影响。
 ### 16.5 第六轮结论
 
 交叉验证轮：**Batch K 修复零回归**（J1~J16 逐项在位，历届 E~I 修复抽查均在位），**无修复引入的回归**；新发现 R1~R3 均为低危边界项（加固漏点/架构残留/J7 残留面），无高危、无中危，**已随 Batch L 全部修复落地**。六轮累计发现 **72 项**（高危 7 / 中危 26 / 低危与信息 39），**全部修复落地**，无未修复安全发现。
+
+---
+
+## 十七、第七轮审计（2026-08-20，HEAD `e43aeea`）
+
+方法：4 路并行审读（① `skills/` 全量 29 个脚本安全面——继 J12 点修后首次逐文件覆盖 ② 前端三页面深维度——DOM 注入面收敛复核 / 连接生命周期 / CDN-SRI 完整性 / 页面收敛 ③ `model_config.py` / `voice_client.py` / `client.py` 深审 ④ WS 协议面与 CLI 命令面全量逐条校验——此前按发现修，未逐命令核对）+ 主审对全部中危项逐条代码复核（Windows 开发机，无 Linux PoC）。
+
+### 17.1 Batch L 修复回归验证（R1~R3 全部在位，零回归）
+
+| # | 核验结论 | 关键证据 |
+|---|---|---|
+| R1 | 在位 | `aibox.py:2586-2595` `/memos` 畸形 reminder_time try/except 按"待执行"展示 |
+| R2 | 在位 | `aibox.py:2368-2384` `handle_interrupt` 仅会话级 `ai.cancel()`，全局 executor 取消已移除，注释在位 |
+| R3 | 在位 | `aibox.py:2179-2196` `unregister` pop+cancel `_processing_tasks` + `websocket.close()` 兜底幂等 |
+
+### 17.2 新发现——中危（11 项，主审逐条代码实证）
+
+#### S1：`gitclient.py` GITHUB_TOKEN 嵌入 clone 命令行（凭据进 argv + 错误回显）
+
+`skills/gitclient.py:91-94`：`_auth_url` 把 token 拼进 `https://{TOKEN}@...` 作为 git 子进程 argv——同机 `ps` 可见；git 报错 stderr（含完整带 token URL）经 `clone()` 返回技能 stdout（`:168`）→ token 进 AI 会话日志。违反本项目 J12"凭据不进命令行"条例。**修法**：改 `git -c http.extraheader="Authorization: token ..."` 或 GIT_ASKPASS，stderr token 脱敏（~10 行）。
+
+#### S2：`gitclient.py delete` 对任意路径 `shutil.rmtree`，无 WORKSPACE 边界
+
+`skills/gitclient.py:271-280`：LLM 可控 `--repo_path` + `--confirm` 即递归删除任意目录（如 `~`）；未校验位于 `WORKSPACE_DIR` 内、未校验是 git 仓库。**修法**：realpath 前缀匹配 WORKSPACE + 要求 `.git` 存在（~6 行）。
+
+#### S4：`ssh-exec.py` SSH 密码必填且走命令行
+
+`skills/ssh-exec.py:30`：`-p/--password` `required=True`——密码必进 `ps` 与 run_command 会话记录（示例还写了 `-p 12345678`）。**修法**：改环境变量/凭据文件读取（~8 行）。
+
+#### S5：`sftp-transfer.py` `-p/--password` 命令行传密码
+
+`skills/sftp-transfer.py:64, 86-88`：`get_password` 优先取 `args.password`，与 S4 同类。**修法**：仅保留 getpass/环境变量途径（~6 行）。
+
+#### S7：`aes-crypto.py` AES 密钥经 `--key` 命令行传入
+
+`skills/aes-crypto.py:452`：`--key` 十六进制密钥直进 argv → `ps` + 会话日志，直接违反 J12 条例。**修法**：仅保留 `--key-file`/`--load-key`（~5 行）。
+
+#### S9：`camera.py --filename` 未校验，任意路径写文件+建目录
+
+`skills/camera.py:343-344`：`os.path.join(CAMERA_DIR, args.filename)`——绝对路径使 join 失效、`../` 可逃逸；`capture_photo` 还对 dirname 无条件 `makedirs`。LLM 可控文件名 → 以 aibox 用户身份任意路径写 JPEG/任意建目录（内容不可控，主要为破坏/落点）。**修法**：basename 比对拒绝分隔符（~4 行）。
+
+#### S11：`facerec.py person_name` 拼路径未校验 → 任意 .jpg 写入/删除
+
+`skills/facerec.py:213, 240, 263`：`os.path.join(known_faces_dir, f"{person_name}.jpg")`——`../../tmp/x` 穿越：`add-known` 任意路径写 .jpg；`remove-known` 可删系统任意 .jpg；`get-info` 探测任意 .jpg。**修法**：person_name 白名单正则（~5 行）。
+
+#### S12：`vision.py --image-path` 任意文件读取并外发第三方云 API
+
+`skills/vision.py:28-29, 42`：无文件类型校验，任意本地文件（`~/.cert/163mail.json`、`~/.ssh/id_rsa`）被 base64 后 POST 到 `ark.cn-beijing.volces.com`。AI 被网页/邮件内容诱导调用 → 本地敏感文件外发云端（提示注入 → 数据渗出通道）。**修法**：校验扩展名/魔数确为图片（~5 行）。
+
+#### F1：清空聊天按钮必然抛出 TypeError，功能半失效（entry/frontend 双页面同源缺陷）
+
+`entry.html:1729-1737`、`frontend.html:1640-1651`：`.welcome-message` 在 `#messages-container` 内部（`entry.html:822-823`），`innerHTML=''` 已将其删除 → `querySelector` 返回 null → `null.cloneNode(true)` 抛 TypeError；后续 `clearAllStreamingMessages()`、计数清零（frontend）全部中断不执行。100% 可复现。**修法**：先 cloneNode 缓存再清空，两行对调（两页各 2 行）。
+
+#### F2：手动断开后，已排程的自动重连定时器未取消，连接被"复活"（三页面同类）
+
+`entry.html:1517-1522, 1697-1701`：断线排程匿名 `setTimeout`（3s）无引用不可清除；手动断开置 `socket=null` 恰好满足重连条件 `!socket` → 倒计时到期自动重建连接，违背用户明确操作意图。`frontend.html:1428-1433, 1607-1616` 同款（闭包不判 manualDisconnect）；`entry1.html:735-739, 753-761` 有 `reconnectTimer` 变量但 disconnect 未 clearTimeout。**修法**：手动断开处清除/作废定时器 + 重连闭包判 manualDisconnect（每页 2-3 行）。
+
+#### M1：`voice_client.py` input 线程在 Ctrl+C 后泄漏并偷吃后续输入
+
+`voice_client.py:624-626, 644-646`：`asyncio.to_thread(lambda: input(prompt))` 线程不可取消——KeyboardInterrupt 打断 await 后底层线程仍阻塞 stdin readline；循环 continue 又起新 input 线程，旧线程永久泄漏并"偷走"后续输入整行（读到无人消费即丢弃），表现为偶发丢行。`client.py:735-755` 已有现成正确方案（单守护线程 + Queue + call_soon_threadsafe）。**修法**：照搬 client.py 方案（~20 行）。
+
+### 17.3 新发现——低危（26 项）
+
+| # | 位置 | 问题 | 修法 |
+|---|---|---|---|
+| S3 | `gitclient.py:162,178,195` | branch 直进 git argv 无 `--` 分隔，`--branch=--upload-pack=...` 选项注入 | ref 前插 `--` 或白名单（~4 行） |
+| S6 | `sftp-transfer.py:170-172` | 递归下载远端文件名未校验，恶意服务端 `../` 路径穿越写本地 | 拒绝含 `/\`..` 的 item（~3 行） |
+| S8 | `aes-crypto.py:69,331-332` | 生成密钥明文 print 进会话日志；密钥文件默认权限 | 写受保护文件 + chmod 600（~4 行） |
+| S10 | `screenshot.py:156-159` | `--filename` 同类路径拼接未校验（J12 已修 PS 转义，本项仅遍历写 PNG） | 同 S9（~3 行） |
+| S13 | `test-auto-appimage.sh:66` | sed 替换串未转义，文件名含 shell 元字符 → 生成的 AppRun 脚本注入 | sed 特殊字符转义/printf 生成（~4 行） |
+| F3 | 三页面连接按钮 | CONNECTING 中重复点击产生孤儿连接/双后端会话 | 点击即禁按钮或先 close 非 CLOSED 旧连接（每页 1-2 行） |
+| F4 | 三页面 `<link>` CSS ×2 | font-awesome/highlight.js 样式表无 SRI（J13 只覆盖 script；CSS 劫持仅 UI 伪装，无 JS 执行） | 补 integrity+crossorigin（共 6 行） |
+| F5 | 三页面消息列表 | 消息无限追加 + `data-raw-content` 双份存储，长会话内存双倍线性增长 | 超阈值头部裁剪（每页 ~5 行，可不做） |
+| F6 | `frontend.html:1427` | 重连提示"N/5 秒后重试"与实际 `3000*N`ms 行为不符 | 文案修正（1 行） |
+| M2 | `model_config.py` 主循环 | input 未捕获 EOFError/KeyboardInterrupt，管道耗尽/Ctrl+C 直接 traceback | 主循环包 try/except（~4 行） |
+| M3 | `model_config.py:138,174` | `api` 节被改坏为非 dict 时 setdefault 后索引赋值抛 TypeError/AttributeError | isinstance 检查后重置（2-3 行） |
+| M4 | `model_config.py:166-168,70,265` | `fallback` 为字符串时子串误判 + 拆成单字符数组写配置 + 展示误导 | isinstance(list) 规整（每处 1-2 行） |
+| M5 | `model_config.py:75-133` | `api_key_env` 不校验合法变量名；display_name/model/api_url 不拒控制字符不限长（终端注入回显） | 正则 + isprintable + 限长（~10 行） |
+| M6 | `model_config.py` 读写模式 | "启动读全量→交互数分钟→全量覆盖写"，与运行中服务并发保存 lost-update（原子写不防） | 保存前 reload 重放变更（~5 行）或文档约定 |
+| M7 | `voice_client.py:350-353` | 启动麦克风探测 arecord 无 timeout，设备挂死则永久卡死 | 加 timeout=5 + 捕获（2 行） |
+| M8 | `client.py:799-817` | run() 正常退出后 main() 无 finally 关 websocket，服务端见异常断连 | finally disconnect（3 行） |
+| W1 | `aibox.py:2388,2493,2740,2392` | WS 入口字段无类型检查，非 str 落顶层兜底"处理失败"；title 传 dict → sqlite3 InterfaceError（J1 except 拦不住） | 三入口 isinstance 规整（~15-20 行） |
+| W2 | `aibox.py:2394,2414` | task add `delay` 无类型/范围校验：非数字 TypeError、负数立即执行、10¹⁸ OverflowError | float 转换+钳制+友好 error（~5 行） |
+| W3 | `aibox.py:2468-2469` | task complete 缺 task_id 静默无响应，与 J15 口径不一致 | else 回 error（2 行） |
+| W4 | `aibox.py:2611-2612` | `/search ` 空关键词 → FTS 语法错被吞 → LIKE `%%` 兜底返回至多 100 条刷屏 | 空 query 回用法提示（2 行） |
+| W5 | `aibox.py:2636-2637` 对比 `3422-3438` | `/reload` 整体重载静默丢弃 CLI 进程级覆盖（--debug/--no-scheduler 等） | reload 后重放 CLI 覆盖（~8 行）或回包注明 |
+| W6 | `aibox.py:3115-3118, 3143` | 端口占用/--port 99999 等启动失败打印堆栈后**退出码 0**，守护脚本误判正常退出；--port 无范围校验 | sys.exit(1) + 1-65535 校验（~6 行） |
+| W7 | `aibox.py:3437-3438, 3147` | `--scheduler-interval -1` → asyncio.sleep（负值） 空转热循环 CPU 打满；`0` 被 falsy 静默忽略 | 钳制 max(0.1, v)（2 行） |
+| W8 | `aibox.py:3157,3314` | `--temperature -1/99` 无钳制直达 API 400（仅 --once 路径；失败模式安全） | 入口钳制（2 行） |
+| W11 | `aibox.py:3422-3438` | config.json 的 system/scheduler 节为非 dict + CLI 覆盖 → main() 启动即 TypeError 崩 | 赋值前 isinstance 回退默认节（~6 行） |
+| W12 | `aibox.py:3226-3248` | CLI `--memo-add "|x"` 空标题入库；`"a|b|"` 空 reminder_time 绕过 J1 校验 → 调度器按到期立即触发 | add_memo 标题非空 ValueError + CLI 空串规整 None（~6 行） |
+
+### 17.4 新发现——信息级（9 项）
+
+| # | 位置 | 说明 |
+|---|---|---|
+| S14 | `ssh-exec.py:36`、`sftp-transfer.py:94` | paramiko AutoAddPolicy 信任任意主机密钥（MITM 面）——SKILLS_FORMAT.md 已声明"仅限可信网络"，实证记录 |
+| S15 | `test_qemu_run.sh:86` | 缺 qemu 时自动 `sudo apt install`，无人工确认——知悉项 |
+| F7 | `entry.html:930,1223`、`frontend.html:899,1144` | 模板内 `id="task-id-display"` 多次克隆产生重复 ID（功能不受影响，HTML 不规范） |
+| F8 | `entry.html:1036-1039,1761-1767`、`frontend.html:998,1649` | 死代码：空 scroll 监听 / 未调用的 preserveRawContent / 恒为 0 的 toolCallCount（~15 行可清理） |
+| F9 | `entry1.html:833` | 更换背景 blob URL 未 revoke（量级极小） |
+| M9 | `model_config.py:371` | 提示"最长 20 秒"与实际超时 30s 不符（1 行文案） |
+| M10 | `voice_client.py:51,102,351` | `/dev/null`+arecord 为 POSIX 专属，Windows 必静默禁用——若刻意（部署 Linux）可忽略，建议文件头注明平台要求 |
+| W9 | `aibox.py:3067` | WS max_size 依赖库默认 1MiB，超限 1009 关连接走正常回收（R3），无应用层"消息过大"提示 |
+| W10 | `aibox.py:2330-2331, 2734-2736` | 非 dict JSON 走顶层兜底；未知 `/` 命令当聊天发给 AI 有 token 费用副作用（else 分支为既有设计，改否属产品决策） |
+
+### 17.5 查过但无问题（摘要）
+
+- **skills（17 Python + 4 Shell + 8 Markdown 全量）**：163mail（凭据走 `~/.cert` 文件+SSL）、ads1115/ads1256（纯寄存器+argparse choices）、bing_search（quote 编码+无凭据）、doc2txt、hello-world、info、md2docx、nmapskills（J12 在位）、famer.sh/qing_famer.sh（变量全引用）、test_qemu_run.sh（mktemp -d）；无 pickle/yaml.load/eval/exec、无可预测临时文件；**8 个 Markdown 技能零诱导越权/泄信内容**
+- **前端三页面**：无 eval/new Function/document.write/insertAdjacentHTML/动态 location；DOMPurify 单参默认调用（无 ADD_TAGS/ADD_ATTR 放行）；全部服务器消息汇点经净化链，三页面无漏修；全部 `<script src>` 有 SRI+crossorigin 且版本锁死；JSON.parse 均有 try/catch；无 localStorage/sessionStorage/cookie 读写；心跳 setInterval 有关闭清理
+- **model_config.py**：写配置实证走原子写（`config.py:322` → `atomic_write_text`）；J4 脱敏唯一异常出口完整；J8 数字容错在位；档案名 `PROFILE_NAME_RE` 白名单；fallback 清理遍历全档案、default_model 正确清除
+- **voice_client.py**：J14 录音临时文件全异常路径清理、僵尸连接修复均在位；arecord 参数全字面量无注入
+- **client.py**：无凭据读写；stdin 单守护线程+Queue 无线程泄漏；自动重连有手动断开抑制+指数退避封顶+循环关闭保护；显示去重 LRU 上限
+- **WS/CLI 命令面**：12 条斜杠命令中 8 条无用户可控字段；/exit、/new（J11 门控）、/list、/config（无敏感项）、/memories、/memos（R1）、/reload_prompts、/check、/tasks、/help 逐条核对无问题；task list/complete SQL 全参数化；/search 注入面零（FTS 引号翻倍 + LIKE %/_/\\ 转义 + 参数化）；is_processing 门控事件循环内原子、finally 必清；会话三条回收路径（finally/unregister/done_callback）对齐无泄漏；ask_user 为同步纯返回工具无 pending 状态（协议面不存在"应答流"）；handle_interrupt 幂等；broadcast J7 语义正确；--once-timeout 双处钳制；handle_once_mode 超时/取消/硬超时/BrokenPipe/空响应路径完整
+
+### 17.6 修复建议（Batch M，按优先级分波）
+
+| 波次 | 内容 | 项 | 预估规模 |
+|---|---|---|---|
+| 波次 1 | 凭据进命令行统一收口（环境变量/凭据文件，对齐 J12 条例与 api_key_env 惯例） | S1/S4/S5/S7 + S8 | ~30 行 |
+| 波次 2 | 路径与文件名边界校验（realpath 前缀/basename 比对/白名单正则/git argv `--`/sed 转义/远端 item 校验/图片魔数） | S2/S9/S11/S12 + S3/S6/S10/S13 | ~35 行 |
+| 波次 3 | 前端功能缺陷（F1 清空按钮 TypeError/F2 重连复活/F3 孤儿连接/F4 CSS SRI/F6 文案） | F1/F2 + F3/F4/F6 | ~20 行 |
+| 波次 4 | 命令面输入规整（W1 类型检查/W2 delay 钳制/W3 缺参报错/W4 空词提示/W6 退出码+端口校验/W7 间隔钳制/W8 温度钳制/W11 节类型回退/W12 空标题）+ W5 择优 | W1~W8/W11/W12 | ~45 行 |
+| 波次 5 | voice_client/client 收尾（M1 input 线程改造/M7 探测超时/M8 finally 断开）+ model_config 边角（M2~M5 输入规整） | M1~M5/M7/M8 | ~40 行 |
+
+定级说明：本地单用户产品保守定级——S1/S4/S5/S7 的实质泄漏面是"凭据进 AI 会话日志/会话史"而非同机 ps（同用户）；S12 为提示注入→云渗出通道，是本轮最接近高危的项（内容可控性低、需 AI 被诱导两条件，维持中危）；F1/F2 为 100% 可复现功能缺陷，无安全后果。全部 46 项无一可崩连接/越权/远控。
+
+### 17.7 测试基线（Windows 开发机）
+
+审计时全量 **493 passed / 4 failed / 1 skipped**（25.5s），与第六轮 Batch L 后基线完全相同；4 失败均为平台环境项（symlink 权限 / python3 缺失 / POSIX 可执行位语义 ×2），与代码无关。Linux 基线维持 490 passed。
+
+### 17.8 第七轮结论
+
+四路新维度审读 + 主审逐条复核：**Batch L 零回归**；新发现 **46 项**（高危 0 / 中危 11 / 低危 26 / 信息 9），集中在两块此前未系统覆盖的存量面——**skills 凭据/路径边界**（S 系列，多违反项目自定 J12 条例）与**命令面输入规整**（W 系列），前端与客户端以功能缺陷为主（F1/F2/M1）。七轮累计发现 **118 项**（高危 7 / 中危 37 / 低危与信息 74）。Batch M 修复建议见 §17.6；**波次 1（S1/S4/S5/S7/S8）已落地**，见 §18。
+
+---
+
+## 十八、Batch M 修复记录（波次 1：凭据收口，2026-08-20）
+
+范围：§17.6 波次 1——凭据进命令行统一收口（S1/S4/S5/S7 + S8），对齐 J12"凭据不进命令行"条例与 `api_key_env` 环境变量名惯例。
+
+| # | 修复内容 | 关键变更 |
+|---|---|---|
+| S1 | `gitclient.py` token 不再嵌入 URL | `_run_git` 统一经 `GIT_CONFIG_COUNT/KEY_0/VALUE_0` 环境变量传 `http.extraheader`（git≥2.31），clone/pull/push 全覆盖；token 不进 argv/远端 URL/.git/config；新增 `_scrub_token` 对 stdout/stderr/异常统一脱敏；删除 `_auth_url` |
+| S4 | `ssh-exec.py` 移除 `-p/--password` | 密码仅经环境变量 `AIBOX_SSH_PASS` 提供，未设置退出码 2 并提示；帮助文本同步 |
+| S5 | `sftp-transfer.py` 移除 `-p/--password` | 密码经环境变量 `AIBOX_SFTP_PASS` 优先，未设置且未用 `--key` 时回退 getpass 交互；密钥认证不再强制索密码；帮助文本同步 |
+| S7 | `aes-crypto.py` 移除 `--key` | 密钥仅经 `--key-file`（hex 文本）/`--load-key`（JSON）文件途径；`args.key` 流程改局部 `key_input`；帮助与错误提示同步 |
+| S8 | `aes-crypto.py` 密钥输出收口 | `generate_random_key` 不再打印密钥内容（提示经 `--save-key` 保存）；`save_key_iv` 写后 `os.chmod 0o600`（不支持 POSIX 权限平台静默跳过） |
+
+**验证**：
+- 四文件 `py_compile` 通过；`aes-crypto --help` 确认 `--key` 已移除
+- 功能闭环实测（Windows）：`--gen-key --gen-iv --save-key`（密钥未打印）→ `--load-key --encrypt-text` 加解密正常；`--key 0011` 被 argparse 拒绝（exit 2）
+- 残留引用核查：全仓库无 `args.password`/`args.key`（aes）残留；`SKILLS_FORMAT.md:238` J12 条例无需变更（代码现已与条例一致）
+- 全量测试 **493 passed / 4 failed（平台环境项）/ 1 skipped**，与审计基线完全一致，零回归
+
+**波次 2~5 待落地**：路径边界（S2/S9/S11/S12+低危同类）、前端功能（F1/F2 等）、命令面规整（W 系列）、客户端收尾（M1 等）。

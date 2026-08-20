@@ -79,19 +79,30 @@ class GitHubTool:
             return date_str
 
     def _run_git(self, repo_path: str, cmd: List[str]) -> Dict:
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+        if GITHUB_TOKEN:
+            # 凭据仅经环境变量传递（git>=2.31 的 GIT_CONFIG_* 机制），
+            # 不进命令行 argv / 远端 URL / .git/config（S1，对齐 J12 条例）
+            env["GIT_CONFIG_COUNT"] = "1"
+            env["GIT_CONFIG_KEY_0"] = "http.extraheader"
+            env["GIT_CONFIG_VALUE_0"] = f"Authorization: token {GITHUB_TOKEN}"
         try:
             result = subprocess.run(
                 ["git"] + cmd, cwd=repo_path, capture_output=True,
-                text=True, timeout=60, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+                text=True, timeout=60, env=env
             )
-            return {"success": result.returncode == 0, "stdout": result.stdout.strip(), "stderr": result.stderr.strip()}
+            return {"success": result.returncode == 0,
+                    "stdout": self._scrub_token(result.stdout.strip()),
+                    "stderr": self._scrub_token(result.stderr.strip())}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": self._scrub_token(str(e))}
 
-    def _auth_url(self, repo_url: str) -> str:
-        if GITHUB_TOKEN and repo_url.startswith("https://"):
-            return repo_url.replace("https://", f"https://{GITHUB_TOKEN}@")
-        return repo_url
+    @staticmethod
+    def _scrub_token(text: str) -> str:
+        """输出脱敏：任何路径回显的 token 一律替换（S1）"""
+        if GITHUB_TOKEN and text:
+            return text.replace(GITHUB_TOKEN, "***")
+        return text
 
     # ==================== 搜索功能 ====================
 
@@ -154,7 +165,7 @@ class GitHubTool:
         if os.path.exists(target_dir):
             return f"⚠️ 仓库已存在: {target_dir}\n💡 使用 pull 命令拉取更新"
         
-        clone_url = self._auth_url(f"https://github.com/{repo}.git")
+        clone_url = f"https://github.com/{repo}.git"
         cmd = ["clone"]
         if depth > 0:
             cmd.extend(["--depth", str(depth)])

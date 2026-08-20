@@ -59,14 +59,14 @@ class AESCli:
             return False
 
     def generate_random_key(self, key_size=16):
-        """生成随机密钥"""
+        """生成随机密钥（S8：密钥内容不打印，避免进入会话日志；经 --save-key 持久化）"""
         if key_size not in [16, 24, 32]:
             print(f"错误: 密钥大小必须为16、24或32，当前为{key_size}")
             return None
 
         self.key = get_random_bytes(key_size)
         key_hex = self.key.hex()
-        print(f"已生成 {key_size} 字节随机密钥: {key_hex}")
+        print(f"已生成 {key_size} 字节随机密钥（内容不显示，请用 --save-key 保存到文件）")
         return key_hex
 
     def generate_random_iv(self):
@@ -330,6 +330,10 @@ class AESCli:
 
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+        try:
+            os.chmod(filepath, 0o600)  # S8：密钥文件仅属主可读写
+        except OSError:
+            pass  # 不支持 POSIX 权限的平台（如 Windows）跳过
 
         print(f"密钥和IV已保存到: {filepath}")
         return True
@@ -395,38 +399,33 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
-  # 生成随机密钥和IV
-  aes-crypto --gen-key
+  # 生成随机密钥和IV（密钥不打印，经 --save-key 保存到文件）
+  aes-crypto --gen-key --gen-iv --save-key keys.json
   aes-crypto --gen-iv
 
-  # 文本加解密
-  aes-crypto --key <密钥hex> --iv <IV/Nonce hex> --encrypt-text "Hello World"
-  aes-crypto --key <密钥hex> --iv <IV/Nonce hex> --decrypt-text "<密文base64>"
+  # 文本加解密（密钥经文件提供，不走命令行）
+  aes-crypto --key-file key.txt --iv <IV/Nonce hex> --encrypt-text "Hello World"
+  aes-crypto --key-file key.txt --iv <IV/Nonce hex> --decrypt-text "<密文base64>"
 
   # 文件加解密
-  aes-crypto --key <密钥hex> --iv <IV/Nonce hex> --encrypt-file input.txt
-  aes-crypto --key <密钥hex> --iv <IV/Nonce hex> --decrypt-file input.txt.encrypted
+  aes-crypto --load-key keys.json --encrypt-file input.txt
+  aes-crypto --load-key keys.json --decrypt-file input.txt.encrypted
 
   # 批量加解密
-  aes-crypto --key <密钥hex> --iv <IV/Nonce hex> --batch-encrypt file1.txt file2.txt
-  aes-crypto --key <密钥hex> --iv <IV/Nonce hex> --batch-decrypt *.encrypted
-
-  # 保存和加载密钥
-  aes-crypto --key <密钥hex> --iv <IV/Nonce hex> --save-key keys.json
-  aes-crypto --load-key keys.json --encrypt-file input.txt
+  aes-crypto --load-key keys.json --batch-encrypt file1.txt file2.txt
+  aes-crypto --load-key keys.json --batch-decrypt *.encrypted
 
   # 使用GCM模式
-  aes-crypto --mode GCM --gen-key --key-size 32
-  aes-crypto --mode GCM --key <密钥hex> --iv <Nonce hex> --encrypt-file input.txt
+  aes-crypto --mode GCM --gen-key --key-size 32 --save-key keys.json
+  aes-crypto --mode GCM --load-key keys.json --encrypt-file input.txt
 
   # 从文件读取密钥
   aes-crypto --key-file key.txt --iv <IV/Nonce hex> --encrypt-file input.txt
 
 参数说明:
   --mode CBC|GCM          加密模式 (默认: CBC)
-  --key KEY               十六进制密钥 (16/24/32字节)
   --iv IV                 十六进制IV/Nonce (CBC:16字节, GCM:12字节)
-  --key-file FILE         从文件读取密钥
+  --key-file FILE         从文件读取密钥（密钥仅经文件提供，避免进入进程列表与会话日志）
   --load-key FILE         从JSON文件加载密钥和IV
   --save-key FILE         保存密钥和IV到JSON文件
   --gen-key               生成随机密钥
@@ -448,8 +447,7 @@ def main():
     parser.add_argument('--mode', choices=['CBC', 'GCM'], default='CBC',
                        help='加密模式 (默认: CBC)')
 
-    # 密钥和IV设置
-    parser.add_argument('--key', help='十六进制密钥 (16/24/32字节)')
+    # 密钥和IV设置（S7：密钥仅经 --key-file/--load-key 文件途径提供，不进命令行）
     parser.add_argument('--iv', help='十六进制IV/Nonce (CBC:16字节, GCM:12字节)')
     parser.add_argument('--key-file', help='从文件读取密钥')
     parser.add_argument('--load-key', help='从JSON文件加载密钥和IV')
@@ -491,27 +489,28 @@ def main():
             sys.exit(1)
 
     # 处理密钥文件
+    key_input = None
     if args.key_file:
         try:
             with open(args.key_file, 'r') as f:
-                args.key = f.read().strip()
+                key_input = f.read().strip()
         except Exception as e:
             print(f"错误: 读取密钥文件失败: {e}")
             sys.exit(1)
 
     # 设置密钥和IV
-    if args.key:
+    if key_input:
         if args.iv is None and not aes.iv:
             print("错误: 需要同时提供密钥和IV/Nonce")
             sys.exit(1)
 
         if args.iv:
-            if not aes.set_key_iv(args.key, args.iv):
+            if not aes.set_key_iv(key_input, args.iv):
                 sys.exit(1)
         elif aes.iv:
             # 从加载的密钥文件中获取IV
             try:
-                aes.key = bytes.fromhex(args.key)
+                aes.key = bytes.fromhex(key_input)
                 if len(aes.key) not in [16, 24, 32]:
                     print(f"错误: 密钥长度必须为16、24或32字节，当前为{len(aes.key)}字节")
                     sys.exit(1)
@@ -548,7 +547,7 @@ def main():
         if args.encrypt_text or args.decrypt_text or \
            args.encrypt_file or args.decrypt_file or \
            args.batch_encrypt or args.batch_decrypt:
-            print("错误: 请先设置密钥和IV/Nonce (使用 --key 和 --iv 或 --load-key)")
+            print("错误: 请先设置密钥和IV/Nonce (使用 --key-file 和 --iv 或 --load-key)")
             sys.exit(1)
 
     try:
