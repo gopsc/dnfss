@@ -49,6 +49,15 @@ def get_models(config: ConfigManager) -> Dict:
     return models
 
 
+def _api_section(config: ConfigManager) -> Dict:
+    """M3（审计 2026-08-20）：api 节被改坏为非 dict 时重置为空节——
+    否则 setdefault 后索引赋值抛 TypeError/AttributeError"""
+    api = config._config.get("api")
+    if not isinstance(api, dict):
+        api = config._config["api"] = {}
+    return api
+
+
 def list_profiles(config: ConfigManager) -> List[Dict]:
     """列出所有档案的归一化展示数据。"""
     models = get_models(config)
@@ -57,6 +66,9 @@ def list_profiles(config: ConfigManager) -> List[Dict]:
     for name, profile in models.items():
         if not isinstance(profile, dict):
             continue
+        # M4（审计 2026-08-20）：fallback 被改坏为字符串时原样下传，
+        # 展示层 join 成单字符误导——统一规整为列表
+        fallback = profile.get("fallback")
         profiles.append({
             "name": name,
             "is_default": name == default,
@@ -67,7 +79,7 @@ def list_profiles(config: ConfigManager) -> List[Dict]:
             "reasoning_enabled": bool(profile.get("reasoning_enabled", False)),
             "temperature": profile.get("temperature"),
             "timeout": profile.get("timeout"),
-            "fallback": profile.get("fallback") or [],
+            "fallback": fallback if isinstance(fallback, list) else [],
         })
     return profiles
 
@@ -99,6 +111,17 @@ def add_profile(config: ConfigManager, name: str, api_url: str, model: str,
     err = validate_new_profile(config, name, api_url, model)
     if err:
         return [f"❌ {err}"]
+
+    # M5（审计 2026-08-20）：api_key_env 需为合法环境变量名；展示/地址字段
+    # 拒控制字符并限长——防终端注入回显（\x1b] 等序列写入配置后被 print）
+    api_key_env = (api_key_env or "").strip()
+    if api_key_env and not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", api_key_env):
+        return [f"❌ 环境变量名不合法: {api_key_env!r}（须为字母/数字/下划线且不以数字开头）"]
+    for label, val, limit in (("显示名", display_name, 64),
+                              ("模型名", model, 128),
+                              ("API 地址", api_url, 256)):
+        if val and (len(str(val)) > limit or not all(c.isprintable() for c in str(val))):
+            return [f"❌ {label}含控制字符或超过 {limit} 字符"]
 
     models = get_models(config)
     profile = {
@@ -135,7 +158,7 @@ def add_profile(config: ConfigManager, name: str, api_url: str, model: str,
     models[name] = profile
     config._config["models"] = models
     if set_default:
-        config._config.setdefault("api", {})["default_model"] = name
+        _api_section(config)["default_model"] = name
 
     saved = config._save_config()
     msgs = [f"✅ 接入点 '{name}' 已添加（{profile['api_url']}，模型 {profile['model']}）"]
@@ -163,7 +186,11 @@ def delete_profile(config: ConfigManager, name: str) -> List[str]:
     for other, profile in models.items():
         if not isinstance(profile, dict):
             continue
-        fb = profile.get("fallback") or []
+        fb = profile.get("fallback")
+        # M4（审计 2026-08-20）：fallback 为字符串时 `name in fb` 退化为子串
+        # 误判，且下方列表推导会把字符串拆成单字符数组写回配置
+        if not isinstance(fb, list):
+            continue
         if name in fb:
             profile["fallback"] = [f for f in fb if f != name]
             cleaned.append(other)
@@ -171,7 +198,7 @@ def delete_profile(config: ConfigManager, name: str) -> List[str]:
 
     # 若删除的是默认档案，清除默认标记（回退旧 api 节语义）
     if config.get("api.default_model") == name:
-        config._config.setdefault("api", {}).pop("default_model", None)
+        _api_section(config).pop("default_model", None)
 
     saved = config._save_config()
     msgs = [f"✅ 接入点 '{name}' 已删除"]
@@ -382,26 +409,33 @@ def run_interactive(config: ConfigManager = None):
     print("  说明：API Key 只存环境变量名，不落盘；免密端点适合 Ollama 等本地服务")
     print("=" * 56)
     while True:
-        print("\n请选择操作：")
-        print("  1. 📋 列出接入点")
-        print("  2. ➕ 添加接入点")
-        print("  3. 🗑️ 删除接入点")
-        print("  4. 🔍 验证接入点连通性")
-        print("  0. 退出")
-        choice = input("> ").strip()
-        if choice == "1":
-            _print_profiles(list_profiles(config))
-        elif choice == "2":
-            _add_flow(config)
-        elif choice == "3":
-            _delete_flow(config)
-        elif choice == "4":
-            _test_flow(config)
-        elif choice in ("0", "q", "exit", "退出"):
-            print("再见")
+        # M2（审计 2026-08-20）：input 未捕获 EOFError/KeyboardInterrupt——
+        # 管道耗尽/Ctrl+C 此前直接 traceback；整循环包 try 同时覆盖子流程
+        # （_add_flow/_delete_flow/_test_flow）内的 input 调用
+        try:
+            print("\n请选择操作：")
+            print("  1. 📋 列出接入点")
+            print("  2. ➕ 添加接入点")
+            print("  3. 🗑️ 删除接入点")
+            print("  4. 🔍 验证接入点连通性")
+            print("  0. 退出")
+            choice = input("> ").strip()
+            if choice == "1":
+                _print_profiles(list_profiles(config))
+            elif choice == "2":
+                _add_flow(config)
+            elif choice == "3":
+                _delete_flow(config)
+            elif choice == "4":
+                _test_flow(config)
+            elif choice in ("0", "q", "exit", "退出"):
+                print("再见")
+                return
+            else:
+                print("无效选择，请输入 0~4")
+        except (EOFError, KeyboardInterrupt):
+            print("\n再见")
             return
-        else:
-            print("无效选择，请输入 0~4")
 
 
 def main():

@@ -346,14 +346,19 @@ class VoiceInterface:
             
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
                 test_file = f.name
-            
-            result = subprocess.run(
-                ['arecord', '-f', 'cd', '-d', '1', test_file],
-                capture_output=True, text=True
-            )
-            
-            os.unlink(test_file)
-            
+
+            try:
+                result = subprocess.run(
+                    ['arecord', '-f', 'cd', '-d', '1', test_file],
+                    capture_output=True, text=True,
+                    timeout=5,  # M7（审计 2026-08-20）：设备挂死此前永久卡死
+                )
+            finally:
+                # M7：超时/异常路径同样清理探测临时文件（此前残留 /tmp）；
+                # TimeoutExpired 传播至外层 except，按"麦克风不可用"降级
+                if os.path.exists(test_file):
+                    os.unlink(test_file)
+
             if result.returncode == 0:
                 print(f"{Colors.INFO}🎤 arecord 检测到设备，将使用 arecord 录音{Colors.RESET}")
                 self.has_microphone = True
@@ -610,21 +615,53 @@ class VoiceInterface:
         if not self.client or not self.client.connected:
             print(f"{Colors.ERROR}❌ 未连接到服务器{Colors.RESET}")
             return
-        
+
         print(f"\n{Colors.USER}👤 用户: {message}{Colors.RESET}")
         await self.client.send_message(message)
-    
+
+    def _stdin_reader(self, loop: asyncio.AbstractEventLoop):
+        """M1（审计 2026-08-20）：单守护线程读 stdin——替代 asyncio.to_thread
+        每行一个 input 线程的方案：Ctrl+C 取消 await 后旧线程仍阻塞 readline
+        永久泄漏，并"偷吃"后续输入整行（表现为偶发丢行）。
+        方案照搬 client.py:735-755（守护线程 + Queue + call_soon_threadsafe）。"""
+        def _put(item):
+            try:
+                loop.call_soon_threadsafe(self._input_queue.put_nowait, item)
+            except RuntimeError:
+                pass  # 事件循环已关闭（程序退出中）
+
+        while self._running:
+            try:
+                line = sys.stdin.readline()
+            except Exception:
+                break
+            if not line:  # EOF (Ctrl+D)
+                _put(None)
+                break
+            _put(line)
+
     async def run(self):
         self.print_banner()
-        
+
         prompt = f"{Colors.USER}>>> {Colors.RESET}"
-        
+
+        # M1：进程生命周期只启动一次 stdin 守护线程
+        self._input_queue = asyncio.Queue()
+        self._running = True
+        loop = asyncio.get_running_loop()
+        if getattr(self, '_stdin_thread', None) is None:
+            self._stdin_thread = threading.Thread(
+                target=self._stdin_reader, args=(loop,),
+                daemon=True, name="stdin-reader")
+            self._stdin_thread.start()
+
         while True:
             try:
-                user_input = await asyncio.to_thread(
-                    lambda: input(prompt)
-                )
-                user_input = user_input.strip()
+                print(prompt, end='', flush=True)
+                line = await self._input_queue.get()
+                if line is None:  # EOF (Ctrl+D)
+                    raise EOFError
+                user_input = line.strip()
                 
                 if not user_input:
                     if self.has_microphone:

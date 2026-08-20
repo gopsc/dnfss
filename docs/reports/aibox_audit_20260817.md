@@ -952,4 +952,25 @@ Linux 基线（`aibox/venv`）维持 **490 passed** 不受影响。
 - 冒烟测试 12/12 通过：`--port` 五例（8765 放行 / 0/65536/-1/abc 拒绝）、`add_memo` 空/纯空格标题拒绝、正常标题入库、i18n 三新键解析、`"a|b|"` 尾段规整 None
 - 全量测试 **493 passed / 4 failed（既有平台环境项）/ 1 skipped**，与波次 1~3 基线完全一致，零回归
 
-**波次 5 待落地**：客户端收尾（M1~M5/M7/M8，model_config/voice_client/client + aibox.py scheduler 超时/记忆上限，~25 行）。
+**波次 5 已落地**：见 §22。
+
+## 二十二、Batch M 修复记录（波次 5：客户端收尾，2026-08-20）
+
+范围：§17.6 波次 5——voice_client/client 收尾（M1/M7/M8）+ model_config 边角（M2~M5），落在 `voice_client.py`/`client.py`/`model_config.py` 三个文件（+118/-39 行）。M6（model_config 与运行中服务并发保存 lost-update）按审计口径"文档约定"跳过——model_config 定位为停机维护工具，与运行中服务同时写配置属使用方式问题。
+
+| # | 修复内容 | 关键变更 |
+|---|---|---|
+| M1 | voice_client stdin 线程泄漏/丢行 | 单守护线程 `_stdin_reader` + `Queue` + `loop.call_soon_threadsafe`（照搬 client.py:735-755 方案），替代 `asyncio.to_thread` 每行起一个 input 线程——此前 Ctrl+C 取消 await 后旧线程仍阻塞 readline 永久泄漏，并"偷吃"后续输入整行（偶发丢行） |
+| M2 | model_config 主循环异常 | 整循环包 `try/except (EOFError, KeyboardInterrupt)`，管道耗尽/Ctrl+C 打印"再见"退出（此前直接 traceback）；覆盖 `_add_flow/_delete_flow/_test_flow` 子流程内的 input 调用 |
+| M3 | api 节非 dict 崩溃 | 新增 `_api_section()`：`config._config["api"]` 非 dict 时重置为空节——此前 setdefault 后索引赋值抛 TypeError/AttributeError |
+| M4 | fallback 字符串三处退化 | `list_profiles` 非 list→`[]`（此前展示层 join 成单字符误导）；`delete_profile` 清理悬空引用时跳过非 list（此前 `name in fb` 子串误判 + 列表推导把字符串拆成单字符数组写回配置） |
+| M5 | 档案字段注入/限长 | `api_key_env` 正则 `^[A-Za-z_][A-Za-z0-9_]*$` 校验合法环境变量名；display_name/model/api_url 拒控制字符（`isprintable`）并限长 64/128/256——防 `\x1b]` 等终端转义序列写入配置后被 print 回显 |
+| M7 | arecord 探测永久卡死 | `subprocess.run(..., timeout=5)` + finally 清理探测临时文件（此前设备挂死永久卡死、异常路径残留 /tmp）；TimeoutExpired 传播至外层按"麦克风不可用"降级 |
+| M8 | client 退出不关 websocket | `main()` 补 finally：正常退出（EOF 等）统一 `await cli.client.disconnect()`（此前服务端见异常断连） |
+
+**验证**：
+- 冒烟测试 7/7 通过（`Temp/_smoke_wave5.py`，跑完即删）：M4 展示规整/删除不拆字符、M3 损坏 api 节重置+默认档案写入、M5 非法变量名/控制字符/超长 URL 拒绝 + 合法输入放行。注：ConfigManager 为单例且 `common.constants` import 期即实例化，冒烟脚本每个场景需重置单例（`_instance/_config/_config_path` 置 None）才能吃到新写盘的配置
+- 全量测试 **493 passed / 4 failed（既有平台环境项）/ 1 skipped**，与波次 1~4 基线完全一致，零回归
+- `py_compile` 三文件通过
+
+**Batch M 全部 5 个波次已收束**（S/F/W/M 四域，累计 §18~§22）。遗留"可不做/产品决策"项：F5（消息列表内存增长）、W9/W10（WS payload 上限/data 归一）、M6（并发保存 lost-update）、§17.5 表外 N 轮未完成项 N6（registry 转发总超时不完整）。

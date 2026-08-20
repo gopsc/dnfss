@@ -815,6 +815,14 @@ async def main():
         await cli.run()
     except KeyboardInterrupt:
         print(f"\n{Colors.SYSTEM}程序已退出{Colors.RESET}")
+    finally:
+        # M8（审计 2026-08-20）：正常退出（EOF 等）此前不关 websocket，
+        # 服务端见异常断连——统一 finally 通知
+        if cli.client:
+            try:
+                await cli.client.disconnect()
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     try:
