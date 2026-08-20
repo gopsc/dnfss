@@ -73,7 +73,7 @@ gateway 侧仅做**存在性不变量**检查（显式 `Target-Url` 请求必须
 
 ### `POST /register` / `POST /register/send_code` / `POST /reset/send_code` / `POST /reset_password`
 
-与 gateway v0.8.0 契约完全一致（详见 `docs/reports/auth_service_plan.md` §5 与黑盒 tests/blackbox/test_gateway.py）。
+与 gateway v0.8.0 契约完全一致（详见黑盒 tests/blackbox/test_gateway.py）。
 
 ### `POST /logout` / `POST /refresh_token` / `POST /whoami` / `POST /admin/verify`
 

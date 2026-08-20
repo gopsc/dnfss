@@ -4,8 +4,7 @@
 > 模块：actpred（hailo_infer.py cv2.LUT 快路径）
 > 作者：自动生成
 > 日期：2026-08-17
-> 前置：`actpred_hailo_preprocess_optimization_plan_20260817.md`（优化方案，已实施）、
-> `actpred_inference_speed_benchmark_20260813.md`（旧基准）
+> 前置：`actpred_inference_speed_benchmark_20260813.md`（旧基准）
 
 ---
 

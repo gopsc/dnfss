@@ -2,7 +2,7 @@
 
 > ca（Central Auth，C++20，v1.0.0）是 UniServe Framework 的中央认证服务，承接原 gateway v0.8.0 的全部认证职责。
 > 本索引汇总：① 从 gateway v0.9.0 认证独立化**迁移接收**的审计项（已在 ca 闭环）；② **ca 相关开放项**（与 gateway 转发层/配置共享，需 ca 侧处理）；③ ca 原生安全态势基线。
-> 关联文档：gateway 合并审计 [`gateway_SECURITY_AUDIT.md`](gateway_SECURITY_AUDIT.md)；认证迁移设计 [`../reports/auth_service_plan.md`](../reports/auth_service_plan.md)。
+> 关联文档：gateway 合并审计 [`gateway_SECURITY_AUDIT.md`](gateway_SECURITY_AUDIT.md)。
 
 ---
 

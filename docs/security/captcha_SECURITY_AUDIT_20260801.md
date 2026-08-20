@@ -109,7 +109,6 @@
 替代 Pillow，协议完全兼容，gateway 零改动。
 
 - 重写审计报告： [captcha2_SECURITY_AUDIT_20260809.md](captcha2_SECURITY_AUDIT_20260809.md)
-- 开发方案文档： [../reports/captcha_cpp_rewrite_dev_doc.md](../reports/captcha_cpp_rewrite_dev_doc.md)
 - `core/init.txt` 已切换为 `captcha2/_run.sh`
 
 本报告中的遗留问题在 C++ 版中的状态：

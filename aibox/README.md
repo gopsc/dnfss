@@ -980,7 +980,7 @@ elif command == "/mycommand":
 - ✅ **测试**：272 项全过（Batch E PoC 回归 + F1 配置脱敏 3 项 + F2 超时清理/线程收尾 5 项新增）
 
 ### v3.2
-- ✅ **CLI 一次性对话模式（`--once`）**（分三批落地，开发文档见 [docs/reports/aibox_cli_once_mode_dev_doc.md](../docs/reports/aibox_cli_once_mode_dev_doc.md)）：
+- ✅ **CLI 一次性对话模式（`--once`）**（分三批落地）：
   - **Batch A**：`--once QUERY` / `--quiet` / `--once-timeout`；不启动 WebSocket，执行后退出；回答走 stdout、过程走 stderr，可管道组合；SIGINT 与超时复用三层取消机制
   - **Batch B**：`--no-save-memory`（`enable_memory` 开关干净禁用 MemoryTool）、`--show-reasoning`（思考流默认静默）；压缩提示改走 output_callback 不再污染 stdout；退出码 1（工具执行失败）
   - **Batch C**：SQLite WAL（多 CLI 进程并发写锁缓解）、`--worker-only`（纯执行面 + 精简 system prompt 防人格污染）、`--model` / `--temperature` 覆盖、子代理工具失败标记透传（`_SUBAGENT_TOOL_FAILED_MARKER` → orchestrator stats）

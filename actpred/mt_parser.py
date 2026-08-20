@@ -2,8 +2,7 @@
 
 从 .mt 文件中提取 @Action 块，解析为 (n_rows, n_cols) 的 float32 矩阵。
 支持 `-` 占位符（沿用上一行同列的值）；首行 `-` 填 0，
-与 pybot/bot4cj 运行时语义一致（2026-08 统一，见
-docs/reports/bot4cj_python_migration_dev_doc.md §2.3）。
+与 pybot/bot4cj 运行时语义一致（2026-08 统一）。
 """
 
 import re

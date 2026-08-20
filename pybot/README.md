@@ -5,9 +5,6 @@
 驱动大顺（Dashun）蜘蛛机器人（树莓派 aarch64，10 舵机 + 2 云台，
 PCA9685 PWM 控制器 + MPU6050 姿态传感器）。
 
-迁移方案与审计修复映射见
-[docs/reports/bot4cj_python_migration_dev_doc.md](../docs/reports/bot4cj_python_migration_dev_doc.md)。
-
 ## 特性
 
 - **零第三方依赖**：纯标准库（fcntl / struct / threading / wave / argparse），

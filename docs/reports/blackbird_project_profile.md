@@ -312,13 +312,13 @@ systemctl start Nidus      # 或 bash core/_run.sh
 | **core ConfsTask** | C++ 内嵌配置任务（557 行） |
 | **gateway 精简** | `src/main.cpp` 大幅精简（-1980 行），认证逻辑下沉至 ca |
 
-### 8.2 认证独立化（auth_service_plan）
+### 8.2 认证独立化（ca 模块）
 
-`waf → ca → gateway` 前置拓扑：ca 统一鉴权并前置转发，gateway 退化为纯转发（仅 loopback），下游 / WAF / 前端零改动。对应开发文档见 `docs/reports/auth_service_plan.md`。
+`waf → ca → gateway` 前置拓扑：ca 统一鉴权并前置转发，gateway 退化为纯转发（仅 loopback），下游 / WAF / 前端零改动。
 
 ### 8.3 关键 dev docs 索引（`docs/reports/`）
 
-core_service_registry_dev_doc（注册中心）、auth_service_plan（CA 模块）、aibox_open_dev_plan / aibox_file_network_cli_refactor（aibox 安全沙箱与 CLI 化）、libcrypt_CBC_deprecation_dev_doc（AES-GCM 迁移）、libhttp_remote_addr_dev_doc（X-Remote-Addr 透传）、captcha_cpp_rewrite / smtp_cpp_rewrite / confs2_cpp_rewrite（C++ 重写方案）。
+core_service_registry_dev_doc（注册中心）、aibox_open_dev_plan（aibox 安全沙箱与 CLI 化）、libcrypt_CBC_deprecation_dev_doc（AES-GCM 迁移）、libhttp_remote_addr_dev_doc（X-Remote-Addr 透传）、smtp_cpp_rewrite（C++ 重写方案）。
 
 ### 8.4 安全评级演进
 

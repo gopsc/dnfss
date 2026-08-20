@@ -7,8 +7,6 @@
 
 硬件驱动插件（modules/<Name>.py）替代仓颉版的 Lua 扩展层，
 协议为 build(ctx) / call(ctx) / destroy(ctx) 三段生命周期。
-
-迁移方案见 docs/reports/bot4cj_python_migration_dev_doc.md。
 """
 
 __version__ = "0.1.0"

@@ -77,7 +77,7 @@
 | 模块 | 说明 |
 |------|------|
 | tests | 黑盒测试套件（`test_db.py`/`test_gateway.py`/`test_waf.py`/`test_dnfs.py`/`test_captcha.py`/`test_smtp.py`/`test_ai_review.py`/`test_static.py`/`test_core_confs.py`），纯标准库 HTTP/TCP 用户旅程模拟，经 `test_runner.py` 统一调度（详见 [tests/blackbox/README.md](../tests/blackbox/README.md)） |
-| docs | 文档聚合（security/ 审计、reviews/ 审查、reports/ 分析），77 篇 md + 1 篇 html |
+| docs | 文档聚合（security/ 审计、reviews/ 审查、reports/ 分析），67 篇 md + 1 篇 html |
 
 ## 九、根级构建与部署脚本
 

@@ -3343,7 +3343,7 @@ def handle_memo_commands(manager):
 def handle_once_mode(manager, args) -> bool:
     """一次性对话模式：命中 --once 则执行单次 AI 对话并以退出码结束进程。
 
-    设计要点（详见 docs/reports/aibox_cli_once_mode_dev_doc.md）：
+    设计要点：
     - stdout 仅输出 AI 回答正文（chunk 流式），line/reasoning 过程行走 stderr，管道安全
     - 退出码：0 成功 / 2 API 或链路失败 / 3 用户中断(Ctrl+C) / 4 全局超时
     - 复用三层中断机制（Event + HTTP 关闭 + 子进程 kill）：SIGINT 与超时 Timer 均走 cancel()

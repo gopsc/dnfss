@@ -56,7 +56,6 @@ captcha2 :8009 (RpcServer)
 ## 状态
 
 - 生产运行中（services.yaml 拉起），Python captcha 已废弃
-- 开发文档见 [docs/reports/captcha_cpp_rewrite_dev_doc.md](../docs/reports/captcha_cpp_rewrite_dev_doc.md)
 - 安全审计见 [docs/security/captcha2_SECURITY_AUDIT_20260809.md](../docs/security/captcha2_SECURITY_AUDIT_20260809.md)
 
 ## 许可证
