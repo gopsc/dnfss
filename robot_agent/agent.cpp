@@ -2,6 +2,8 @@
 
 #include <us/HttpClient.hpp>
 
+#include <boost/system/error_code.hpp>
+
 #include <ctime>
 #include <iostream>
 #include <stdexcept>
@@ -90,7 +92,7 @@ std::string run_chat_loop(const AgentConfig& cfg,
         if (code != 200)
             throw std::runtime_error("HTTP " + std::to_string(code) + ": " + response_body);
 
-        json::error_code ec;
+        boost::system::error_code ec;
         json::value resp = json::parse(response_body, ec);
         if (ec)
             throw std::runtime_error("响应不是合法 JSON: " + response_body.substr(0, 200));
@@ -119,7 +121,7 @@ std::string run_chat_loop(const AgentConfig& cfg,
                 auto args_it = fn.find("arguments");
                 if (args_it != fn.end() && !args_it->value().is_null()) {
                     std::string args_str = json::value_to<std::string>(args_it->value());
-                    json::error_code aec;
+                    boost::system::error_code aec;
                     args = json::parse(args_str, aec);
                     if (aec) args = json::object();
                 } else {
