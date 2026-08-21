@@ -45,6 +45,13 @@ from .prompt_tools import (
 )
 from .proxy_tools import SetProxyTool, GetProxyTool
 from .misc_tools import AskUserTool
+from .process_tools import (
+    BgRunTool,
+    BgWriteTool,
+    BgListTool,
+    BgOutputTool,
+    BgKillTool,
+)
 
 __all__ = [
     "Tool",
@@ -71,4 +78,10 @@ __all__ = [
     "SetProxyTool",
     "GetProxyTool",
     "AskUserTool",
+    # 后台进程管理工具（bg_run/bg_write/bg_list/bg_output/bg_kill）
+    "BgRunTool",
+    "BgWriteTool",
+    "BgListTool",
+    "BgOutputTool",
+    "BgKillTool",
 ]

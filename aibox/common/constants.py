@@ -236,6 +236,31 @@ class Constants:
     def COMPRESSOR_LLM_MAX_TOKENS(cls):
         return cls._get_config().get("compressor.llm_max_tokens", 1000)
 
+    # 后台进程管理（bg_run/bg_list/bg_output/bg_kill）
+    @property
+    def BG_PROCESSES_ENABLED(cls):
+        return cls._get_config().get("background_processes.enabled", True)
+
+    @property
+    def BG_MAX_PROCESSES(cls):
+        return cls._get_config().get("background_processes.max_processes", 16)
+
+    @property
+    def BG_MAX_ENTRIES(cls):
+        return cls._get_config().get("background_processes.max_entries", 32)
+
+    @property
+    def BG_BUFFER_PER_PROCESS(cls):
+        return cls._get_config().get("background_processes.buffer_per_process", 262144)
+
+    @property
+    def BG_MAX_LIFETIME(cls):
+        return cls._get_config().get("background_processes.max_lifetime", 0)
+
+    @property
+    def BG_MAX_WRITE_BYTES(cls):
+        return cls._get_config().get("background_processes.max_write_bytes", 65536)
+
 
 # 创建常量实例
 constants = Constants()

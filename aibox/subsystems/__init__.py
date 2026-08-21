@@ -24,6 +24,11 @@ from .db import MemoryDatabase, MemoDatabase
 from .skill_manager import SkillManager
 from .conversation_history import ConversationHistory
 from .conversation_compressor import ConversationCompressor
+from .process_manager import (
+    ProcessManager,
+    get_process_manager,
+    reset_process_manager,
+)
 
 __all__ = [
     "CommandExecutor",
@@ -34,4 +39,7 @@ __all__ = [
     "SkillManager",
     "ConversationHistory",
     "ConversationCompressor",
+    "ProcessManager",
+    "get_process_manager",
+    "reset_process_manager",
 ]
