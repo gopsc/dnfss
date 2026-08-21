@@ -527,7 +527,9 @@ def resolve_api_key(api_key: Optional[str], config=None,
             f"模型档案端点缺少 API Key：请设置环境变量 {env_name}，"
             f"或将该档案的 api_key_env 配置为空串以启用本地免密端点")
     try:
-        home = os.environ.get("HOME", os.environ["USERPROFILE"])
+        # dict.get 的 default 参数会无条件先求值，直接写 os.environ["USERPROFILE"]
+        # 在无该变量的 Linux 上必抛 KeyError，导致 key 文件回退路径永远不可达
+        home = os.environ.get("HOME") or os.environ.get("USERPROFILE")
         key_path = os.path.join(home, ".cert", "deepseek.key")
         with open(key_path, "r") as f:
             return f.read().strip()
