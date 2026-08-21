@@ -22,6 +22,36 @@ from typing import Dict, Optional, Tuple
 
 from common import ConfigManager, constants, Logger
 
+# T21（审计 2026-08-21）：env 覆盖黑名单——工具 schema 中 env 是开放
+# object，LLM（可被网页内容提示注入诱导）可传 LD_PRELOAD/PYTHONPATH/
+# PATH 等在 shell=True 之上进一步劫持进程加载（POSIX LD_PRELOAD 可加载
+# 任意共享库）。命中黑名单的覆盖键拒绝并告警
+ENV_DENY_EXACT = frozenset({
+    "PATH", "PYTHONPATH", "PYTHONHOME", "SHELL", "IFS",
+    "LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT",
+    "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES",
+    "PSMODULEPATH", "COMSPEC",
+})
+ENV_DENY_PREFIXES = ("LD_", "DYLD_")
+
+
+def filter_env_overrides(env) -> Tuple[Dict, list]:
+    """T21：过滤 env 覆盖项，返回 (安全覆盖, 被拒绝键列表)。
+
+    键大小写不敏感匹配（Windows 环境变量不区分大小写）；
+    LD_*/DYLD_* 前缀整体拒绝（加载器劫持面）。
+    """
+    if not env:
+        return {}, []
+    safe, rejected = {}, []
+    for key, value in dict(env).items():
+        ku = str(key).upper()
+        if ku in ENV_DENY_EXACT or ku.startswith(ENV_DENY_PREFIXES):
+            rejected.append(key)
+        else:
+            safe[key] = value
+    return safe, rejected
+
 
 class CommandExecutor(ABC):
     """命令执行器抽象基类 - 负责执行系统命令"""
@@ -293,10 +323,13 @@ class SubprocessCommandExecutor(CommandExecutor):
 
         self.logger.info(f"执行命令: {command} (work_dir={work_dir})")
 
-        # 准备环境变量
+        # 准备环境变量（T21：黑名单键拒绝，防加载器/解释器劫持）
         exec_env = os.environ.copy()
         if env:
-            exec_env.update(env)
+            safe_env, rejected_keys = filter_env_overrides(env)
+            if rejected_keys:
+                self.logger.warning(f"env 覆盖被黑名单拒绝（T21）: {rejected_keys}")
+            exec_env.update(safe_env)
 
         process = None
         token = None
@@ -384,10 +417,13 @@ class SubprocessCommandExecutor(CommandExecutor):
         output_queue.put(("line", f"📁 工作目录: {work_dir}\n"))
         output_queue.put(("line", "-" * 50 + "\n"))
 
-        # 准备环境变量
+        # 准备环境变量（T21：黑名单键拒绝，防加载器/解释器劫持）
         exec_env = os.environ.copy()
         if env:
-            exec_env.update(env)
+            safe_env, rejected_keys = filter_env_overrides(env)
+            if rejected_keys:
+                self.logger.warning(f"env 覆盖被黑名单拒绝（T21）: {rejected_keys}")
+            exec_env.update(safe_env)
 
         process = None
         token = None

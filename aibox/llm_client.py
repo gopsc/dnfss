@@ -32,6 +32,17 @@ _AUTH_HEADER_RE = re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+")
 # T13：错误响应体可能回显裸 API Key（如 sk-xxx），一并脱敏
 _API_KEY_RE = re.compile(r"sk-[A-Za-z0-9_-]{16,}")
 
+# T19（审计 2026-08-21）：瞬时网络异常白名单。此前 FailoverClient 捕获
+# requests.exceptions.RequestException 基类——档案 api_url 手写错（漏
+# scheme 抛 MissingSchema）等永久性配置错误也被当瞬时：标记冷却 60s、
+# 触发转移、计入 failovers，每次冷却到期再撞一次坏端点，统计与冷却表
+# 被永久错误污染。显式枚举瞬时异常，其余 requests 异常直接上抛响亮暴露
+_TRANSIENT_NET_ERRORS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+)
+
 
 def _sanitize_log_msg(msg: str) -> str:
     """日志脱敏：替换错误消息中的 Bearer 令牌与裸 API Key。"""
@@ -190,8 +201,9 @@ class DeepSeekClient(LLMClient):
             return None
         except TransientLLMError:
             raise  # L4a：瞬时故障上抛供 FailoverClient 转移，不吞
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-            raise  # L4a：连接类瞬时故障同样上抛（原被吞成 None，无法转移）
+        except _TRANSIENT_NET_ERRORS:
+            raise  # T19：连接类瞬时故障同样上抛（原被吞成 None，无法转移；
+            # ChunkedEncodingError 一并对齐——响应体中途损坏属瞬时网络故障）
         except Exception as e:
             self._log("error", f"LLM 压缩请求异常: {e}")
             return None
@@ -246,6 +258,7 @@ class DeepSeekClient(LLMClient):
             raise RuntimeError(
                 f"HTTP {status}: {body}")
 
+        saw_done = False
         try:
             for line in response.iter_lines():
                 if not line:
@@ -255,6 +268,7 @@ class DeepSeekClient(LLMClient):
                     continue
                 data = line_text[6:]
                 if data == "[DONE]":
+                    saw_done = True
                     yield {"type": "done"}
                     break
                 try:
@@ -270,6 +284,14 @@ class DeepSeekClient(LLMClient):
                     yield event
         finally:
             self._current_response = None
+        # T20（审计 2026-08-21）：iter_lines 耗尽但从未收到 [DONE]（代理缓冲
+        # 后提前 FIN / 服务端中途断开，末行半截 JSON 解析失败被 continue）
+        # 此前被静默视为成功——回答无声截断无任何信号。抛瞬时异常：首事件
+        # 前 FailoverClient 可转移重放；已产出事件则上抛（既有语义：已输出
+        # 内容绝不重放），由上层错误处理回滚/报错。用户中断（cancel 关连接
+        # 抛异常）不会走到这里。
+        if not saw_done:
+            raise TransientLLMError("LLM 流式响应不完整：未收到 [DONE] 结束标记（连接中途断开）")
 
     # L5：思考内容的常见厂商字段别名（首个命中的非空字段生效）
     REASONING_FIELDS = ("reasoning_content", "reasoning", "thinking", "thinking_content")
@@ -462,7 +484,7 @@ class FailoverClient:
                     return result
                 # None：认证/参数类 4xx 或响应异常——不可转移，直接透传
                 return None
-            except (TransientLLMError, requests.exceptions.RequestException) as e:
+            except (TransientLLMError,) + _TRANSIENT_NET_ERRORS as e:
                 if self._cancelled:
                     return None  # 用户中断引发的异常：不转移
                 last_exc = e
@@ -517,7 +539,7 @@ class FailoverClient:
                     produced_any = True
                     yield event
                 return  # 自然结束（含 done 事件）视为成功
-            except (TransientLLMError, requests.exceptions.RequestException) as e:
+            except (TransientLLMError,) + _TRANSIENT_NET_ERRORS as e:
                 if self._cancelled:
                     raise  # 用户中断（cancel 强关连接）：绝不转移
                 if produced_any:

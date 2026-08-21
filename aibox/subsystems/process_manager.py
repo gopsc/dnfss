@@ -35,6 +35,7 @@ import time
 from typing import Dict, List, Optional
 
 from common import ConfigManager, constants, Logger
+from subsystems.executors import filter_env_overrides
 
 # 单行输出最大字节数，超出截断（防超长单行撑爆环形缓冲内存预算）
 MAX_LINE_BYTES = 16 * 1024
@@ -162,7 +163,11 @@ class ProcessManager:
 
         exec_env = os.environ.copy()
         if env:
-            exec_env.update(env)
+            # T21：黑名单键拒绝（对齐 executors，防 LD_PRELOAD/PYTHONPATH 劫持）
+            safe_env, rejected_keys = filter_env_overrides(env)
+            if rejected_keys:
+                self.logger.warning(f"env 覆盖被黑名单拒绝（T21）: {rejected_keys}")
+            exec_env.update(safe_env)
 
         try:
             popen = subprocess.Popen(
@@ -322,7 +327,7 @@ class ProcessManager:
 
     def write(self, handle, text: str, append_newline: bool = True,
               wait_lines: int = 0, wait_timeout: float = 5.0,
-              write_timeout: float = 5.0) -> Dict:
+              write_timeout: float = 5.0, owner: str = None) -> Dict:
         """向后台进程 stdin 写入一行（交互式问答）。
 
         返回 {ok, handle, watermark, sent_bytes[, wait]}：
@@ -330,10 +335,16 @@ class ProcessManager:
             watermark) 得到的必然且仅是本条输入引发的响应（写读对齐）
           - wait_lines>0 时同步等待 N 行响应（wait 子 dict 含 output/
             timed_out），expect 式一步问答
-        失败返回 {ok: False, error}（进程已退出/写入超时/超长等）。"""
+        失败返回 {ok: False, error}（进程已退出/写入超时/超长等）。
+
+        T22 属主隔离：条目与调用方都携带 owner 且不一致时拒绝——他人
+        stdin 不容注入。任一侧未标识（None，如测试/管理面直调）不隔离。"""
         entry = self._lookup(handle)
         if entry is None:
             return {"ok": False, "error": f"句柄 #{handle} 不存在"}
+        denial = self._check_owner(entry, owner, "写入")
+        if denial:
+            return denial
         if not isinstance(text, str) or text == "":
             return {"ok": False, "error": "缺少或空的 text"}
         data = text if (not append_newline or text.endswith("\n")) else text + "\n"
@@ -467,12 +478,20 @@ class ProcessManager:
                              key=lambda e: (e.status != "running", e.handle))
             return [self._entry_info(e) for e in entries]
 
-    def kill(self, handle, force: bool = False, grace: float = 3.0) -> Dict:
+    def kill(self, handle, force: bool = False, grace: float = 3.0,
+             owner: str = None) -> Dict:
         """终止后台进程。SIGTERM → 宽限轮询 → SIGKILL；force=True 直接 SIGKILL。
-        对已退出条目幂等，返回当前状态。"""
+        对已退出条目幂等，返回当前状态。
+
+        T22 属主隔离：条目与调用方都携带 owner 且不一致时拒绝——防止
+        提示注入的会话/任务跨属主杀掉他人的 dev server。shutdown/TTL
+        清理属管理器特权，不走本校验。"""
         entry = self._lookup(handle)
         if entry is None:
             return {"ok": False, "error": f"句柄 #{handle} 不存在"}
+        denial = self._check_owner(entry, owner, "终止")
+        if denial:
+            return denial
 
         with self._lock:
             self._update_status_locked(entry)
@@ -561,6 +580,20 @@ class ProcessManager:
     # ------------------------------------------------------------------
     # 内部实现
     # ------------------------------------------------------------------
+
+    def _check_owner(self, entry: _ProcEntry, caller_owner: Optional[str],
+                     action: str) -> Optional[Dict]:
+        """T22：属主校验——条目与调用方都携带 owner 且不一致时返回拒绝
+        dict（写/杀权限隔离）；任一侧未标识（None，如测试/管理面直调）
+        不隔离，保持向后兼容。观察面（list/get_output）不经过本校验。"""
+        if (entry.owner is not None and caller_owner is not None
+                and entry.owner != caller_owner):
+            self.logger.warning(
+                f"属主校验拒绝：owner={caller_owner} 尝试{action} "
+                f"#{entry.handle}（属主 {entry.owner}）")
+            return {"ok": False,
+                    "error": f"进程 #{entry.handle} 属于其他会话（属主不匹配），无权{action}"}
+        return None
 
     def _lookup(self, handle) -> Optional[_ProcEntry]:
         try:
@@ -699,6 +732,7 @@ class ProcessManager:
             "buffered_lines": len(entry.lines),
             "evicted_lines": entry.evicted,
             "command": entry.command,
+            "owner": entry.owner,  # T22：属主标识（观察面可见，写/杀需匹配）
         }
 
 

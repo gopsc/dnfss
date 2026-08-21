@@ -223,49 +223,6 @@ class ConversationCompressor:
 
         return conversation_turns
 
-    def _is_range_safe(self, messages: List[Dict], start: int, end: int, protected: set) -> bool:
-        """检查消息范围是否安全 - 简化版，不检查tool完整性"""
-        return True  # 不保护tool消息，允许压缩
-
-    def _get_protected_indices(self, messages: List[Dict]) -> set:
-        """
-        找出所有受保护的消息索引 - 简化版，只保护最近的对话轮次
-        """
-        protected_indices = set()
-
-        # ========== 1. 保护最近的消息（由配置决定） ==========
-        keep_recent = constants.COMPRESS_KEEP_RECENT
-        if keep_recent > 0:
-            recent_start = max(0, len(messages) - keep_recent)
-            for i in range(recent_start, len(messages)):
-                protected_indices.add(i)
-
-        # ========== 2. 保护前2个对话轮次 ==========
-        conversation_turns = self._build_conversation_turns(messages)
-
-        if len(conversation_turns) >= 2:
-            # 保护第1轮
-            first_turn = conversation_turns[0]
-            protected_indices.add(first_turn["user_index"])
-            if first_turn["assistant_index"] is not None:
-                protected_indices.add(first_turn["assistant_index"])
-            for tool_idx in first_turn["tool_indices"]:
-                protected_indices.add(tool_idx)
-
-            # 保护第2轮
-            second_turn = conversation_turns[1]
-            protected_indices.add(second_turn["user_index"])
-            if second_turn["assistant_index"] is not None:
-                protected_indices.add(second_turn["assistant_index"])
-            for tool_idx in second_turn["tool_indices"]:
-                protected_indices.add(tool_idx)
-
-        # 调试日志
-        if self.logger.level >= 3:
-            self.logger.debug(f"受保护的消息索引: {sorted(protected_indices)}")
-
-        return protected_indices
-
     def _build_compression_prompt(self, messages: List[Dict]) -> str:
         """构建压缩提示词 - 包含工具调用信息"""
         conversation_lines = []
@@ -368,25 +325,57 @@ class ConversationCompressor:
             return None
 
     def _validate_message_structure(self, messages: List[Dict]) -> List[Dict]:
-        """验证并修复消息结构，移除孤立的 tool 消息"""
+        """验证并修复消息结构（tool 配对双向完整性）。
+
+        OpenAI 协议要求 assistant.tool_calls 与对应的 tool 结果消息成对出现，
+        缺任一侧后续 API 调用直接 400：
+        1. 孤立 tool 消息（tool_call_id 无对应 assistant）→ 移除（既有行为）
+        2. T23（审计 2026-08-21）：压缩块边界按条数切，可能落在带 tool_calls
+           的 assistant 消息与其 tool 结果之间——保留侧 assistant 的
+           tool_calls 失去配对 → 剥离失配的 tool_calls 条目；全部失配时删除
+           字段（content 为空则置空串，防产生非法空消息）
+        """
         if not messages:
             return messages
 
-        # 找出所有 assistant 消息的 tool_call_ids
-        assistant_tool_ids = set()
+        # tool 侧实际存在的 id
+        present_tool_ids = {
+            m.get("tool_call_id")
+            for m in messages
+            if m.get("role") == "tool" and m.get("tool_call_id")
+        }
+
+        # 第一遍：assistant 剥离失去配对的 tool_calls
+        first_pass = []
+        kept_assistant_ids = set()
         for msg in messages:
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                for tc in msg.get("tool_calls", []):
-                    tc_id = tc.get("id")
-                    if tc_id:
-                        assistant_tool_ids.add(tc_id)
+                calls = msg.get("tool_calls", [])
+                kept_calls = [tc for tc in calls
+                              if tc.get("id") and tc.get("id") in present_tool_ids]
+                kept_assistant_ids.update(tc.get("id") for tc in kept_calls)
+                if len(kept_calls) == len(calls):
+                    first_pass.append(msg)  # 全部有配对，原样保留
+                    continue
+                new_msg = dict(msg)
+                if kept_calls:
+                    new_msg["tool_calls"] = kept_calls
+                    print(f"   ⚠️ 剥离部分失去配对 tool 结果的 tool_calls（T23）")
+                else:
+                    new_msg.pop("tool_calls", None)
+                    if not new_msg.get("content"):
+                        new_msg["content"] = ""
+                    print(f"   ⚠️ 剥离失去配对 tool 结果的 assistant.tool_calls（T23）")
+                first_pass.append(new_msg)
+            else:
+                first_pass.append(msg)
 
-        # 过滤掉没有对应 assistant 的 tool 消息
+        # 第二遍：移除孤立 tool 消息（其 id 不在任何保留的 assistant tool_calls 中）
         filtered = []
-        for msg in messages:
+        for msg in first_pass:
             if msg.get("role") == "tool":
                 tool_call_id = msg.get("tool_call_id")
-                if tool_call_id and tool_call_id not in assistant_tool_ids:
+                if tool_call_id and tool_call_id not in kept_assistant_ids:
                     print(f"   ⚠️ 移除孤立的 tool 消息: {tool_call_id}")
                     continue
             filtered.append(msg)

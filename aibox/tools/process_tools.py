@@ -78,9 +78,11 @@ def _coerce_bool(value, default: bool) -> bool:
 class BgRunTool(Tool):
     """后台启动长驻进程"""
 
-    def __init__(self, manager: ProcessManager = None, logger=None):
+    def __init__(self, manager: ProcessManager = None, logger=None, owner: str = None):
         super().__init__(logger)
         self.manager = manager or get_process_manager(logger)
+        # T22：属主标识——写入/终止权限隔离（观察面 list/output 不限）
+        self.owner = owner
 
     def get_name(self) -> str:
         return "bg_run"
@@ -139,7 +141,8 @@ class BgRunTool(Tool):
         log_file = _coerce_bool(log_file, False)
 
         result = self.manager.start(command, name=proc_name, work_dir=work_dir,
-                                    env=env, detach=detach, log_file=log_file)
+                                    env=env, detach=detach, log_file=log_file,
+                                    owner=self.owner)
         if not result.get("ok"):
             return self.format_result(False, "后台进程启动失败",
                                       {"错误": result.get("error", "未知错误")})
@@ -158,9 +161,11 @@ class BgRunTool(Tool):
 class BgWriteTool(Tool):
     """向后台进程 stdin 写入（交互式问答）"""
 
-    def __init__(self, manager: ProcessManager = None, logger=None):
+    def __init__(self, manager: ProcessManager = None, logger=None, owner: str = None):
         super().__init__(logger)
         self.manager = manager or get_process_manager(logger)
+        # T22：属主标识——仅属主可写（他人 stdin 不容注入）
+        self.owner = owner
 
     def get_name(self) -> str:
         return "bg_write"
@@ -220,6 +225,7 @@ class BgWriteTool(Tool):
             append_newline=_coerce_bool(append_newline, True),
             wait_lines=max(0, wait_i),
             wait_timeout=wait_t,
+            owner=self.owner,
         )
         if not result.get("ok"):
             return self.format_result(False, f"写入后台进程 #{handle} 失败",
@@ -357,9 +363,11 @@ class BgOutputTool(Tool):
 class BgKillTool(Tool):
     """终止后台进程"""
 
-    def __init__(self, manager: ProcessManager = None, logger=None):
+    def __init__(self, manager: ProcessManager = None, logger=None, owner: str = None):
         super().__init__(logger)
         self.manager = manager or get_process_manager(logger)
+        # T22：属主标识——仅属主可终止（防提示注入跨会话杀 dev server）
+        self.owner = owner
 
     def get_name(self) -> str:
         return "bg_kill"
@@ -401,7 +409,7 @@ class BgKillTool(Tool):
         # T18：force 字符串 "false" 会被裸 bool 判为 True，跳过宽限直接 SIGKILL
         force = _coerce_bool(force, False)
 
-        result = self.manager.kill(handle, force=force, grace=grace)
+        result = self.manager.kill(handle, force=force, grace=grace, owner=self.owner)
         if not result.get("ok"):
             return self.format_result(False, f"终止后台进程 #{handle} 失败",
                                       {"错误": result.get("error", "未知错误")})

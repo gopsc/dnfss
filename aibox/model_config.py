@@ -282,16 +282,49 @@ def _choose(prompt: str, options: List[str], multi: bool = False) -> List[str]:
             print(f"  编号超出范围（1~{len(options)}）")
 
 
+# T-L17（审计 2026-08-21）：按 api_url 域名推荐 Key 环境变量名——此前默认
+# DEEPSEEK_API_KEY，一路回车会把 DeepSeek 凭据发给其他厂商（moonshot/
+# aliyuncs 等），正是 resolve_api_key 文档声称要杜绝的跨厂商凭据外发。
+# 未知域名留空强制输入
+_ENV_NAME_BY_DOMAIN = {
+    "deepseek": "DEEPSEEK_API_KEY",
+    "moonshot": "MOONSHOT_API_KEY",
+    "aliyuncs": "DASHSCOPE_API_KEY",
+    "bigmodel": "ZHIPU_API_KEY",
+    "ark.cn": "ARK_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "openai.com": "OPENAI_API_KEY",
+    "siliconflow": "SILICONFLOW_API_KEY",
+    "volces": "ARK_API_KEY",
+}
+
+
+def _suggest_env_name(api_url: str) -> str:
+    url = (api_url or "").lower()
+    for kw, env in _ENV_NAME_BY_DOMAIN.items():
+        if kw in url:
+            return env
+    return ""
+
+
+def _sanitize_display(s) -> str:
+    """T-L18（审计 2026-08-21）：手写 config.json 可嵌 ANSI/控制转义
+    （\x1b]0;pwned\x07 等），展示层原样 print 每次列表即触发；写入侧有
+    isprintable 校验，读出侧同样过滤控制字符。"""
+    return "".join(ch for ch in str(s or "") if ch.isprintable())
+
+
 def _print_profiles(profiles: List[Dict]):
     if not profiles:
         print("  （当前没有任何接入点。旧版 api 节仍可用，或选 2 添加）")
         return
     for p in profiles:
         mark = " ⭐默认" if p["is_default"] else ""
-        key_desc = f"环境变量 {p['api_key_env']}" if p["api_key_env"] else "免密"
-        fb = f"，失败转移 → {', '.join(p['fallback'])}" if p["fallback"] else ""
-        print(f"  {p['name']}{mark}  [{p['display_name']}]")
-        print(f"      地址: {p['api_url']}   模型: {p['model']}")
+        key_desc = f"环境变量 {_sanitize_display(p['api_key_env'])}" if p["api_key_env"] else "免密"
+        fb = (f"，失败转移 → "
+              f"{', '.join(_sanitize_display(f) for f in p['fallback'])}") if p["fallback"] else ""
+        print(f"  {_sanitize_display(p['name'])}{mark}  [{_sanitize_display(p['display_name'])}]")
+        print(f"      地址: {_sanitize_display(p['api_url'])}   模型: {_sanitize_display(p['model'])}")
         print(f"      Key: {key_desc}   温度: {p['temperature'] or '默认'}   超时: {p['timeout'] or '默认'}{fb}")
 
 
@@ -319,7 +352,12 @@ def _add_flow(config: ConfigManager):
     key_mode = _ask("选择 [1/2]", "1")
     api_key_env = ""
     if key_mode == "1":
-        api_key_env = _ask("环境变量名", "DEEPSEEK_API_KEY")
+        suggested = _suggest_env_name(api_url)
+        prompt = "环境变量名" + (f"（回车用 {suggested}）" if suggested else "")
+        api_key_env = _ask(prompt, suggested)
+        if not api_key_env:
+            print("❌ 已取消（环境变量名不能为空；免密端点请选方式 2）")
+            return
     elif key_mode != "2":
         print("❌ 已取消（Key 方式无效）")
         return

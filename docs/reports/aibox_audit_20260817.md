@@ -1283,9 +1283,9 @@ FTS5 `MATCH` 左操作数必须是 FROM 子句中的表名或别名。`memories_
 
 八轮累计发现 **166+ 项**（高危 18 / 中危 54 / 低危与信息 94+）；前七轮 118 项全部修复落地（Batch E/F/G/H/I/K/L/M），第八轮 T 系列待落地（Batch N 建议见 §23.7）。
 
-## 二十四、Batch N 修复记录（波次 1~3，2026-08-21）
+## 二十四、Batch N 修复记录（波次 1~5，2026-08-21）
 
-范围：§23.7 波次 1（速赢 7 项）+ 波次 2（并发正确性 6 项）+ 波次 3（平台兼容 5 项），共 18 项。
+范围：§23.7 全部五个波次——速赢 7 项 + 并发正确性 6 项 + 平台兼容 5 项 + LLM 健壮性 5 项修复（另有 T14 复现证伪 1 项）+ 权限隔离 3 项修复与 2 项产品决策收束。
 
 ### 24.1 波次 1 落地（速赢批）
 
@@ -1314,9 +1314,9 @@ FTS5 `MATCH` 左操作数必须是 FROM 子句中的表名或别名。`memories_
 
 波次 1 后：**532 passed / 4 failed / 1 skipped**（43.8s）；波次 2 后：**532 passed / 4 failed / 1 skipped**（41.5s）。4 失败均为 §23.8 所列同一批 Windows 平台环境项，零回归。
 
-### 24.4 待落地（波次 4~5）
+### 24.4 待落地
 
-波次 4 LLM 健壮性（T10/T14/T19/T20/T21/T23，其中 T14 需先写 FTS5 复现用例）、波次 5 权限隔离（T1/T2/T22，含产品决策项）。
+无——波次 1~5 全部落地。T1/T2 的产品决策记录见 §24.9。
 
 ### 24.5 波次 3 落地（平台兼容批，2026-08-21）
 
@@ -1335,3 +1335,44 @@ FTS5 `MATCH` 左操作数必须是 FROM 子句中的表名或别名。`memories_
 ### 24.6 测试基线（Linux，`aibox/venv`）
 
 波次 3 后：**566 passed / 1 failed**（30.1s）。新增 `tests/test_n_fixes.py` 30 项（T3 引用规则 6 + Windows 指引生成 10 + T11 taskkill 4 + T25 busy_timeout 2 + T26 原子 reload 2 + T27 重试 3 + POSIX 锚定 3）；1 失败为 §11.3 所列 Windows 向用例（`test_execute_timeout`，本机无 ping 命令），与代码无关，零回归。
+
+### 24.7 波次 4 落地（LLM 健壮性批，2026-08-21）
+
+范围：T10/T19/T20/T21/T23 共 5 项修复 + T14 复现证伪，共 6 项。
+
+| # | 修复内容 | 文件/位置 |
+|---|---|---|
+| T10 | 调度器 `await ai_future` 改 `asyncio.wait_for(ai_future, timeout=task_timeout + 30)`——软取消（M3 的 ai.cancel 三层）够不到的卡死路径（代理连接黑洞/滴流输出规避读超时/杀不掉的进程）在 +30s 宽限后硬超时放行，调度循环不再永久停摆；`run_ai` 回调改经 `_set_result/_set_exception_if_pending`（done 检查），wait_for 取消 future 后迟到的 set_result 不再抛 InvalidStateError 打进事件循环 | `aibox.py:318-375` |
+| T19 | FailoverClient 两处 `except (TransientLLMError, requests.exceptions.RequestException)` 收窄为 `(TransientLLMError,) + _TRANSIENT_NET_ERRORS`（ConnectionError/Timeout/ChunkedEncodingError 显式白名单，模块级常量）；非流式 `chat_completion` 内层瞬时上抛清单同步对齐——MissingSchema/InvalidURL 等永久配置错误直接上抛响亮暴露，不再进冷却/转移污染统计与冷却表 | `llm_client.py:36-46,204-206,489,544` |
+| T20 | `stream_chat` 跟踪 `saw_done`：iter_lines 耗尽但从未收到 `[DONE]`（代理缓冲后提前 FIN/服务端中途断开，末行半截 JSON 被 continue）时抛 `TransientLLMError`——首事件前 FailoverClient 可转移重放，已产出事件则上抛由既有回滚/报错接住，回答无声截断不再被静默视为成功 | `llm_client.py:262-290` |
+| T21 | 新增 `filter_env_overrides()`（executors 模块级，process_manager 导入）：env 覆盖黑名单 `ENV_DENY_EXACT`（PATH/PYTHONPATH/PYTHONHOME/SHELL/IFS/LD_LIBRARY_PATH/PSMODULEPATH/COMSPEC 等）+ `LD_*`/`DYLD_*` 前缀整体拒绝（键大小写不敏感），拒绝键告警留痕；executors 两处与 process_manager 一处 `os.environ.copy().update(env)` 全部接入——LLM（可被提示注入诱导）无法再经 env 参数注入 LD_PRELOAD 等劫持后续进程加载 | `subsystems/executors.py:25-52,329-336,422-429`；`subsystems/process_manager.py:37,163-169` |
+| T23 | `_validate_message_structure` 双向修复 tool 配对：既有"孤立 tool 消息移除"之外，新增反向——压缩块边界切开后保留侧 assistant 的 tool_calls 失去配对 tool 消息时剥离失配条目（部分失配保留配对项；全部失配删字段，content 为空置空串防非法空消息），OpenAI 协议成对约束不再被压缩破坏导致后续 API 400；顺带删除死代码 `_is_range_safe`（恒 True）与 `_get_protected_indices`（无调用方） | `subsystems/conversation_compressor.py:226-284,334-380` |
+| T14 | **复现证伪，无需修复**：审计怀疑 FTS5 MATCH 左操作数在 JOIN 别名（`memories_fts f`）场景用错表名导致全程静默降级。实测（SQLite 3.45.1 + trigram）：别名场景下 `WHERE memories_fts MATCH ?` 正常命中不报错；端到端 MemoryDatabase 全链路验证——4 字中文词走 FTS trigram 命中、2 字短词走 LIKE 兜底（v3.1 设计行为），`memories_fts` 建表含 `tokenize='trigram'` 确认在用。复现要点：外部内容表（content=memories）的索引需显式 INSERT，且 trigram 需 ≥3 字符 | 复现记录见本节；`subsystems/db.py:196-209`（代码未改动） |
+
+### 24.8 测试基线（Linux，`aibox/venv`）
+
+波次 4 后：**584 passed / 1 failed**（31.9s）。`tests/test_n_fixes.py` 追加 18 项（T19 收窄 4 + T20 不完整流 3 + T21 黑名单 4 + T23 配对修复 5 + T10 调度器硬超时 2）；1 失败仍为 §11.3 所列 Windows 向用例（`test_execute_timeout`，本机无 ping），零回归。
+
+### 24.9 波次 5 落地（权限隔离批，2026-08-21）
+
+范围：T22 + T-L17/T-L18 修复，T1/T2 经产品决策收束（决策：T1 仅加告警不加鉴权、T2 维持现状——本地单用户可信环境定位，接受风险），共 5 项。
+
+**产品决策记录**（2026-08-21，用户裁决）：
+- **T1**（WS 无鉴权）：不加认证，仅绑定非回环地址时启动显著告警（重复 3 次提醒确认网关/WAF 接入）。理由：本地单用户可信环境，引入 token 配置成本大于收益；网络暴露场景由 gateway/WAF 边界承担
+- **T2**（set_proxy 全局持久化开关）：维持现状不改行为，接受该风险。理由：本机可信环境下用户依赖对话中调代理的便利性
+
+| # | 修复内容 | 文件/位置 |
+|---|---|---|
+| T22a | 新增 `TOOL_PROFILE_TASK`：定时任务 AI 显式传精简 profile——剔除 `update_identity`/`update_soul`（改写全局人格提示词）与 `set_proxy`（全局网络面），保留 memory/memo/子代理派生/技能等其余管理面工具；`WORKER_ONLY_TOOLS` 误调拦截条件扩展到 task profile；被污染的任务内容（备忘录标题/正文可能源自网页内容）无法在无人值守时段改写人格与代理 | `aibox.py:1012-1017,104-127,1232-1250,1290-1293,1465` |
+| T22b | ProcessManager 属主隔离：`start(owner=)` 记录属主，`write`/`kill` 新增 owner 校验（条目与调用方都携带且不一致即拒绝——他人 stdin 不容注入、防提示注入跨会话杀 dev server）；任一侧未标识（None）不隔离保持兼容；观察面（list/get_output）不隔离且 `list_procs` 暴露 owner 字段；shutdown/TTL 清理属管理器特权不走校验。`DeepSeekChat` 新增 `owner_id` 构造参数，worker 注册的 `bg_run`/`bg_write`/`bg_kill` 携带（任务 AI 为 `task-<id>`） | `subsystems/process_manager.py:328-345,489-500,597-612,741`；`tools/process_tools.py:81-86,141-142,161-167,222-228,366-371,410`；`aibox.py:1063-1067,1230-1234` |
+| T1 | 绑定非回环地址（非 localhost/127.0.0.1/::1）时启动告警重复 3 次：任何能建立 TCP 连接的客户端都可使用本智能体（含命令执行能力），提醒确认可信网络/网关接入 | `aibox.py:3170-3178` |
+| T-L17 | 添加档案时 Key 环境变量名默认值改为按 api_url 域名推荐（deepseek→DEEPSEEK_API_KEY、moonshot→MOONSHOT_API_KEY、aliyuncs→DASHSCOPE_API_KEY 等 9 厂商映射）；未知域名（如本地 Ollama）留空且输入为空时取消而非静默变成免密——一路回车不再把 DeepSeek 凭据发给其他厂商 | `model_config.py:285-308,345-352` |
+| T-L18 | `list_profiles` 展示层输出统一过 `_sanitize_display()`（剥离控制字符）——手写 config.json 嵌 ANSI 转义（`\x1b]0;pwned\x07`）不再于每次列表触发；写入侧 isprintable 校验与读出侧过滤对齐 | `model_config.py:311-328` |
+
+### 24.10 测试基线（Linux，`aibox/venv`）
+
+波次 5 后：**598 passed / 1 failed**（38.5s）。`tests/test_n_fixes.py` 追加 14 项（T22 owner 隔离 6 + task profile 4 + T-L17 域名推荐 2 + T-L18 过滤 2）；1 失败仍为 §11.3 所列 Windows 向用例（`test_execute_timeout`，本机无 ping），零回归。
+
+### 24.11 Batch N 收束
+
+第八轮审计 T 系列 28 项全部处置完毕：波次 1 速赢 7 项 + 波次 2 并发正确性 6 项 + 波次 3 平台兼容 5 项 + 波次 4 LLM 健壮性 5 项 + T14 复现证伪 1 项 + 波次 5 权限隔离 3 项修复与 2 项产品决策收束（T1 告警落地、T2 维持现状）。低危 T-L 系列随批落地 T-L17/T-L18；其余 T-L 项（T-L7~T-L16 等信息级）未在本批处理。

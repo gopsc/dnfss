@@ -121,7 +121,12 @@ class TaskScheduler:
             prompt_manager=self.ai_manager.prompt_manager if self.ai_manager else None,
             skill_manager=self._get_shared_skill_manager(),
             # H3：CLI --model 为进程级覆盖，定时任务实例同样生效
-            model=getattr(self.ai_manager, "model", None) if self.ai_manager else None
+            model=getattr(self.ai_manager, "model", None) if self.ai_manager else None,
+            # T22：精简 profile——无 update_identity/update_soul/set_proxy，
+            # 被污染的任务内容无法在无人值守时段改写人格/代理
+            tool_profile=TOOL_PROFILE_TASK,
+            # T22：后台进程属主隔离——任务 AI 与会话 AI 的 bg 进程互不可杀
+            owner_id=f"task-{id(self):x}"
         )
 
     def set_websocket_handler(self, handler):
@@ -317,15 +322,25 @@ class TaskScheduler:
             
             # 创建一个 Future 来等待 AI 完成
             ai_future = loop.create_future()
-            
+
+            def _set_result_if_pending(response):
+                # T10：wait_for 硬超时会 cancel future，之后 run_ai 线程迟到的
+                # set_result/set_exception 会抛 InvalidStateError 打进事件循环
+                if not ai_future.done():
+                    ai_future.set_result(response)
+
+            def _set_exception_if_pending(exc):
+                if not ai_future.done():
+                    ai_future.set_exception(exc)
+
             def run_ai():
                 try:
                     # 在单独的线程中运行 AI（独立实例，天然隔离，无并发冲突）
                     response = ai.think_and_respond(user_input, output_callback)
                     # 将结果设置到 Future 中
-                    loop.call_soon_threadsafe(ai_future.set_result, response)
+                    loop.call_soon_threadsafe(_set_result_if_pending, response)
                 except Exception as e:
-                    loop.call_soon_threadsafe(ai_future.set_exception, e)
+                    loop.call_soon_threadsafe(_set_exception_if_pending, e)
             
             # 启动 AI 线程
             ai_thread = threading.Thread(target=run_ai)
@@ -350,8 +365,22 @@ class TaskScheduler:
 
             timeout_handle = loop.call_later(task_timeout, _timeout_cancel)
             try:
-                response = await ai_future
+                # T10（审计 2026-08-21）：wait_for 硬超时兜底——软取消（ai.cancel
+                # 三层：取消事件/关在途 HTTP 流/杀子进程）够不到的卡死路径
+                # （Windows 代理连接黑洞、requests 读超时被服务器滴流输出
+                # 规避、kill 失败的进程）会让 run_ai 永不回调，await 永久挂起
+                # 停摆整个调度循环且任务已 mark_as_triggered 不会重试。
+                # task_timeout 到点先软取消，+30s 宽限后硬超时放行调度循环
+                # （对齐 --once 的 _hard_exit 兜底语义；AI 线程为 daemon，
+                # 迟到的回调经 done() 检查安全跳过）
+                response = await asyncio.wait_for(
+                    ai_future, timeout=task_timeout + 30)
                 result = response or "AI无响应"
+            except asyncio.TimeoutError:
+                self.logger.error(
+                    f"任务执行硬超时（{task_timeout + 30:.0f}秒，软取消未生效），"
+                    f"放弃等待，调度循环继续")
+                result = f"任务执行硬超时（{task_timeout + 30:.0f}秒），已放弃等待"
             except Exception as e:
                 if timed_out.is_set():
                     self.logger.error(f"任务执行超时（{task_timeout}秒），AI 已取消")
@@ -987,6 +1016,10 @@ class SubAgentTool(Tool):
 
 TOOL_PROFILE_ORCHESTRATOR = "orchestrator"
 TOOL_PROFILE_WORKER = "worker"
+# T22（审计 2026-08-21）：定时任务精简 profile——任务内容可源自 LLM 生成物
+# （备忘录标题/正文可能被网页内容污染），无人值守时段不持有改写全局人格
+# 提示词（update_identity/update_soul）与全局网络面（set_proxy）的工具
+TOOL_PROFILE_TASK = "task"
 
 # 仅 worker 子代理注册的执行面工具；编排者误调时拦截并纠正
 WORKER_ONLY_TOOLS = {"run_command", "read_file", "write_file", "list_files", "web", "calculator",
@@ -1025,12 +1058,16 @@ class DeepSeekChat:
                  memo_db: MemoDatabase = None, command_executor: CommandExecutor = None,
                  prompt_manager: PromptManager = None, skill_manager: SkillManager = None,
                  tool_profile: str = TOOL_PROFILE_ORCHESTRATOR, enable_memory: bool = True,
-                 model: str = None, temperature: float = None):
+                 model: str = None, temperature: float = None,
+                 owner_id: str = None):
         self.config = ConfigManager()
         self.logger = Logger("DeepSeek", debug_level if debug_level is not None else Logger("").level)
         self.debug_level = self.logger.level
         # 工具集 profile：决定本实例注册哪套工具（orchestrator 管理面 / worker 执行面）
         self.tool_profile = tool_profile
+        # T22：后台进程属主标识——bg_* 工具携带，ProcessManager 据此隔离
+        # kill/write 权限（会话/任务/子代理互不可操作他人进程，观察面共享）
+        self.owner_id = owner_id
         # 大模型客户端（抽象层，支持多厂商切换）；model 显式传入时覆盖配置默认
         self.client = create_llm_client(self.config, api_key=api_key, logger=self.logger, model=model)
         self.api_key = self.client.api_key
@@ -1182,33 +1219,38 @@ class DeepSeekChat:
                 SimpleWebCrawlerTool(self.logger),
                 CalculatorTool(self.logger),
                 GetCurrentTimeTool(self.logger),
-                # 后台进程管理（共享全局单例：跨子代理可管理彼此启动的进程）
-                BgRunTool(self.logger),
-                BgWriteTool(self.logger),
+                # 后台进程管理（注册表全局共享；T22：owner 隔离写/杀权限，
+                # 观察面 list/output 仍全局可见）
+                BgRunTool(self.logger, owner=self.owner_id),
+                BgWriteTool(self.logger, owner=self.owner_id),
                 BgListTool(self.logger),
                 BgOutputTool(self.logger),
-                BgKillTool(self.logger),
+                BgKillTool(self.logger, owner=self.owner_id),
             ]
             self.tool_registry.register_many(worker_tools, is_builtin=True)
             self.logger.info(f"worker 子代理已注册 {len(worker_tools)} 个执行面工具")
             return
 
         # orchestrator（主对话）：管理面工具，执行类任务经 create_subagent 派生 worker
+        # T22：task profile 为 orchestrator 子集——剔除改写全局人格提示词与
+        # 全局网络面的工具（定时任务无人值守，任务内容可能被污染）
+        is_task_profile = self.tool_profile == TOOL_PROFILE_TASK
         builtin_tools = [
             GetCurrentTimeTool(self.logger),
         ]
-        
+
         if self.memory_db:
             builtin_tools.append(MemoryTool(self.memory_db, self.logger))
-        
+
         if self.memo_db:
             builtin_tools.append(MemoTool(self.memo_db, self.logger))
-        
-        # 更新身份工具
-        builtin_tools.append(UpdateIdentityTool(self.prompt_manager, self.logger))
-        
-        # 新增：更新智能体自我认识工具
-        builtin_tools.append(UpdateSoulTool(self.prompt_manager, self.logger))
+
+        if not is_task_profile:
+            # 更新身份工具
+            builtin_tools.append(UpdateIdentityTool(self.prompt_manager, self.logger))
+
+            # 新增：更新智能体自我认识工具
+            builtin_tools.append(UpdateSoulTool(self.prompt_manager, self.logger))
         
         # 增强版保存记忆并结束对话工具
         if exit_callback and self.memory_db:
@@ -1224,7 +1266,9 @@ class DeepSeekChat:
         builtin_tools.append(InstallSkillTool(self.logger))
         builtin_tools.append(CreateSkillTool(self.logger))
                 
-        builtin_tools.append(SetProxyTool(self.logger))
+        if not is_task_profile:
+            # T22：set_proxy 是全局持久化网络面，任务 AI 不持有
+            builtin_tools.append(SetProxyTool(self.logger))
         builtin_tools.append(GetProxyTool(self.logger))
 
         # 子代理工具：主代理可派生独立上下文/角色的轻量子代理执行任务
@@ -1421,8 +1465,8 @@ class DeepSeekChat:
                     output_callback("line", f"🔧 调用工具: {tool_name}\n")
 
                 result_raw = None
-                if self.tool_profile == TOOL_PROFILE_ORCHESTRATOR and tool_name in WORKER_ONLY_TOOLS:
-                    # 编排者不持有执行面工具：拦截并纠正，引导改用 create_subagent
+                if self.tool_profile in (TOOL_PROFILE_ORCHESTRATOR, TOOL_PROFILE_TASK) and tool_name in WORKER_ONLY_TOOLS:
+                    # 编排者/任务 AI 不持有执行面工具：拦截并纠正，引导改用 create_subagent
                     result_raw = (
                         f"⛔ '{tool_name}' 调用被拦截：你是编排者，没有执行面工具（命令/文件/网页由 worker 子代理持有）。\n"
                         "请改用 create_subagent 派生子代理执行该任务：在 role 中写明执行者身份，"
@@ -3140,6 +3184,16 @@ class EnhancedAIManager:
         # Ping 帧，20s 内收不到 Pong 即强制断连。经 WAF→gateway 两层代理转发后 Pong 无法
         # 可靠回传，导致连接约 20s 被服务端关闭。前端已通过 25s 应用层心跳（{type:'ping'}）
         # 保活，故此处完全禁用服务端协议层 ping。
+        # T1（审计 2026-08-21，产品决策：仅告警不加鉴权）：绑定非回环地址时
+        # WebSocket 端点（经工具链可达任意命令执行）即暴露给网络内任意
+        # 客户端，启动时显著告警提醒确认网关/WAF 接入与网络边界
+        _h = (host or "").strip().lower()
+        if _h not in ("", "localhost", "127.0.0.1", "::1", "[::1]"):
+            for _ in range(3):
+                self.logger.warning(
+                    f"⚠️ WebSocket 绑定在 {host}:{port}（非回环地址）：任何能建立 "
+                    f"TCP 连接的客户端都可使用本智能体（含命令执行能力），"
+                    f"请确认已置于可信网络或有网关/WAF 认证保护")
         server = await websockets.serve(handler, host, port, ping_interval=None)
         self.logger.info(i18n.get('websocket_started', host, port))
         
