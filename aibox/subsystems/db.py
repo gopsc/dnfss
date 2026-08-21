@@ -33,9 +33,18 @@ class MemoryDatabase:
         self.logger = Logger("MemoryDB")
         self._init_database()
 
+    def _connect(self) -> sqlite3.Connection:
+        """统一连接工厂（T25，审计 2026-08-21）：对齐 MemoDatabase J9 修复——
+        busy_timeout 覆盖全部路径。两类默认共用同一 memories.db，此前
+        MemoryDatabase 直连只靠 sqlite3 默认 5s 等待，CLI 与服务进程并发
+        写时锁冲突即抛 database is locked（记忆保存/检索失败）。"""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA busy_timeout = 10000")
+        return conn
+
     def _init_database(self):
         """初始化数据库表"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             # WAL 模式：读写并发不互斥，缓解多 CLI 进程并发写锁等待
             conn.execute("PRAGMA journal_mode=WAL")
             cursor = conn.cursor()
@@ -118,7 +127,7 @@ class MemoryDatabase:
         tags_str = ",".join(tags) if tags else ""
         created_at = datetime.now().strftime(constants.DATETIME_FORMAT)
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO memories (topic, summary, content, start_time, end_time, created_at, tags, importance)
@@ -139,7 +148,7 @@ class MemoryDatabase:
 
     def delete_memory(self, memory_id: int) -> bool:
         """删除记忆"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             # J3（审计 2026-08-19）：必须先删 fts 再删内容表——外部内容表
             # （content=memories）删除索引条目需从内容表回读旧值，内容行
@@ -166,7 +175,7 @@ class MemoryDatabase:
         if limit is None:
             limit = constants.MEMORY_MAX_SEARCH_RESULTS
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -240,7 +249,7 @@ class MemoryDatabase:
         的 None→默认上限语义对齐）。"""
         if limit is None:
             limit = constants.MEMORY_MAX_SEARCH_RESULTS
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM memories ORDER BY end_time DESC LIMIT ?', (limit,))
@@ -256,7 +265,7 @@ class MemoryDatabase:
 
     def get_memory_by_id(self, memory_id: int) -> Optional[Dict]:
         """根据ID获取记忆"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM memories WHERE id = ?', (memory_id,))
@@ -274,7 +283,7 @@ class MemoryDatabase:
         if not memory_ids:
             return 0
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             placeholders = ','.join(['?'] * len(memory_ids))
             # J3：同 delete_memory——先删 fts 再删内容表，防索引条目残留

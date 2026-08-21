@@ -10,6 +10,7 @@ mkstemp 随机文件名避免多进程并发写同路径互踩（conversation_hi
 
 import os
 import tempfile
+import time
 
 
 def atomic_write_text(path: str, content: str) -> None:
@@ -23,10 +24,26 @@ def atomic_write_text(path: str, content: str) -> None:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, path)
+        # T27（审计 2026-08-21）：Windows 下目标被其他进程打开（杀毒扫描/
+        # 编辑器/并发读者）时 os.replace 抛 PermissionError。POSIX 无条件
+        # 成功不受影响；Windows 做短退避重试，高频写路径（每条消息都原子
+        # 写 current_conversation.json）一次冲突不再直接丢该条持久化。
+        last_exc = None
+        for attempt in range(3):
+            try:
+                os.replace(tmp_path, path)
+                last_exc = None
+                break
+            except PermissionError as e:
+                last_exc = e
+                if attempt < 2:
+                    time.sleep(0.05 * (attempt + 1))
+        if last_exc is not None:
+            raise last_exc
     except BaseException:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
         raise
+

@@ -123,12 +123,18 @@ class SkillManager:
     # ------------------------------------------------------------------
 
     def _load_skills(self):
-        """扫描技能目录，加载所有技能文件（可执行文件或 Markdown 文件）。"""
+        """扫描技能目录，加载所有技能文件（可执行文件或 Markdown 文件）。
+
+        T26（审计 2026-08-21）：本地构建 new_skills 完成后一次性原子替换，
+        对齐 PromptManager M6——此前先 self.skills = {} 清空再逐个重建，
+        reload 期间（每个可执行技能 --help 最多 10s）并发读者会看到空/半截
+        技能表（技能"消失"再"逐渐出现"）。"""
         skills_dir = constants.SKILLS_DIR
-        self.skills = {}
+        new_skills = {}
 
         if not os.path.exists(skills_dir):
             self.logger.info(f"技能目录不存在: {skills_dir}")
+            self.skills = new_skills
             return
 
         skill_files = [
@@ -153,7 +159,7 @@ class SkillManager:
             is_markdown = self._is_markdown_file(skill_file)
 
             if is_markdown:
-                if skill_name in self.skills:
+                if skill_name in new_skills:
                     self.logger.warning(
                         f"Markdown 技能 '{skill_file}' 与同名可执行技能冲突，已跳过"
                         f"（可执行技能优先）")
@@ -161,7 +167,7 @@ class SkillManager:
                 # Markdown 格式技能：直接读取内容
                 summary, content = self._read_markdown_skill(skill_path)
                 if content:
-                    self.skills[skill_name] = {
+                    new_skills[skill_name] = {
                         "path": skill_path,
                         "file": skill_file,
                         "summary": summary,
@@ -182,7 +188,7 @@ class SkillManager:
                 help_output = self._run_help(skill_path)
                 summary = self._first_nonempty_line(help_output) or f"扩展技能: {skill_name}"
 
-                self.skills[skill_name] = {
+                new_skills[skill_name] = {
                     "path": skill_path,
                     "file": skill_file,
                     "summary": summary,
@@ -192,7 +198,8 @@ class SkillManager:
                 }
                 self.logger.info(f"已加载可执行技能: {skill_name} — {summary}")
 
-        self.logger.info(f"共加载 {len(self.skills)} 个技能（{len([s for s in self.skills.values() if s['is_markdown']])} 个 Markdown 技能）")
+        self.skills = new_skills
+        self.logger.info(f"共加载 {len(new_skills)} 个技能（{len([s for s in new_skills.values() if s['is_markdown']])} 个 Markdown 技能）")
 
     def reload(self) -> int:
         """重新扫描技能目录，返回加载的技能数量。"""

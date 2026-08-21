@@ -1283,9 +1283,9 @@ FTS5 `MATCH` 左操作数必须是 FROM 子句中的表名或别名。`memories_
 
 八轮累计发现 **166+ 项**（高危 18 / 中危 54 / 低危与信息 94+）；前七轮 118 项全部修复落地（Batch E/F/G/H/I/K/L/M），第八轮 T 系列待落地（Batch N 建议见 §23.7）。
 
-## 二十四、Batch N 修复记录（波次 1~2，2026-08-21）
+## 二十四、Batch N 修复记录（波次 1~3，2026-08-21）
 
-范围：§23.7 波次 1（速赢 7 项）+ 波次 2（并发正确性 6 项），共 13 项。
+范围：§23.7 波次 1（速赢 7 项）+ 波次 2（并发正确性 6 项）+ 波次 3（平台兼容 5 项），共 18 项。
 
 ### 24.1 波次 1 落地（速赢批）
 
@@ -1314,6 +1314,24 @@ FTS5 `MATCH` 左操作数必须是 FROM 子句中的表名或别名。`memories_
 
 波次 1 后：**532 passed / 4 failed / 1 skipped**（43.8s）；波次 2 后：**532 passed / 4 failed / 1 skipped**（41.5s）。4 失败均为 §23.8 所列同一批 Windows 平台环境项，零回归。
 
-### 24.4 待落地（波次 3~5）
+### 24.4 待落地（波次 4~5）
 
-波次 3 平台兼容（T3/T11/T25/T26/T27）、波次 4 LLM 健壮性（T10/T14/T19/T20/T21/T23，其中 T14 需先写 FTS5 复现用例）、波次 5 权限隔离（T1/T2/T22，含产品决策项）。
+波次 4 LLM 健壮性（T10/T14/T19/T20/T21/T23，其中 T14 需先写 FTS5 复现用例）、波次 5 权限隔离（T1/T2/T22，含产品决策项）。
+
+### 24.5 波次 3 落地（平台兼容批，2026-08-21）
+
+范围：T3/T11/T25/T26/T27，共 5 项。
+
+| # | 修复内容 | 文件/位置 |
+|---|---|---|
+| T3 | `basic_tools.py` 新增平台感知引用 `_quote_arg()`（POSIX=shlex.quote；Windows=双引号包裹 + 拒绝 `"`/换行/`%变量名%` 形态——cmd 变量展开是经典注入向量，URL 编码 %20 与 PowerShell `%{http_code}` 不匹配该模式不受影响）与 `_ps_quote()`（PowerShell 单引号字面量）；四个工具按 `os.name` 分支生成指引：ReadFile 走 Get-Content/Select-Object（head/tail/行范围/wc 等价），WriteFile 走 Base64+Set-Content/Add-Content（heredoc 在 cmd 下不可用：命令行不能含换行；Base64 字符集不含任何 cmd/PowerShell 元字符，多行/引号/特殊字符全覆盖；超 6000 字符提示分块追加），ListFiles 走 Get-ChildItem，Web 走系统内置 curl.exe（分析类动作 text 给 PowerShell 管道等价，title/links/search 指引取原始 HTML 自行分析）；`_proxy_curl_args`/search keyword 引用同步切换 | `tools/basic_tools.py:33-78,150-237,297-343,389-414,474-533` |
+| T11 | executors 与 process_manager 两处 `_terminate_tree` Windows 分支改 `taskkill /PID {pid} /T /F` 递归终止整棵进程树（无 /F 仅对 GUI 进程有效，控制台进程杀不掉，故统一强制；force 参数在 Windows 不区分），taskkill 失败（进程已退出/无权限）兜底单进程 kill；POSIX 分支行为不变 | `subsystems/executors.py:109-157`；`subsystems/process_manager.py:604-634` |
+| T25 | MemoryDatabase 新增 `_connect()` 统一连接工厂（`PRAGMA busy_timeout = 10000`），7 处直连 `sqlite3.connect` 全部换走工厂——与 MemoDatabase J9 修复对齐，两类共库时锁等待策略一致，CLI `--memo-add` 与服务进程并发写不再抛 `database is locked` | `subsystems/db.py:36-45`（工厂）+ 7 处调用点 |
+| T26 | `SkillManager._load_skills` 本地构建 `new_skills` 完成后一次性原子替换 `self.skills`（对齐 PromptManager M6）——reload 期间（每个可执行技能 `--help` 最多 10s）并发读者不再看到空/半截技能表；目录不存在分支同样保持显式赋值语义 | `subsystems/skill_manager.py:125-213` |
+| T27 | `atomic_write_text` 的 `os.replace` 捕获 `PermissionError` 做 3 次短退避重试（50/100ms）——Windows 下目标被杀毒扫描/编辑器/并发读者占用时一次冲突不再直接丢该条持久化（conversation_history 每条消息都走此路径）；重试耗尽上抛原异常，临时文件清理逻辑不变；POSIX 下 `os.replace` 无条件成功不受影响 | `common/atomic.py:15-52` |
+
+**Windows 分支验证方式注记**：Linux 环境以 `mock.patch("os.name", "nt")` 模拟验证命令生成逻辑（引用规则/拒绝路径/命令形态），生成的 PowerShell/curl.exe 命令未在真实 Windows 上执行验证，Windows 开发机建议抽测指引命令的实际可用性。
+
+### 24.6 测试基线（Linux，`aibox/venv`）
+
+波次 3 后：**566 passed / 1 failed**（30.1s）。新增 `tests/test_n_fixes.py` 30 项（T3 引用规则 6 + Windows 指引生成 10 + T11 taskkill 4 + T25 busy_timeout 2 + T26 原子 reload 2 + T27 重试 3 + POSIX 锚定 3）；1 失败为 §11.3 所列 Windows 向用例（`test_execute_timeout`，本机无 ping 命令），与代码无关，零回归。

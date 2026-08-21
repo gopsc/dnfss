@@ -15,14 +15,50 @@ tools.basic_tools - 基础工具集（A 批抽离）
 依赖方向：common <- tools.basic_tools，不反向依赖 aibox 任何符号。
 """
 
+import base64
 import os
 import queue
+import re
 import shlex
 from datetime import datetime
 from typing import Dict, Optional, Tuple
 
 from common import ConfigManager, constants
 from .base import Tool
+
+
+# T3（审计 2026-08-21）：cmd.exe 变量展开形态——%VAR% 匹配已定义环境变量时
+# 展开为变量值，值中的 & | 会成为命令分隔符（经典 cmd 注入）。URL 编码
+# （%20/%E4 等）与 PowerShell 的 %{http_code} 均不匹配该模式，不受影响。
+_WIN_VAR_PATTERN = re.compile(r"%[A-Za-z_][A-Za-z0-9_]*%")
+
+
+def _quote_arg(value: str) -> Tuple[str, Optional[str]]:
+    """平台感知的 shell 参数引用，返回 (quoted, error)。
+
+    POSIX：shlex.quote（sh 单引号语义）。
+    Windows（run_command 经 cmd.exe / shell=True 执行）：
+      - 双引号包裹（& | < > ( ) ^ 在双引号内为字面量）
+      - 含 " → 拒绝（闭合外层双引号，其后内容暴露给 cmd 解析）
+      - 匹配 %VAR% 形态 → 拒绝（cmd 变量展开注入面）
+      - 含换行/控制字符 → 拒绝（cmd 命令行不可含换行）
+    """
+    value = str(value)
+    if os.name != "nt":
+        return shlex.quote(value), None
+    if '"' in value:
+        return "", f"❌ 参数含双引号，无法安全生成 Windows 命令: {value[:100]}"
+    if "\n" in value or "\r" in value:
+        return "", f"❌ 参数含换行符，无法生成命令: {value[:100]}"
+    if _WIN_VAR_PATTERN.search(value):
+        return "", (f"❌ 参数疑似含 cmd 变量引用（%变量名%），已拒绝以防命令注入: "
+                    f"{value[:100]}")
+    return f'"{value}"', None
+
+
+def _ps_quote(value: str) -> str:
+    """PowerShell 单引号字面量（内部单引号翻倍），用于 -Command 内层参数。"""
+    return "'" + str(value).replace("'", "''") + "'"
 
 
 # ==================== 文件操作工具基类 ====================
@@ -106,9 +142,54 @@ class ReadFileTool(FileToolBase):
             return "❌ 参数错误: start_line/end_line 必须为整数"
         start_line = max(1, start_line)
         end_line = max(0, min(end_line, 10_000_000))
-        quoted = shlex.quote(abs_path)
 
-        # 构造等价的命令行读取命令
+        # T3（审计 2026-08-21）：shlex.quote 是 POSIX 单引号语义，Windows 上
+        # run_command 经 cmd.exe 执行——单引号不被识别，& | % < > 仍是元字符
+        # （URL 含 & 即命令被截断；%VAR% 变量展开可注入）。按平台生成指引：
+        # POSIX 保持 head/tail/sed，Windows 走 PowerShell 等价命令。
+        quoted, qerr = _quote_arg(abs_path)
+        if qerr:
+            return qerr
+
+        if os.name == "nt":
+            # PowerShell 等价命令（经 cmd 调 powershell，-Command 整体双引号
+            # 包裹，内层路径用 _ps_quote 单引号字面量）
+            if head:
+                cmd = (f'powershell -NoProfile -Command "Get-Content -Path '
+                       f'{_ps_quote(abs_path)} -TotalCount {max_lines}"')
+                wc_cmd = (f'powershell -NoProfile -Command "(Get-Content '
+                          f'{_ps_quote(abs_path)} | Measure-Object -Line).Lines"')
+            elif tail:
+                cmd = (f'powershell -NoProfile -Command "Get-Content -Path '
+                       f'{_ps_quote(abs_path)} -Tail {max_lines}"')
+                wc_cmd = (f'powershell -NoProfile -Command "(Get-Content '
+                          f'{_ps_quote(abs_path)} | Measure-Object -Line).Lines"')
+            else:
+                if end_line > 0:
+                    first = start_line - 1
+                    take = end_line - start_line + 1
+                elif max_lines > 0:
+                    first = start_line - 1
+                    take = max_lines
+                else:
+                    first = start_line - 1
+                    take = 10_000_000
+                cmd = (f'powershell -NoProfile -Command "Get-Content -Path '
+                       f'{_ps_quote(abs_path)} | Select-Object -Skip {first} '
+                       f'-First {take}"')
+                wc_cmd = (f'powershell -NoProfile -Command "(Get-Content '
+                          f'{_ps_quote(abs_path)} | Measure-Object -Line).Lines"')
+            prompt = f"""请使用 `run_command` 工具执行以下命令来读取文件内容，不要直接返回文件内容：
+
+```
+{cmd}
+```
+
+- 若需统计总行数：`{wc_cmd}`
+- 文件大小上限 {constants.MAX_FILE_SIZE} 字节，单次最多读取 500 行"""
+            return prompt
+
+        # 构造等价的命令行读取命令（POSIX）
         if head:
             cmd = f"head -n {max_lines} {quoted}"
         elif tail:
@@ -180,7 +261,40 @@ class WriteFileTool(FileToolBase):
         if not is_safe:
             return error
 
-        quoted = shlex.quote(abs_path)
+        quoted, qerr = _quote_arg(abs_path)
+        if qerr:
+            return qerr
+
+        if os.name == "nt":
+            # T3：Windows 下 heredoc 不可用（cmd 命令行不能含换行，且引号
+            # 转义跨 cmd/PowerShell 两层极易出错）。content 整体 Base64 编码
+            # 后经 PowerShell 解码写入——Base64 字符集 [A-Za-z0-9+/=] 不含
+            # 任何 cmd/PowerShell 元字符，多行/引号/特殊字符内容全覆盖。
+            b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
+            if len(b64) > 6000:
+                return ("❌ 写入内容过大：Windows 命令行长度上限约 8191 字符，"
+                        "Base64 编码后超出。请将内容分成多次调用（每次 ≤4KB），"
+                        "首次 mode=w、后续 mode=a 追加写入")
+            writer = "Add-Content" if mode == "a" else "Set-Content"
+            write_cmd = (f'powershell -NoProfile -Command "{writer} -Path '
+                         f'{_ps_quote(abs_path)} -Value ([Text.Encoding]::UTF8.'
+                         f'GetString([Convert]::FromBase64String(\'{b64}\')))"')
+            directory = os.path.dirname(abs_path)
+            if directory:
+                write_cmd = (f'powershell -NoProfile -Command "New-Item '
+                             f'-ItemType Directory -Force -Path '
+                             f'{_ps_quote(directory)}" & {write_cmd}')
+            prompt = f"""请使用 `run_command` 工具执行以下命令来写入文件，不要在此工具中直接写入：
+
+```
+{write_cmd}
+```
+
+- 写入内容已编码为 Base64（避免换行/引号/特殊字符的跨 cmd+PowerShell 转义问题），命令会自动解码并以 UTF-8 写入
+- 若需检查文件大小：`powershell -NoProfile -Command "(Get-Item {_ps_quote(abs_path)}).Length"`
+- 文件大小上限 {constants.MAX_FILE_SIZE} 字节"""
+            return prompt
+
         directory = os.path.dirname(abs_path)
         dir_cmd = f"mkdir -p {shlex.quote(directory)}" if directory else ""
 
@@ -254,7 +368,26 @@ class ListFilesTool(FileToolBase):
         if not os.path.isdir(abs_path):
             return f"❌ 路径不是目录: {abs_path}"
 
-        quoted = shlex.quote(abs_path)
+        quoted, qerr = _quote_arg(abs_path)
+        if qerr:
+            return qerr
+
+        if os.name == "nt":
+            # T3：Windows 走 PowerShell 等价命令（ls/du/find/file 无原生等价物）
+            force_flag = " -Force" if show_hidden else ""
+            cmd = (f'powershell -NoProfile -Command "Get-ChildItem{force_flag} '
+                   f'{_ps_quote(abs_path)} | Select-Object '
+                   f'Mode,LastWriteTime,Length,Name"')
+            prompt = f"""请使用 `run_command` 工具执行以下命令来列出目录内容，不要直接在此工具中列出：
+
+```
+{cmd}
+```
+
+- 若需统计目录总大小：`powershell -NoProfile -Command "(Get-ChildItem -Recurse {_ps_quote(abs_path)} | Measure-Object Length -Sum).Sum"`
+- 若需递归列出：`powershell -NoProfile -Command "Get-ChildItem -Recurse -Depth 2 {_ps_quote(abs_path)} | Select-Object FullName"`"""
+            return prompt
+
         flag = "-la" if show_hidden else "-l"
 
         # 返回 markdown 提示词，指导智能体用命令行工具列目录
@@ -324,7 +457,9 @@ class SimpleWebCrawlerTool(Tool):
         host_port = proxy_url.split("://", 1)[-1]
         if "@" in host_port:
             host_port = host_port.split("@", 1)[-1]
-        return f"--socks5 {shlex.quote(host_port)}"
+        # T3：平台感知引用（原 shlex.quote 在 Windows cmd.exe 下无效）
+        quoted, _err = _quote_arg(host_port)
+        return f"--socks5 {quoted}" if quoted else ""
 
     def execute(self, action: str, url: str, **kwargs) -> str:
         if action not in ("get", "text", "title", "links", "search"):
@@ -336,10 +471,44 @@ class SimpleWebCrawlerTool(Tool):
         if not url or not str(url).strip().lower().startswith(("http://", "https://")):
             return "❌ 仅支持 http/https 协议地址（已拦截 file:// 等非网络协议）"
 
-        quoted_url = shlex.quote(url)
+        quoted_url, qerr = _quote_arg(url)
+        if qerr:
+            return qerr
         timeout = constants.WEB_TIMEOUT
-        user_agent = shlex.quote(constants.WEB_USER_AGENT)
+        user_agent, ua_err = _quote_arg(constants.WEB_USER_AGENT)
+        if ua_err:
+            return ua_err
         proxy = self._proxy_curl_args()
+
+        if os.name == "nt":
+            # T3：Windows 用系统内置 curl.exe（Win10 1803+）；sed/grep 等
+            # POSIX 管道无原生等价，分析类动作（text/title/links/search）
+            # 指引先取原始 HTML 再由 AI 自行解析。URL 含 & 时靠双引号
+            # 保护（cmd 双引号内为字面量），%VAR% 形态已在 _quote_arg 拒绝。
+            base = f"curl.exe -sL --max-time {timeout} -A {user_agent} {proxy}".strip()
+            if action == "get":
+                cmd = f'{base} -w "\\nHTTP_CODE:%{{http_code}}" {quoted_url}'
+                extra = "如需查看响应头：`curl.exe -sIL ...`；如需保存到文件：`curl.exe -sL ... -o 文件名`"
+            elif action == "text":
+                cmd = (f'{base} {quoted_url} | powershell -NoProfile -Command '
+                       f'"$input -replace \'<[^>]+>\',\'\'"')
+                extra = "去除 HTML 标签提取纯文本"
+            else:
+                cmd = f"{base} {quoted_url}"
+                extra = ("Windows 下无 grep/sed 管道，请取回原始 HTML 后自行分析"
+                         "（提取标题/链接/检索关键词）")
+            prompt = f"""请使用 `run_command` 工具执行以下命令来完成网页操作，不要直接返回网页内容：
+
+```
+{cmd}
+```
+
+{extra}
+- 下载大小限制 {constants.WEB_MAX_DOWNLOAD_SIZE} 字节，可在命令后追加 `| powershell -NoProfile -Command "$input | Select-Object -First 100"` 限制
+- 当前已按配置自动附带代理：{proxy or '无（如需代理请先调用 set_proxy 工具）'}"""
+            return prompt
+
+        # POSIX 分支：_quote_arg 在 POSIX 下即 shlex.quote，直接沿用
         base = f"curl -sL --max-time {timeout} -A {user_agent} {proxy}".strip()
 
         if action == "get":
@@ -358,7 +527,10 @@ class SimpleWebCrawlerTool(Tool):
             keyword = kwargs.get("keyword")
             if not keyword:
                 return "❌ 需要提供 keyword 参数"
-            cmd = f"{base} {quoted_url} | grep -c {shlex.quote(keyword)}"
+            quoted_kw, kw_err = _quote_arg(keyword)
+            if kw_err:
+                return kw_err
+            cmd = f"{base} {quoted_url} | grep -c {quoted_kw}"
             extra = f"返回匹配行数，大于 0 即表示找到关键词 '{keyword}'"
 
         # 返回 markdown 提示词，指导智能体用 curl 完成网页访问

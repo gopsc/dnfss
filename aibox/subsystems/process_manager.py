@@ -602,7 +602,7 @@ class ProcessManager:
                 self.logger.info(f"后台进程 #{entry.handle} TTL 到期已终止")
 
     def _terminate_tree(self, entry: _ProcEntry, force: bool = False):
-        """按进程组终止整棵进程树（对齐 executors L9 语义与 Windows 回退）"""
+        """按进程组终止整棵进程树（对齐 executors L9/T11 语义与 Windows 回退）"""
         proc = entry.popen
         try:
             if os.name == "posix":
@@ -611,10 +611,21 @@ class ProcessManager:
                 if pgid is None:
                     pgid = os.getpgid(proc.pid)
                 os.killpg(pgid, sig)
-            elif force:
-                proc.kill()
             else:
-                proc.terminate()
+                # T11（审计 2026-08-21）：Windows 无进程组，单进程 kill 收割
+                # 不到 spawn 的孙进程（dev server/训练任务成孤儿继续占用端口
+                # /文件锁）。taskkill /T /F 递归终止整棵树，失败兜底单进程 kill
+                try:
+                    subprocess.run(
+                        ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                        capture_output=True, timeout=10)
+                except Exception:
+                    pass
+                try:
+                    if proc.poll() is None:
+                        proc.kill()
+                except Exception:
+                    pass
         except Exception:
             try:
                 proc.kill()

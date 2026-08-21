@@ -115,7 +115,12 @@ class SubprocessCommandExecutor(CommandExecutor):
         ProcessLookupError，届时无法再从进程反查组。
         T5：pgid 由调用方显式传入（注册槽位时捕获），不再读共享
         _current_pgid——并发执行时那是别人的进程组。
-        Windows 无进程组概念，退回单进程 terminate/kill。"""
+        T11（审计 2026-08-21）：Windows 无进程组概念，单进程 terminate/
+        kill 收割不到 shell=True 生成的 cmd.exe /c 之下 spawn 的孙进程
+        （超时/取消后孙进程成孤儿，持续占用 CPU/端口/文件锁）。用
+        taskkill /T 递归终止整棵进程树；Windows 无 SIGTERM 等价物，
+        taskkill 不带 /F 仅对有消息窗口的 GUI 进程有效，控制台进程
+        杀不掉，故统一 /F 强制，force 参数在 Windows 上不区分。"""
         try:
             if os.name == "posix":
                 sig = signal.SIGKILL if force else signal.SIGTERM
@@ -128,10 +133,20 @@ class SubprocessCommandExecutor(CommandExecutor):
                     os.killpg(pgid, sig)
                 else:
                     proc.kill() if force else proc.terminate()
-            elif force:
-                proc.kill()
             else:
-                proc.terminate()
+                # T11：Windows 树收割——taskkill /T /F 递归终止子孙进程，
+                # 失败（进程已退出/无权限）时兜底单进程 kill
+                try:
+                    subprocess.run(
+                        ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                        capture_output=True, timeout=10)
+                except Exception:
+                    pass
+                try:
+                    if proc.poll() is None:
+                        proc.kill()
+                except Exception:
+                    pass
         except Exception:
             try:
                 proc.kill()
