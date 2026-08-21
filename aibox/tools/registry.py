@@ -67,29 +67,42 @@ class ToolRegistry:
     def get_tools_schemas(self) -> List[Dict]:
         """获取所有工具的OpenAI函数调用格式"""
         return [tool.to_function_call_format() for tool in self._tools.values()]
+
+    @staticmethod
+    def _truncate_result(result) -> str:
+        """T15：工具返回值统一长度预算（非流式与流式最终结果同口径）"""
+        if not isinstance(result, str):
+            return result
+        limit = constants.TOOL_MAX_RESULT_LENGTH
+        if len(result) > limit:
+            return (result[:limit] +
+                    f"\n⚠️ 结果超过 {limit} 字符上限，已截断")
+        return result
     
     def set_output_queue(self, queue: queue.Queue):
-        """设置输出队列"""
+        """设置输出队列（T4：仅记注册表级引用，不再传播到共享工具实例——
+        实例属性由 execute_streaming 每次调用自行注入局部队列，全局传播
+        会让并发会话互相覆盖对方的输出通路，造成跨会话输出串扰）"""
         self.current_output_queue = queue
-        # 同时设置所有工具的队列
-        for tool in self._tools.values():
-            tool.output_queue = queue
-    
+
     def execute_tool(self, name: str, **kwargs) -> str:
         """执行工具"""
         tool = self.get_tool(name)
         if not tool:
             return f"❌ 错误：找不到工具 '{name}'"
-        
+
         self.logger.debug(f"工具调用: {name}({_sanitize_kwargs(kwargs)})")
         start_time = time.time()
-        
+
         try:
+            # T4：入口快照会话队列。转发循环可能持续数秒~小时，期间并发
+            # 会话的 set_output_queue 会覆盖单值引用——全程用快照，保证
+            # 本会话输出只进本会话队列，结束清理也不影响在途转发
+            session_queue = self.current_output_queue
             # 检查是否有队列可用，并且工具支持流式输出
-            if self.current_output_queue and hasattr(tool, 'execute_streaming'):
+            if session_queue and hasattr(tool, 'execute_streaming'):
                 # 设置工具的流式输出属性
                 tool.streaming_output = True
-                tool.output_queue = self.current_output_queue
                 
                 # 创建队列来收集流式输出
                 output_queue = queue.Queue()
@@ -134,8 +147,8 @@ class ToolRegistry:
                                 # 预算耗尽：停止转发，仅提示一次
                                 if not truncation_noted:
                                     truncation_noted = True
-                                    if self.current_output_queue:
-                                        self.current_output_queue.put(
+                                    if session_queue:
+                                        session_queue.put(
                                             ("line", f"\n⚠️ 流式输出超过 {line_budget} 字符上限，已停止转发剩余内容\n"))
                                 continue
                             remaining = line_budget - forwarded
@@ -146,13 +159,13 @@ class ToolRegistry:
                             else:
                                 forwarded += len(piece)
                             # 发送到当前队列（会通过WebSocket发送）
-                            if self.current_output_queue:
-                                self.current_output_queue.put(("line", piece))
+                            if session_queue:
+                                session_queue.put(("line", piece))
                         elif msg_type == "complete":
                             final_result = content
                             # 也发送完整结果
-                            if self.current_output_queue:
-                                self.current_output_queue.put(("complete", content))
+                            if session_queue:
+                                session_queue.put(("complete", content))
                     except queue.Empty:
                         continue
 
@@ -173,6 +186,11 @@ class ToolRegistry:
             else:
                 # 普通执行
                 result = tool.execute(**kwargs)
+
+            # T15：两条分支的最终返回值统一过 TOOL_MAX_RESULT_LENGTH——
+            # 此前仅流式转发有 line_budget（N8），非流式结果无上限直入
+            # 对话上下文（memory/memo get 超长 content，token/内存放大）
+            result = self._truncate_result(result)
             
             elapsed = time.time() - start_time
             self.logger.debug(f"工具结果 ({elapsed:.2f}s): {result[:100]}...")

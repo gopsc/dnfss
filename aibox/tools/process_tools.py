@@ -133,6 +133,11 @@ class BgRunTool(Tool):
         if not _enabled():
             return "❌ 后台进程功能已禁用（commands.enabled 或 background_processes.enabled 为 false）"
 
+        # T18：LLM 可能传字符串 "false"，裸 bool("false") is True——
+        # detach 误开致进程脱离管理、log_file 误开，统一规整
+        detach = _coerce_bool(detach, False)
+        log_file = _coerce_bool(log_file, False)
+
         result = self.manager.start(command, name=proc_name, work_dir=work_dir,
                                     env=env, detach=detach, log_file=log_file)
         if not result.get("ok"):
@@ -392,6 +397,9 @@ class BgKillTool(Tool):
         handle = _coerce_int(handle)
         if handle is None:
             return "❌ 错误：handle 必须是整数句柄"
+
+        # T18：force 字符串 "false" 会被裸 bool 判为 True，跳过宽限直接 SIGKILL
+        force = _coerce_bool(force, False)
 
         result = self.manager.kill(handle, force=force, grace=grace)
         if not result.get("ok"):

@@ -820,8 +820,9 @@ class TestL4aChatCompletionFailover:
             assert fc.chat_completion([{"role": "user", "content": "q2"}]) == "r2"
             assert mp.call_args_list[0].args[0].startswith("https://api.moonshot.cn")
         # 冷却过期（手动回拨失败时间戳）：恢复走主档案
-        fc._fail_at["deepseek"] = (_time.monotonic() - fc.cooldown_seconds - 1,
-                                   fc.cooldown_seconds)
+        # T6：冷却键改为客户端实例 id，种冷却态需走 _cool_key
+        fc._fail_at[fc._cool_key(fc._clients[0])] = (_time.monotonic() - fc.cooldown_seconds - 1,
+                                                     fc.cooldown_seconds)
         with mock.patch("llm_client.requests.post",
                         return_value=_resp(200, content="r3")) as mp:
             assert fc.chat_completion([{"role": "user", "content": "q3"}]) == "r3"
@@ -998,8 +999,8 @@ class TestL4bStreamFailover:
         primary = self._client("deepseek", stream=_fake_stream(events=self.EVENTS))
         fallback = self._client("kimi", stream=_fake_stream(events=self.EVENTS))
         fc = self._fc(primary, fallback)
-        fc._fail_at = {"deepseek": (_time.monotonic(), fc.cooldown_seconds),
-                       "kimi": (_time.monotonic(), fc.cooldown_seconds)}
+        fc._fail_at = {fc._cool_key(primary): (_time.monotonic(), fc.cooldown_seconds),
+                       fc._cool_key(fallback): (_time.monotonic(), fc.cooldown_seconds)}
         with pytest.raises(RuntimeError, match="冷却期"):
             list(fc.stream_chat([{"role": "user", "content": "q"}]))
         primary.stream_chat.assert_not_called()
@@ -1010,7 +1011,7 @@ class TestL4bStreamFailover:
         primary = self._client("deepseek", stream=_fake_stream(events=self.EVENTS))
         fallback = self._client("kimi", stream=_fake_stream(events=self.EVENTS))
         fc = self._fc(primary, fallback)
-        fc._fail_at["deepseek"] = (_time.monotonic(), fc.cooldown_seconds)
+        fc._fail_at[fc._cool_key(primary)] = (_time.monotonic(), fc.cooldown_seconds)
         assert list(fc.stream_chat([{"role": "user", "content": "q"}])) == self.EVENTS
         primary.stream_chat.assert_not_called()
 
@@ -1102,7 +1103,7 @@ class TestL4cObservabilityAndBudget:
                                   stream=_fake_stream(events=self.EVENTS))
         fallback = self._mk_client("kimi", stream=_fake_stream(events=self.EVENTS))
         fc = self._fc(primary, fallback)
-        fc._fail_at["deepseek"] = (_time.monotonic(), fc.cooldown_seconds)
+        fc._fail_at[fc._cool_key(primary)] = (_time.monotonic(), fc.cooldown_seconds)
         assert list(fc.stream_chat([{"role": "user", "content": "q"}])) == self.EVENTS
         s = fc.get_stats()
         assert s == {"requests": 1, "failovers": 0, "cooldown_skips": 1, "exhausted": 0}
@@ -1231,13 +1232,14 @@ class TestL4cObservabilityAndBudget:
         # 第一次：主失败（retry_after=300）→ fallback
         assert fc.chat_completion([{"role": "user", "content": "q1"}]) == "from-kimi"
         # 冷却中（默认 60s 已过但 300s 未到）：仍走 fallback
-        t, _ = fc._fail_at["deepseek"]
-        fc._fail_at["deepseek"] = (t - 100, 300)
+        _key = fc._cool_key(primary)
+        t, _ = fc._fail_at[_key]
+        fc._fail_at[_key] = (t - 100, 300)
         primary.chat_completion = primary_ok
         assert fc.chat_completion([{"role": "user", "content": "q2"}]) == "from-kimi"
         primary_ok.assert_not_called()
         # 300s 冷却过期：恢复主档案
-        fc._fail_at["deepseek"] = (t - 301, 300)
+        fc._fail_at[_key] = (t - 301, 300)
         assert fc.chat_completion([{"role": "user", "content": "q3"}]) == "from-ds"
         primary_ok.assert_called_once()
 

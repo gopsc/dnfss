@@ -71,26 +71,63 @@ class SubprocessCommandExecutor(CommandExecutor):
 
     def __init__(self, logger=None):
         super().__init__(logger)
-        self._current_process = None
+        self._current_process = None  # 兼容保留：最近一次注册的进程（诊断用）
         self._current_pgid = None  # L9：Popen 后立即捕获，shell 死亡后 getpgid 会失败
         self._process_lock = threading.Lock()
+        # T5：单槽 _current_process 在并发执行时互相覆盖——先启动的执行
+        # 超时/取消会误杀后来者的进程组（killpg 连坐孙进程），先结束的
+        # finally 清引用导致后来者永远无法取消。改为令牌多槽注册表，
+        # 终止只作用于自己槽位内的 (proc, pgid)。
+        self._proc_slots: Dict[int, Tuple] = {}
+        self._token_seq = 0
 
-    def _terminate_tree(self, proc, force: bool = False):
+    def _register_proc(self, process):
+        """T5：注册本次执行的进程槽，返回 (token, pgid)"""
+        with self._process_lock:
+            self._token_seq += 1
+            token = self._token_seq
+            pgid = None
+            if os.name == "posix":
+                try:
+                    pgid = os.getpgid(process.pid)
+                except Exception:
+                    pgid = None
+            self._proc_slots[token] = (process, pgid)
+            # 兼容属性指向最新注册（诊断/旧测试观察用，不参与终止逻辑）
+            self._current_process = process
+            self._current_pgid = pgid
+            return token, pgid
+
+    def _unregister_proc(self, token):
+        """T5：仅移除自己的槽位；全部槽位清空时同步清兼容属性"""
+        with self._process_lock:
+            self._proc_slots.pop(token, None)
+            if not self._proc_slots:
+                self._current_process = None
+                self._current_pgid = None
+
+    def _terminate_tree(self, proc, force: bool = False, pgid=None):
         """终止整个进程组（L9：POSIX 下 shell=True 只杀 shell 时，孙进程
         （`(x &)` 等）仍持管道写端——reader 阻塞无 EOF、fd/线程悬挂至孙
         进程退出，写满 64KB 管道缓冲后孙进程也卡死。start_new_session 使
         shell 成为会话首进程，按组信号可一次覆盖整棵进程树）。
         组 ID 在 Popen 后立即保存：shell 死亡后 os.getpgid(pid) 会抛
         ProcessLookupError，届时无法再从进程反查组。
+        T5：pgid 由调用方显式传入（注册槽位时捕获），不再读共享
+        _current_pgid——并发执行时那是别人的进程组。
         Windows 无进程组概念，退回单进程 terminate/kill。"""
         try:
             if os.name == "posix":
                 sig = signal.SIGKILL if force else signal.SIGTERM
-                with self._process_lock:
-                    pgid = self._current_pgid
                 if pgid is None:
-                    pgid = os.getpgid(proc.pid)
-                os.killpg(pgid, sig)
+                    try:
+                        pgid = os.getpgid(proc.pid)
+                    except Exception:
+                        pgid = None
+                if pgid is not None:
+                    os.killpg(pgid, sig)
+                else:
+                    proc.kill() if force else proc.terminate()
             elif force:
                 proc.kill()
             else:
@@ -102,18 +139,21 @@ class SubprocessCommandExecutor(CommandExecutor):
                 pass
 
     def cancel(self):
-        """取消当前正在运行的命令（kill子进程组）。线程安全。"""
+        """取消本执行器当前注册的全部运行中命令（kill 子进程组）。线程安全。
+        T5：多槽令牌注册表——并发执行时定向终止各自槽位，互不误杀；
+        无参调用语义为"终止本执行器全部在途命令"（中断/关闭路径）。"""
         with self._process_lock:
-            proc = self._current_process
-        if proc is not None:
+            slots = list(self._proc_slots.values())
+        for proc, pgid in slots:
             try:
                 if proc.poll() is None:
-                    self._terminate_tree(proc, force=True)
+                    self._terminate_tree(proc, force=True, pgid=pgid)
                     self.logger.info("已终止正在运行的子进程组")
             except Exception:
                 pass
 
-    def _read_with_limit(self, process, timeout: int, start_time: float, output_queue=None) -> Tuple[str, bool, bool]:
+    def _read_with_limit(self, process, timeout: int, start_time: float, output_queue=None,
+                         pgid=None) -> Tuple[str, bool, bool]:
         """从进程读取输出，限制总大小和超时。返回 (output_str, timeout_occurred, truncated)。
 
         H2 修复：阻塞 readline 在独立 reader 线程执行，主循环带超时轮询队列。
@@ -147,14 +187,14 @@ class SubprocessCommandExecutor(CommandExecutor):
             # J16（审计 2026-08-19）：timeout<=0 语义为"不设超时"（有意为之，
             # 调用方显式传 0 禁用）；registry 层 3600s 流式兜底仍生效
             if timeout > 0 and time.time() - start_time > timeout:
-                self._terminate_tree(process)
+                self._terminate_tree(process, pgid=pgid)
                 timeout_occurred = True
                 break
 
             # 检查输出大小
             if total_bytes >= self.MAX_OUTPUT_BYTES:
                 truncated = True
-                self._terminate_tree(process)
+                self._terminate_tree(process, pgid=pgid)
                 break
 
             try:
@@ -175,7 +215,7 @@ class SubprocessCommandExecutor(CommandExecutor):
                         # 与管道 fd 至孙进程退出，写满 64KB 缓冲后孙进程自身
                         # 也卡死。此处强杀进程组收尾（nohup 重定向输出的
                         # 真正脱离场景不持管道，不会走到这里）。
-                        self._terminate_tree(process, force=True)
+                        self._terminate_tree(process, force=True, pgid=pgid)
                         break
                 continue
 
@@ -188,7 +228,7 @@ class SubprocessCommandExecutor(CommandExecutor):
                     output_chunks.append(line.encode('utf-8', errors='replace')[:allowed].decode('utf-8', errors='ignore'))
                     total_bytes = self.MAX_OUTPUT_BYTES
                 truncated = True
-                self._terminate_tree(process)
+                self._terminate_tree(process, pgid=pgid)
                 break
 
             output_chunks.append(line)
@@ -224,6 +264,14 @@ class SubprocessCommandExecutor(CommandExecutor):
         if not self.is_enabled():
             return "❌ 命令执行功能已禁用"
 
+        # T24：非流式路径没有 registry 3600s 流式兜底，timeout<=0（"不设
+        # 超时"）会让挂起命令永久阻塞调用线程——下限夹取到 1s 快速失败。
+        # 流式路径保留 0=不限语义（registry 兜底在位）
+        try:
+            timeout = max(1, int(timeout))
+        except (TypeError, ValueError):
+            timeout = 30
+
         # 默认工作目录为workspace，避免在启动目录散落文件
         if work_dir is None or work_dir == ".":
             work_dir = constants.WORKSPACE_DIR
@@ -236,6 +284,8 @@ class SubprocessCommandExecutor(CommandExecutor):
             exec_env.update(env)
 
         process = None
+        token = None
+        pgid = None
         try:
             process = subprocess.Popen(
                 command,
@@ -246,31 +296,28 @@ class SubprocessCommandExecutor(CommandExecutor):
                 text=True,
                 bufsize=1,
                 universal_newlines=True,
+                encoding="utf-8",  # T16：显式 UTF-8，避免 Windows cp936 解码 UTF-8 输出
+                errors="replace",  # T16：非法字节不抛异常中断 reader 线程
                 env=exec_env,
                 cwd=os.path.expanduser(work_dir),
                 # L9：POSIX 下 shell 成为会话首进程，超时/取消可按进程组
                 # 一次终止整棵进程树（含 & 后台孙进程），消除管道悬挂
                 start_new_session=(os.name == "posix")
             )
-            # 保存进程引用以便cancel()可以kill它
-            with self._process_lock:
-                self._current_process = process
-                if os.name == "posix":
-                    try:
-                        self._current_pgid = os.getpgid(process.pid)
-                    except Exception:
-                        self._current_pgid = None
+            # T5：注册本执行专属槽位，终止/取消只作用于自己的 (proc, pgid)
+            token, pgid = self._register_proc(process)
 
             start_time = time.time()
-            output_str, timeout_occurred, truncated = self._read_with_limit(process, timeout, start_time)
+            output_str, timeout_occurred, truncated = self._read_with_limit(
+                process, timeout, start_time, pgid=pgid)
 
             # 确保进程终止
             if process.poll() is None:
-                self._terminate_tree(process, force=timeout_occurred or truncated)
+                self._terminate_tree(process, force=timeout_occurred or truncated, pgid=pgid)
                 try:
                     process.wait(timeout=2)
                 except:
-                    self._terminate_tree(process, force=True)
+                    self._terminate_tree(process, force=True, pgid=pgid)
 
             return_code = process.returncode if process.returncode is not None else -1
 
@@ -298,11 +345,10 @@ class SubprocessCommandExecutor(CommandExecutor):
             return f"❌ 执行错误: {str(e)}"
         finally:
             if process and process.poll() is None:
-                self._terminate_tree(process, force=True)
-            # 清除当前进程引用
-            with self._process_lock:
-                self._current_process = None
-                self._current_pgid = None
+                self._terminate_tree(process, force=True, pgid=pgid)
+            # T5：仅注销自己的槽位，不再无差别清空共享引用
+            if token is not None:
+                self._unregister_proc(token)
 
     def execute_streaming(self, command: str, output_queue: queue.Queue, timeout: int = 30,
                           work_dir: str = None, env: Dict = None, **kwargs):
@@ -329,6 +375,8 @@ class SubprocessCommandExecutor(CommandExecutor):
             exec_env.update(env)
 
         process = None
+        token = None
+        pgid = None
         try:
             process = subprocess.Popen(
                 command,
@@ -339,6 +387,8 @@ class SubprocessCommandExecutor(CommandExecutor):
                 text=True,
                 bufsize=1,
                 universal_newlines=True,
+                encoding="utf-8",  # T16：显式 UTF-8，避免 Windows cp936 解码 UTF-8 输出
+                errors="replace",  # T16：非法字节不抛异常中断 reader 线程
                 env=exec_env,
                 cwd=os.path.expanduser(work_dir),
                 # L9：POSIX 下 shell 成为会话首进程，超时/取消可按进程组
@@ -346,19 +396,13 @@ class SubprocessCommandExecutor(CommandExecutor):
                 start_new_session=(os.name == "posix")
             )
             self.process = process
-            # 保存进程引用以便cancel()可以kill它
-            with self._process_lock:
-                self._current_process = process
-                if os.name == "posix":
-                    try:
-                        self._current_pgid = os.getpgid(process.pid)
-                    except Exception:
-                        self._current_pgid = None
+            # T5：注册本执行专属槽位，终止/取消只作用于自己的 (proc, pgid)
+            token, pgid = self._register_proc(process)
 
             start_time = time.time()
             # H2 修复：复用线程化读取（reader 线程 + 超时轮询），行经 output_queue 流式转发
             output_str, timeout_occurred, truncated = self._read_with_limit(
-                process, timeout, start_time, output_queue=output_queue)
+                process, timeout, start_time, output_queue=output_queue, pgid=pgid)
 
             if timeout_occurred:
                 output_queue.put(("line", f"\n⏰ 命令执行超时（{timeout}秒）\n"))
@@ -367,7 +411,7 @@ class SubprocessCommandExecutor(CommandExecutor):
 
             # 如果超时或截断，确保进程被终止
             if (timeout_occurred or truncated) and process.poll() is None:
-                self._terminate_tree(process, force=True)
+                self._terminate_tree(process, force=True, pgid=pgid)
                 try:
                     process.wait(timeout=2)
                 except:
@@ -404,12 +448,12 @@ class SubprocessCommandExecutor(CommandExecutor):
             output_queue.put(("complete", f"❌ 执行错误: {str(e)}"))
         finally:
             if process and process.poll() is None:
-                self._terminate_tree(process)
+                self._terminate_tree(process, pgid=pgid)
                 try:
                     process.wait(timeout=2)
                 except:
-                    self._terminate_tree(process, force=True)
+                    self._terminate_tree(process, force=True, pgid=pgid)
             self.process = None
-            with self._process_lock:
-                self._current_process = None
-                self._current_pgid = None
+            # T5：仅注销自己的槽位，不再无差别清空共享引用
+            if token is not None:
+                self._unregister_proc(token)

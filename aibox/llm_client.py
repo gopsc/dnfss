@@ -29,13 +29,17 @@ import requests
 # L12（审计 2026-08-18）：瞬时错误体可能回显网关/WAF 错误页中的
 # Authorization 头，抹掉 Bearer 令牌后再进日志，防密钥落盘
 _AUTH_HEADER_RE = re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+")
+# T13：错误响应体可能回显裸 API Key（如 sk-xxx），一并脱敏
+_API_KEY_RE = re.compile(r"sk-[A-Za-z0-9_-]{16,}")
 
 
 def _sanitize_log_msg(msg: str) -> str:
-    """日志脱敏：替换错误消息中的 Bearer 令牌。"""
+    """日志脱敏：替换错误消息中的 Bearer 令牌与裸 API Key。"""
     if not msg:
         return msg
-    return _AUTH_HEADER_RE.sub("Bearer ***", msg)
+    msg = _AUTH_HEADER_RE.sub("Bearer ***", msg)
+    msg = _API_KEY_RE.sub("sk-***", msg)
+    return msg
 
 
 class LLMClient(ABC):
@@ -166,15 +170,23 @@ class DeepSeekClient(LLMClient):
                 proxies=self._resolve_proxies(),
             )
             if response.status_code == 200:
-                result = response.json()
-                return result["choices"][0]["message"]["content"].strip()
-            if response.status_code == 429 or response.status_code >= 500:
+                try:
+                    result = response.json()
+                    return result["choices"][0]["message"]["content"].strip()
+                finally:
+                    response.close()
+            # T9+T13：非 200 立即关连接（stream=True 才需要，但统一防御），
+            # 错误体脱敏后再入异常，防 API Key 经错误页回显进历史/日志
+            status = response.status_code
+            body = _sanitize_log_msg(response.text[:200])
+            response.close()
+            if status == 429 or status >= 500:
                 # L4a：瞬时故障显式抛出——FailoverClient 据此转移下一档案；
                 # 无包装器时由调用方 catch-all 接住，下游仍走失败分支（语义等价）
                 raise TransientLLMError(
-                    f"LLM 请求瞬时失败: HTTP {response.status_code}: {response.text[:200]}",
+                    f"LLM 请求瞬时失败: HTTP {status}: {body}",
                     retry_after=_retry_after_of(response))
-            self._log("error", f"LLM 压缩请求失败: HTTP {response.status_code}")
+            self._log("error", f"LLM 压缩请求失败: HTTP {status}")
             return None
         except TransientLLMError:
             raise  # L4a：瞬时故障上抛供 FailoverClient 转移，不吞
@@ -219,13 +231,20 @@ class DeepSeekClient(LLMClient):
         self._current_response = response
 
         if response.status_code != 200:
-            if response.status_code == 429 or response.status_code >= 500:
+            # T9：非 200 立即释放连接（stream=True 下不关闭会阻塞同域名
+            # in-flight 请求直到 GC）；T13：错误体脱敏后再入异常
+            status = response.status_code
+            retry_after = _retry_after_of(response)
+            body = _sanitize_log_msg(response.text[:200])
+            response.close()
+            self._current_response = None
+            if status == 429 or status >= 500:
                 # L4b：瞬时故障显式分类（此时尚未产出任何事件，可安全转移重放）
                 raise TransientLLMError(
-                    f"LLM 流式请求瞬时失败: HTTP {response.status_code}: {response.text[:200]}",
-                    retry_after=_retry_after_of(response))
+                    f"LLM 流式请求瞬时失败: HTTP {status}: {body}",
+                    retry_after=retry_after)
             raise RuntimeError(
-                f"HTTP {response.status_code}: {response.text[:200]}")
+                f"HTTP {status}: {body}")
 
         try:
             for line in response.iter_lines():
@@ -368,8 +387,17 @@ class FailoverClient:
             except Exception:
                 pass
 
+    @staticmethod
+    def _cool_key(client) -> int:
+        """T6：冷却键按客户端实例（id）——client.name 取 display_name 优先且
+        无唯一性校验，两个 profile_name 不同但 display_name 相同的档案
+        （如主备都叫 "Kimi"）冷却状态互相污染：A 失败冷却 → B 被误判
+        跳过（该转移时不转移）。P6 去重保证每档案恰好一个实例，实例被
+        _clients 持有生命周期内 id 稳定，与去重键语义一致。"""
+        return id(client)
+
     def _cooling(self, client) -> bool:
-        entry = self._fail_at.get(client.name)
+        entry = self._fail_at.get(self._cool_key(client))
         if entry is None:
             return False
         t, cd = entry
@@ -377,9 +405,9 @@ class FailoverClient:
 
     def _mark_fail(self, client, cooldown: Optional[float] = None):
         # L4c：429 Retry-After（经 TransientLLMError.retry_after）覆盖默认冷却时长
-        self._fail_at[client.name] = (time.monotonic(),
-                                      cooldown if cooldown and cooldown > 0
-                                      else self.cooldown_seconds)
+        self._fail_at[self._cool_key(client)] = (time.monotonic(),
+                                                 cooldown if cooldown and cooldown > 0
+                                                 else self.cooldown_seconds)
 
     def _budget_exhausted(self) -> bool:
         if self.timeout_budget is None or self._call_started is None:
@@ -451,10 +479,25 @@ class FailoverClient:
                     max_tokens: int = 8192, tools: Optional[List[Dict]] = None,
                     tool_choice: Optional[str] = None,
                     reasoning_enabled: bool = False, **extra) -> Iterator[Dict]:
-        """L4b：流式转移——仅首事件前故障可安全重放（对用户不可见）。"""
+        """L4b：流式转移——仅首事件前故障可安全重放（对用户不可见）。
+
+        T7：本方法是普通函数（非生成器）——生成器函数体延迟到首次 next()
+        才执行，若 cancel() 在创建生成器与首迭代之间被其他线程调用，
+        延迟执行的 `_cancelled = False` 会把用户的取消清掉（请求照常发出）。
+        标志重置与计数在返回生成器前同步完成，取消契约（类文档）恢复成立。
+        """
         self._cancelled = False  # 新一轮请求，清除上一轮中断标志
         self._call_started = time.monotonic()
         self._stats["requests"] += 1
+        return self._stream_chat_impl(messages, temperature=temperature,
+                                      max_tokens=max_tokens, tools=tools,
+                                      tool_choice=tool_choice,
+                                      reasoning_enabled=reasoning_enabled, **extra)
+
+    def _stream_chat_impl(self, messages: List[Dict], temperature: float = None,
+                          max_tokens: int = 8192, tools: Optional[List[Dict]] = None,
+                          tool_choice: Optional[str] = None,
+                          reasoning_enabled: bool = False, **extra) -> Iterator[Dict]:
         last_exc = None
         for idx, client in enumerate(self._clients):
             if self._cooling(client):

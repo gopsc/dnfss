@@ -1,9 +1,9 @@
 # aibox 模块安全与质量审计报告
 
-- **日期**：2026-08-17（第一轮）/ 2026-08-18（第二轮复审）/ 2026-08-18（第三轮：遗留复核 + v3.4 专审）/ 2026-08-18（第四轮：3 路并行审读 + Batch H 修复）/ 2026-08-19（第五轮：4 路并行审读，聚焦历届未覆盖区域）/ 2026-08-20（第六轮：交叉视角——修复回归验证 / 并发与生命周期 / 降级路径 / 修复间相互作用）/ 2026-08-20（第七轮：skills 全量脚本 / 前端深维度 / 客户端三文件 / WS+CLI 命令面全量校验）
-- **审计基线**：第一轮 HEAD `ce142fe`（Batch A–D 后）→ 第二轮 HEAD `177a9ac`（Batch E 修复后）→ 第三轮 HEAD `aa15841`（L4a/b/c 落地后）→ 第四轮 HEAD `d1f780e`（Batch G + SOCKS5 验证后）→ 第五轮 HEAD `d513c5f`（Batch I + model_config.py 后，含工作区未提交的 max_turns 钳制）→ 第六轮 HEAD `7dc6796`（Batch K 全落地 + 五轮收束文档同步后）→ 第七轮 HEAD `e43aeea`（Batch L 落地后）
-- **审计范围**：`aibox.py`（~3458 行）+ `llm_client.py` + `model_config.py` + `tools/`（7 文件）+ `subsystems/`（6 文件）+ `common/`（5 文件）+ 前端 HTML（frontend.html / entry.html / entry1.html）+ `skills/` 脚本 + `client.py` / `voice_client.py`（前端与技能脚本为第五轮首次覆盖；第七轮完成 skills 全量逐文件与命令面逐条覆盖）
-- **方法**：第一轮逐文件代码审读 + PoC 动态验证；第二轮 Batch E 修复复审 + 全量重审 + 6 处关键发现实证抽查；第三轮遗留项复核 + v3.4 专审；第四轮 3 路并行审读 + 主审逐条复核 + Linux PoC 实证（6/6）；第五轮 4 路并行审读（聚焦历届未覆盖区域）+ 主审逐条复核 + Linux PoC 实证（2/2）；第六轮 4 路并行审读（Batch K 修复回归验证与修复自身缺陷面 / 并发与资源生命周期交叉 / 数据边界与故障降级 / 工具链与修复间相互作用）+ 主审逐条代码复核（Windows 开发机，无 Linux PoC，动态行为以代码级核验 + Windows 测试基线代替）；第七轮 4 路并行审读（skills 全量安全面 / 前端深维度 / model_config+voice_client+client 深审 / WS+CLI 命令面全量逐条校验）+ 主审对全部中危项逐条代码实证（Windows 开发机）
+- **日期**：2026-08-17（第一轮）/ 2026-08-18（第二轮复审）/ 2026-08-18（第三轮：遗留复核 + v3.4 专审）/ 2026-08-18（第四轮：3 路并行审读 + Batch H 修复）/ 2026-08-19（第五轮：4 路并行审读，聚焦历届未覆盖区域）/ 2026-08-20（第六轮：交叉视角——修复回归验证 / 并发与生命周期 / 降级路径 / 修复间相互作用）/ 2026-08-20（第七轮：skills 全量脚本 / 前端深维度 / 客户端三文件 / WS+CLI 命令面全量校验）/ 2026-08-21（第八轮：后台进程池 v3.8 新代码首审 + 全模块 3 路并行深审）
+- **审计基线**：第一轮 HEAD `ce142fe`（Batch A–D 后）→ 第二轮 HEAD `177a9ac`（Batch E 修复后）→ 第三轮 HEAD `aa15841`（L4a/b/c 落地后）→ 第四轮 HEAD `d1f780e`（Batch G + SOCKS5 验证后）→ 第五轮 HEAD `d513c5f`（Batch I + model_config.py 后，含工作区未提交的 max_turns 钳制）→ 第六轮 HEAD `7dc6796`（Batch K 全落地 + 五轮收束文档同步后）→ 第七轮 HEAD `e43aeea`（Batch L 落地后）→ 第八轮 HEAD `3e860c1`（Batch M 全 5 波落地 + 后台进程池 v3.8，commit 5cb3594）
+- **审计范围**：`aibox.py`（~3408 行）+ `llm_client.py` + `model_config.py` + `tools/`（10 文件，含 v3.8 新增 `process_tools.py`）+ `subsystems/`（7 文件，含 v3.8 新增 `process_manager.py`）+ `common/`（5 文件）+ 前端 HTML（frontend.html / entry.html / entry1.html）+ `skills/` 脚本 + `client.py` / `voice_client.py`（前端与技能脚本为第五轮首次覆盖；第七轮完成 skills 全量逐文件与命令面逐条覆盖；第八轮首次覆盖后台进程池子系统）
+- **方法**：第一轮逐文件代码审读 + PoC 动态验证；第二轮 Batch E 修复复审 + 全量重审 + 6 处关键发现实证抽查；第三轮遗留项复核 + v3.4 专审；第四轮 3 路并行审读 + 主审逐条复核 + Linux PoC 实证（6/6）；第五轮 4 路并行审读（聚焦历届未覆盖区域）+ 主审逐条复核 + Linux PoC 实证（2/2）；第六轮 4 路并行审读（Batch K 修复回归验证与修复自身缺陷面 / 并发与资源生命周期交叉 / 数据边界与故障降级 / 工具链与修复间相互作用）+ 主审逐条代码复核（Windows 开发机，无 Linux PoC，动态行为以代码级核验 + Windows 测试基线代替）；第七轮 4 路并行审读（skills 全量安全面 / 前端深维度 / model_config+voice_client+client 深审 / WS+CLI 命令面全量逐条校验）+ 主审对全部中危项逐条代码实证（Windows 开发机）；第八轮 3 路并行深审（aibox.py 编排层 / llm_client+model_config / subsystems+tools+common）+ 主审对 v3.8 新代码（process_manager.py/process_tools.py）逐行复核 + Windows 测试基线确认
 
 ### 轮次总览
 
@@ -15,7 +15,8 @@
 | 第四轮 | 2026-08-18 | `d1f780e` | Batch H 全项（含 N5 取消传播回归，高危） | Batch H + Batch I 遗留收尾 | 424 passed |
 | 第五轮 | 2026-08-19 | `d513c5f` | J1~J16（高危 2 / 中危 5 / 低危与信息 9） | Batch K（波次 1~5 全落地） | 490 passed |
 | 第六轮 | 2026-08-20 | `7dc6796` | R1~R3（均低危；Batch K 回归验证零回归） | Batch L（R1~R3 全落地） | 490 passed（Linux）/ 493 passed（Windows） |
-| 第七轮 | 2026-08-20 | `e43aeea` | 46 项（高危 0 / 中危 11 / 低危 26 / 信息 9；Batch L 回归验证零回归） | Batch M 波次 1 已落地（S1/S4/S5/S7/S8），波次 2~5 待落地 | 493 passed / 4 failed（平台环境项）/ 1 skipped（Windows） |
+| 第七轮 | 2026-08-20 | `e43aeea` | 46 项（高危 0 / 中危 11 / 低危 26 / 信息 9；Batch L 回归验证零回归） | Batch M 波次 1~5 全落地 | 493 passed / 4 failed（平台环境项）/ 1 skipped（Windows） |
+| 第八轮 | 2026-08-21 | `3e860c1` | T1~T11 高危 11 / T12~T28 中危 17 / 低危与信息 20+（Batch M 全量回归验证；v3.8 后台进程池首审） | 待落地（Batch N 建议见 §23.7） | 532 passed / 4 failed（平台环境项）/ 1 skipped（Windows） |
 
 ---
 
@@ -35,7 +36,9 @@
 
 **第七轮**（基线 e43aeea）：四路新维度——skills 全量 29 脚本逐文件（继 J12 点修后首次）、前端三页面深维度、model_config/voice_client/client 深审、WS+CLI 命令面逐条校验；主审对全部中危项逐条代码实证。Batch L 零回归；新发现 **46 项**（高危 0 / 中危 11 / 低危 26 / 信息 9），集中于 skills 凭据进命令行（S1/S4/S5/S7，违反项目自定 J12 条例）、skills 路径边界（S2/S9/S11/S12，含 vision.py 任意文件经云 API 渗出的提示注入通道）、前端功能缺陷（F1 清空按钮必抛 TypeError / F2 手动断开被重连复活）、voice_client input 线程泄漏（M1）与命令面输入规整（W 系列）。Batch M 修复建议（5 波次）已给出，待落地。见"十七、第七轮审计"。
 
-**最终状态**：七轮累计发现 118 项（高危 7 / 中危 37 / 低危与信息 74）；前六轮 72 项**全部修复落地**（Batch E/F/G/H/I/K/L），第七轮 **Batch M 波次 1 已落地**（S1/S4/S5/S7/S8 凭据收口，见"十八"），波次 2~5（41 项，中危 6 / 低危与信息 35）待落地；维持原判仅限设计决策项，见"十五、最终状态与遗留清单"与"十六、第六轮审计"。
+**第八轮**（基线 3e860c1）：Batch M 全 5 波落地后的首次全量深审，同时首审 v3.8 后台进程池（`process_manager.py` 731 行 + `process_tools.py` 408 行，commit 5cb3594）。方法为 3 路并行深审（aibox.py 编排层 / llm_client+model_config / subsystems+tools+common）+ 主审对 v3.8 新代码逐行复核。Batch M 零回归；新发现 **T1~T28 中高危 28 项 + 低危与信息 20+**，其中高危 11 项集中于三个系统性主题：**平台矩阵未声明**（POSIX 专用逻辑在 Windows 下失效或成注入面，T3/T11/T16）、**"单会话串行"隐含假设在多连接 WS 下不成立**（registry 输出队列串扰 / executor 单槽误杀 / watermark 竞态，T4/T5/T8）、**防线位置错位**（脱敏建在消费侧 / 冷却键与去重键不一致 / 生成器延迟副作用，T6/T7/T13）。本轮发现的 T2（set_proxy 全局网络面）、T1（WS 无鉴权）、T10（调度器无硬超时）为设计层问题，需产品决策。见"二十三、第八轮审计"。
+
+**最终状态**：八轮累计发现 166+ 项（高危 18 / 中危 54 / 低危与信息 94+）；前七轮 118 项**全部修复落地**（Batch E/F/G/H/I/K/L/M），第八轮 T 系列**待落地**（Batch N 建议见 §23.7）；维持原判仅限设计决策项，见"十五、最终状态与遗留清单"与"十六、第六轮审计"。
 
 ---
 
@@ -974,3 +977,343 @@ Linux 基线（`aibox/venv`）维持 **490 passed** 不受影响。
 - `py_compile` 三文件通过
 
 **Batch M 全部 5 个波次已收束**（S/F/W/M 四域，累计 §18~§22）。遗留"可不做/产品决策"项：F5（消息列表内存增长）、W9/W10（WS payload 上限/data 归一）、M6（并发保存 lost-update）、§17.5 表外 N 轮未完成项 N6（registry 转发总超时不完整）。
+
+---
+
+## 二十三、第八轮审计（2026-08-21，HEAD `3e860c1`）
+
+方法：3 路并行深审（① `aibox.py` 编排层——并发/取消传播/orchestrator-worker 分发/子代理生命周期 ② `llm_client.py` + `model_config.py`——FailoverClient 状态机/流式解析/脱敏/key 回退 ③ `subsystems/` + `tools/` + `common/`——SQL/命令执行/路径/热重载/原子写/注册表并发）+ 主审对 v3.8 新代码（`process_manager.py` 731 行 + `process_tools.py` 408 行，commit 5cb3594）逐行复核 + Windows 测试基线确认。
+
+### 23.1 Batch M 修复回归验证（全 5 波在位，零回归）
+
+| 波次 | 核验结论 | 关键证据 |
+|---|---|---|
+| 波次 1 凭据收口 | 在位 | `skills/gitclient.py`/`ssh-exec.py`/`sftp-transfer.py`/`aes-crypto.py` 凭据改环境变量/凭据文件，无 `--password`/`--key` 命令行残留 |
+| 波次 2 路径边界 | 在位 | `gitclient.py:271-280` realpath 前缀 + `.git` 校验；`camera.py`/`facerec.py`/`vision.py` basename/扩展名校验在位 |
+| 波次 3 前端功能 | 在位 | `entry.html`/`frontend.html` 清空按钮先 cloneNode 再清空；三页面 manualDisconnect 清除重连定时器 |
+| 波次 4 命令面规整 | 在位 | `aibox.py` W1~W8/W11/W12 类型检查/钳制/缺参报错/空词提示/退出码/端口校验在位 |
+| 波次 5 客户端收尾 | 在位 | `voice_client.py` 单守护线程+Queue；`model_config.py` M2~M5/M7 规整；`client.py` finally disconnect |
+
+**回归结论**：Batch M 全量零回归，4 个测试失败均为 Windows 平台环境项（symlink 权限 / python3 缺失 / POSIX 可执行位语义），与第七轮基线一致。
+
+### 23.2 新代码首审——后台进程池 v3.8（commit 5cb3594）
+
+v3.8 新增 `ProcessManager` 子系统 + 5 个 worker 执行面工具（`bg_run`/`bg_write`/`bg_list`/`bg_output`/`bg_kill`），弥补 `run_command` 同步阻塞、超时即杀的不足。`run_command` 原路径零改动。设计整体扎实（环形缓冲/三级终止/atexit 收尾/双闸开关/watermark 写读对齐均有测试锚定，39 项测试全过），但仍发现以下问题：
+
+#### T8：`bg_write` watermark 取号与记录回显行非原子，并发写时写读对齐语义被破坏（高危）
+
+`subsystems/process_manager.py:349-353`：
+
+```python
+with entry.lock:
+    watermark = entry.next_seq        # ① 取号（持锁）
+# 锁释放后……
+echo = "[stdin] " + text.replace("\n", "⏎")
+self._record_line(entry, echo)        # ② 记录回显行（再次取 entry.lock）
+```
+
+两步之间释放了 `entry.lock`。两个并发 `bg_write`（A、B）的交错时序：A 取 `watermark=10` → B 取 `watermark=10` → A 记录回显 seq=10 → B 记录回显 seq=11。两个写入拿到相同 watermark，而 watermark 的核心语义是"`bg_output(since=watermark)` 必然且仅为本条输入的响应"——B 用 `since=10` 会同时读到 A 的响应，写读对齐被破坏。
+
+虽然当前 worker 子代理在单线程 think 循环中串行调用工具、实际并发概率低，但 `ProcessManager` 注册表跨子代理全局共享（设计明确），且 `BgWriteTool` 无任何串行化保护，属正确性缺陷。**修法**：取号与记录回显行合并到同一临界区（在 `entry.lock` 内完成 `watermark = next_seq; next_seq += 1; 追加 echo 行`），约 5 行。
+
+#### T28：`start()` 释放 self._lock 后 Popen 期间，concurrent kill/shutdown 找不到句柄但进程已启动（中危）
+
+`subsystems/process_manager.py:139-229`：在 `self._lock` 内做完上限检查/分配 handle 后释放锁（:161），随后 `subprocess.Popen`（:168）可能耗时，直到 :219 才重新持锁把 entry 放入 `_procs`。此窗口内：
+- 另一线程 `shutdown()` 拿锁清空 `_procs`（:523）→ Popen 成功后 :221 检查 `_shutdown_done` 能兜底回收；
+- 但另一线程 `kill(handle=新handle)` 在 :567 `self._procs.get(handle)` 返回 None → 返回"句柄不存在"，而进程实际已启动且无人管理，直到 reader EOF 或 atexit。
+
+shutdown 分支有兜底，kill 竞态窗口窄（Popen 期间），定中危。**修法**：entry 在 Popen 前以 "starting" 状态放入 `_procs`，或 Popen 后再校验 `_shutdown_done` 时同时检查是否有并发 kill 意图（约 8 行）。
+
+#### T22 关联：进程句柄表全局共享且无属主隔离（中危，见 T22）
+
+#### T17：`text=True` 未指定 encoding，Windows cp936 解码 UTF-8 输出致 reader 线程静默退出（中危）
+
+`subsystems/process_manager.py:178-180`：
+
+```python
+text=True,
+bufsize=1,
+universal_newlines=True,
+```
+
+Windows 上 text 模式默认按 locale（中文环境 cp936/GBK）解码。后台进程输出 UTF-8（Python `-u`、git、node 等）时 `readline` 抛 `UnicodeDecodeError` → `_reader` 的 `except Exception: pass`（:627-628）静默退出 → **该进程后续全部输出丢失**，bg_output 永远停在异常前的最后一行，且无任何错误提示。executors.py 有同型问题（第七轮未覆盖，本轮 T16）。**修法**：`encoding='utf-8', errors='replace'`（1 行）。
+
+#### T18：`bg_run`/`bg_kill` 的 bool 参数未过 `_coerce_bool`，LLM 传字符串 `"false"` 恒真（中危）
+
+`tools/process_tools.py:128-130, 386`：
+
+```python
+def execute(self, command=None, ..., detach: bool = False, log_file: bool = False, ...):
+def execute(self, handle=None, force: bool = False, ...):
+```
+
+`BgWriteTool` 对 `append_newline` 用了 `_coerce_bool`（:215），但 `BgRunTool.execute` 直接把 `detach`/`log_file` 透传给 manager（:136-137），`BgKillTool.execute` 直接透传 `force`（:396）。LLM 工具调用参数经 JSON 解析，布尔字段若传字符串 `"false"`（模型偶发）则 Python `bool("false") is True`——`detach` 误开启（aibox 退出不杀进程，进程脱离句柄管理）、`force` 误开启（跳过 SIGTERM 直接 SIGKILL，可能丢数据）、`log_file` 误开启。这正是第七轮波次 4（W 批命令面输入规整）要解决的问题类型，新工具漏了自家惯例。**修法**：三参数统一过 `_coerce_bool`（3 行）。
+
+#### T21 关联：`env` 参数允许覆盖任意环境变量（中危，与 executors 同型，见 T21）
+
+#### 低危——process_manager 专项
+
+| # | 位置 | 问题 | 修法 |
+|---|---|---|---|
+| T-L1 | `process_manager.py:484-513` | `kill()` 主流程在 `self._lock` 外执行终止+轮询（最长 30s），与 `start()`/`shutdown()`/`list_procs()` 的 `_sweep_locked` 并发；`_sweep_locked` 在 kill 进行中可能将条目判为 running 并 TTL 终止（双终止），或 kill 完成后 status 被并发覆盖 | kill 期间持 entry 级状态锁，或 sweep 跳过正在 kill 的条目（~5 行） |
+| T-L2 | `process_manager.py:219-228` | shutdown 竞态分支 `self._terminate_tree(entry, force=True)` 后未关闭 `entry.log_fh`（正常路径在 reader finally 关闭，但 force kill 后 reader 线程可能未及时排空） | 该分支补 log_fh close（3 行） |
+| T-L3 | `process_manager.py:515-555` | `shutdown()` 无总预算：N 个进程 × (1s wait + 3s SIGTERM + 2s SIGKILL) 最坏 6N 秒，进程数达上限 16 时 atexit 收尾可阻塞 96 秒——atexit 期间若被 SIGKILL 则 detach 语义未记录 | 加总预算（如 15s），超时后 SIGKILL 全扫并记录（~8 行） |
+| T-L4 | `process_manager.py:373-382` | `bg_write` watchdog 线程在 write_timeout 后成为孤儿：超时返回后 watchdog 仍可能阻塞在 `stdin.write`（管道满 + 进程不读），daemon 线程随进程退出，但期间 `stdin_lock` 被持有，后续 write 全部超时 | 超时后无法安全杀死线程，文档已承认；可加"写入中毒"标志让后续 write 快速失败（~5 行） |
+| T-L5 | `process_manager.py:150-159` | `max_entries` 淘汰在 `self._lock` 内对 exited 列表排序（O(n log n)），n=32 影响极小，但与 running 上限检查的时序：`len(running) >= max_processes` 拒绝后未淘汰已退出条目即返回，已退出条目占满时无法启动新进程（即使 running 未达上限） | 上限检查前先 sweep+淘汰（:143 已 sweep，但淘汰在 :150 之后，调整顺序 2 行） |
+| T-L6 | `process_manager.py:182` | `cwd=os.path.expanduser(work_dir)` 未校验 work_dir 存在/可访问，不存在时 Popen 抛 FileNotFoundError 被 :187 捕获返回"命令未找到"——错误消息误导 | except 分支区分 cwd 不存在（~3 行） |
+
+### 23.3 新发现——高危（11 项）
+
+#### T1：WebSocket 服务无鉴权，`--host 0.0.0.0` 即暴露任意命令执行端点（设计层）
+
+`aibox.py:3131` `websockets.serve(handler, host, port, ping_interval=None)` 无 token/来源校验；`:3220-3221` 支持 `--host/--port`；`:3520-3521` 覆盖配置。任何能建立 TCP 连接的客户端即获得完整智能体：经 `create_subagent` → worker → `run_command`（`shell=True`，工作目录默认 `~/.aibox/workspace` 但命令本身不限路径）= 任意命令执行。默认 localhost 尚可，`--host 0.0.0.0` 直接暴露到网络。read_file/write_file/list_files/web 均为"指引工具"（返回让模型调 run_command 的提示词），实际无路径白名单边界。**修法**（产品决策）：握手 token（配置/CLI 生成，客户端首条消息校验）；绑定非 localhost 时启动日志显著告警；若需多用户，为 worker 增加 workspace 沙箱路径限制。
+
+#### T2：`set_proxy` 是编排者可调的全局持久化开关——LLM API Key 可被导向任意代理（设计层）
+
+`aibox.py:1227` 编排者注册 `SetProxyTool`；`tools/proxy_tools.py:149` `save` 默认 True 持久化落盘；`llm_client.py:210-217` `proxies=self._resolve_proxies()` 让所有 LLM 请求走代理。`WORKER_ONLY_TOOLS` 拦截（`aibox.py:1416-1423`）只管住执行面工具，编排者合法持有 `set_proxy` 这一全局网络面：一次提示注入（网页内容/用户消息诱导）即可让 LLM 把代理指向攻击者服务器，此后**所有会话、定时任务、子代理的 LLM 请求都携带 `Authorization: Bearer <api_key>` 经过该代理**，且默认持久化跨重启生效。连通性验证只会验证代理可用——攻击者的代理当然可用。这是与 T22（bg_kill 全局无隔离）同型的"编排者合法持有但副作用全局"旁路，三层拦截（名字集合/未注册/拦截提示）共同管不住。**修法**（产品决策）：`set_proxy` 移出 LLM 可直接调用的工具面（改需用户确认的命令）；至少禁止持久化 save、代理变更时广播显式提示用户、对 api_url 域名加直连白名单。
+
+#### T3：Windows 下 `shlex.quote` 指引无效且构成 cmd.exe 命令注入
+
+`tools/basic_tools.py:109,183,257,339`：文件工具和 web 工具用 `shlex.quote`（POSIX 单引号语义）生成 `head/sed/tail/cat` 指引命令。当前开发/部署环境为 Windows，`run_command` 经 `subprocess.Popen(shell=True)` 由 **cmd.exe** 执行，cmd.exe 不认单引号，`& | ^ % < >` 仍是元字符：
+- 非恶意：URL 含 `&`（查询参数 `?a=1&b=2` 极常见）命令被截断、后半段被当命令执行报错——**功能必现故障**；`head/sed/tail` 等 POSIX 命令在 Windows 上根本不存在，四个文件工具+web 工具在当前环境整体不可用；
+- 恶意：网页内容提示注入诱导 LLM 抓取 `http://evil.com/?&del /f /s /q C:\data&`，指引命令夹带任意命令——命令注入成立（跨过 LLM 意图边界）。
+
+**修法**：按 `os.name` 分支生成指引（Windows 走 PowerShell 等价命令并做 cmd 元字符转义），或更彻底地用 Python 直接实现文件读写/列目录（不再生成 shell 指引），从根上消除注入面。
+
+#### T4：工具注册表共享输出队列 → 多会话并发时跨会话输出串扰（信息泄露）
+
+`tools/registry.py:71-92`：
+
+```python
+def set_output_queue(self, queue):
+    self.current_output_queue = queue       # 注册表级单值
+    for tool in self._tools.values():
+        tool.output_queue = queue           # 覆写所有共享工具实例
+...
+tool.streaming_output = True
+tool.output_queue = self.current_output_queue   # 并发调用互相覆盖
+```
+
+`current_output_queue` 是单值，`output_queue` 是共享工具实例上的实例属性。多 WebSocket 连接/线程并发调用 `execute_tool` 时：会话 A 设置的队列被会话 B 覆盖 → **A 的工具输出推入 B 的队列（跨会话数据泄露）**；会话 B 结束清理（:166-167 无差别置 None）时把 A 正在使用的队列清空 → A 的输出静默丢失。PromptManager 已做 M6 原子替换、技能重载已做确定性处理，唯独会话级输出通路无并发防护。**修法**：队列随每次 `execute_tool` 调用局部传递（作为流式执行参数注入，而非实例属性）；或注册表持有 `session_id -> queue` 映射，调用时显式指定并校验。
+
+#### T5：共享 SubprocessCommandExecutor 单槽 `_current_process` → 并发执行时误杀/无法取消
+
+`subsystems/executors.py:256-262, 299-305`：
+
+```python
+with self._process_lock:
+    self._current_process = process        # 单槽位
+...
+finally:
+    with self._process_lock:
+        self._current_process = None       # 先完成的线程清掉后来的引用
+```
+
+`CommandLineTool` 全局共享一个 executor，但 `_current_process` 是单槽位。两个线程并发执行命令时：线程 2 的 Popen 覆盖线程 1 的引用 → 线程 1 的 `cancel()`/超时 `_terminate_tree` 会 **killpg 误杀线程 2 的整组进程**（POSIX 下连坐孙进程）；线程 1 先结束的 finally 把引用清空 → 线程 2 的命令永远无法取消。`_process_lock` 只保护引用读写本身，没有保护"一个引用只属于一次执行"的语义。**修法**：每次执行生成调用令牌（自增 ID），`_current_process` 改 `{token: (proc, pgid)}`；`cancel(token)` 定向终止；finally 只删自己的 token。或对 executor 执行整体加锁串行化。
+
+#### T6：FailoverClient 冷却键用 display_name，同名档案冷却状态互相污染
+
+`llm_client.py:371-376` 冷却用 `client.name`（返回 `display_name or profile_name`，:639 display_name 优先）；但 `create_llm_client` 的 P6 去重用 `profile_name`（:683）。display_name 无唯一性校验（model_config 只校验长度/可打印字符）。两个 profile_name 不同但 display_name 相同的档案（如主备两个 Kimi 端点都叫 "Kimi"）：档案 A 失败进入冷却 → 档案 B 被 `_cooling` 误判为冷却中跳过——**该转移时不转移**。P6 注释表明作者意识到"冷却键同名冲突"，但去重键与冷却键错位，防护完全无效。**修法**：冷却键改用 `id(client)` 或显式传入 profile_name，保证去重与冷却同一键。
+
+#### T7：`FailoverClient.stream_chat` 是生成器，`_cancelled=False` 延迟到首迭代 → 取消标志丢失竞态
+
+`llm_client.py:450-457`：`stream_chat` 含 `yield` 是生成器函数，函数体在首次 `next()` 才执行。时序：线程 A `gen = fc.stream_chat(msgs)`（仅创建生成器）→ 线程 B 调用 `fc.cancel()` 置 `_cancelled=True` → 线程 A 开始迭代 → :455 把 `_cancelled` 重置为 False——**用户的取消被清除，请求照常发出**（浪费 token）。这直接违反类文档（:336-339）声明的并发契约"cancel() 可从其他线程"。`_stats["requests"]` 计数同样因延迟执行而失真。**修法**：拆成普通方法 + 内部生成器（普通方法里先置 `_cancelled=False`/计数，再 return 内部生成器）。
+
+#### T8：（见 §23.2，process_manager watermark 竞态）
+
+#### T9：DeepSeekClient 非 200 路径响应不关闭，且 `_current_response` 残留
+
+`llm_client.py:219-228`：
+
+```python
+self._current_response = response          # :219
+if response.status_code != 200:            # :221 —— 在 try 之外
+    if response.status_code == 429 or ...:
+        raise TransientLLMError(...)       # :224 —— 未 close、未清引用
+    raise RuntimeError(...)                # :227 —— 同上
+try:                                       # :230 —— finally 只覆盖 200 路径
+    ...
+finally:
+    self._current_response = None
+```
+
+三层泄漏：(1) `stream=True` 的响应必须显式 close 或读完 body，否则底层 socket 不归还连接池；非 200 分支两个 raise 均未 close。(2) 异常的 `__traceback__` 持有 `stream_chat` 栈帧 → 栈帧持有局部 `response` → `FailoverClient` 捕获后 `last_exc = e`（:441/482）持续持有异常 → **整个转移链尝试期间（多个档案 × timeout 秒）所有失败响应的连接都不释放**。(3) `_current_response` 残留指向已失败响应，后续 `cancel()` 关陈旧引用。**修法**：把状态码检查移入 try/finally，非 200 分支 raise 前 `response.close()`。
+
+#### T10：调度器 `await ai_future` 无硬超时兜底，卡死路径永久停摆调度循环
+
+`aibox.py:319-365` `TaskScheduler.execute_task_as_conversation`：M3 修复（:351 `loop.call_later(task_timeout, _timeout_cancel)`）只做软取消——调用 `ai.cancel()`（Event + 关 HTTP 流 + kill 子进程）。若 AI 线程卡死在这三层都够不到的路径（Windows 代理连接黑洞、requests 读超时被服务器滴流输出规避、kill 失败的进程），`run_ai` 永不回调 `set_result`，`await ai_future`（:353）**永久挂起** → `TaskScheduler.run` 的 while 循环卡死 → 所有后续定时/即时任务停摆，且任务已 `mark_as_triggered` 不会重试。对比 `--once` 模式已有 `_hard_exit`（`os._exit(4)`，:3441-3449）硬杀兜底，调度器恰恰遗漏。**修法**：`response = await asyncio.wait_for(ai_future, timeout=task_timeout + 30)`；超时后告警并继续循环；可参照 --once 增加二级 Timer 硬兜底。
+
+#### T11：Windows 进程树收割缺失（executors + process_manager 两处同型）
+
+`subsystems/executors.py:85-97` 和 `subsystems/process_manager.py:600-618`：POSIX 用 `start_new_session` + `killpg` 收割整棵进程树（L9 修复），但 Windows 分支只对单个包装进程 `terminate()/kill()`。Windows 上 `shell=True` 生成 `cmd.exe /c`，`start xxx`、PowerShell 后台任务、dev server spawn 的子进程等孙进程不会被终止：超时/取消/kill 后孙进程继续运行成孤儿，持续占用 CPU/文件锁/端口。当前环境即 Windows，此缺陷为实际生效状态；process_manager 管理的恰是会 spawn 子进程的长驻服务（dev server/训练任务），影响更甚。**修法**：Windows 上用 Job Object（子进程整个生命周期绑定作业对象，作业销毁即收割全树），或至少超时/终止路径追加 `taskkill /PID {pid} /T /F`。
+
+### 23.4 新发现——中危（17 项，T12~T28）
+
+#### T12：`has_stream_output` 恒为 False（死逻辑）：流式输出重复推送 + 超长结果绕过 N8 预算直发前端
+
+`aibox.py:1427-1462`：:1429 排空 output_queue（"complete" 标记在此被消费丢弃）→ :1451 `has_stream_output = not output_queue.empty()` **排空之后判定，恒为 False**。后果：(1) 流式工具（run_command 等）的完整过程输出（line 流）与最终 result（含完整"输出"字段）**重复展示两遍**；(2) 超长工具结果在 :1458 丢弃**之前**已在 :1454 `output_callback("line", result + "\n")` 全量推送给前端——registry 流式通道有 N8 预算限制（`registry.py:120-147`），这条非流式直发路径完全绕过输出限制。**修法**：在 :1429 排空循环中记录 `saw_complete = (msg_type == "complete")`，用其替代 `not output_queue.empty()`；长度截断移到 output_callback 发送之前。
+
+#### T13：异常消息内嵌未脱敏 `response.text`，上抛路径无统一脱敏
+
+`llm_client.py:224-228` 构造异常时直接内嵌 `response.text[:200]`，:490-491 `raise last_exc` 原样上抛。代码已承认威胁模型（:29-31 L12 注释：网关/WAF 错误页会回显 Authorization 头），但 `_sanitize_log_msg` 只应用在 `_log`、`on_failover` 回调、model_config 三处。任何调用方 `except Exception as e: logger.error(str(e))` 未自觉脱敏，令牌即落盘。**脱敏应在异常构造点一次完成**，而非依赖每个下游消费方。**修法**：构造异常时统一 `_sanitize_log_msg(response.text[:200])`。
+
+#### T14：FTS5 MATCH 左操作数疑似用错表名，FTS5 全程静默降级走 LIKE（待运行验证）
+
+`subsystems/db.py:188-195`：
+
+```python
+FROM memories m
+JOIN memories_fts f ON m.rowid = f.rowid
+WHERE memories_fts MATCH ?          -- 表已别名 f，LHS 用原表名
+```
+
+FTS5 `MATCH` 左操作数必须是 FROM 子句中的表名或别名。`memories_fts` 已被别名 `f` 遮蔽，`memories_fts MATCH ?` 极可能抛 `no such column: memories_fts`，被 :196-198 的 `except OperationalError` 静默吞掉 → **FTS5 索引与 rank 排序从未生效，全部检索走 LIKE 兜底**，且每次搜索刷一条 warning。此项需运行验证（SQLite 版本可能对表名 MATCH 有宽松容忍）。另：空关键词 `""` 生成空短语 → FTS 语法错 → LIKE `%%` 全表匹配。**修法**：改 `WHERE f MATCH ?`；入口过滤空关键词。建议先写复现用例确认。
+
+#### T15：非流式工具结果完全不受 TOOL_MAX_RESULT_LENGTH 约束（输出限制绕过）
+
+`tools/registry.py:173-175` 普通执行分支 `result = tool.execute(**kwargs)` 直接返回，无任何长度截断。N8 修复只给流式转发加了 `line_budget`（:120-147）。无输出队列的场景（后台任务、非流式会话）中，`memory get`/`memo get` 返回不设上限的 `content`（`add_memory`/`add_memo` 入库时 content 长度也无校验）→ 超长内容直接灌入对话上下文，token/内存放大。流式与非流式两条路径限制不一致即绕过。**修法**：普通执行分支同样套用 `TOOL_MAX_RESULT_LENGTH` 截断；入库时加 content 长度上限。
+
+#### T16：executors `text=True` 未指定 encoding，Windows cp936 解码 UTF-8 致输出丢失（与 T17 同型）
+
+`subsystems/executors.py:240-254, 333-347`：`text=True` 未指定 encoding，Windows 中文环境按 cp936 解码。子进程输出 UTF-8 时 readline 抛 `UnicodeDecodeError` → reader 线程 `except Exception: pass`（:135-137）静默退出 → **命令输出部分或全部丢失**，GBK 恰可解码的部分则乱码。**修法**：显式 `encoding='utf-8', errors='replace'`。
+
+#### T17：（见 §23.2，process_manager encoding 同型）
+
+#### T18：（见 §23.2，process_tools bool 参数未规整）
+
+#### T19：`RequestException` 捕获过宽，永久配置错误被当瞬时故障转移+冷却
+
+`llm_client.py:437, 477` `except (TransientLLMError, requests.exceptions.RequestException)` 捕获全部 requests 异常基类。档案 `api_url` 手写错（漏 scheme）时 `requests.post` 抛 `MissingSchema`——永久性错误被当瞬时：标记冷却 60s、触发转移、计入 failovers。每次冷却到期都会再撞一次坏端点，统计与冷却表被永久错误污染。**修法**：显式枚举瞬时异常 `(ConnectionError, Timeout, ChunkedEncodingError)`。
+
+#### T20：不完整流被静默视为成功，回答无声截断无信号
+
+`llm_client.py:238-245, 476`：代理缓冲后提前 FIN / 服务端中途断开时，末行半截 JSON 解析失败 `continue`（:244），迭代耗尽 → FailoverClient :476 将"从未产出 `[DONE]` 的自然结束"视为成功。业务层收到**无声截断的回答**，无任何错误信号，回复内容静默丢失尾部。**修法**：跟踪 `saw_done`，正常结束但未收到 `[DONE]` 时抛 `TransientLLMError`（首事件前可转移，已产出事件则上抛）或 yield error 事件。
+
+#### T21：`run_command`/`bg_run` 的 env 参数允许覆盖任意环境变量（注入放大面）
+
+`subsystems/executors.py:234-236, 327-329` 和 `subsystems/process_manager.py:163-165`：`exec_env = os.environ.copy(); exec_env.update(env)`，env 在工具 schema 中是开放 object，LLM（可被网页内容提示注入诱导）可传 `{"LD_PRELOAD": "...", "PATH": "...", "PYTHONPATH": "..."}`，在 `shell=True` 之上进一步扩大代码执行/劫持面（POSIX 下 LD_PRELOAD 可加载任意共享库）。**修法**：env 键白名单，或至少黑名单拒绝 `LD_*`/`DYLD_*`/`PATH`/`PYTHONPATH`/`SHELL`/`PSModulePath`；增加审计日志。
+
+#### T22：定时任务 AI 以 orchestrator profile 运行且共享全局 PromptManager/DB，无人值守时段可改写人格/代理/记忆
+
+`aibox.py:104-125` `_create_task_ai` 未传 `tool_profile`，默认 `TOOL_PROFILE_ORCHESTRATOR`（:1027），且与主对话**共享** `prompt_manager`/`memory_db`/`memo_db`，注册了 `UpdateIdentityTool`/`UpdateSoulTool`（改写全局系统提示词）、`set_proxy`（见 T2）、`MemoTool`。任务内容由备忘录标题/正文驱动（可能源自 LLM 或被网页内容污染的生成物），focus_prompt（:274-284）只是软约束——被污染的任务可在无人值守时静默改写人格提示词、代理与记忆库。上下文隔离做了（独立 messages/executor），但**权限未隔离**。关联：进程句柄表全局无属主隔离（aibox.py:1185-1190 注释自述"跨子代理可管理彼此启动的进程"），任意 worker 可 `bg_kill` 其他会话进程。**修法**：任务 AI 显式传精简 `tool_profile`（无 update_identity/update_soul/set_proxy），或传入 PromptManager 只读快照；ProcessManager 条目增加 owner 隔离。
+
+#### T23：对话压缩可产生非法消息序列（assistant.tool_calls 与 tool 结果被切开）
+
+`subsystems/conversation_compressor.py:100-161, 226-228, 370-394`：`_is_range_safe` 恒返回 True（不保护 tool 消息），压缩块边界（按条数切）可能落在带 `tool_calls` 的 assistant 消息与其 tool 结果消息之间。块被摘要替换后，保留的 assistant 消息的 `tool_calls` 找不到配对的 tool 消息——OpenAI 协议要求二者成对，**后续 API 调用直接 400 报错**。`_validate_message_structure` 只修复了反向（孤立 tool 消息）。**修法**：压缩块边界对齐完整对话轮次（user → assistant → tool* 整体进出块）；或压缩后剥离失去配对的 `assistant.tool_calls` 字段。
+
+#### T24：非流式路径下 `timeout<=0` 可无限阻塞，registry 3600s 兜底不生效
+
+`subsystems/executors.py:147-149` 注释自认 timeout<=0 语义为"不设超时"，并称"registry 层 3600s 流式兜底仍生效"，但 registry 的兜底只在流式分支（`registry.py:114-127`）；非流式分支（:173-175）`result = tool.execute(**kwargs)` 无任何超时兜底。LLM 传 `timeout=0` 时，一条挂起的命令（`python -c "import time; time.sleep(1e9)"`）将**永久阻塞调用线程**。**修法**：非流式分支同样用线程+deadline 包裹；或禁用 timeout<=0 语义（下限夹取到 1s），由 registry 统一兜底。
+
+#### T25：MemoryDatabase 漏设 busy_timeout，与 MemoDatabase 共库时写锁等待不一致
+
+`subsystems/db.py:38, 121, 142, 169, 243, 259, 277`：MemoryDatabase 全部路径直连 `sqlite3.connect(self.db_path)`，无 `busy_timeout`；而 MemoDatabase._connect（:307-312）已统一 `PRAGMA busy_timeout = 10000`（J9 修复）。两个类默认共用同一个 `memories.db`，J9 只覆盖了 MemoDatabase。CLI `--memo-add` 与服务进程并发写时，MemoryDatabase 路径只靠 sqlite3 默认 5 秒等待，锁冲突即抛 `database is locked`，记忆保存/检索失败。**修法**：MemoryDatabase 同样走 `_connect()` 工厂（busy_timeout + WAL 显式设置）。
+
+#### T26：SkillManager.reload 非原子替换，热重载期间读者看到空/半截技能表
+
+`subsystems/skill_manager.py:127-128`：`_load_skills` 先 `self.skills = {}` 清空再逐个重建。与 PromptManager M6 修复（构建新列表后原子替换）完全同型的问题在这里未修。reload 期间（每个可执行技能 `--help` 最多 10 秒，技能多时窗口很长），并发线程调用 `search_skills`/`get_skill_content` 会读到空字典或半截数据——技能"消失"再"逐渐出现"。**修法**：本地构建 `new_skills` 完成后一次性 `self.skills = new_skills`。
+
+#### T27：atomic.py 在 Windows 上 os.replace 目标被占用即失败（高频写路径必踩）
+
+`common/atomic.py:26` `os.replace(tmp_path, path)`：POSIX 下无条件成功；Windows 下若目标文件正被其他进程打开（杀毒扫描、编辑器、另一进程正在读），`MoveFileExW(REPLACE_EXISTING)` 抛 `PermissionError`。`conversation_history.add_message` **每条消息**都原子写 `current_conversation.json`（写频极高），与扫描器/备份工具冲突概率不低——一次冲突即该条对话持久化失败。**修法**：捕获 `PermissionError` 做短退避重试（3 次 × 50ms），仍失败再上抛；写侧考虑降频（批量/定时快照）。
+
+### 23.5 新发现——低危与信息（精选 20 项）
+
+| # | 位置 | 问题 | 修法 |
+|---|---|---|---|
+| T-L7 | `aibox.py:1469-1474, 383-384, 2902-2903` | 多处静默吞异常（`add_tool_call` 失败无日志；裸 `except: pass` 连 KeyboardInterrupt 一起吞） | `except Exception as e: logger.warning(...)`，禁裸 except |
+| T-L8 | `aibox.py:1061, 1857, 1866, 1883` | `stats["errors"]` 列表无界增长，长生命周期会话内存缓慢增长 | `collections.deque(maxlen=50)` |
+| T-L9 | `aibox.py:1813` | 主对话 orchestrator 工具循环无轮次上限，每轮递归加深调用栈；子代理有 max_turns 钳制，主对话没有——300+ 轮触发 RecursionError（虽被 catch 回滚但烧钱） | 加软轮次上限（如 50），超限注入"请总结并结束" |
+| T-L10 | `aibox.py:3114, 3121, 1239` | 启动期技能扫描重复执行 2-3 遍（ws_handler/scheduler/add_ai 各自 SkillManager），每个可执行技能串行 --help，技能多时启动延迟放大 | EnhancedAIManager 持有单例注入三处 |
+| T-L11 | `aibox.py:362-365` | 调度器 AI 线程 join(timeout=1.0) 后成孤儿，任务"超时完成"后 output_callback 仍 run_coroutine_threadsafe 广播迟到输出（前端 complete 后又收到 chunk） | 回检查 `timed_out.is_set()` 丢弃 |
+| T-L12 | `aibox.py:1302-1336` | `_save_tool_result_to_file` 已无调用方（超长改为直接丢弃），死代码——本可用于"超长落盘+返回路径"的更好体验（与 T12 相关） | 删除，或反向利用落盘返回路径 |
+| T-L13 | `aibox.py:2130-2150` 等 | DeepSeekChat 实例（会话/任务/子代理）无 dispose 钩子，LLM client/executor/registry 全靠 GC | 加 `close()`（cancel + queue 置 None + executor 清理），unregister/任务 finally 调用 |
+| T-L14 | `llm_client.py:235-237` | SSE 解析只认 `"data: "`（带一个空格），SSE 规范允许 `data:foo` 无空格；非主流网关/本地 vLLM 可能发无空格格式致整条流静默丢弃 | `data = line[5:]; if data.startswith(" "): data = data[1:]` |
+| T-L15 | `llm_client.py:536-538` | `resolve_api_key` key 文件回退 `except Exception` 吞原始异常，不区分文件不存在/权限拒绝，丢失原异常链 | `raise RuntimeError(...) from e`，消息区分 key_path 是否存在 |
+| T-L16 | `llm_client.py:246-251` | `finish_reason` 被完全忽略，业务层无法区分"答完了"与"被 max_tokens 截断了" | done 事件携带 finish_reason |
+| T-L17 | `model_config.py:317-322` | 添加非 DeepSeek 档案时环境变量名默认 `DEEPSEEK_API_KEY`，一路回车会把 DeepSeek 凭据发给其他厂商（moonshot/aliyuncs）；正是 resolve_api_key 文档声称要杜绝的跨厂商凭据外发 | 默认值留空强制输入，或按 api_url 域名推荐 |
+| T-L18 | `model_config.py:289-295` | 展示层 `list_profiles` 原样 print 档案名/display_name/api_url，手写 config 嵌 ANSI 转义（`\x1b]0;pwned\x07`）每次列表即触发；写入侧有 isprintable 校验，读出侧裸奔 | 输出前过滤控制字符 |
+| T-L19 | `subsystems/skill_manager.py:70-71` | Markdown 技能文件 `f.read()` 全量读取无大小限制（对比 `_run_help` 有 2000 字符截断）；skills 目录可经 run_command 写入，数 GB .md 全量入内存+进系统提示词 | 读取前 getsize 检查，超限拒绝加载并告警 |
+| T-L20 | `common/constants.py:220-221` vs `config.py:165` | `TOOL_MAX_RESULT_LENGTH` fallback 100000 而 config 默认 10000——用户删掉配置键时上限放大 10 倍；`MAX_HISTORY_CONTEXT` fallback 50 vs 默认 120 同型 | 统一 fallback 与 config 默认值 |
+
+**其余低危**（简列）：`common/atomic.py` 未 fsync 父目录 + mkstemp 0600 权限未恢复（POSIX）；`tools/registry.py` 注册/迭代无锁（启动期注册风险低）；`conversation_history.py` conv_id 秒级时间戳可重 + 归档 TOCTOU + 每条消息全量重写（O(n²)）；`prompt_manager.py` prompts 目录直读无大小限制；`skill_manager.py` Windows 把 .py/.sh 判可执行但 CreateProcess 无法直接执行（WinError 193 被吞）；`skill_tools.py` InstallSkill 目标文件名无字符校验（对比 CreateSkill 有正则）；`db_tools.py` 空关键词 LIKE `%%` 全表匹配；`logger.py` 初始化竞态 + 多进程 RotatingFileHandler 轮转冲突；`config.py` set_proxy/_save_config 无锁同进程竞态 + 跨进程 lost-update；`executors.py` `except subprocess.TimeoutExpired` 不可达（Popen 无 timeout）；`conversation_compressor.py` `weight_decay_factor` 硬编码 0.6 致 constants 成死配置；`base.py` `check_path_safety` 名不副实（只查文件大小）。
+
+### 23.6 查过但无问题（摘要）
+
+- **v3.8 后台进程池**：环形缓冲 seq 单调连续性（淘汰最旧行仍保持 seq 连续，since 游标续读正确）；三级优雅终止（关 stdin→SIGTERM 宽限→SIGKILL）逻辑正确；atexit 收尾幂等；detach 语义正确（shutdown 保留运行仅注销）；双闸开关（commands.enabled + background_processes.enabled）；单行截断 16KB + 单次拉取 1MB 硬顶；watermark wait_lines expect 式同步等待 + 进程退出提前返回；写入 watchdog 防管道满阻塞；39 项测试覆盖生命周期/游标续读/环形淘汰/watermark 对齐/EOF 优雅终止/log tee/工具分发，全过
+- **llm_client**：免密端点密钥隔离（api_key_env 空串不读 key 文件）；用户中断绝不转移（_cancelled 标志，P 批修复）；fallback 链硬性校验（指向不存在档案抛错、缺 model 跳过告警）；Bearer 日志脱敏在位（L12）；Retry-After cap 3600s（P2）；fallback 去重（P6）
+- **aibox.py 编排**：N2 drain 线程批次级生命周期；N14 任务集合登记；R3 注销回收闭环；J7 广播超时；消息配对自愈（`_repair_tool_pairs`/`_validate_enhanced_messages`）；失败回滚（`_rollback_messages`）；三层取消的第一层（Event）检查点完备（流循环/工具调用前/think 前置）；N5 共享父取消事件不再在子代理首轮 clear（H1 回归修复在位）
+- **subsystems**：db SQL 全参数化 + FTS5 引号翻倍 + LIKE `%/_/\` 转义（W4/第七轮）；MemoDatabase J9 busy_timeout + WAL；atomic 写单次原子性；PromptManager M6 原子替换；技能路径 realpath 边界（J12/L4）
+
+### 23.7 修复建议（Batch N，按优先级分波）
+
+| 波次 | 内容 | 项 | 预估规模 |
+|---|---|---|---|
+| 波次 1 速赢 | 几行改动高收益：非 200 响应 close（T9）、异常构造点脱敏（T13）、bool 参数规整（T18）、encoding=utf-8（T16/T17）、saw_complete+输出预算（T12）、watermark 原子取号（T8） | T8/T9/T12/T13/T16/T17/T18 | ~30 行 |
+| 波次 2 并发正确性 | registry 输出队列调用维度隔离（T4）、executor 进程槽令牌化（T5）、FailoverClient 冷却键（T6）、生成器拆分（T7）、非流式超时兜底（T24）、非流式输出限制（T15） | T4/T5/T6/T7/T15/T24 | ~80 行 |
+| 波次 3 平台兼容 | Windows 进程树 taskkill/Job Object（T11）、shlex 指引跨平台（T3）、atomic Windows 重试（T27）、MemoryDatabase busy_timeout（T25）、SkillManager 原子 reload（T26） | T3/T11/T25/T26/T27 | ~70 行 |
+| 波次 4 LLM 健壮性 | RequestException 收窄（T19）、不完整流 saw_done（T20）、调度器硬超时（T10）、env 键白名单（T21）、压缩块边界对齐（T23）、FTS5 别名修复+空词（T14，先写复现用例） | T10/T14/T19/T20/T21/T23 | ~60 行 |
+| 波次 5 权限隔离（产品决策） | WS 握手 token（T1）、set_proxy 移出工具面/禁持久化（T2）、定时任务精简 profile + ProcessManager owner 隔离（T22）、model_config env 默认值/ANSI 过滤（T-L17/T-L18） | T1/T2/T22 + 低危 | ~80 行 |
+
+**定级说明**：
+- T1/T2/T10 为设计层问题，需产品决策（是否支持多用户/网络暴露、是否允许 LLM 自改代理、调度任务权限边界），不阻塞波次 1~4
+- T3 在 Windows 开发机上是**必现功能故障**（文件/web 工具指引命令不可用），不是纯理论问题，建议优先
+- T4/T5 是多连接 WebSocket 服务的正确性前提，虽然当前单用户场景触发概率低，但属于"架构假设与部署形态不匹配"
+- T14（FTS5 失效）必须先运行复现确认，若属实则是长期静默降级（记忆搜索质量下降但不报错）
+- T8 watermark 竞态在当前串行 think 下概率低，但 ProcessManager 全局共享的设计声明使其成为正确性债务
+
+### 23.8 测试基线（Windows 开发机）
+
+审计时全量 **532 passed / 4 failed / 1 skipped**（40.9s），较第七轮（493 passed）增加 39 项（v3.8 `test_process_manager.py`）。4 失败均为 Windows 平台环境项：
+
+1. `test_h_fixes.py::TestL4PersonaSymlink::test_symlink_outside_skills_dir_rejected` — Windows symlink 需管理员权限（OSError WinError 87）
+2. `test_h_fixes.py::TestL5NoPartialChar::test_truncated_output_has_no_replacement_char` — Windows 无 `python3` 命令
+3. `test_k_fixes.py::TestJ16SkillManager::test_markdown_skipped_when_executable_same_name` — POSIX 可执行位语义
+4. `test_k_fixes.py::TestJ16SkillManager::test_help_output_truncated` — 同上
+
+与第七轮基线完全一致，零回归。
+
+### 23.9 第八轮结论
+
+3 路并行深审 + 主审对 v3.8 新代码逐行复核：**Batch M 全 5 波零回归**；后台进程池 v3.8 新代码设计扎实、测试充分（39 项全过），但仍发现 watermark 竞态（T8）、encoding 缺失（T17）、bool 参数未规整（T18）等问题。全模块新发现 **T1~T28 中高危 28 项 + 低危与信息 20+**，其中高危 11 项集中于三个系统性主题：
+
+1. **平台矩阵未声明**：大量 POSIX 专用逻辑（shlex 指引/killpg/heredoc/无 encoding/atomic replace）在 Windows 部署下要么失效（T3 文件工具必现故障、T16 输出丢失）要么成为注入面（T3 cmd.exe 注入），要么功能受限（T11 孙进程残留、T27 原子写失败）。建议要么全面适配 Windows，要么在文档/启动检查中声明仅支持 POSIX。
+2. **"单会话串行"隐含假设在多连接 WebSocket 下不成立**：registry 输出队列（T4）、executor 进程槽（T5）、watermark（T8）都假设同一时刻只有一个会话在执行工具，但 WebSocket 服务天然多连接并发。需按调用维度（token/session_id）隔离。
+3. **防线位置错位**：脱敏建在消费侧而非产生侧（T13）、冷却键与去重键不一致（T6）、校验建在写入侧而非读出侧（T-L18）、生成器延迟副作用破坏取消契约（T7）、`has_stream_output` 排空后判定恒 False（T12）。
+
+八轮累计发现 **166+ 项**（高危 18 / 中危 54 / 低危与信息 94+）；前七轮 118 项全部修复落地（Batch E/F/G/H/I/K/L/M），第八轮 T 系列待落地（Batch N 建议见 §23.7）。
+
+## 二十四、Batch N 修复记录（波次 1~2，2026-08-21）
+
+范围：§23.7 波次 1（速赢 7 项）+ 波次 2（并发正确性 6 项），共 13 项。
+
+### 24.1 波次 1 落地（速赢批）
+
+| # | 修复内容 | 文件/位置 |
+|---|---|---|
+| T8 | watermark 取号与回显行记账移入同一临界区（`entry.lock` 改 `RLock` 防重入死锁），保证 watermark 等于回显行真实序号 | `subsystems/process_manager.py:79,348-354` |
+| T9 | 流式/非流式两条非 200 路径抛出前 `response.close()`，流式路径同时清 `_current_response`，消除连接占用与残留引用 | `llm_client.py:172-190,233-247` |
+| T13 | `_sanitize_log_msg` 增加裸 `sk-xxx` 正则；两处 `response.text[:200]` 入异常前先脱敏 | `llm_client.py:33-42` |
+| T12 | drain 线程与后排空循环共享 `saw_complete` 标志替代排空后恒 False 的 `empty()` 判定；长度截断移到 output_callback 之前，堵住非流式直发绕过 N8 预算的通道 | `aibox.py:1379-1395,1432-1475` |
+| T16 | executors 两处 Popen 显式 `encoding="utf-8", errors="replace"` | `subsystems/executors.py` |
+| T17 | process_manager Popen 同款显式编码 | `subsystems/process_manager.py:181-182` |
+| T18 | `detach`/`log_file`/`force` 三参数统一过 `_coerce_bool` | `tools/process_tools.py:136-139,401-402` |
+
+### 24.2 波次 2 落地（并发正确性批）
+
+| # | 修复内容 | 文件/位置 |
+|---|---|---|
+| T4 | `set_output_queue` 不再把队列传播到共享工具实例（跨会话串扰的覆盖向量，`execute_streaming` 本就每次注入局部队列）；`execute_tool` 入口快照会话队列，转发循环全程用快照——并发会话互不覆盖、结束清理不影响在途转发 | `tools/registry.py:82-92,139-157` |
+| T5 | executor 单槽 `_current_process` 改令牌多槽注册表 `{token: (proc, pgid)}`；`_terminate_tree` 改显式传 `(proc, pgid)` 不再读共享 `_current_pgid`（误杀根因）；finally 只注销自己的槽位；`cancel()` 语义为终止本执行器全部在途命令（原为"杀单槽里的随机进程"） | `subsystems/executors.py:72-153,286-351,377-459` |
+| T6 | FailoverClient 冷却键改 `id(client)`（`_cool_key`），与 P6 去重键语义一致——同名 display_name 档案不再互相污染冷却态；`test_models_profile.py` 5 处种键方式同步更新 | `llm_client.py:390-410`；`tests/test_models_profile.py:823-825,1001-1003,1014,1106,1235-1242` |
+| T7 | `stream_chat` 拆为普通方法（同步完成 `_cancelled=False` 重置 + 计数）+ 内部生成器 `_stream_chat_impl`——创建生成器与首迭代之间的 `cancel()` 不再被延迟执行的重置清掉 | `llm_client.py:478-501` |
+| T15 | registry 两条分支的最终返回值统一过 `_truncate_result`（TOOL_MAX_RESULT_LENGTH），非流式结果不再无上限直入上下文，与 N8 line_budget 同口径 | `tools/registry.py:71-80,190-193` |
+| T24 | 非流式 `execute()` 的 timeout 下限夹取到 1s（含字符串容错）——该路径无 registry 3600s 兜底，timeout<=0 会永久阻塞调用线程；流式路径保留 0=不限语义 | `subsystems/executors.py:267-273` |
+
+### 24.3 测试基线（Windows 开发机）
+
+波次 1 后：**532 passed / 4 failed / 1 skipped**（43.8s）；波次 2 后：**532 passed / 4 failed / 1 skipped**（41.5s）。4 失败均为 §23.8 所列同一批 Windows 平台环境项，零回归。
+
+### 24.4 待落地（波次 3~5）
+
+波次 3 平台兼容（T3/T11/T25/T26/T27）、波次 4 LLM 健壮性（T10/T14/T19/T20/T21/T23，其中 T14 需先写 FTS5 复现用例）、波次 5 权限隔离（T1/T2/T22，含产品决策项）。

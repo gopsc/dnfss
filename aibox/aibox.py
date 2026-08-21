@@ -1376,13 +1376,20 @@ class DeepSeekChat:
         # 队列是否为空），闭包长期持有 output_callback（含 websocket 引用）
         # 阻碍 GC，常驻服务下线程与内存持续累积。
         drain_stop = threading.Event()
+        # T12：drain 线程与工具调用后的排空循环并发消费同一队列，complete
+        # 标记可能被任一方取走——用可变容器共享，两路见到都置位，供
+        # has_stream_output 判定流式工具（流式已逐行转发，勿重复整发结果）
+        saw_complete = [False]
 
-        def _drain_queue(q=output_queue, cb=output_callback, stop_event=drain_stop):
+        def _drain_queue(q=output_queue, cb=output_callback, stop_event=drain_stop,
+                         flag=saw_complete):
             """持续排空 output_queue 并转发 line 输出（长时间工具执行期间防 WS 空闲断线）"""
             while not stop_event.is_set():
                 try:
                     msg_type, content = q.get(timeout=0.1)
-                    if cb and msg_type == "line":
+                    if msg_type == "complete":
+                        flag[0] = True
+                    elif cb and msg_type == "line":
                         cb("line", str(content) if content is not None else "")
                 except queue.Empty:
                     continue
@@ -1423,6 +1430,9 @@ class DeepSeekChat:
                     )
                     self.logger.warning(f"编排者误调执行面工具 {tool_name}，已拦截并引导改用 create_subagent")
                 else:
+                    # T12：每个工具调用前重置流式标志（drain 线程与下方排空
+                    # 循环并发消费，任一方见到 complete 都会置位）
+                    saw_complete[0] = False
                     try:
                         result_raw = self.tool_registry.execute_tool(tool_name, **args)
                         # 排空队列中剩余标记（complete 标记供 has_stream_output 判定、
@@ -1430,7 +1440,9 @@ class DeepSeekChat:
                         while not output_queue.empty():
                             try:
                                 msg_type, content = output_queue.get_nowait()
-                                if output_callback and msg_type == "line":
+                                if msg_type == "complete":
+                                    saw_complete[0] = True
+                                elif output_callback and msg_type == "line":
                                     output_callback("line", str(content) if content is not None else "")
                             except queue.Empty:
                                 break
@@ -1448,19 +1460,19 @@ class DeepSeekChat:
                 # 安全转换并清理结果
                 result = self._sanitize_tool_result(result_raw)
 
-                # drain 线程持续转发 line 输出，这里通过 complete 标记判断是否流式工具
-                has_stream_output = not output_queue.empty()
+                # T12：流式工具的 line 输出已由 drain 线程逐行转发（registry 侧
+                # N8 预算已生效），勿再把完整 result 整发——此前排空后判定
+                # output_queue.empty() 恒为 False，导致重复推送 + 超长结果绕过预算
+                has_stream_output = saw_complete[0]
 
-                # 普通（非流式）工具没有队列输出，直接发送结果
+                # 长度预算前置：超长结果先替换为提示，再决定是否推送，
+                # 避免全量 result 经非流式直发路径绕过 N8 输出限制（T12）
+                if len(result) > MAX_RESULT_LENGTH:
+                    result = f"⚠️ 工具调用结果长度超过 {MAX_RESULT_LENGTH} 字符，已丢弃。请使用更精确的查询获取所需信息。"
+
+                # 普通（非流式）工具没有队列输出，直接发送（已截断的）结果
                 if not has_stream_output and output_callback and result:
                     output_callback("line", result + "\n")
-
-                # 检查结果大小，如果超过阈值，不保留截断内容，仅返回提示信息
-                if len(result) > MAX_RESULT_LENGTH:
-                    truncated_note = f"⚠️ 工具调用结果长度超过 {MAX_RESULT_LENGTH} 字符，已丢弃。请使用更精确的查询获取所需信息。"
-                    result = truncated_note
-                    if output_callback:
-                        output_callback("line", truncated_note + "\n")
 
                 # 结束调用工具时发送换行
                 if output_callback:

@@ -76,7 +76,7 @@ class _ProcEntry:
         self.max_buffer = max(1024, int(buffer_bytes))
         self.next_seq = 1
         self.evicted = 0
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()  # T8：可重入，write_input 持锁期间可调用 _record_line
         self.reader_done = threading.Event()
         self.reader = None
         # 交互写入：单写锁保序（bg_write 串行化，防交错输入）
@@ -178,6 +178,8 @@ class ProcessManager:
                 text=True,
                 bufsize=1,
                 universal_newlines=True,
+                encoding="utf-8",  # T17：显式 UTF-8，避免 Windows cp936 解码 UTF-8 输出致 reader 静默退出
+                errors="replace",
                 env=exec_env,
                 cwd=os.path.expanduser(work_dir),
                 # 对齐 L9：POSIX 下 shell 成为会话首进程，kill 按进程组
@@ -345,12 +347,13 @@ class ProcessManager:
         if entry.status != "running":
             return {"ok": False, "error": f"进程已结束（{entry.status}），无法写入"}
 
-        # watermark：回显行将占用的序号（写入前先记账，响应必然在其后）
+        # watermark：取号与回显行记账必须在同一临界区，保证 watermark 等于
+        # 回显行真实序号，bg_output(since=watermark) 正确对齐本条响应（T8）
+        echo = "[stdin] " + text.replace("\n", "⏎")
         with entry.lock:
             watermark = entry.next_seq
-        # 回显行进环形缓冲 + log 镜像（多行输入折叠为单行展示）
-        echo = "[stdin] " + text.replace("\n", "⏎")
-        self._record_line(entry, echo)
+            # 回显行进环形缓冲 + log 镜像（多行输入折叠为单行展示）
+            self._record_line(entry, echo)
 
         # 写入放 watchdog 线程：进程不读 stdin 且管道缓冲（~64KB）写满时
         # write() 会阻塞，不能拖死工具线程；超时后 daemon 线程由系统兜底
