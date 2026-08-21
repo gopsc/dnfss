@@ -96,8 +96,9 @@ aibox/
 │   ├── db.py                     # MemoryDatabase + MemoDatabase（SQLite，FTS5 trigram 中文检索 + LIKE 兜底）
 │   ├── skill_manager.py          # SkillManager（技能发现/加载/热重载）
 │   ├── conversation_history.py   # ConversationHistory（对话历史管理）
-│   └── conversation_compressor.py # ConversationCompressor（对话压缩，注入 llm_client 解耦）
-├── tools/             # 工具系统包（A 批 + B 批共 17 个工具类）
+│   ├── conversation_compressor.py # ConversationCompressor（对话压缩，注入 llm_client 解耦）
+│   └── process_manager.py        # ProcessManager（后台进程管理，全局单例 + 环形输出缓冲 + atexit 收尾）
+├── tools/             # 工具系统包（A 批 + B 批 + 后台进程共 22 个工具类）
 │   ├── base.py             # Tool 抽象基类
 │   ├── registry.py         # ToolRegistry 工具注册器
 │   ├── basic_tools.py      # A 批：ReadFile/WriteFile/ListFiles/SimpleWebCrawler/GetCurrentTime/Calculator
@@ -106,8 +107,9 @@ aibox/
 │   ├── db_tools.py         # B 批：MemoryTool/MemoTool
 │   ├── prompt_tools.py     # B 批：UpdateIdentity/UpdateSoul/SaveMemoryAndEndConversation
 │   ├── proxy_tools.py      # B 批：SetProxy/GetProxy
-│   └── misc_tools.py       # B 批：AskUserTool
-├── tests/             # 单元测试套件（490 项全过）
+│   ├── misc_tools.py       # B 批：AskUserTool
+│   └── process_tools.py    # 后台进程：BgRun/BgWrite/BgList/BgOutput/BgKill（bg_run/bg_write/bg_list/bg_output/bg_kill）
+├── tests/             # 单元测试套件（529 项全过）
 │   ├── conftest.py                    # sys.path 配置 + websockets 桩
 │   ├── test_basic_tools.py            # A 批工具 43 项
 │   ├── test_b_tools.py                # B 批工具 58 项
@@ -126,7 +128,8 @@ aibox/
 │   ├── test_i_fixes.py                # 遗留收尾 Batch I（16 项）
 │   ├── test_subagent_max_turns.py     # 子代理最大轮次行为回归（14 项）
 │   ├── test_k_fixes.py                # 第五轮审计 Batch K（35 项）
-│   └── test_model_config.py           # 模型接入点管理工具（17 项）
+│   ├── test_model_config.py           # 模型接入点管理工具（17 项）
+│   └── test_process_manager.py        # 后台进程管理器与 bg_* 工具（39 项：生命周期/交互 I/O/收尾）
 ├── skills/            # 内置扩展技能（*.py 可执行脚本 / *.md Markdown 技能）
 │   ├── hello-world.py
 │   ├── aes-crypto.py
@@ -161,8 +164,8 @@ common  ←  subsystems  ←  tools  ←  aibox.py
 ```bash
 # 从仓库根目录运行
 py -m pytest aibox/tests -q
-# 当前：490 项全过（Linux；test_execute_timeout / test_flat_api_still_reads_key_file 为 Windows 向用例，Linux 预存失败）
-# Windows 开发机：493 passed / 4 failed（平台环境项：symlink 权限、python3 缺失、POSIX 可执行位语义 ×2）/ 1 skipped
+# 当前：529 项全过（Linux；test_execute_timeout / test_flat_api_still_reads_key_file 为 Windows 向用例，Linux 预存失败）
+# Windows 开发机：532 passed / 4 failed（平台环境项：symlink 权限、python3 缺失、POSIX 可执行位语义 ×2）/ 1 skipped
 ```
 
 运行期数据存放于 `~/.aibox/`：
@@ -238,6 +241,13 @@ py -m pytest aibox/tests -q
 | `web` | 访问网页、获取标题/文本/链接（返回 markdown 指引，改用 `curl` 命令行访问） |
 | `calculator` | 数学计算 |
 | `get_current_time` | 获取当前时间 |
+| `bg_run` | 后台启动长驻进程（dev server / 训练任务 / watch），立即返回句柄不阻塞；stdin 为管道可交互；默认 `detach=false`（aibox 退出时终止），`detach=true` 豁免但脱离句柄管理；`log_file=true` 同步镜像全程输出到 `workspace/bg_<句柄>.log`（无界全档，可被 run_command 的 tail/cat 原生读取）；名称参数为 `proc_name`（≤64 字符，防与 `execute_tool` 首参撞名） |
+| `bg_write` | 向后台进程 stdin 写入一行（行协议交互：REPL / 问答式 CLI）；返回 **watermark 水位**——`bg_output(since=watermark)` 得到的必然且仅是本条输入引发的响应（写读对齐，不含 `[stdin]` 回显行）；`wait_lines=N` 同步等待 N 行响应（expect 式一步问答）；单次上限 64KB，超时写入不阻塞工具线程；无 TTY，全屏程序（vim/top）不可用，建议启动时强制行缓冲（`python -i -u` / `PYTHONUNBUFFERED=1` / `stdbuf -oL`） |
+| `bg_list` | 列出全部后台进程（运行中在前，已退出保留尾部输出供验尸，LRU 淘汰） |
+| `bg_output` | 拉取输出：`tail=N` 尾部 N 行 / `since=游标` 增量续读（游标为上次返回的 `next_cursor`）；单次默认 64KB、上限 1MB；环形缓冲（默认 256KB/进程）淘汰的早期行如实提示 |
+| `bg_kill` | 终止后台进程（整棵进程组）：三级优雅终止——关 stdin（行协议进程见 EOF 常自行退出）→ SIGTERM 宽限 → SIGKILL 兜底；`force=true` 直接 SIGKILL；对已退出进程幂等 |
+
+> **后台进程语义（v3.8）**：注册表为全局单例（跨会话/跨子代理可见，任何 worker 可管理其他 worker 启动的进程）；用户中断（Ctrl+C/取消事件）**不**影响后台进程；aibox 进程退出经 atexit 统一收尾（非 detach 全杀，SIGKILL/SIGTERM 硬杀不覆盖）；单行输出截断 16KB；运行中上限 16 / 总条目上限 32 / 单次 stdin 写入上限 64KB（`background_processes` 配置节可调）；POSIX 按进程组终止（`start_new_session`，孙进程不悬挂），Windows 回退单进程终止。
 
 ## 💬 WebSocket API
 
@@ -615,6 +625,14 @@ AI 可以通过 `update_soul` 工具动态更新 `99_SOUL.md`，通过 `update_i
   "commands": {
     "enabled": true
   },
+  "background_processes": {
+    "enabled": true,
+    "max_processes": 16,
+    "max_entries": 32,
+    "buffer_per_process": 262144,
+    "max_lifetime": 0,
+    "max_write_bytes": 65536
+  },
   "web": {
     "timeout": 10,
     "delay": 0,
@@ -913,6 +931,16 @@ elif command == "/mycommand":
 3. 确认工具返回值为字符串且不含二进制/控制字符
 
 ## 📄 更新日志
+
+### v3.8
+- ✅ **后台进程池（智能体运行/管理长驻进程）**：新增 `subsystems/process_manager.py`（`ProcessManager` 全局单例）+ `tools/process_tools.py` 5 个 worker 执行面工具（`bg_run` / `bg_write` / `bg_list` / `bg_output` / `bg_kill`），弥补 `run_command` 同步阻塞、超时即杀的不足——dev server / 训练任务 / watch 等长驻进程可后台启动、跨会话管理：
+  - **生命周期语义（三决策）**：用户中断（Ctrl+C/取消事件）不影响后台进程；aibox 退出经 atexit 统一收尾（非 detach 全杀，`detach=true` 豁免但脱离句柄管理）；注册表跨会话/跨子代理共享（任何 worker 可管理其他 worker 启动的进程）
+  - **交互式 I/O（stdin 管道 + watermark 写读对齐）**：stdin 挂管道，`bg_write` 向行协议进程（REPL / 问答式 CLI）写入一行，返回 **watermark**（`[stdin]` 回显行序号）——`bg_output(since=watermark)` 得到的必然且仅是该输入引发的响应（写读配对）；`wait_lines=N` expect 式同步等待；回显行入环形缓冲与 log 镜像（tail 可见完整交互时序）；写入 watchdog 线程兜底（进程不读 stdin 管道写满时不阻塞工具线程）；单次写入上限 64KB
+  - **输出缓冲**：每进程有界环形缓冲（默认 256KB，`buffer_per_process` 可调），单行截断 16KB；`bg_output` 支持 `tail` 尾读与 `since` 游标增量续读（淘汰行如实提示），单次默认 64KB、上限 1MB；`bg_run log_file=true` 输出同步 tee 到 `workspace/bg_<句柄>.log`（无界全档，`[stdin]` 回显同入档，可被 run_command 的 tail/cat 原生读取）
+  - **三级优雅终止**：`bg_kill` 关 stdin（行协议进程见 EOF 常自行退出）→ SIGTERM 宽限（grace 比例 4:6）→ SIGKILL 兜底；`force=true` 直接 SIGKILL；shutdown 收尾同样先关 stdin
+  - **安全边界**：运行中上限 16 / 总条目上限 32（LRU 淘汰已退出条目）；`background_processes` 配置节（含 `enabled` 双闸：`commands.enabled` 关闭时一并拒绝）；`proc_name` 标签 ≤64 字符且拒绝控制字符（M5 惯例）；POSIX `start_new_session` + 进程组终止（对齐执行器 L9 语义），Windows 回退单进程终止；TTL `max_lifetime` 惰性清理（默认 0 不启用）；凭据类交互（sudo -S 喂密码）会留对话记录，敏感凭据走环境变量注入（工具描述已指引）
+  - **实现要点**：H2 reader 线程模式复用（EOF 即 poll 收割防僵尸）；`list_procs` 惰性刷新全表状态；`proc_name` 命名规避 `ToolRegistry.execute_tool(name=...)` 首参撞名；编排者误调拦截表 `WORKER_ONLY_TOOLS` 同步纳入；无 TTY 的适用边界（全屏程序不可用、行缓冲指引）写入工具描述供模型自检
+  - **测试**：新增 `tests/test_process_manager.py` 39 项（生命周期/游标续读/环形淘汰/单行截断/上限/TTL/收尾/工具分发/禁用闸/watermark 对齐/回显/sync 等待/超时/EOF 优雅终止/log tee/注册表分发），Windows 开发机 532 passed / 4 failed（平台环境项，与代码无关）
 
 ### v3.7
 - ✅ **第六轮安全审计 + Batch L 修复（2026-08-20，交叉验证轮：Batch K 回归验证 / 并发与生命周期 / 降级路径 / 修复间相互作用，4 路并行审读 + 主审逐条复核）**（完整记录见 [docs/reports/aibox_audit_20260817.md](../docs/reports/aibox_audit_20260817.md) §16）：

@@ -55,6 +55,8 @@ from tools import (
     UpdateIdentityTool, UpdateSoulTool, SaveMemoryAndEndConversationTool,
     SetProxyTool, GetProxyTool,
     AskUserTool,
+    # 后台进程管理工具（bg_run/bg_write/bg_list/bg_output/bg_kill，worker 执行面）
+    BgRunTool, BgWriteTool, BgListTool, BgOutputTool, BgKillTool,
 )
 
 # 子系统（Wave 1 + Wave 2 抽离）：命令执行器 / 提示词管理器 / 数据库 / 技能管理器 / 对话历史 / 对话压缩
@@ -987,7 +989,8 @@ TOOL_PROFILE_ORCHESTRATOR = "orchestrator"
 TOOL_PROFILE_WORKER = "worker"
 
 # 仅 worker 子代理注册的执行面工具；编排者误调时拦截并纠正
-WORKER_ONLY_TOOLS = {"run_command", "read_file", "write_file", "list_files", "web", "calculator"}
+WORKER_ONLY_TOOLS = {"run_command", "read_file", "write_file", "list_files", "web", "calculator",
+                     "bg_run", "bg_write", "bg_list", "bg_output", "bg_kill"}
 
 # 每轮临时注入的互动风格提醒（仅编排者，不进对话历史）
 ORCHESTRATOR_TURN_GUIDANCE = (
@@ -1179,6 +1182,12 @@ class DeepSeekChat:
                 SimpleWebCrawlerTool(self.logger),
                 CalculatorTool(self.logger),
                 GetCurrentTimeTool(self.logger),
+                # 后台进程管理（共享全局单例：跨子代理可管理彼此启动的进程）
+                BgRunTool(self.logger),
+                BgWriteTool(self.logger),
+                BgListTool(self.logger),
+                BgOutputTool(self.logger),
+                BgKillTool(self.logger),
             ]
             self.tool_registry.register_many(worker_tools, is_builtin=True)
             self.logger.info(f"worker 子代理已注册 {len(worker_tools)} 个执行面工具")
