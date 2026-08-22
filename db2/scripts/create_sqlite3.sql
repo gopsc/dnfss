@@ -7,7 +7,8 @@ CREATE TABLE IF NOT EXISTS Users (
     password_hash TEXT NOT NULL,
     create_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_login DATETIME,
-    is_active BOOLEAN DEFAULT 1
+    is_active BOOLEAN DEFAULT 1,
+    is_admin BOOLEAN NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS Notes (
@@ -18,14 +19,19 @@ CREATE TABLE IF NOT EXISTS Notes (
     content TEXT NOT NULL,
     views INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME,
-    updated_at DATETIME
+    updated_at DATETIME,
+    is_public BOOLEAN NOT NULL DEFAULT 1,
+    everyone_editable BOOLEAN NOT NULL DEFAULT 1
 );
 
--- 旧版增量
+-- 旧版增量（存量库请按编号顺序执行对应 patch 脚本）
 -- ALTER TABLE Notes ADD COLUMN owner VARCHAR(128) DEFAULT 'Unknow';
--- ALTER TABLE Notes ADD COLUMN views INTEGER NOT NULL DEFAULT 0;       -- patch_001 观看人数列
--- ALTER TABLE Notes ADD COLUMN created_at DATETIME;                     -- patch_002 创建时间
--- ALTER TABLE Notes ADD COLUMN updated_at DATETIME;                     -- patch_002 更新时间
+-- ALTER TABLE Notes ADD COLUMN views INTEGER NOT NULL DEFAULT 0;               -- patch_001 观看人数列
+-- ALTER TABLE Notes ADD COLUMN created_at DATETIME;                             -- patch_002 创建时间
+-- ALTER TABLE Notes ADD COLUMN updated_at DATETIME;                             -- patch_002 更新时间
+-- ALTER TABLE Users  ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0;            -- patch_003 管理员标记
+-- ALTER TABLE Notes ADD COLUMN is_public BOOLEAN NOT NULL DEFAULT 1;            -- patch_003 是否公开（默认公开）
+-- ALTER TABLE Notes ADD COLUMN everyone_editable BOOLEAN NOT NULL DEFAULT 1;    -- patch_003 是否人人可编辑（默认人人可编辑）
 
 -- Notes 索引：get_notes 按 pid 查子节点、所有权校验按 owner（patch_001 并入）
 CREATE INDEX IF NOT EXISTS idx_notes_pid   ON Notes(pid);
