@@ -4,8 +4,11 @@ go 1.22.0
 
 require (
 	github.com/corazawaf/coraza/v3 v3.3.0
+	github.com/micro_servers/gomsg v0.0.0
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+replace github.com/micro_servers/gomsg => ../gomsg
 
 require (
 	github.com/corazawaf/libinjection-go v0.2.2 // indirect

@@ -144,7 +144,7 @@ waf/
 │   ├── engine/
 │   │   └── engine.go        # coraza 封装：加载/热加载/列举/单测/输入检测
 │   ├── logclient/
-│   │   └── logclient.go     # Go 版 pymsg 日志客户端（异步批量推送）
+│   │   └── logclient.go     # gomsg 日志客户端适配层（协议/队列实现见 ../gomsg）
 │   └── proxy/
 │       └── proxy.go         # ReverseProxy + WAF 事务接入 + 安全响应头注入
 ├── rules/
