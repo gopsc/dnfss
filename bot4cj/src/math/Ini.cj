@@ -21,6 +21,15 @@ public class Ini {
 		}
 	}
 
+	/* xavier正态初始化 - 返回数组 */
+	public static func xavierNormalInit(fan_in: Int64, fan_out: Int64): Array<Array<Float64>> {
+		let seed = DateTime.now().nanosecond
+		let random = Random(UInt64(seed))
+		let sigma = sqrt(2.0f64 / Float64(fan_in + fan_out))	/* 标准差 */
+		var array =  Array<Array<Float64>>(fan_in, repeat: Array<Float64>(fan_out, repeat: random.nextGaussianFloat64(mean: 0.0f64, sigma: sigma)))
+		return array
+	}
+
 	/* -------- Glorot均匀初始化 -------- */
 	public static func xavierUniformInit(target: Matrix1, fan_in: Int64, fan_out: Int64) {
 		let limit = sqrt(6.0f32 / Float32(fan_in + fan_out))
@@ -33,5 +42,14 @@ public class Ini {
 				target.set(r, c, FP32(v))  }
 		}
 
+	}
+
+	/* xavier正态初始化 - 返回数组 */
+	public static func xavierUniformInit(fan_in: Int64, fan_out: Int64): Array<Array<Float64>> {
+		let limit = sqrt(6.0f64 / Float64(fan_in + fan_out))
+		let seed = DateTime.now().nanosecond
+		let random = Random(UInt64(seed))
+		var array =  Array<Array<Float64>>(fan_in, repeat: Array<Float64>(fan_out, repeat: (random.nextFloat64() * 2.0f64 - 1.0f64) * limit))
+		return array
 	}
 }

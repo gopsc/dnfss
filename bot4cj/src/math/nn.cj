@@ -2,6 +2,8 @@ package bot4cj.math
 import std.fs.*
 import std.io.*
 import std.convert.*
+import std.collection.*
+import cangjie_tpc::matrix4cj.Matrix
 //foreign func Sigmoid_do(m: CPointer<Unit>): CPointer<Unit>
 //foreign func Sigmoid_dot(m: CPointer<Unit>): CPointer<Unit>
 //foreign func ReLU_do(m: CPointer<Unit>): CPointer<Unit>
@@ -11,6 +13,153 @@ import std.convert.*
 //foreign func Tanh_do(m: CPointer<Unit>): CPointer<Unit>
 //foreign func Tanh_dot(m: CPointer<Unit>): CPointer<Unit>
 
+
+
+public class Nns {
+
+	let nns = ArrayList<Nn2>()
+
+	public func add(layer: Nn2) {
+		nns.add(layer)
+	}
+
+	/* 【神经网络训练】
+	 * description: 输入一组原始数据和教师数据，进行神经网络训练
+	 * @param nns:  输入神经网络结构
+	 * @param m:    输入一组原始数据
+	 * @param t:    输入一组教师数据
+	 * @param discount: 输入本次训练的折扣系数
+	 */
+	public func train(m: Matrix, t: Matrix, discount: Float64) {
+	
+		/* ======== 这个对象用于暂时占位 ======== */
+		var res = Option<Matrix>.None
+
+		/* ======== 正向传播 ======== */
+		for (idx in 0..nns.size) {
+			let x = if (idx == 0) { m } else { res.getOrThrow() }
+			res = nns[idx].forward(x)
+		}
+
+		/* ======== 计算误差 ======== */
+	        var errs =  res.getOrThrow().minus(t)
+
+		/* ======== 反向传播 ======== */
+		for (idx in (nns.size-1)..=0:-1) {
+			errs = nns[idx].backward(errs)
+		}
+
+		/* ======== 梯度更新 ======== */
+		for (idx in 0..nns.size) {
+ 			nns[idx].update(discount)
+		}
+
+		/* ======== 计算MSE损失 ========
+		   FIXME*(20260517-qing): 对于多个结果计算误差（目前只计算了第一个结果）  */
+
+		let t0 = t.get(0, 0)
+		let r0 = res.getOrThrow().get(0, 0)
+		let loss0 = 0.5 * (t0 - r0) * (t0 - r0)
+		//let loss1 = 0.5 * (t1 - r1) * (t1 - r1)
+		//return (loss0 + loss1) / 2.0
+		return loss0
+	}
+}
+
+/*
+ * 20260823版本的神经网络，使用matrix4cj库
+ * TODO: 1.使用matrix4cj重写
+ *       2.使用数组表示批次
+ */
+public class Nn2 {
+
+	/* ---- 形状 ---- */
+	let inputno: Int64
+	let outputno:Int64
+	/* ---- 参数 ---- */
+	var weights: Matrix	/* (inputs, outputs) */
+	var bias: Matrix	/* (1, output) */
+	/* ---- 学习 ---- */
+	let lr: Float64
+	let f: Af		/* 激活函数 */
+	/* ---- 缓存 ----*/
+	var prev_input:       Option<Matrix> = None
+	var prev_raw_output:  Option<Matrix> = None
+	var prev_output:      Option<Matrix> = None
+	var prev_weight_grad: Option<Matrix> = None
+	/* ---- 梯度 ----*/
+	var weights_grad: Option<Matrix> = None
+	var bias_grad:    Option<Matrix> = None
+
+	/* -------- 带泄露的线性整流单元 -------- */
+	private static func leaky_relu(M: Matrix, alpha: Float64) {
+		let row = M.getRowDimension()
+		let col = M.getColumnDimension()
+		let N = Matrix(row, col)
+		for (r in 0..row) {
+			for (c in 0..col) {
+				let x1 = M.get(r, c)
+				let x2 =if (x1 > 0.0f64) {x1} else{x1 * alpha}
+				N.set(r, c, x2)
+			}
+		}
+		return N
+	}
+
+	/* -------- 带泄露的整流单元导数 -------- */
+	private static func leaky_relu_dot(M: Matrix, alpha: Float64) {
+		let row = M.getRowDimension()
+		let col = M.getColumnDimension()
+		let N = Matrix(row, col)
+		for (r in 0..row) {
+			for (c in 0..col) {
+				let x1 = M.get(r, c)
+				let x2 =if (x1 > 0.0f64) { 1.0f64 } else{ alpha }
+				N.set(r, c, x2)
+			}
+		}
+		return N
+	}
+	/* ---- 初始化器 ---- */
+	public init(i: Int64, o: Int64, lr: Float64, f: Af) {
+		inputno = i
+		outputno= o
+		this.lr = lr
+		this.f  = f
+		weights = Matrix(Ini.xavierNormalInit(i, o))
+		bias = Matrix(1, o)
+	}
+
+	/* ---- 推理 ---- */
+	public func forward(x: Matrix) {
+		prev_input = x
+		var r = x.times(weights)
+		r = r.plus(bias)
+		prev_raw_output = r
+		var r1 = leaky_relu(r, 0.01f64)
+		prev_output = r1
+		return r1
+	}
+
+	/* ---- 反向传播 ---- */
+	public func backward(e: Matrix) {
+		let fb = leaky_relu_dot(prev_raw_output.getOrThrow(), 0.01f64)
+		let first = e.arrayTimes(fb)
+		let mx = prev_input.getOrThrow().transpose()
+		weights_grad = mx.times(first)
+		bias_grad = first
+		let e_up = first.times(weights.transpose())
+		return e_up
+	}
+
+	/*  -------- 更新权重值、偏爱因子 --------
+	 *  NOTE: discount（折扣）是为了方便深度强化学习给出奖励值 */
+	public func update(discount: Float64) {
+		weights = weights.minus(weights_grad.getOrThrow() * lr * discount)
+		bias = bias.minus(bias_grad.getOrThrow() * lr * discount)
+	}
+
+}
 
 /* -------- 新版的神经网络，使用原生矩阵对象实现 --------
  * TODO(20260517-qing): 增加batch批次处理，使用ArrayList<Matrix1>
