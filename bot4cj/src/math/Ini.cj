@@ -8,19 +8,6 @@ import std.math.*
  * - 这样在矩阵式中可以定义初始化方式  */
 public class Ini {
 
-	/* -------- xavier正态初始化 -------- */
-	public static func xavierNormalInit(target: Matrix1, fan_in: Int64, fan_out: Int64) {
-		let seed = DateTime.now().nanosecond
-		let random = Random(UInt64(seed))
-		let sigma = sqrt(2.0f32 / Float32(fan_in + fan_out))	/* 计算标准差 */
-		for (r in 0..fan_in) {
-			for (c in 0..fan_out) {
-				let v = random.nextGaussianFloat32(mean: 0.0f32, sigma:sigma)
-				target.set(r, c, FP32(v))
-			}
-		}
-	}
-
 	/* xavier正态初始化 - 返回数组 */
 	public static func xavierNormalInit(fan_in: Int64, fan_out: Int64): Array<Array<Float64>> {
 		let seed = DateTime.now().nanosecond
@@ -28,20 +15,6 @@ public class Ini {
 		let sigma = sqrt(2.0f64 / Float64(fan_in + fan_out))	/* 标准差 */
 		var array =  Array<Array<Float64>>(fan_in, repeat: Array<Float64>(fan_out, repeat: random.nextGaussianFloat64(mean: 0.0f64, sigma: sigma)))
 		return array
-	}
-
-	/* -------- Glorot均匀初始化 -------- */
-	public static func xavierUniformInit(target: Matrix1, fan_in: Int64, fan_out: Int64) {
-		let limit = sqrt(6.0f32 / Float32(fan_in + fan_out))
-		let seed = DateTime.now().nanosecond
-		let random = Random(UInt64(seed))
-
-		for (r in 0..fan_in) {
-			for (c in 0..fan_out) {
-				let v = (random.nextFloat32() * 2.0f32 - 1.0f32) * limit	/* 均匀分布 [-limit, limit] */
-				target.set(r, c, FP32(v))  }
-		}
-
 	}
 
 	/* xavier正态初始化 - 返回数组 */

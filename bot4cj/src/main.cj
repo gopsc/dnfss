@@ -8,16 +8,13 @@ package bot4cj
 import std.argopt.*
 import std.collection.*
 import std.env.*
-import std.time.*
 import std.convert.*
-import std.random.*
 import std.io.*
 import std.fs.*
 import stdx.encoding.json.*
 import bot4cj.hd.*
 import bot4cj.math.*
 import ctype4cj.*
-import cangjie_tpc::matrix4cj.Matrix
 
 /* ---- 神经网络输出路径 ---- */
 var NNS_OUT: Option<String> = None	
@@ -121,68 +118,11 @@ func print_help()
 func run_test(key: String) {
 
 	/*
-	 * 神经网络与门测试
-	 *
-	 * INFO: 我们使用随机生成的动态数据集，这样会导致一些后果
+	 * 神经网络门测试
 	 */
-	if (key == "nn") {
-		let nn_t = ArrayList<Nn1>()
-		nn_t.add(Nn1(2, 4, 0.05f32, Af.Leaky_ReLU(FP32(0.01))))
-		nn_t.add(Nn1(4, 1, 0.05f32, Af.Sigmoid))
-		let batch = 1
-		let num =2000
-		let prt_num = 100
-		for (i in 0..(num*batch)) {
-			let m = Matrix1(1, 2)
-			let t = Matrix1(1, 1)
-			prepare_andDoor(m, t)
-			let l = train1(nn_t, m, t, 1.0f32) // 这个1.0是学习率的折扣，而非学习率本身
-			if (i % prt_num == prt_num-1) {
-				print("${i}\t:")
-				print("${l}")
-				println()
-			}
-		}
+	if (key == "nn1") {
+		testNn()
 	}
-
-	else if (key == "nn1") {
-
-		let m = Matrix(1, 2)
-		let t = Matrix(1, 2)
-
-		//let random = Random()
-		let random = Random(UInt64(DateTime.now().nanosecond))
-		let a = random.nextInt8(2)
-		let b = random.nextInt8(2)
-		let t0 = if ((a == 0 &&  b == 0) || (a ==1 && b == 1)) { 1.0f64 } else { 0.0f64 }    
-		let t1 = if (a  != b) { 1.0f64 } else { 0.0f64 }    
-		m.set(0, 0, Float64(a))
-		m.set(0, 1, Float64(b))
-		t.set(0, 0, t0)
-		t.set(0, 1, t1)
-
-		let nns = Nns()
-		nns.add(Nn2(2, 4, 0.01f64, Af.ReLU))
-		nns.add(Nn2(4, 2, 0.01f64, Af.ReLU))
-		let num = 200
-		let prt_num = 10
-		for (i in 0..num) {
-			let loss = nns.train(m, t, 1.0f64)
-			if (i % prt_num == prt_num-1) {
-				println("${i}\t: ${loss}")
-			}
-		}
-	}
-
-
-	else if (key == "cnn") {
-		testCNN()
-	}
-
-	else if (key == "cnn1") {
-		testGeometryCNN()
-	}
-
 
 	/* -------- 测试解析矩阵，并且输出
 	 * -------- */
