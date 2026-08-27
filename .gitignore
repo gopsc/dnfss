@@ -28,3 +28,6 @@ hailort.log
 
 # 录制产物（可复现：mtc DSL → 编译 → pybot --record）
 actpred/data_v3
+
+# pybot 训练/评估数据（pybot_record_* 动作录制 + eval_recorded*.json）
+data/
