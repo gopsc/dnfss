@@ -12,12 +12,15 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -200,9 +203,37 @@ func main() {
 	logclient.Info("waf", fmt.Sprintf("服务启动 instance=%s listen=%s upstream=%s rules=%s pid=%d",
 		*instance, cfg.Listen, cfg.Upstream, cfg.RulesDir, os.Getpid()), nil)
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
+	// 同一端口区分 TLS 与明文 HTTP：明文请求 301 重定向到 HTTPS（原 redirect80 的职责）
+	cert, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
+	if err != nil {
+		logclient.Error("waf", fmt.Sprintf("加载 TLS 证书失败: %v", err), nil)
+		logclient.Flush()
+		os.Exit(1)
+	}
+	server.TLSConfig.Certificates = []tls.Certificate{cert}
+	rawLn, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		logclient.Error("waf", fmt.Sprintf("监听失败: %v", err), nil)
+		logclient.Flush()
+		os.Exit(1)
+	}
+	tlsCh := make(chan net.Conn)
+	plainCh := make(chan net.Conn)
+	go acceptAndDispatch(rawLn, tlsCh, plainCh)
+
+	plainServer := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "https://"+r.Host+r.URL.RequestURI(), http.StatusMovedPermanently)
+		}),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
 	go func() {
-		errCh <- server.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey)
+		errCh <- server.Serve(tls.NewListener(&chanListener{ch: tlsCh, addr: rawLn.Addr()}, server.TLSConfig))
+	}()
+	go func() {
+		errCh <- plainServer.Serve(&chanListener{ch: plainCh, addr: rawLn.Addr()})
 	}()
 
 	select {
@@ -219,7 +250,50 @@ func main() {
 		if err := server.Shutdown(ctx); err != nil {
 			logclient.Error("waf", fmt.Sprintf("优雅关闭超时: %v", err), nil)
 		}
+		plainServer.Shutdown(ctx)
 		logclient.Flush()
+	}
+}
+
+// bufferedConn 保留已 peek 的首字节，避免后续 Read 丢数据。
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (c *bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+
+// chanListener 从 channel 取连接，供两个 http.Server 分别消费 TLS / 明文连接。
+type chanListener struct {
+	ch   chan net.Conn
+	addr net.Addr
+}
+
+func (l *chanListener) Accept() (net.Conn, error) {
+	c, ok := <-l.ch
+	if !ok {
+		return nil, io.EOF
+	}
+	return c, nil
+}
+
+func (l *chanListener) Close() error   { return nil }
+func (l *chanListener) Addr() net.Addr { return l.addr }
+
+// acceptAndDispatch 按首字节分发：0x16 为 TLS ClientHello → TLS 通道，其余 → 明文 HTTP 通道。
+func acceptAndDispatch(ln net.Listener, tlsCh, plainCh chan<- net.Conn) {
+	for {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		br := bufio.NewReader(c)
+		b, err := br.Peek(1)
+		if err == nil && len(b) == 1 && b[0] == 0x16 {
+			tlsCh <- &bufferedConn{Conn: c, r: br}
+		} else {
+			plainCh <- &bufferedConn{Conn: c, r: br}
+		}
 	}
 }
 
