@@ -223,22 +223,23 @@ services:
     depends_on: []
     sleep_before: 0
 
-  # --- 端口重定向（最后启动） ---
-  - name: redirect80
-    cmd: bash /opt/micro_servers/redirect80/_run.sh
-    args:
-      - "--instance"
-      - "redirect80"
-      - "--log-level"
-      - "info"
-      # --- 配置全部经 CLI 传递（原 confs/configs/redirect80.ini 迁入） ---
-      - "--host"
-      - "0.0.0.0"
-      - "--port"
-      - "80"
-      - "--redirect-port"
-      - "443"
-      - "--redirect-code"
-      - "301"
-    depends_on: [waf]
-    sleep_before: 0
+  # --- 端口重定向（最后启动）---
+  # redirect80 与系统 casaos-gateway 抢占 80 端口导致绑定失败，暂时停用
+  # - name: redirect80
+  #   cmd: bash /opt/micro_servers/redirect80/_run.sh
+  #   args:
+  #     - "--instance"
+  #     - "redirect80"
+  #     - "--log-level"
+  #     - "info"
+  #     # --- 配置全部经 CLI 传递（原 confs/configs/redirect80.ini 迁入） ---
+  #     - "--host"
+  #     - "0.0.0.0"
+  #     - "--port"
+  #     - "80"
+  #     - "--redirect-port"
+  #     - "443"
+  #     - "--redirect-code"
+  #     - "301"
+  #   depends_on: [waf]
+  #   sleep_before: 0
