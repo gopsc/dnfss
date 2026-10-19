@@ -108,10 +108,12 @@ async function addNode(pid, title, content) {
 		input_note_title.value = "";
 		input_note_content.value = "";
 		cancelEdit();	/* 退出编辑模式并重置高度 */
-		getNode(stack[stack.length - 1]).then(function(r) { load_notes(r); loadMap(r); })
+		var cur = (stack.length == 0) ? 0 : stack[stack.length - 1];
+		var notes = await getNode(cur);
+		load_notes(notes);
+		loadMap(notes);
 
 		//if (result.success) {
-		alert(`添加节点成功`, result);
 		return result
 		//...
 
@@ -279,9 +281,10 @@ async function updateNode(id, pid, title, content) {
 		input_note_content.value = "";
 		cancelEdit();
 		var cur = (stack.length == 0) ? 0 : stack[stack.length - 1];
-		getNode(cur).then(function(r) { load_notes(r); loadMap(r); });
+		var notes = await getNode(cur);
+		load_notes(notes);
+		loadMap(notes);
 
-		alert('修改成功');
 		return result;
 
 	} catch (err) {
@@ -512,13 +515,9 @@ function renderSpJs(container, sp, appendNote) {
 	/* 启动特效：创建隔离 iframe 沙箱，完整前端代码（含 <style>/<script>/<body>）由 srcdoc 承载，
 	 * 脚本在独立上下文执行，无法影响父页面导航。
 	 * 两种模式：
-	 *   - 代码含 "<!-- in-node -->" 标记 → 渲染在节点内部（relative 定位、可交互、随节点滚动），
-	 *     iframe 挂载在节点容器内（随卡片隐藏/移除）；
-	 *   - 否则 → 全屏 fixed 定位，视觉特效悬浮覆盖整个页面（pointer-events:none 不拦截父页面点击），
-	 *     iframe 直接挂载到 document.body：若挂在卡片内部，卡片入场动画等 opacity<1 的属性
-	 *     会在卡片上产生层叠上下文，iframe 的 z-index:9999 就被困在该卡片内部生效，
-	 *     DOM 序靠后的兄弟卡片会把整张卡片（含特效）压在下面；挂到 body 后 z-index
-	 *     直接在根层叠上下文竞争，恒位于所有卡片之上。
+	 *   - 默认或代码含 "<!-- in-node -->" 标记 → 渲染在节点内部（relative 定位、可交互、随节点滚动）；
+	 *   - 仅代码含 "<!-- fullscreen -->" 标记 → 全屏 fixed 定位，视觉特效覆盖整个页面，
+	 *     iframe 直接挂载到 document.body，pointer-events:none 不拦截页面操作。
 	 * 清理不受影响：clearAllEffects 按 class 全文档查找，两种挂载位置都能正确回收。 */
 	function startEffect() {
 		if (frame) return;
@@ -526,17 +525,19 @@ function renderSpJs(container, sp, appendNote) {
 		frame.className = 'sp-effect-frame';
 		frame.setAttribute('sandbox', 'allow-scripts');
 		frame.srcdoc = sp.code;
-		var inNode = /<!--\s*in-node\s*-->/.test(sp.code || '');
-		if (inNode) {
-			frame.style.cssText = 'position:relative;display:block;width:100%;height:420px;border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden;background:transparent;';
-			container.appendChild(frame);
-		} else {
+		var fullscreen = /<!--\s*fullscreen\s*-->/.test(sp.code || '');
+		if (fullscreen) {
+			frame.tabIndex = -1;
+			frame.inert = true;
 			frame.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;border:0;pointer-events:none;z-index:9999;';
 			document.body.appendChild(frame);
+		} else {
+			frame.style.cssText = 'position:relative;display:block;width:100%;height:420px;border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden;background:transparent;';
+			container.appendChild(frame);
 		}
 		toggle_btn.textContent = '停止特效';
 		out.style.display = 'block';
-		out.textContent = inNode ? '已载入' : '特效已启动';
+		out.textContent = fullscreen ? '全屏特效已启动' : '已载入';
 	}
 	function stopEffect() {
 		if (frame) { frame.remove(); frame = null; }
@@ -855,7 +856,7 @@ sp_type.addEventListener('change', function() {
 	}
 	if (t === 'js') input_note_content.placeholder = '请输入完整前端代码（可含 HTML/CSS/JS）';
 	else if (t === 'style') input_note_content.placeholder = '请输入 CSS（如 .card { border-radius: 16px }），发布后全界面生效';
-	else if (t === 'theme') input_note_content.placeholder = '每行一个变量，如 --accent: #e8853a';
+	else if (t === 'theme') input_note_content.placeholder = '每行一个变量，如 --accent: #b6532d';
 	else input_note_content.placeholder = '';
 });
 
@@ -885,7 +886,7 @@ function parseThemeVars(text) {
 		if (/[{}<>]/.test(v)) { alert('变量值含非法字符（{}<>）：' + k); return null; }
 		vars[k] = v;
 	}
-	if (Object.keys(vars).length === 0) { alert('请至少输入一个 CSS 变量，如 --accent: #e8853a'); return null; }
+	if (Object.keys(vars).length === 0) { alert('请至少输入一个 CSS 变量，如 --accent: #b6532d'); return null; }
 	return vars;
 }
 
@@ -948,6 +949,11 @@ input_note_submit.addEventListener('click', function(event) {
 			input_note_submit.disabled = false;
 			input_note_clear.disabled = false;
 			delete_note.disabled = false;
+			input_note_title.disabled = false;
+			input_note_title.readOnly = false;
+			input_note_content.disabled = false;
+			input_note_content.readOnly = false;
+			requestAnimationFrame(() => input_note_title.focus({ preventScroll: true }));
 		});
 })
 
@@ -1087,12 +1093,14 @@ function applyHiddenNodeEffects(item) {
 	if (sp._sp === 'style' || sp._sp === 'theme') {
 		injectSpCss(sp, noteId);
 	} else if (sp._sp === 'js' && !sp_effects_disabled) {
-		/* 仅全屏模式（非 in-node）：无卡片容器，in-node 无法合理放置，忽略 */
-		if (/<!--\s*in-node\s*-->/.test(sp.code || '')) return;
+		/* 隐藏节点没有卡片容器，仅显式 fullscreen 特效可以运行 */
+		if (!/<!--\s*fullscreen\s*-->/.test(sp.code || '')) return;
 		var frame = document.createElement('iframe');
 		frame.className = 'sp-effect-frame';
 		frame.setAttribute('sandbox', 'allow-scripts');
 		frame.srcdoc = sp.code;
+		frame.tabIndex = -1;
+		frame.inert = true;
 		frame.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;border:0;pointer-events:none;z-index:9999;';
 		document.body.appendChild(frame);
 	}

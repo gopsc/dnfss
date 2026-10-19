@@ -1,49 +1,85 @@
 <!DOCTYPE html>
-<html>
-	<head>
-		<meta charset="utf-8">
-		<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
-		<title>重置密码</title>
-		<link rel="stylesheet" href="css/theme.css">
-		<link rel="stylesheet" href="css/auth.css">
-	</head>
-	<body>
-		<div class="card">
-			<p class="auth-eyebrow">DNFS 树状笔记</p>
-			<h2>重置密码页面</h2>
-			<form id="form">
-				<div>
-				<label>邮箱号：</label>
-					<input type="email" id="regemail" placeholder="请输入已注册的邮箱号">
-					<span id="emlTip"></span>
-				<div class="code-box">图形验证码：
-					<input type="text" id="captchaAnswer" placeholder="请输入图形验证码" maxlength="4" autocomplete="off">
-					<img id="captchaImg" class="captcha-img" alt="加载中…" title="点击刷新验证码">
-					<span id="captchaTip"></span>
-				</div>
-				<div class="code-box">邮箱验证码：
-						<input type="text" id="code" placeholder="请输入6位验证码" inputmode="numeric" maxlength="6">
-						<input type="button" id="getCode" value="获取验证码">
-						<span id="codeTip"></span>
-					</div>
-					<label>新密码：</label>
-					<input type="password" id="regpsw" placeholder="至少6位，需含大小写/数字/特殊字符中至少3类">
-					<label>确认密码：</label>
-					<input type="password" id="repwd" placeholder="请再次输入新密码">
-					<span id="pwdTip"></span>
-				</div>
-				<div class="form-actions">
-					<input id="formsub" type="submit" value="重置密码">
-					<input id="resetUser" type="reset" value="重置">
-					<input type="button" value="返回登录" onclick="location.href='login.html'">
-				</div>
-			</form>
-		</div>
-		<footer class="footer">
-			<a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">蜀ICP备2024107064号-2</a>
-		</footer>
-		<script src="js/validation.js"></script>
-		<script>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#faf9f6">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#191a18">
+    <title>找回密码 — DNFS 树状笔记</title>
+    <link rel="icon" href="favicon.ico">
+    <link rel="stylesheet" href="css/theme.css">
+    <link rel="stylesheet" href="css/index.css">
+    <link rel="stylesheet" href="css/auth.css">
+</head>
+<body class="auth-page">
+    <header class="header">
+        <div class="wrap header-inner">
+            <a class="brand" href="index.html" aria-label="DNFS 树状笔记首页">
+                <span class="brand-mark" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 6v12M7 12h10V6"/><circle cx="7" cy="5" r="2"/><circle cx="17" cy="5" r="2"/><circle cx="7" cy="19" r="2"/></svg>
+                </span>
+                <span class="brand-name">DNFS<span class="brand-caption">树状笔记</span></span>
+            </a>
+            <nav class="auth-switch" aria-label="账号导航">
+                <span>想起密码了？</span>
+                <input type="button" class="btn btn-ghost" value="返回登录" onclick="location.href='login.html'">
+            </nav>
+        </div>
+    </header>
+
+    <main class="auth-main">
+        <div class="auth-panel">
+            <div class="auth-heading">
+                <p class="section-eyebrow">回到你的知识树</p>
+                <h1>重置密码。</h1>
+                <p class="auth-description">通过邮箱验证，重新连接你的记录。</p>
+            </div>
+            <form id="form" class="auth-form">
+                <div class="auth-field">
+                    <label for="regemail">注册邮箱</label>
+                    <input type="email" id="regemail" placeholder="请输入已注册的邮箱" autocomplete="email" autocapitalize="none" spellcheck="false" aria-describedby="emlTip">
+                    <span id="emlTip" aria-live="polite"></span>
+                </div>
+                <div class="auth-field">
+                    <div class="auth-field-label"><label for="captchaAnswer">图形验证码</label><span>点击图片换一张</span></div>
+                    <div class="auth-code-row">
+                        <input type="text" id="captchaAnswer" placeholder="图中字符" maxlength="4" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="captchaTip">
+                        <img id="captchaImg" class="auth-captcha" alt="加载中…" title="点击刷新验证码" role="button" tabindex="0" onkeydown="if(event.key === 'Enter' || event.key === ' '){event.preventDefault();this.click();}">
+                    </div>
+                    <span id="captchaTip" aria-live="polite"></span>
+                </div>
+                <div class="auth-field">
+                    <label for="code">邮箱验证码</label>
+                    <div class="auth-code-row">
+                        <input type="text" id="code" placeholder="6 位验证码" inputmode="numeric" maxlength="6" autocomplete="one-time-code" aria-describedby="codeTip">
+                        <input type="button" id="getCode" value="获取验证码">
+                    </div>
+                    <span id="codeTip" aria-live="polite"></span>
+                </div>
+                <div class="auth-field">
+                    <label for="regpsw">新密码</label>
+                    <input type="password" id="regpsw" placeholder="设置新的密码" autocomplete="new-password" aria-describedby="passwordHint pwdTip">
+                    <p id="passwordHint" class="auth-help">至少6位，需含大小写/数字/特殊字符中至少3类</p>
+                </div>
+                <div class="auth-field">
+                    <label for="repwd">确认新密码</label>
+                    <input type="password" id="repwd" placeholder="再次输入新密码" autocomplete="new-password" aria-describedby="pwdTip">
+                    <span id="pwdTip" aria-live="polite"></span>
+                </div>
+                <input id="formsub" type="submit" class="auth-submit" value="重置密码">
+                <div class="auth-secondary">
+                    <input id="resetUser" type="reset" value="重置">
+                </div>
+            </form>
+        </div>
+    </main>
+
+    <footer class="footer auth-footer">
+        <p>让知识自然成体系。</p>
+        <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">蜀ICP备2024107064号-2</a>
+    </footer>
+    <script src="js/validation.js"></script>
+    <script>
 const form = document.getElementById('form');
 const emailInput = document.getElementById('regemail');
 const codeInput = document.getElementById('code');

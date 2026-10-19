@@ -1,83 +1,105 @@
 <!DOCTYPE html>
-<html>
-	<head>
-		<meta charset="utf-8">
-		<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
-		<title>登录</title>
-		<link rel="stylesheet" href="css/theme.css">
-	</head>
-	<body>
-		<div class="card">
-			<h2>用户登录</h2>
-			<form id="form" novalidate>
-				<div>
-					<label>邮箱：</label>
-					<input type="text" id="loginUsername" placeholder="请输入邮箱">
-					<span id="msgTip"></span>
-					<label>密码：</label>
-					<input type="password" id="loginPassword" placeholder="请输入密码">
-					<span id="pwdTip"></span>
-					<label>验证码：</label>
-					<div style="display:flex;align-items:center;gap:8px">
-						<input type="text" id="captchaAnswer" placeholder="请输入验证码" maxlength="4" autocomplete="off" style="flex:1;min-width:0;width:auto">
-						<img id="captchaImg" alt="加载中…" title="点击刷新验证码" style="width:120px;height:38px;flex:none;cursor:pointer;border:1.5px solid var(--border);border-radius:10px;box-sizing:border-box">
-					</div>
-					<span id="captchaTip"></span>
-				</div>
-				<div class="form-actions">
-					<button type="button" id="registerBtn">注册</button>
-					<input type="submit" id="loginBtn" value="登录">
-					<input type="reset" id="resetUser" value="重置">
-				</div>
-				<div class="form-check">
-					<input type="checkbox" id="agreeBox" name="agree" value="access">
-					<label id="agreement" for="agreeBox">我已阅读并同意</label>
-					<a id="agreementLink" href="LICENSE.html" rel="noopener" style="color:var(--accent);font-size:14px;text-decoration:none;cursor:pointer">《用户使用条例》</a>
-					<span id="agreeTip"></span>
-				</div>
-			</form>
-			<a href="forgot.html" style="display:block;text-align:center;color:#999;font-size:13px;margin:8px 0">忘记密码？</a>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#faf9f6">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#191a18">
+    <title>登录 — DNFS 树状笔记</title>
+    <link rel="icon" href="favicon.ico">
+    <link rel="stylesheet" href="css/theme.css">
+    <link rel="stylesheet" href="css/index.css">
+    <link rel="stylesheet" href="css/auth.css">
+</head>
+<body class="auth-page">
+    <header class="header">
+        <div class="wrap header-inner">
+            <a class="brand" href="index.html" aria-label="DNFS 树状笔记首页">
+                <span class="brand-mark" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 6v12M7 12h10V6"/><circle cx="7" cy="5" r="2"/><circle cx="17" cy="5" r="2"/><circle cx="7" cy="19" r="2"/></svg>
+                </span>
+                <span class="brand-name">DNFS<span class="brand-caption">树状笔记</span></span>
+            </a>
+            <nav class="auth-switch" aria-label="账号导航">
+                <span>还没有账号？</span>
+                <button type="button" id="registerBtn" class="btn btn-ghost">注册</button>
+            </nav>
+        </div>
+    </header>
 
-			<!-- 用户使用条例弹窗 -->
-			<div id="licenseModal" class="license-modal-overlay" style="display:none">
-				<div class="license-modal-box">
-					<button id="licenseClose" class="license-modal-close" aria-label="关闭">&times;</button>
-					<iframe id="licenseFrame" src="about:blank" title="用户使用条例"></iframe>
-				</div>
-			</div>
-			<style>
-				.license-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px;z-index:1000}
-				.license-modal-box{position:relative;width:100%;max-width:680px;max-height:86vh;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 10px 40px rgba(0,0,0,.25)}
-				.license-modal-box iframe{width:100%;height:86vh;border:0;display:block}
-				.license-modal-close{position:absolute;top:8px;right:10px;width:32px;height:32px;border:0;background:rgba(255,255,255,.9);border-radius:50%;font-size:22px;line-height:1;cursor:pointer;color:#555;z-index:2}
-				.license-modal-close:hover{background:#fff;color:#000}
-			</style>
-		</div>
-		<footer class="footer">
-			<a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">蜀ICP备2024107064号-2</a>
-		</footer>
-		<script src="js/validation.js"></script>
-		<script src="js/login.js"></script>
-		<script>
-			(function(){
-				var link = document.getElementById('agreementLink');
-				var modal = document.getElementById('licenseModal');
-				var frame = document.getElementById('licenseFrame');
-				var close = document.getElementById('licenseClose');
-				function show(){
-					frame.src = 'LICENSE.html';
-					modal.style.display = 'flex';
-					document.body.style.overflow = 'hidden';
-				}
-				function hide(){
-					modal.style.display = 'none';
-					frame.src = 'about:blank';
-					document.body.style.overflow = '';
-				}
-				link.addEventListener('click', function(e){ e.preventDefault(); show(); });
-				close.addEventListener('click', hide);
-				modal.addEventListener('click', function(e){ if(e.target === modal) hide(); });
-			})();
-		</script>
-	</body>
+    <main class="auth-main">
+        <div class="auth-panel">
+            <div class="auth-heading">
+                <p class="section-eyebrow">回到你的知识树</p>
+                <h1>欢迎回来。</h1>
+                <p class="auth-description">登录后，继续记录与连接。</p>
+            </div>
+            <form id="form" class="auth-form" novalidate>
+                <div class="auth-field">
+                    <label for="loginUsername">邮箱</label>
+                    <input type="text" id="loginUsername" placeholder="请输入邮箱" inputmode="email" autocomplete="username" autocapitalize="none" spellcheck="false" aria-describedby="msgTip">
+                    <span id="msgTip" aria-live="polite"></span>
+                </div>
+                <div class="auth-field">
+                    <label for="loginPassword">密码</label>
+                    <input type="password" id="loginPassword" placeholder="请输入密码" autocomplete="current-password" aria-describedby="pwdTip">
+                    <span id="pwdTip" aria-live="polite"></span>
+                </div>
+                <div class="auth-field">
+                    <div class="auth-field-label"><label for="captchaAnswer">图形验证码</label><span>点击图片换一张</span></div>
+                    <div class="auth-code-row">
+                        <input type="text" id="captchaAnswer" placeholder="图中字符" maxlength="4" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="captchaTip">
+                        <img id="captchaImg" class="auth-captcha" alt="加载中…" title="点击刷新验证码" role="button" tabindex="0" onkeydown="if(event.key === 'Enter' || event.key === ' '){event.preventDefault();this.click();}">
+                    </div>
+                    <span id="captchaTip" aria-live="polite"></span>
+                </div>
+                <div class="auth-agreement">
+                    <label id="agreement" for="agreeBox"><input type="checkbox" id="agreeBox" name="agree" value="access" aria-describedby="agreeTip"><span>我已阅读并同意</span></label>
+                    <a id="agreementLink" href="LICENSE.html" rel="noopener">《用户使用条例》</a>
+                    <span id="agreeTip" aria-live="polite"></span>
+                </div>
+                <input type="submit" id="loginBtn" class="auth-submit" value="登录">
+                <div class="auth-secondary">
+                    <input type="reset" id="resetUser" value="重置">
+                    <a href="forgot.html">忘记密码？</a>
+                </div>
+            </form>
+        </div>
+    </main>
+
+    <footer class="footer auth-footer">
+        <p>让知识自然成体系。</p>
+        <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">蜀ICP备2024107064号-2</a>
+    </footer>
+
+    <div id="licenseModal" class="license-modal-overlay" style="display:none">
+        <div class="license-modal-box" role="dialog" aria-modal="true" aria-labelledby="licenseTitle">
+            <div class="license-modal-header"><h2 id="licenseTitle">用户使用条例</h2><button id="licenseClose" class="license-modal-close" aria-label="关闭">&times;</button></div>
+            <iframe id="licenseFrame" src="about:blank" title="用户使用条例"></iframe>
+        </div>
+    </div>
+    <script src="js/validation.js"></script>
+    <script src="js/login.js"></script>
+    <script>
+        (function(){
+            var link = document.getElementById('agreementLink');
+            var modal = document.getElementById('licenseModal');
+            var frame = document.getElementById('licenseFrame');
+            var close = document.getElementById('licenseClose');
+            function show(){
+                frame.src = 'LICENSE.html?embedded=1';
+                modal.style.display = 'flex';
+                document.body.style.overflow = 'hidden';
+            }
+            function hide(){
+                modal.style.display = 'none';
+                frame.src = 'about:blank';
+                document.body.style.overflow = '';
+            }
+            link.addEventListener('click', function(e){ e.preventDefault(); show(); });
+            close.addEventListener('click', hide);
+            modal.addEventListener('click', function(e){ if(e.target === modal) hide(); });
+        })();
+    </script>
+</body>
 </html>

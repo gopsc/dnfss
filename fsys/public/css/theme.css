@@ -1,45 +1,45 @@
 /* ===== Design Tokens ===== */
 :root {
-    --bg: #fdf6ee;
-    --fg: #4a3728;
-    --fg-secondary: #8c7260;
-    --card: #ffffff;
-    --card-hover: #fff7ef;
-    --border: #f0e0cc;
-    --border-light: #f7ecdd;
-    --muted: #b89b7a;
-    --accent: #e8853a;
-    --accent-dark: #cf6b1f;
-    --accent-soft: rgba(232, 133, 58, 0.10);
-    --accent-glow: rgba(232, 133, 58, 0.25);
-    --error: #d94f3d;
-    --error-bg: #fef0ee;
-    --success: #5a9e6f;
-    --warning: #d4922a;
-    --shadow-sm: 0 1px 3px rgba(74, 55, 40, 0.06);
-    --shadow-md: 0 4px 12px rgba(74, 55, 40, 0.08);
+    --bg: #faf9f6;
+    --fg: #282a26;
+    --fg-secondary: #65675f;
+    --card: #fffefa;
+    --card-hover: #f4f4ee;
+    --border: #ddded5;
+    --border-light: #e9e9e1;
+    --muted: #77786e;
+    --accent: #b6532d;
+    --accent-dark: #984224;
+    --accent-soft: #f6ebe3;
+    --accent-glow: #e9c8b5;
+    --error: #b43a31;
+    --error-bg: #f6eae7;
+    --success: #477450;
+    --warning: #8b681a;
+    --shadow-sm: 0 1px 3px rgba(40, 42, 38, 0.06);
+    --shadow-md: 0 4px 12px rgba(40, 42, 38, 0.08);
     --radius-sm: 10px;
     --radius-md: 14px;
     --radius-lg: 20px;
 }
 @media (prefers-color-scheme: dark) {
     :root {
-        --bg: #1e1712;
-        --fg: #f0e4d8;
-        --fg-secondary: #a08c78;
-        --card: #2a2119;
-        --card-hover: #342a20;
-        --border: #3e3228;
-        --border-light: #342a20;
-        --muted: #8c7a66;
-        --accent: #e8934a;
-        --accent-dark: #f0a060;
-        --accent-soft: rgba(232, 147, 74, 0.12);
-        --accent-glow: rgba(232, 147, 74, 0.20);
-        --error: #e8685a;
-        --error-bg: #3a2220;
-        --success: #6fb87f;
-        --warning: #e0a84a;
+        --bg: #191a18;
+        --fg: #e9e9e0;
+        --fg-secondary: #b0b2a7;
+        --card: #242520;
+        --card-hover: #2e2f29;
+        --border: #404238;
+        --border-light: #32342d;
+        --muted: #9a9d90;
+        --accent: #e2a07b;
+        --accent-dark: #efb491;
+        --accent-soft: #322820;
+        --accent-glow: #614938;
+        --error: #ef968a;
+        --error-bg: #3a2725;
+        --success: #95bb9a;
+        --warning: #d8b779;
         --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2);
         --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
     }
@@ -440,7 +440,7 @@ input[type="button"]:disabled {
     gap: 0.5rem;
     padding: 0.5rem 0.8rem;
     border-radius: var(--radius-md);
-    background: rgba(253, 246, 238, 0.85);
+    background: rgba(250, 249, 246, 0.85);
     border: 1px solid var(--accent);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
@@ -449,7 +449,7 @@ input[type="button"]:disabled {
     max-width: 92vw;
 }
 @media (prefers-color-scheme: dark) {
-    .movebar { background: rgba(30, 23, 18, 0.85); }
+    .movebar { background: rgba(25, 26, 24, 0.85); }
 }
 .movebar:empty { display: none; }
 .move-title {
@@ -474,7 +474,7 @@ input[type="button"]:disabled {
     overflow-y: auto;
     padding: 0.6rem 0.75rem;
     border-radius: var(--radius-md);
-    background: rgba(253, 246, 238, 0.72);
+    background: rgba(250, 249, 246, 0.72);
     border: 1px solid var(--border-light);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
@@ -483,7 +483,7 @@ input[type="button"]:disabled {
 }
 @media (prefers-color-scheme: dark) {
     .userpanel {
-        background: rgba(30, 23, 18, 0.72);
+        background: rgba(25, 26, 24, 0.72);
         border-color: var(--border);
     }
 }
@@ -502,7 +502,7 @@ input[type="button"]:disabled {
     overflow-y: auto;
     padding: 0.6rem 0.75rem;
     border-radius: var(--radius-md);
-    background: rgba(253, 246, 238, 0.72);
+    background: rgba(250, 249, 246, 0.72);
     border: 1px solid var(--border-light);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
@@ -511,7 +511,7 @@ input[type="button"]:disabled {
 }
 @media (prefers-color-scheme: dark) {
     .minimap {
-        background: rgba(30, 23, 18, 0.72);
+        background: rgba(25, 26, 24, 0.72);
         border-color: var(--border);
     }
 }
@@ -522,7 +522,7 @@ input[type="button"]:disabled {
 }
 .userpanel .tag.no-hover:hover {
     color: var(--fg-secondary);
-    background: rgba(232, 133, 58, 0.08);
+    background: rgba(182, 83, 45, 0.08);
     border-color: transparent;
 }
 .minimap .tag, .userpanel .tag {
@@ -535,7 +535,7 @@ input[type="button"]:disabled {
     font-size: 0.78rem;
     font-weight: 500;
     color: var(--fg-secondary);
-    background: rgba(232, 133, 58, 0.08);
+    background: rgba(182, 83, 45, 0.08);
     border: 1px solid transparent;
     border-radius: var(--radius-sm);
     cursor: pointer;
