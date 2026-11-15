@@ -58,7 +58,11 @@ function clearTipStyle() {
 clearTipStyle();
 
 function checkUsername() {
-	const result = FormValidators.username(usernameInput.value);
+	// 登录标识即注册邮箱（无长度上限）；管理员白名单可能是非邮箱短名，故不含 @ 时走用户名规则
+	const value = usernameInput.value.trim();
+	const result = (!value || value.includes('@'))
+		? FormValidators.email(value)
+		: FormValidators.username(value);
 	msgTip.textContent = result.message;
 	msgTip.className = result.className;
 	return result.valid ? result.value : false;
