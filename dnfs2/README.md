@@ -24,12 +24,30 @@ dnfs2 :8006 ──pymsg──► db2 :8005 (execute 路由) ──► SQLite
 
 | 路由 | 鉴权 | 说明 |
 |------|------|------|
-| POST /get_notes | 否（可选 Token，用于 can_operate） | 返回子节点数组 |
-| POST /add_note | 是 | 校验 Token → 父节点存在 → AI 审核 → 插入 |
+| POST /get_notes | 否（可选 Token，用于可见性过滤与 can_operate） | 返回子节点数组（过滤当前用户不可见的私有节点） |
+| POST /add_note | 是 | 校验 Token → 添加权限 → AI 审核 → 插入 |
 | POST /delete_note | 是 | 校验 Token → 检查子节点 → 所有权 → 删除 |
-| POST /update_note | 是 | 校验 Token → 所有权 → 父节点存在 → AI 审核 → 更新 |
+| POST /update_note | 是 | 校验 Token → 所有权 → 移动权限（pid 变更时） → AI 审核 → 更新 |
 
-请求/响应 JSON 格式与 Python dnfs 完全一致，前端零改动。
+请求/响应 JSON 格式兼容 Python dnfs，新增可选字段 `is_public` / `everyone_editable`（见下）。
+
+## 节点权限（patch_003/004 起）
+
+Notes 表两个标志列（0/1，add_note 可传布尔或整数）：
+
+- `is_public`：1=公开（任何人可见），0=私有（仅拥有者/管理员可见）。
+  get_notes 打开私有节点返回 403，列表中他人的私有节点被过滤。
+- `everyone_editable`：1=任何登录用户可在该节点下添加子节点，0=仅拥有者/管理员。
+
+规则：
+
+- **根节点（pid=0）**：所有人可见，仅管理员可添加子节点（代码强制，与列值无关）。
+- **add_note**：pid≠0 时要求父节点对当前用户可见，且满足 管理员/拥有者/everyone_editable。
+  缺省 `is_public=1`、`everyone_editable=0`。
+- **update_note**：编辑/删除仍仅拥有者/管理员；`is_public`/`everyone_editable`
+  仅在请求显式携带时更新，缺省保留原值。**移动节点（pid 变更）对新父节点按
+  add_note 同口径校验添加权限**，防止借移动绕过限制。
+- 存量节点经 patch_004 统一设为「公开 + 禁止他人添加子节点」。
 
 ## 配置
 

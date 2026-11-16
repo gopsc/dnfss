@@ -1,10 +1,16 @@
 /** dnfs2 — C++20 树状网络文件系统（对齐 Python dnfs 模块）
  *
  * 基于 libhttp + libmsg + boost::json 实现，接口与 Python dnfs 完全兼容：
- *   POST /get_notes    获取子节点列表（无需鉴权）
- *   POST /add_note     添加节点（需 Token + AI 审核）
+ *   POST /get_notes    获取子节点列表（私有节点仅拥有者/管理员可见）
+ *   POST /add_note     添加节点（需 Token + AI 审核；根节点仅管理员，
+ *                      非根需父节点可见且 管理员/拥有者/everyone_editable）
  *   POST /delete_note  删除节点（需 Token + 所有权）
- *   POST /update_note  更新节点（需 Token + 所有权 + AI 审核）
+ *   POST /update_note  更新节点（需 Token + 所有权 + AI 审核；
+ *                      移动节点时对新父节点按 add_note 同口径校验添加权限）
+ *
+ * 节点权限列（patch_003/004）：
+ *   is_public          0=仅拥有者/管理员可见，1=公开
+ *   everyone_editable  1=任何登录用户可在该节点下添加子节点，0=仅拥有者/管理员
  *
  * 安全修复（相比 Python dnfs）：
  *   P0-4  统一封装 _call_db() 检查 success 后再访问 data
@@ -249,6 +255,25 @@ public:
 private:
     int status_;
 };
+
+// 读取节点布尔标志列（is_public / everyone_editable）：db2 返回整数，兼容 bool；
+// 缺列/类型异常按 false 处理（fail-closed，不放开权限）
+static bool note_flag(const json::object& note, const std::string& key) {
+    auto it = note.find(key);
+    if (it == note.end()) return false;
+    if (it->value().is_bool()) return it->value().as_bool();
+    if (it->value().is_int64()) return it->value().as_int64() != 0;
+    return false;
+}
+
+// 提取节点 owner：缺失/非字符串返回空串（无人匹配，仅管理员有权）
+static std::string note_owner_of(const json::object& note) {
+    auto it = note.find("owner");
+    if (it != note.end() && it->value().is_string()) {
+        return std::string(it->value().as_string());
+    }
+    return "";
+}
 
 // ============================================================================
 // 特殊节点校验
@@ -623,8 +648,8 @@ private:
         }
     }
 
-    // 查询节点是否存在（P2-N6 修复：db 业务错误抛 500，不误判为"不存在"）
-    bool _note_exists(int64_t id) {
+    // 查询节点整行：节点不存在返回 nullopt；db 业务错误抛 500（fail-closed，不误判为"不存在"）
+    std::optional<json::object> _note_row(int64_t id) {
         json::object payload;
         payload["action"] = "select";
         payload["table"]  = "Notes";
@@ -633,34 +658,14 @@ private:
 
         DbResult r = _call_db(payload);
         if (!r.success) {
-            _log("ERROR", "dnfs2", "查询节点存在性失败 id=" + std::to_string(id)
-                 + " err=" + r.error);
-            throw DnfsExp("查询节点失败", 500);
-        }
-        return r.data.is_array() && !r.data.as_array().empty();
-    }
-
-    // 查询节点 owner：节点不存在返回 nullopt；存在但无 owner 字段返回空字符串（无人匹配，仅管理员有权）
-    std::optional<std::string> _note_owner(int64_t id) {
-        json::object payload;
-        payload["action"] = "select";
-        payload["table"]  = "Notes";
-        payload["where"]  = json::object{{"id", id}};
-        payload["limit"]  = 1;
-
-        DbResult r = _call_db(payload);
-        if (!r.success) {
-            _log("ERROR", "dnfs2", "查询节点 owner 失败 id=" + std::to_string(id)
+            _log("ERROR", "dnfs2", "查询节点失败 id=" + std::to_string(id)
                  + " err=" + r.error);
             throw DnfsExp("查询节点失败", 500);
         }
         if (!r.data.is_array() || r.data.as_array().empty()) return std::nullopt;
         const auto& note = r.data.as_array()[0];
-        if (note.is_object() && note.as_object().contains("owner")
-            && note.as_object().at("owner").is_string()) {
-            return std::string(note.as_object().at("owner").as_string());
-        }
-        return std::string();
+        if (!note.is_object()) return std::nullopt;
+        return note.as_object();
     }
 
     // L-1 修复：判定 candidate 是否位于 id 的子树内（即 id 是 candidate 的祖先）。
@@ -793,6 +798,19 @@ private:
         std::string user;
         bool is_admin = false;
     };
+
+    // 可见性：公开节点任何人可见；私有节点仅拥有者/管理员可见
+    static bool _can_view(const json::object& note, const std::optional<UserInfo>& info) {
+        if (note_flag(note, "is_public")) return true;
+        if (!info) return false;
+        return info->is_admin || note_owner_of(note) == info->user;
+    }
+
+    // 在节点下添加子节点的权限：管理员 / 节点拥有者 / everyone_editable 开放
+    static bool _can_add_under(const json::object& parent, const UserInfo& info) {
+        return info.is_admin || note_owner_of(parent) == info.user
+            || note_flag(parent, "everyone_editable");
+    }
 
     // 返回 UserInfo；验签失败返回 nullopt；网络异常抛 DnfsExp(503)
     std::optional<UserInfo> decode_token(const std::string& token) {
@@ -946,6 +964,13 @@ private:
         return s;
     }
 
+    // 解析 0/1 标志参数（is_public / everyone_editable）：接受布尔或整数 0/1
+    static int64_t parse_flag(const json::value& v, const std::string& key) {
+        if (v.is_bool()) return v.as_bool() ? 1 : 0;
+        if (v.is_int64() && (v.as_int64() == 0 || v.as_int64() == 1)) return v.as_int64();
+        throw DnfsExp("非法参数: " + key + " 必须是布尔值或 0/1", 400);
+    }
+
     // ---- 路由 handler ------------------------------------------------------
 
     http::response<http::string_body> _handle_get_notes(
@@ -966,6 +991,38 @@ private:
                 }
             }
 
+            bool noread = false;
+            if (auto it2 = body.find("noread"); it2 != body.end() && it2->value().is_bool()) {
+                noread = it2->value().as_bool();
+            }
+
+            // 解析当前用户（可选）：用于私有节点可见性判定与 can_operate 标注
+            std::optional<UserInfo> info = std::nullopt;
+            std::string token = extract_token(req);
+            if (!token.empty()) {
+                try {
+                    info = decode_token(token);
+                } catch (const DnfsExp&) {
+                    info = std::nullopt;  // Token 无效时按未登录处理
+                }
+            }
+
+            // 打开非根节点：私有节点仅拥有者/管理员可见。
+            // 观看人数 +1 仅在可见性通过后执行（pid=0 为虚拟根；noread 为前端
+            // 样式继承等静默查询，跳过计数）。best-effort：失败仅记日志。
+            if (pid != 0) {
+                auto opened = _note_row(pid);
+                if (!opened) {
+                    throw DnfsExp("节点不存在", 404);
+                }
+                if (!_can_view(*opened, info)) {
+                    throw DnfsExp("节点不公开", 403);
+                }
+                if (!noread) {
+                    _bump_views(pid);
+                }
+            }
+
             json::object payload;
             payload["action"] = "select";
             payload["table"]  = "Notes";
@@ -979,30 +1036,14 @@ private:
                 return make_json_obj(http::status::internal_server_error, err, req);
             }
 
-            // 打开节点 pid 时观看人数 +1（pid=0 为虚拟根节点或无 noread 标记时，
-            // 前端样式继承等静默查询传 {"noread":true} 来跳过）。
-            // best-effort：失败仅记日志，不影响返回结果。
-            bool noread = false;
-            if (auto it2 = body.find("noread"); it2 != body.end() && it2->value().is_bool()) {
-                noread = it2->value().as_bool();
-            }
-            if (pid != 0 && !noread) {
-                _bump_views(pid);
-            }
-
-            // 解析当前用户（可选）：为每个节点附带 can_operate 标记
-            std::optional<UserInfo> info = std::nullopt;
-            std::string token = extract_token(req);
-            if (!token.empty()) {
-                try {
-                    info = decode_token(token);
-                } catch (const DnfsExp&) {
-                    info = std::nullopt;  // Token 无效时，所有节点无权
-                }
-            }
-
             if (r.data.is_array()) {
-                json::array result = r.data.as_array();
+                // 过滤当前用户不可见的私有节点
+                json::array result;
+                for (const auto& item : r.data.as_array()) {
+                    if (item.is_object() && _can_view(item.as_object(), info)) {
+                        result.push_back(item);
+                    }
+                }
                 // 一次性统计各节点的子节点数（供前端"分享数"展示），避免逐节点查询
                 auto child_counts = _child_counts(result);
                 for (auto& item : result) {
@@ -1054,6 +1095,15 @@ private:
                 throw DnfsExp("非法参数: pid 不能为负数", 400);
             }
 
+            // 可见性 / 添加权限标志（缺省：公开、禁止他人添加子节点）
+            int64_t is_public = 1, everyone_editable = 0;
+            if (auto it = body.find("is_public"); it != body.end()) {
+                is_public = parse_flag(it->value(), "is_public");
+            }
+            if (auto it = body.find("everyone_editable"); it != body.end()) {
+                everyone_editable = parse_flag(it->value(), "everyone_editable");
+            }
+
             // Token 验签
             std::string token = extract_token(req);
             auto info = decode_token(token);
@@ -1061,13 +1111,25 @@ private:
                 throw DnfsExp("未授权访问", 401);
             }
 
-            // 父节点存在性 + 拥有者（特殊节点发布权限判定用）
+            // 添加权限：根节点仅管理员；非根需父节点可见，且 管理员/拥有者/everyone_editable。
+            // parent_owner 同时用于特殊节点发布权限判定
             std::optional<std::string> parent_owner;
-            if (pid != 0) {
-                parent_owner = _note_owner(pid);
-                if (!parent_owner) {
+            if (pid == 0) {
+                if (!info->is_admin) {
+                    throw DnfsExp("根节点仅管理员可添加子节点", 403);
+                }
+            } else {
+                auto parent = _note_row(pid);
+                if (!parent) {
                     throw DnfsExp("父节点不存在", 400);
                 }
+                if (!_can_view(*parent, info)) {
+                    throw DnfsExp("父节点不公开", 403);
+                }
+                if (!_can_add_under(*parent, *info)) {
+                    throw DnfsExp("该节点未开放他人添加子节点", 403);
+                }
+                parent_owner = note_owner_of(*parent);
             }
 
             // 特殊节点校验：父节点拥有者或管理员可发布（根层 pid=0 无拥有者，仅管理员）
@@ -1100,6 +1162,8 @@ private:
             values["content"]    = content;
             values["created_at"] = local_now();
             values["updated_at"] = local_now();
+            values["is_public"]         = is_public;
+            values["everyone_editable"] = everyone_editable;
 
             json::object payload;
             payload["action"] = "insert";
@@ -1262,13 +1326,17 @@ private:
                 throw DnfsExp("节点不存在", 404);
             }
 
-            // 提取节点 owner（所有权校验与特殊节点发布判定共用）
+            // 提取节点 owner 与原 pid（所有权校验、特殊节点发布判定、移动权限校验共用）
             std::string note_owner;
+            int64_t old_pid = 0;
             {
                 const auto& note = owner_r.data.as_array()[0];
-                if (note.is_object() && note.as_object().contains("owner")
-                    && note.as_object().at("owner").is_string()) {
-                    note_owner = std::string(note.as_object().at("owner").as_string());
+                if (note.is_object()) {
+                    note_owner = note_owner_of(note.as_object());
+                    const auto& o = note.as_object();
+                    if (o.contains("pid") && o.at("pid").is_int64()) {
+                        old_pid = o.at("pid").as_int64();
+                    }
                 }
             }
 
@@ -1277,17 +1345,34 @@ private:
                 throw DnfsExp("It's not your note", 403);
             }
 
-            // P1-8 修复：pid≠0 时校验父节点存在
-            if (pid != 0 && !_note_exists(pid)) {
-                throw DnfsExp("父节点不存在", 400);
-            }
+            // 移动节点（pid 变更）时对新父节点按 add_note 同口径校验添加权限，
+            // 防止借移动绕过根节点管理员限制 / everyone_editable 限制。
+            // pid 不变时父节点即当前父节点，天然存在，无需重复校验。
+            if (pid != old_pid) {
+                if (pid == 0) {
+                    if (!info->is_admin) {
+                        throw DnfsExp("根节点仅管理员可添加子节点", 403);
+                    }
+                } else {
+                    auto new_parent = _note_row(pid);
+                    if (!new_parent) {
+                        throw DnfsExp("父节点不存在", 400);
+                    }
+                    if (!_can_view(*new_parent, info)) {
+                        throw DnfsExp("父节点不公开", 403);
+                    }
+                    if (!_can_add_under(*new_parent, *info)) {
+                        throw DnfsExp("目标节点未开放他人添加子节点", 403);
+                    }
+                }
 
-            // L-1 修复：新父节点为自身或位于自身子树内会成环（子树不可达），拒绝。
-            // pid=0（挂到根）天然无环；pid==id 时走查首轮即命中
-            if (pid != 0 && _is_descendant(id, pid)) {
-                _log("WARNING", "dnfs2", "update_note 拒绝成环 id=" + std::to_string(id)
-                     + " pid=" + std::to_string(pid));
-                throw DnfsExp("不能将节点移动到自身或其子节点内", 400);
+                // L-1 修复：新父节点为自身或位于自身子树内会成环（子树不可达），拒绝。
+                // pid=0（挂到根）天然无环；pid==id 时走查首轮即命中
+                if (pid != 0 && _is_descendant(id, pid)) {
+                    _log("WARNING", "dnfs2", "update_note 拒绝成环 id=" + std::to_string(id)
+                         + " pid=" + std::to_string(pid));
+                    throw DnfsExp("不能将节点移动到自身或其子节点内", 400);
+                }
             }
 
             // 特殊节点校验：上方所有权校验已保证是节点拥有者或管理员，此处仅校验信封格式
@@ -1309,12 +1394,19 @@ private:
                 throw DnfsExp("review failed", 400);
             }
 
-            // 执行更新
+            // 执行更新（权限标志仅在请求显式携带时更新，缺省保留原值——
+            // 移动操作不传标志，不会重置节点的公开性/添加权限）
             json::object values;
             values["pid"]        = pid;
             values["title"]      = title;
             values["content"]    = content;
             values["updated_at"] = local_now();
+            if (auto it = body.find("is_public"); it != body.end()) {
+                values["is_public"] = parse_flag(it->value(), "is_public");
+            }
+            if (auto it = body.find("everyone_editable"); it != body.end()) {
+                values["everyone_editable"] = parse_flag(it->value(), "everyone_editable");
+            }
 
             json::object payload;
             payload["action"] = "update";

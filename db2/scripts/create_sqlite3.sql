@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS Notes (
     created_at DATETIME,
     updated_at DATETIME,
     is_public BOOLEAN NOT NULL DEFAULT 1,
-    everyone_editable BOOLEAN NOT NULL DEFAULT 1
+    everyone_editable BOOLEAN NOT NULL DEFAULT 0
 );
 
 -- 旧版增量（存量库请按编号顺序执行对应 patch 脚本）
@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS Notes (
 -- ALTER TABLE Notes ADD COLUMN updated_at DATETIME;                             -- patch_002 更新时间
 -- ALTER TABLE Users  ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0;            -- patch_003 管理员标记
 -- ALTER TABLE Notes ADD COLUMN is_public BOOLEAN NOT NULL DEFAULT 1;            -- patch_003 是否公开（默认公开）
--- ALTER TABLE Notes ADD COLUMN everyone_editable BOOLEAN NOT NULL DEFAULT 1;    -- patch_003 是否人人可编辑（默认人人可编辑）
+-- ALTER TABLE Notes ADD COLUMN everyone_editable BOOLEAN NOT NULL DEFAULT 1;    -- patch_003 是否允许他人添加子节点
+-- UPDATE Notes SET is_public = 1, everyone_editable = 0;                        -- patch_004 存量节点：公开 + 禁止他人添加子节点
 
 -- Notes 索引：get_notes 按 pid 查子节点、所有权校验按 owner（patch_001 并入）
 CREATE INDEX IF NOT EXISTS idx_notes_pid   ON Notes(pid);
