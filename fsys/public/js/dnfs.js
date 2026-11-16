@@ -66,12 +66,14 @@ async function getNode(id) {
  *
  * 用于向dnfs添加节点
  */
-async function addNode(pid, title, content) {
+async function addNode(pid, title, content, is_public, everyone_editable) {
 	try {
 		obj = {
 			"pid": pid,
 			"title": title,
-			"content": content
+			"content": content,
+			"is_public": is_public ? 1 : 0,
+			"everyone_editable": everyone_editable ? 1 : 0
 		}
 		jsonBody = JSON.stringify(obj)
 		console.log(jsonBody)
@@ -108,12 +110,10 @@ async function addNode(pid, title, content) {
 		input_note_title.value = "";
 		input_note_content.value = "";
 		cancelEdit();	/* 退出编辑模式并重置高度 */
-		var cur = (stack.length == 0) ? 0 : stack[stack.length - 1];
-		var notes = await getNode(cur);
-		load_notes(notes);
-		loadMap(notes);
+		getNode(stack[stack.length - 1]).then(function(r) { load_notes(r); loadMap(r); })
 
 		//if (result.success) {
+		alert(`添加节点成功`, result);
 		return result
 		//...
 
@@ -169,6 +169,7 @@ async function deleteNode(id) {
 
 		stack.pop();
 		stack_operate.pop();
+		stack_addable.pop();
 		getNode(stack[stack.length - 1]).then(function(r) { load_notes(r); loadMap(r); })
 
 		console.log(`删除节点成功`);
@@ -238,13 +239,15 @@ async function deleteChild(id) {
 }
 
 /* by qing — 保存编辑：调用 /update_note，成功后刷新当前层并退出编辑模式 */
-async function updateNode(id, pid, title, content) {
+async function updateNode(id, pid, title, content, is_public, everyone_editable) {
 	try {
 		obj = {
 			"id": Number(id),
 			"pid": pid,
 			"title": title,
-			"content": content
+			"content": content,
+			"is_public": is_public ? 1 : 0,
+			"everyone_editable": everyone_editable ? 1 : 0
 		}
 		jsonBody = JSON.stringify(obj)
 		const res = await fetch('/update_note', {
@@ -281,10 +284,9 @@ async function updateNode(id, pid, title, content) {
 		input_note_content.value = "";
 		cancelEdit();
 		var cur = (stack.length == 0) ? 0 : stack[stack.length - 1];
-		var notes = await getNode(cur);
-		load_notes(notes);
-		loadMap(notes);
+		getNode(cur).then(function(r) { load_notes(r); loadMap(r); });
 
+		alert('修改成功');
 		return result;
 
 	} catch (err) {
@@ -407,6 +409,7 @@ async function confirmMove() {
 		input_note_submit.disabled = false;
 		input_note_clear.disabled = false;
 		delete_note.disabled = false;
+		updateFormPermission();
 	}
 }
 
@@ -515,9 +518,13 @@ function renderSpJs(container, sp, appendNote) {
 	/* 启动特效：创建隔离 iframe 沙箱，完整前端代码（含 <style>/<script>/<body>）由 srcdoc 承载，
 	 * 脚本在独立上下文执行，无法影响父页面导航。
 	 * 两种模式：
-	 *   - 默认或代码含 "<!-- in-node -->" 标记 → 渲染在节点内部（relative 定位、可交互、随节点滚动）；
-	 *   - 仅代码含 "<!-- fullscreen -->" 标记 → 全屏 fixed 定位，视觉特效覆盖整个页面，
-	 *     iframe 直接挂载到 document.body，pointer-events:none 不拦截页面操作。
+	 *   - 代码含 "<!-- in-node -->" 标记 → 渲染在节点内部（relative 定位、可交互、随节点滚动），
+	 *     iframe 挂载在节点容器内（随卡片隐藏/移除）；
+	 *   - 否则 → 全屏 fixed 定位，视觉特效悬浮覆盖整个页面（pointer-events:none 不拦截父页面点击），
+	 *     iframe 直接挂载到 document.body：若挂在卡片内部，卡片入场动画等 opacity<1 的属性
+	 *     会在卡片上产生层叠上下文，iframe 的 z-index:9999 就被困在该卡片内部生效，
+	 *     DOM 序靠后的兄弟卡片会把整张卡片（含特效）压在下面；挂到 body 后 z-index
+	 *     直接在根层叠上下文竞争，恒位于所有卡片之上。
 	 * 清理不受影响：clearAllEffects 按 class 全文档查找，两种挂载位置都能正确回收。 */
 	function startEffect() {
 		if (frame) return;
@@ -525,19 +532,17 @@ function renderSpJs(container, sp, appendNote) {
 		frame.className = 'sp-effect-frame';
 		frame.setAttribute('sandbox', 'allow-scripts');
 		frame.srcdoc = sp.code;
-		var fullscreen = /<!--\s*fullscreen\s*-->/.test(sp.code || '');
-		if (fullscreen) {
-			frame.tabIndex = -1;
-			frame.inert = true;
-			frame.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;border:0;pointer-events:none;z-index:9999;';
-			document.body.appendChild(frame);
-		} else {
+		var inNode = /<!--\s*in-node\s*-->/.test(sp.code || '');
+		if (inNode) {
 			frame.style.cssText = 'position:relative;display:block;width:100%;height:420px;border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden;background:transparent;';
 			container.appendChild(frame);
+		} else {
+			frame.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;border:0;pointer-events:none;z-index:9999;';
+			document.body.appendChild(frame);
 		}
 		toggle_btn.textContent = '停止特效';
 		out.style.display = 'block';
-		out.textContent = fullscreen ? '全屏特效已启动' : '已载入';
+		out.textContent = inNode ? '已载入' : '特效已启动';
 	}
 	function stopEffect() {
 		if (frame) { frame.remove(); frame = null; }
@@ -787,12 +792,19 @@ const stack = [];	/* 用于存储当前节点的路径，也就是经过的每�
 /* 与 stack 平行的权限栈：进入每个节点时记录其 can_operate（后端按 owner/is_admin 判定，
  * 与 delete_note 鉴权口径一致），用于"删除当前节点"按钮显隐；入栈/出栈必须与 stack 同步 */
 const stack_operate = [];
+/* 与 stack 平行的添加权限栈：进入每个节点时记录当前用户能否在其下添加子节点
+ * （管理员/拥有者/everyone_editable，与后端 add_note 鉴权口径一致）；
+ * 根层（stack 空）仅管理员可添加，由 currentAddAllowed 按 current_user 判定 */
+const stack_addable = [];
 var article_title = document.getElementById('article-title');
 var article_content = document.getElementById('article-content');
 var input_note_title = document.getElementById('input-note-title');
 var input_note_content = document.getElementById('input-note-content');
 var input_note_submit = document.getElementById('input-note-submit');
 var input_note_clear = document.getElementById('input-note-clear');
+var flag_public = document.getElementById('flag-public');
+var flag_everyone = document.getElementById('flag-everyone');
+var node_form = document.getElementById('node-form');
 var recommend_list = document.getElementById('recommend-list');
 var delete_note = document.getElementById('delete-note');
 var minimap = document.getElementById("minimap");
@@ -812,6 +824,29 @@ var PANEL_EXPAND_MIN_WIDTH = 768;
 var is_expand = window.innerWidth >= PANEL_EXPAND_MIN_WIDTH;
 var editing_id = null;	/* 编辑模式：正在编辑的节点 id，null 表示当前是新增模式 */
 var moving_node = null;	/* 移动模式：待移动的节点 {id, pid, title, content}，null 表示未在移动 */
+
+/* ===== 添加子节点权限（与后端 add_note 鉴权口径一致，仅用于表单显隐提示） ===== */
+function canAddUnder(item) {
+	if (!current_user || !current_user.login) return false;
+	if (current_user.is_admin) return true;
+	if (item.owner != null && String(item.owner) === current_user.user) return true;
+	return Number(item.everyone_editable) === 1;
+}
+
+function currentAddAllowed() {
+	if (stack.length == 0) {
+		return !!(current_user && current_user.login && current_user.is_admin);
+	}
+	return stack_addable[stack_addable.length - 1] === true;
+}
+
+/* 表单显隐与添加权限挂钩：无添加权限时整个节点操作表单隐藏；
+ * 编辑模式例外——点卡片"编辑"保存自己的节点（can_operate 已保证）时弹出表单。
+ * 拥有当前节点的用户必然可在其下添加（owner 判定），故隐藏表单不影响"删除当前节点" */
+function updateFormPermission() {
+	var allowed = (editing_id != null) || currentAddAllowed();
+	node_form.style.display = allowed ? '' : 'none';
+}
 
 /* ===== 输入框自动高度调整 ===== */
 /* 中文输入法 composition 期间每个拼音字母都会触发 input；若每次都做塌陷测量，
@@ -856,7 +891,7 @@ sp_type.addEventListener('change', function() {
 	}
 	if (t === 'js') input_note_content.placeholder = '请输入完整前端代码（可含 HTML/CSS/JS）';
 	else if (t === 'style') input_note_content.placeholder = '请输入 CSS（如 .card { border-radius: 16px }），发布后全界面生效';
-	else if (t === 'theme') input_note_content.placeholder = '每行一个变量，如 --accent: #b6532d';
+	else if (t === 'theme') input_note_content.placeholder = '每行一个变量，如 --accent: #e8853a';
 	else input_note_content.placeholder = '';
 });
 
@@ -886,7 +921,7 @@ function parseThemeVars(text) {
 		if (/[{}<>]/.test(v)) { alert('变量值含非法字符（{}<>）：' + k); return null; }
 		vars[k] = v;
 	}
-	if (Object.keys(vars).length === 0) { alert('请至少输入一个 CSS 变量，如 --accent: #b6532d'); return null; }
+	if (Object.keys(vars).length === 0) { alert('请至少输入一个 CSS 变量，如 --accent: #e8853a'); return null; }
 	return vars;
 }
 
@@ -939,7 +974,9 @@ input_note_submit.addEventListener('click', function(event) {
 	buildSubmitContent()
 		.then(function(content) {
 			if (content == null) return null;	// 校验失败，已弹提示
-			return (editing_id != null) ? updateNode(editing_id, pid, title, content) : addNode(pid, title, content);
+			return (editing_id != null)
+				? updateNode(editing_id, pid, title, content, flag_public.checked, flag_everyone.checked)
+				: addNode(pid, title, content, flag_public.checked, flag_everyone.checked);
 		})
 		.catch(function(err) {
 			alert(err.message || '内容处理失败');
@@ -949,11 +986,6 @@ input_note_submit.addEventListener('click', function(event) {
 			input_note_submit.disabled = false;
 			input_note_clear.disabled = false;
 			delete_note.disabled = false;
-			input_note_title.disabled = false;
-			input_note_title.readOnly = false;
-			input_note_content.disabled = false;
-			input_note_content.readOnly = false;
-			requestAnimationFrame(() => input_note_title.focus({ preventScroll: true }));
 		});
 })
 
@@ -983,6 +1015,9 @@ delete_note.addEventListener('click', (event) => {
 function startEdit(item) {
 	editing_id = item.id;
 	input_note_title.value = item.title;
+	flag_public.checked = Number(item.is_public) !== 0;
+	flag_everyone.checked = Number(item.everyone_editable) === 1;
+	updateFormPermission();
 	var sp = parseSp(item.content);
 	sp_edit_original = null;
 	if (sp && sp._sp === 'js') {
@@ -1020,6 +1055,9 @@ function cancelEdit() {
 	sp_edit_original = null;
 	sp_file.value = '';
 	sp_file_tip.textContent = '';
+	flag_public.checked = true;
+	flag_everyone.checked = false;
+	updateFormPermission();
 	if (sp_type.value !== 'text') {
 		sp_type.value = 'text';
 		sp_type.dispatchEvent(new Event('change'));
@@ -1081,6 +1119,7 @@ function load_notes(main_node) {
 	renderCards(current_children);
 	inheritThemeStyle();
 	updateDeleteBtnVisibility();
+	updateFormPermission();
 	/* 层级切换后回到页面顶部，避免滚动条停留在上一层的深度 */
 	window.scrollTo(0, 0);
 };
@@ -1093,14 +1132,12 @@ function applyHiddenNodeEffects(item) {
 	if (sp._sp === 'style' || sp._sp === 'theme') {
 		injectSpCss(sp, noteId);
 	} else if (sp._sp === 'js' && !sp_effects_disabled) {
-		/* 隐藏节点没有卡片容器，仅显式 fullscreen 特效可以运行 */
-		if (!/<!--\s*fullscreen\s*-->/.test(sp.code || '')) return;
+		/* 仅全屏模式（非 in-node）：无卡片容器，in-node 无法合理放置，忽略 */
+		if (/<!--\s*in-node\s*-->/.test(sp.code || '')) return;
 		var frame = document.createElement('iframe');
 		frame.className = 'sp-effect-frame';
 		frame.setAttribute('sandbox', 'allow-scripts');
 		frame.srcdoc = sp.code;
-		frame.tabIndex = -1;
-		frame.inert = true;
 		frame.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;border:0;pointer-events:none;z-index:9999;';
 		document.body.appendChild(frame);
 	}
@@ -1128,9 +1165,16 @@ function renderCards(list) {
 			var id = Number(item.id)
 			stack.push(id)
 			stack_operate.push(item.can_operate === true)
+			stack_addable.push(canAddUnder(item))
 			getNode(id).then(function(r) { load_notes(r); loadMap(r); })
 		});
 		ttl.appendChild(ttl1);
+		if (Number(item.is_public) === 0) {
+			let priv = document.createElement('span');
+			priv.className = 'private-tag';
+			priv.textContent = '非公开';
+			ttl.appendChild(priv);
+		}
 		card.appendChild(ttl);
 		let wrt_div = document.createElement('p');
 		// 发帖用户：头像圆点（取昵称首字符）+ 昵称，样式见 theme.css 的 Owner Chip 段
@@ -1291,6 +1335,7 @@ function loadMap(children_json) {
             if (!confirmLeaveIfDirty()) return;	/* 未放弃输入则不返回，stack 保持原样 */
             stack.pop();
             stack_operate.pop();
+            stack_addable.pop();
             /* 栈空（回到根）时取 0：原判断 stack.length >= 0 恒真，空栈取 stack[-1] 得 undefined */
             var id = (stack.length > 0) ? stack[stack.length - 1] : 0;
             getNode(id).then(function(r) { load_notes(r); loadMap(r); });
@@ -1333,6 +1378,7 @@ async function loadUserPanel() {
 			sp_panel.style.display = '';
 		}
 		renderUserPanel();
+		updateFormPermission();
 	} catch (e) {
 		console.error('获取用户信息失败：', e);
 	}

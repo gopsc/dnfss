@@ -23,7 +23,7 @@
 			<div id="minimap" class="minimap"></div>
 			<div id="movebar" class="movebar"></div>
 			<div class="recommend-list" id="recommend-list"></div>
-			<div class="card node-form">
+			<div class="card node-form" id="node-form" style="display:none">
 				<h3>节点操作</h3>
 			<label>新增节点</label><input id="input-note-title">
 			<!-- 特殊节点面板：登录用户可见（dnfs.js 按 /whoami login 显示；发布权限由后端按节点拥有者/管理员强制） -->
@@ -45,7 +45,6 @@
 					<label class="flag-item"><input type="checkbox" id="flag-public" checked>公开节点</label>
 					<label class="flag-item"><input type="checkbox" id="flag-everyone">允许他人添加子节点</label>
 				</div>
-				<div id="form-perm-tip" class="form-perm-tip" style="display:none"></div>
 				<div class="form-actions">
 					<button id="input-note-submit">提交</button>
 					<button id="input-note-clear">重置</button>
